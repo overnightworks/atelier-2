@@ -17,6 +17,7 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_answer,
     bounded_process_streams,
 )
+from atelier2.adapters.claude_executable import ClaudeExecutable
 from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -500,12 +501,10 @@ class ClaudeSubscriptionSettings:
     search_path: str
 
     def __post_init__(self) -> None:
-        executable = self.executable.resolve()
+        executable = ClaudeExecutable(self.executable).path
         credential_directory = self.credential_directory.resolve()
         object.__setattr__(self, "executable", executable)
         object.__setattr__(self, "credential_directory", credential_directory)
-        if not executable.is_file() or not os.access(executable, os.X_OK):
-            raise ValueError("the Claude executable must be an executable file")
         if not credential_directory.is_dir():
             raise ValueError(
                 "the Claude credential directory must be an existing directory"

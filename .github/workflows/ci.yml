@@ -630,7 +630,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@v0.10.1 agent-claim --repo ${{ github.repository }} pr-check --pr ${{ github.event.pull_request.number }}
+        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@v0.11.0 agent-claim --repo ${{ github.repository }} pr-check --pr ${{ github.event.pull_request.number }}
 
       - name: Hold the required check name for the merge queue
         if: ${{ github.event_name == 'merge_group' }}
