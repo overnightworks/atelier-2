@@ -165,4 +165,25 @@ WAITING_FOR_A_CALLER = (
         ),
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
+    {
+        "names": (
+            "host/terminal_seat.py:TerminalSeat",
+            "host/terminal_seat.py:ensure_session",
+            "host/terminal_seat.py:stop_session",
+            "host/terminal_seat.py:ttyd_command",
+            "host/terminal_seat.py:program",
+        ),
+        "why": (
+            "The terminal seat's lifecycle: creating and finding one tmux "
+            "server per seat inside its own systemd scope, building the "
+            "ttyd child the serve starts, and ending the seat itself. The "
+            "serve's lifespan, the seat's API door and the `atelier2 seat stop` "
+            "command are the callers, and they arrive together with the "
+            "workbench surface that replaces the web chat -- a half-wired seat "
+            "would publish a surface nobody can reach. `program` is the "
+            "machine boundary's own parameter, unbound until that composition "
+            "implements it."
+        ),
+        "item": "#1099 Scheibe C (Sitz hinein, Chat heraus)",
+    },
 )
