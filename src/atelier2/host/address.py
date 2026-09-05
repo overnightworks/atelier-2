@@ -9,12 +9,26 @@ because reading this pair must not cost the client the whole server graph.
 from __future__ import annotations
 
 import ipaddress
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8422
-DEFAULT_SERVICE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 ADDRESSABLE_SCHEMES = frozenset({"http", "https"})
+LOOPBACK_SERVICE_SCHEME = "http"
+
+
+def loopback_service_url(port: int, path: str = "") -> str:
+    """Where a client on this machine reaches a service bound to loopback.
+
+    The one place such an address is spelled: this machine is the whole trust
+    boundary of a loopback service, so it carries no certificate and no caller
+    picks a scheme of its own.
+    """
+
+    return urlunsplit((LOOPBACK_SERVICE_SCHEME, f"{DEFAULT_HOST}:{port}", path, "", ""))
+
+
+DEFAULT_SERVICE_URL = loopback_service_url(DEFAULT_PORT)
 
 
 def is_loopback_host(host: str) -> bool:
