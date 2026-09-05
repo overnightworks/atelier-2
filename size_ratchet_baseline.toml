@@ -7,7 +7,7 @@
 
 [[file]]
 path = "src/atelier2/adapters/agent_process_watchdog.py"
-lines = 1202
+lines = 1196
 
 [[file]]
 path = "src/atelier2/adapters/agent_processes.py"
