@@ -127,17 +127,16 @@ class OpenPullRequest:
             raise TypeError("an open-pr work item reference uses the tracker contract")
 
     def canonical_bytes(self) -> bytes:
-        return _canonical_json(
-            {
-                "body": self.body,
-                "head_branch": self.head_branch.value,
-                "work_item_reference": (
-                    None
-                    if self.work_item_reference is None
-                    else self.work_item_reference.value
-                ),
-            }
-        )
+        # An absent reference's canonical bytes and hash are durable identity:
+        # in-flight intents opened before #1290 are reconciled by this exact
+        # form, so the key is omitted rather than carried as a `null`.
+        value: dict[str, str] = {
+            "body": self.body,
+            "head_branch": self.head_branch.value,
+        }
+        if self.work_item_reference is not None:
+            value["work_item_reference"] = self.work_item_reference.value
+        return _canonical_json(value)
 
     @classmethod
     def from_canonical_bytes(cls, request: bytes) -> Self:
@@ -154,13 +153,9 @@ class OpenPullRequest:
         if fields == legacy_fields:
             return cls(body, HeadBranch(branch))
         reference = value["work_item_reference"]
-        if reference is not None and not isinstance(reference, str):
-            raise TypeError("open-pr work_item_reference is text or absent")
-        return cls(
-            body,
-            HeadBranch(branch),
-            None if reference is None else _tracker_item_reference(reference),
-        )
+        if not isinstance(reference, str):
+            raise TypeError("open-pr work_item_reference is text")
+        return cls(body, HeadBranch(branch), _tracker_item_reference(reference))
 
 
 @dataclass(frozen=True, slots=True)

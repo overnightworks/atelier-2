@@ -139,6 +139,24 @@ def test_an_open_pr_request_without_a_work_item_reference_remains_readable() -> 
     assert restored == OpenPullRequest(TREE.decode("utf-8"), HEAD_BRANCH)
 
 
+def test_a_reference_less_open_pr_requests_canonical_bytes_are_unchanged() -> None:
+    """A reconciled in-flight intent's identity outlives #1290's new field.
+
+    The canonical bytes (and the hash derived from them) are the durable
+    identity an in-flight `open-pr` intent is reconciled by; an intent opened
+    before #1290 carried no `work_item_reference` key at all, so one without a
+    reference today must still encode to exactly that two-field form, not to
+    the same fields plus a `null`.
+    """
+    request = OpenPullRequest(TREE.decode("utf-8"), HEAD_BRANCH)
+
+    assert request.canonical_bytes() == json.dumps(
+        {"body": TREE.decode("utf-8"), "head_branch": HEAD_BRANCH.value},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
 @pytest.mark.parametrize("operation", ["readback", "execute"])
 def test_a_malformed_open_pr_payload_is_refused_before_the_recorded_adapter_writes(
     factory: GitHubEffectAdapterFactory,
