@@ -46,6 +46,12 @@ from atelier2.adapters.github.live_effects import (
     GitHubRepository,
     GitHubTokenCredential,
 )
+from atelier2.adapters.github.tracker_reference import (
+    github_issue_number_or_none as _issue_number,
+)
+from atelier2.adapters.github.tracker_reference import (
+    github_tracker_reference,
+)
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.when import RecordedAt, recorded_instant
 from atelier2.contracts.work_items import (
@@ -65,8 +71,6 @@ from atelier2.ports.issue_observation import (
     WorkItemRevisionObserved,
 )
 
-GITHUB_TRACKER_REFERENCE_PREFIX = "gh:"
-
 # GitHub's own maximum page size; fewer round trips per observation, and the
 # last short page is what ends the walk.
 _ISSUES_PAGE_SIZE = 100
@@ -74,12 +78,6 @@ _ISSUES_PAGE_SIZE = 100
 # GitHub marks a pull request inside the issue representation with this key,
 # and it is the only thing that tells the two kinds apart there.
 _PULL_REQUEST_KEY = "pull_request"
-
-
-def github_tracker_reference(issue_number: int) -> TrackerItemReference:
-    """The `gh:<n>` spelling this adapter owns for one GitHub issue."""
-
-    return TrackerItemReference(f"{GITHUB_TRACKER_REFERENCE_PREFIX}{issue_number}")
 
 
 @dataclass(frozen=True)
@@ -131,22 +129,6 @@ def _label_names(payload: Any) -> tuple[str, ...] | None:
             return None
         names.append(name)
     return tuple(names)
-
-
-def _issue_number(reference: TrackerItemReference) -> int | None:
-    """The item this reference addresses here, or nothing if it addresses none.
-
-    A reference in another adapter's grammar is not an error to raise: it names
-    no item in this repository, which is what the caller is told.
-    """
-
-    if not reference.value.startswith(GITHUB_TRACKER_REFERENCE_PREFIX):
-        return None
-    digits = reference.value.removeprefix(GITHUB_TRACKER_REFERENCE_PREFIX)
-    if not (digits.isascii() and digits.isdigit()):
-        return None
-    number = int(digits)
-    return number if number >= 1 else None
 
 
 @dataclass(frozen=True)

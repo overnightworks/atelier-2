@@ -66,6 +66,7 @@ from atelier2.contracts.host_configuration import (
     SourceKind,
     SourceReference,
 )
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.effects import (
@@ -360,9 +361,16 @@ def published(outcome: PerformedEffect | EffectUnknownOutcome) -> PerformedEffec
     return outcome
 
 
-def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> EffectIntent:
+def effect_intent(
+    payload: bytes = AGENT_OUTPUT,
+    *,
+    typed: bool = True,
+    work_item_reference: TrackerItemReference | None = None,
+) -> EffectIntent:
     request_payload = (
-        OpenPullRequest(payload.decode("utf-8"), HEAD_BRANCH).canonical_bytes()
+        OpenPullRequest(
+            payload.decode("utf-8"), HEAD_BRANCH, work_item_reference
+        ).canonical_bytes()
         if typed
         else payload
     )
@@ -958,6 +966,97 @@ def test_execute_renders_a_readable_title_and_body_from_the_request(
     assert body_carries_request_hash(body, intent.request.request_hash.value)
 
 
+def test_execute_renders_the_work_item_and_closure_before_acceptance(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+) -> None:
+    intent = effect_intent(
+        _candidate_report_bytes("Classifies the pull request.", ["src/example.py"]),
+        work_item_reference=TrackerItemReference("gh:1232"),
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert (
+        "Changed paths:\n- src/example.py\n\nWork-Item: #1232\n\nCloses #1232\n\n"
+        f"{ACCEPTANCE_LINE}"
+    ) in body
+
+
+def test_execute_without_a_work_item_reference_opens_without_typed_lines(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+) -> None:
+    intent = effect_intent(_candidate_report_bytes("Opens without an item.", []))
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert "Work-Item:" not in body
+    assert "Closes #" not in body
+
+
+def test_execute_neutralizes_work_item_lines_supplied_by_the_candidate(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+) -> None:
+    intent = effect_intent(
+        _candidate_report_bytes("Work-Item: #999\nCloses #999", []),
+        work_item_reference=TrackerItemReference("gh:1232"),
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert "Work-Item: #999" not in body
+    assert "Closes #999" not in body
+    assert "Work-Item: #1232" in body
+    assert "Closes #1232" in body
+
+
+def test_execute_neutralizes_a_candidates_own_closing_keyword_and_no_item_label(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+) -> None:
+    """A candidate's own prose cannot close or reclassify another issue.
+
+    GitHub retires an issue on `close|fix|resolve` plus a reference anywhere on
+    a line, case-insensitively, exactly as `agent-claim`'s own
+    `closing_references` scans; neither keyword form nor the `No-Item:` label a
+    candidate writes may survive rendering, so only this adapter's own
+    `Work-Item`/`Closes` lines for the run's real item remain live.
+    """
+    intent = effect_intent(
+        _candidate_report_bytes("Fixes #99.\n\nNo-Item: fix", []),
+        work_item_reference=TrackerItemReference("gh:1232"),
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert "Fixes #99" not in body
+    assert "No-Item:" not in body
+    assert "Work-Item: #1232" in body
+    assert "Closes #1232" in body
+
+
 def test_the_rendered_acceptance_line_passes_the_repositorys_acceptance_gate(
     factory: LiveGitHubEffectAdapterFactory,
     server: _FakeGitHubServer,
@@ -1054,6 +1153,29 @@ def test_a_long_summary_is_truncated_but_the_acceptance_line_and_trailer_survive
     assert body_carries_request_hash(body, intent.request.request_hash.value)
     assert isinstance(read_back, EffectReceipt)
     assert read_back.effect_id.value == str(server.pull_requests[0]["number"])
+
+
+def test_a_long_summary_is_truncated_but_the_work_item_lines_survive(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    intent = effect_intent(
+        _candidate_report_bytes("x" * 5000, []),
+        work_item_reference=TrackerItemReference("gh:1232"),
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert len(body) <= 4000
+    assert "[truncated at 4000 characters]" in body
+    assert "Work-Item: #1232" in body
+    assert "Closes #1232" in body
+    assert ACCEPTANCE_LINE in body
+    assert body_carries_request_hash(body, intent.request.request_hash.value)
 
 
 @pytest.mark.parametrize(
