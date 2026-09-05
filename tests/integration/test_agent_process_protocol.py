@@ -201,6 +201,82 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
         os.close(owner_writer)
 
 
+def test_serve_reaches_finalizing_after_bounded_persistent_tick_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `_tick()` that never stops raising must not spin `serve()` forever.
+
+    The bound is asserted from inside the fake tick itself: past it, the fake
+    raises `AssertionError` instead of `OSError`, so a coordinator that never
+    reaches `FINALIZING` fails this test promptly instead of hanging it.
+    """
+
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    tick_calls = 0
+    maximum_tolerated_ticks = 10
+
+    def persistently_failing_tick() -> None:
+        nonlocal tick_calls
+        tick_calls += 1
+        if tick_calls > maximum_tolerated_ticks:
+            raise AssertionError(
+                "serve() kept ticking past the bound without reaching FINALIZING"
+            )
+        raise OSError("descriptor of the long-dead child is gone")
+
+    monkeypatch.setattr(watchdog, "_tick", persistently_failing_tick)
+    try:
+        watchdog.serve(lambda: None)
+    finally:
+        os.close(owner_writer)
+
+    assert watchdog._state is watchdog_module._CoordinatorState.FINALIZING
+    assert tick_calls <= maximum_tolerated_ticks
+
+
+def test_provider_stream_error_deregisters_the_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider descriptor that errors is stopped watching, not left to refire.
+
+    Left registered, a descriptor that keeps reporting a read error stays
+    selector-ready forever, so every following tick would service it again
+    for free -- the same failure, at no cost in wall time, spinning the loop.
+    """
+
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
+    read_end, write_end = os.pipe()
+    os.set_blocking(read_end, False)
+    watchdog._provider_streams[read_end] = "stdout"
+    watchdog._selector.register(read_end, selectors.EVENT_READ, "stdout")
+    real_read = os.read
+
+    def fail_on_the_dead_descriptor(descriptor: int, size: int) -> bytes:
+        if descriptor == read_end:
+            raise OSError("bad file descriptor")
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", fail_on_the_dead_descriptor)
+    try:
+        watchdog._service_provider(read_end, "stdout", selectors.EVENT_READ, 1.0)
+
+        assert read_end not in watchdog._provider_streams
+        with pytest.raises(KeyError):
+            watchdog._selector.get_key(read_end)
+    finally:
+        watchdog._selector.close()
+        os.close(owner_pipe)
+        os.close(owner_writer)
+        os.close(write_end)
+        try:
+            os.close(read_end)
+        except OSError:
+            pass
+
+
 def test_running_watchdog_bounds_four_control_roles_independently(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

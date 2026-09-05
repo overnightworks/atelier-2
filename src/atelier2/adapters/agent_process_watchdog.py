@@ -223,8 +223,12 @@ class Watchdog:
                 except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
                     if self._termination_owner is None:
                         self._begin_termination("SUPERVISION", time.monotonic())
-                    else:
+                    elif self._state is not _CoordinatorState.RECOVERY_HANDOFF:
                         self._publish_recovery_handoff(time.monotonic())
+                    else:
+                        # A second failure after the handoff already went out
+                        # has nothing left to wait on, so it ends here.
+                        self._state = _CoordinatorState.FINALIZING
         finally:
             self._close_provider_descriptors()
             for connection in tuple(self._connections.values()):
@@ -627,11 +631,13 @@ class Watchdog:
             else:
                 self._read_provider_output(descriptor, role, now)
         except BrokenPipeError:
-            if role == "stdin":
-                self._close_provider_stream(role)
-            else:
+            self._close_provider_stream(role)
+            if role != "stdin":
                 self._begin_termination("SUPERVISION", now)
         except OSError:
+            # Left registered, an erroring descriptor stays selector-ready
+            # forever, so it is unregistered here too.
+            self._close_provider_stream(role)
             self._begin_termination("SUPERVISION", now)
 
     def _write_standard_input(self, descriptor: int) -> None:
