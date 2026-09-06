@@ -61,9 +61,21 @@ def _read(path: Path) -> ProviderFilesystemRequest:
     return ProviderFilesystemRequest(ProviderFilesystemEffect.READ, path, REQUEST_ID)
 
 
+def _write(path: Path, content: bytes) -> ProviderFilesystemRequest:
+    return ProviderFilesystemRequest(
+        ProviderFilesystemEffect.WRITE, path, REQUEST_ID, content
+    )
+
+
 def _answered(content: bytes) -> AttemptWorkspaceFileOutcome:
     return AttemptWorkspaceFileOutcome(
         ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, content)
+    )
+
+
+def _answered_write() -> AttemptWorkspaceFileOutcome:
+    return AttemptWorkspaceFileOutcome(
+        ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED)
     )
 
 
@@ -514,20 +526,246 @@ def test_a_file_that_grows_during_the_read_is_refused_once_past_the_ceiling(
     assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
 
 
-def test_a_write_request_is_refused_as_not_yet_granted(tmp_path: Path) -> None:
+@dataclass(frozen=True)
+class _WriteTargetScenario:
+    name: str
+    build_parent: Callable[[Path], None]
+    requested: Path
+
+
+def _no_parent_needed(_workspace: Path) -> None:
+    pass
+
+
+def _an_existing_sub_parent(workspace: Path) -> None:
+    (workspace / "sub").mkdir()
+
+
+_WRITE_TARGET_SCENARIOS = (
+    _WriteTargetScenario("at the lease root", _no_parent_needed, Path("notes.md")),
+    _WriteTargetScenario(
+        "nested under an existing parent", _an_existing_sub_parent, Path("sub/deep.txt")
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    _WRITE_TARGET_SCENARIOS,
+    ids=[scenario.name for scenario in _WRITE_TARGET_SCENARIOS],
+)
+def test_a_write_creates_the_exact_bytes(
+    tmp_path: Path, scenario: _WriteTargetScenario
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    write = ProviderFilesystemRequest(
-        ProviderFilesystemEffect.WRITE, Path("notes.md"), REQUEST_ID, b"new content"
-    )
+    scenario.build_parent(workspace)
+    target = workspace / scenario.requested
 
-    outcome = _access(workspace).describe(write)
+    outcome = _access(workspace).describe(_write(scenario.requested, b"exact bytes"))
+
+    assert outcome == _answered_write()
+    assert target.read_bytes() == b"exact bytes"
+    assert {entry.name for entry in target.parent.iterdir()} == {target.name}
+
+
+def test_a_write_overwrites_an_existing_file_atomically(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original content")
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), b"replaced content"))
+
+    assert outcome == _answered_write()
+    assert (workspace / "notes.md").read_bytes() == b"replaced content"
+    assert list(workspace.iterdir()) == [workspace / "notes.md"]
+
+
+def test_a_failure_injected_after_staging_leaves_the_target_unchanged_and_no_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original content")
+
+    def raising_replace(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EIO, "simulated staging failure")
+
+    monkeypatch.setattr(attempt_workspace_files.os, "replace", raising_replace)
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), b"new content"))
 
     assert outcome.reply == ProviderFilesystemReply(
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
     )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
+    assert outcome.detail == "EIO"
+    assert (workspace / "notes.md").read_bytes() == b"original content"
+    assert list(workspace.iterdir()) == [workspace / "notes.md"]
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        Path(".ssh/id_rsa"),
+        Path(".bashrc"),
+        Path(".profile"),
+        Path(".zshrc"),
+        Path(".bash_profile"),
+        Path(".grok/config.json"),
+        Path(".claude/settings.json"),
+        Path(".cursor/config.json"),
+        Path(".git/hooks/pre-commit"),
+        Path("sub/.ssh/id_rsa"),
+    ],
+    ids=[
+        "ssh-directory",
+        "bashrc",
+        "profile",
+        "zshrc",
+        "bash-profile",
+        "grok-directory",
+        "claude-directory",
+        "cursor-directory",
+        "git-hooks-pair",
+        "nested-ssh-directory",
+    ],
+)
+def test_a_write_naming_a_protected_path_is_refused(
+    tmp_path: Path, requested: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PROTECTED_PATH
+    assert list(workspace.rglob("*")) == []
+
+
+def test_a_git_directory_without_the_hooks_pair_is_not_a_protected_write(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / ".git").mkdir(parents=True)
+
+    outcome = _access(workspace).describe(_write(Path(".git/config"), b"[core]"))
+
+    assert outcome == _answered_write()
+    assert (workspace / ".git" / "config").read_bytes() == b"[core]"
+
+
+def test_a_write_onto_a_symlinked_name_is_refused_leaving_the_real_file_unchanged(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real = workspace / "real.txt"
+    real.write_bytes(b"actual content")
+    (workspace / "alias.txt").symlink_to(real)
+
+    outcome = _access(workspace).describe(
+        _write(Path("alias.txt"), b"attempted overwrite")
+    )
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.TARGET_IS_SYMLINK
+    assert real.read_bytes() == b"actual content"
+    assert (workspace / "alias.txt").is_symlink()
+
+
+def test_an_oversize_write_is_refused_without_creating_anything(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace, maximum_read_bytes=5).describe(
+        _write(Path("notes.md"), b"too many bytes")
+    )
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
     assert list(workspace.iterdir()) == []
+
+
+def test_a_write_whose_parent_directory_is_missing_is_refused(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace).describe(_write(Path("sub/notes.md"), b"content"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PARENT_MISSING
+    assert list(workspace.iterdir()) == []
+
+
+_WRITE_REUSES_READ_ESCAPE_SCENARIOS = tuple(
+    scenario
+    for scenario in _REFUSAL_SCENARIOS
+    if scenario.name
+    in {
+        "parent directory escape",
+        "foreign absolute address",
+        "absolute address only sharing the lease name as a prefix",
+        "embedded NUL byte",
+        "symlink path component",
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    _WRITE_REUSES_READ_ESCAPE_SCENARIOS,
+    ids=[scenario.name for scenario in _WRITE_REUSES_READ_ESCAPE_SCENARIOS],
+)
+def test_a_write_reaching_outside_the_lease_is_refused_the_same_way_as_a_read(
+    tmp_path: Path, scenario: _RefusalScenario
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    requested = scenario.build(tmp_path, workspace)
+
+    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is scenario.refusal
+
+
+def test_a_write_parent_mount_crossing_is_mapped_to_its_own_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors the read-side mount test: building a real mount needs
+    privileges this suite does not have, so only the errno-to-refusal mapping
+    for the parent resolution is under test here."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def raising_openat2_directory(dir_fd: int, relative_path: str) -> int:
+        raise OSError(errno.EXDEV, "simulated mount crossing")
+
+    monkeypatch.setattr(
+        attempt_workspace_files,
+        "_openat2_directory_descriptor",
+        raising_openat2_directory,
+    )
+
+    outcome = _access(workspace).describe(_write(Path("sub/file.txt"), b"content"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
 
 
 def _spying_open(
@@ -624,6 +862,45 @@ def test_a_symlink_escape_calls_openat2_exactly_once_against_the_lease_root(
     assert "sentinel" not in called_path
 
 
+def test_a_write_opens_only_relative_names_through_the_lease_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every `os.open` a staged write performs must be a bare relative staged
+    name resolved through `dir_fd`, never an absolute path that could address
+    something outside the lease, and the one `openat2` directory resolution
+    for its parent must be anchored at the lease root, naming a relative path
+    that never mentions the host's real directory."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / "sub").mkdir(parents=True)
+    opened_names = _spying_open(monkeypatch)
+    lease_root_identity = (os.stat(workspace).st_dev, os.stat(workspace).st_ino)
+    real_openat2_directory = attempt_workspace_files._openat2_directory_descriptor
+    directory_calls: list[tuple[tuple[int, int], str]] = []
+
+    def recording_openat2_directory(dir_fd: int, relative_path: str) -> int:
+        status = os.fstat(dir_fd)
+        directory_calls.append(((status.st_dev, status.st_ino), relative_path))
+        return real_openat2_directory(dir_fd, relative_path)
+
+    monkeypatch.setattr(
+        attempt_workspace_files,
+        "_openat2_directory_descriptor",
+        recording_openat2_directory,
+    )
+
+    outcome = _access(workspace).describe(_write(Path("sub/deep.txt"), b"deep bytes"))
+
+    assert outcome == _answered_write()
+    assert len(directory_calls) == 1
+    called_dir_identity, called_path = directory_calls[0]
+    assert called_dir_identity == lease_root_identity
+    assert called_path == "sub"
+    assert opened_names
+    assert all(not os.path.isabs(name) for name in opened_names)
+    assert all(str(tmp_path) not in name for name in opened_names)
+
+
 def test_the_constructor_rejects_a_ceiling_above_the_artifact_bound(
     tmp_path: Path,
 ) -> None:
@@ -642,7 +919,7 @@ def test_an_answered_outcome_cannot_also_carry_a_refusal() -> None:
             ProviderFilesystemReply(
                 REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, b"x"
             ),
-            AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
+            AttemptWorkspaceFileRefusal.PARENT_MISSING,
         )
 
 
@@ -657,7 +934,7 @@ def test_only_a_workspace_io_failure_may_name_an_errno() -> None:
     with pytest.raises(ValueError, match="only a workspace I/O failure"):
         AttemptWorkspaceFileOutcome(
             ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED),
-            AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
+            AttemptWorkspaceFileRefusal.PARENT_MISSING,
             "EIO",
         )
 
