@@ -119,7 +119,6 @@ async function shootRunFrame(page: Page, name: string): Promise<void> {
     await page.emulateMedia({ colorScheme: theme });
     for (const viewport of widths) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.waitForTimeout(200);
       await frame.screenshot({
         path: `${shotDir}/${name}-${viewport.name}-${theme}.png`
       });

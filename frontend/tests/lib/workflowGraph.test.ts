@@ -61,6 +61,14 @@ describe("topological layers of a V3 excerpt", () => {
     expect(layered).toEqual({ ok: true, layers: [[{ id: "only", depends_on: [] }]] });
   });
 
+  it("refuses an edge that names a node outside the excerpt", () => {
+    const layered = layerWorkflowGraph([{ id: "review", depends_on: ["implement"] }]);
+
+    expect(layered.ok).toBe(false);
+    if (layered.ok) return;
+    expect(layered.reason).toMatch(/not among/);
+  });
+
   it("refuses a cycle instead of inventing a placement", () => {
     const layered = layerWorkflowGraph([
       { id: "a", depends_on: ["b"] },
