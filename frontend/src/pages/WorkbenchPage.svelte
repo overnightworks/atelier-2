@@ -690,7 +690,9 @@
 
   .seat-terminal {
     /* Tall enough to hold a working session's last screenful without the room
-       scrolling under it; the terminal keeps its own scrollback. */
+       scrolling under it; the terminal keeps its own scrollback. As wide as
+       the room gives it: a terminal reads by its columns. */
+    width: 100%;
     height: var(--seat-height);
     min-width: 0;
     border: var(--edge) solid var(--line);

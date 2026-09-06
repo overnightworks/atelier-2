@@ -36,6 +36,7 @@ from atelier2.api.context import ApiContext, ApiPorts
 from atelier2.api.limits import ApiLimits
 from atelier2.api.openapi import SEAT_PATH
 from atelier2.api.references import decode_public_run_reference
+from atelier2.api.seat import SeatReader, no_seat_declared
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
     ModelRegistryPublished,
@@ -1570,6 +1571,7 @@ def main() -> None:
         event_poll_backoff: EventPollBackoff,
         frontend_dist: Path | None = None,
         served_project_id: ProjectId | None = None,
+        seat_reader: SeatReader = no_seat_declared,
         lifespan: Lifespan[FastAPI] | None = None,
     ) -> FastAPI:
         seeded = replace(
@@ -1587,6 +1589,7 @@ def main() -> None:
             event_poll_backoff=event_poll_backoff,
             frontend_dist=frontend_dist,
             served_project_id=served_project_id,
+            seat_reader=seat_reader,
             lifespan=lifespan,
         )
         observed = seeded.queue_projection.reconcile_open_items(

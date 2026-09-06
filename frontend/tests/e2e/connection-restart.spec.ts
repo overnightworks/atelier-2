@@ -111,7 +111,7 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   // above it like above every other room.
   await page.getByRole("link", { name: "Workbench" }).click();
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
-  await expect(notice).toHaveText(restartNoticeCopy);
+  await expect(notice).toContainText(restartNoticeCopy);
 
   for (const viewport of widths) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });

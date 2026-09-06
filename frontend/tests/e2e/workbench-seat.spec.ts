@@ -72,6 +72,12 @@ test("a run started while the seat is on screen appears as an ordinary run row (
   await expect(page.locator(".seat-terminal")).toHaveCount(1);
 
   const runId = `workbench/seat-started-${Date.now()}`;
+  const schema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: '{"type":"boolean"}'
+  });
+  expect([200, 201]).toContain(schema.status());
+  const schemaRevisionHash = (await schema.json()).schema_revision_hash as string;
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
     data: [
@@ -81,6 +87,7 @@ test("a run started while the seat is on screen appears as an ordinary run row (
       "  - id: ask",
       "    type: wait",
       "    prompt: Did this run arrive on the shelf?",
+      `    outputs: [{name: answer, schema: {ref: decision, revision: ${schemaRevisionHash}}}]`,
       ""
     ].join("\n")
   });
