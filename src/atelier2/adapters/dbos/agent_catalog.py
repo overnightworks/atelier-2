@@ -32,7 +32,7 @@ from atelier2.contracts.agents import (
     ProviderProbeFailure,
 )
 from atelier2.contracts.host_configuration import ModelRegistryBytesDisagree
-from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, MINIMUM_PAGE_ITEMS
 from atelier2.contracts.provider_probe_receipts import ProviderProbeResult
 from atelier2.ports.agent_configurations import (
     AgentConfigurationCatalog,
@@ -231,9 +231,12 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
     def list_agent_configuration_revisions(
         self, after: AgentConfigurationRevisionHash | None, limit: int
     ) -> ListAgentConfigurationRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+        if (
+            type(limit) is not int
+            or not MINIMUM_PAGE_ITEMS <= limit <= MAXIMUM_PAGE_ITEMS
+        ):
             raise ValueError(
-                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+                f"revision page limit must be an integer from {MINIMUM_PAGE_ITEMS} to {MAXIMUM_PAGE_ITEMS}"
             )
         try:
             with self._engine.connect() as connection:
@@ -326,9 +329,12 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
     def list_auth_profile_revisions(
         self, after: AuthProfileRevisionHash | None, limit: int
     ) -> ListAuthProfileRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+        if (
+            type(limit) is not int
+            or not MINIMUM_PAGE_ITEMS <= limit <= MAXIMUM_PAGE_ITEMS
+        ):
             raise ValueError(
-                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+                f"revision page limit must be an integer from {MINIMUM_PAGE_ITEMS} to {MAXIMUM_PAGE_ITEMS}"
             )
         try:
             with self._engine.connect() as connection:

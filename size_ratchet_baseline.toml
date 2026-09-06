@@ -27,7 +27,7 @@ lines = 3527
 
 [[file]]
 path = "src/atelier2/adapters/dbos/catalog_store.py"
-lines = 1085
+lines = 1088
 
 [[file]]
 path = "src/atelier2/adapters/dbos/effect_store.py"
@@ -43,7 +43,7 @@ lines = 1549
 
 [[file]]
 path = "src/atelier2/adapters/dbos/queries.py"
-lines = 2932
+lines = 2947
 
 [[file]]
 path = "src/atelier2/adapters/dbos/queue_projection_store.py"
@@ -231,7 +231,7 @@ lines = 78
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_catalog.DbosAgentConfigurationCatalog.list_agent_configuration_revisions"
-lines = 94
+lines = 97
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.attention_events.load_attention_event_page"
@@ -287,11 +287,11 @@ lines = 65
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_described_workflow_revisions"
-lines = 77
+lines = 80
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_runs"
-lines = 62
+lines = 65
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.prepare_run_event_stream"
@@ -299,7 +299,7 @@ lines = 84
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.read_run_event_page"
-lines = 112
+lines = 115
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
