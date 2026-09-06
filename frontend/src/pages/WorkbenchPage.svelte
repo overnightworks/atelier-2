@@ -700,16 +700,13 @@
     font-size: var(--text-xs);
   }
 
-  /* On a phone the terminal takes the whole room: it reaches into the stage's
-     own gutter for the columns, and stands short enough that the on-screen
-     keyboard leaves its prompt visible. */
+  /* On a phone the terminal takes the room's whole width -- not the window's:
+     reaching into the stage's gutter made the room itself overflow, which no
+     surface may (ADR 0019). It stands short enough that the on-screen keyboard
+     leaves its prompt visible. */
   @media (max-width: 48rem) {
     .seat-terminal {
-      width: calc(100% + var(--stage-gutter) * 2);
       height: var(--seat-height-narrow);
-      margin-inline: calc(var(--stage-gutter) * -1);
-      border-inline: none;
-      border-radius: 0;
     }
   }
 </style>

@@ -157,8 +157,12 @@ test.describe("on a phone", () => {
     // The type size a phone can read, asked of ttyd's own client through the
     // address it reads its options from.
     expect(await terminal.getAttribute("src")).toContain("fontSize=12");
-    const frame = await terminal.boundingBox();
-    expect(frame?.width).toBe(NARROW.width);
+    // The room's whole width, gutter to gutter: a terminal that reached past
+    // it would make the room itself overflow, which no surface may.
+    const room = page.locator(".workbench");
+    expect((await terminal.boundingBox())?.width).toBe(
+      await room.evaluate((element) => element.clientWidth)
+    );
 
     await seatSessionLine(page);
     const prompt = page.frameLocator(".seat-terminal").locator("#prompt");
