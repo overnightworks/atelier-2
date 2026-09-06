@@ -25,6 +25,7 @@ from atelier2.api.projection.models import (
     project_model_defaults_resource,
     project_model_resolution_resource,
 )
+from atelier2.api.references import PublicProjectReferencePath
 from atelier2.api.wire.requests import (
     PutModelRegistryRevisionRequestResource,
     PutProjectModelDefaultsRevisionRequestResource,
@@ -216,7 +217,7 @@ async def get_model_registry_route(
     responses={HTTPStatus.OK: {"model": ProjectModelDefaultsRevisionResource}},
 )
 async def put_project_model_defaults_route(
-    public_project_reference: str,
+    public_project_reference: PublicProjectReferencePath,
     body: PutProjectModelDefaultsRevisionRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -265,7 +266,7 @@ async def put_project_model_defaults_route(
     PROJECT_MODEL_DEFAULTS_PATH, response_model=ProjectModelDefaultsRevisionResource
 )
 async def get_project_model_defaults_route(
-    public_project_reference: str,
+    public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectModelDefaultsRevisionResource:
     project = _project_id(public_project_reference, context)
@@ -293,7 +294,7 @@ async def get_project_model_defaults_route(
     response_model=ProjectModelResolutionResource,
 )
 async def resolve_project_models_route(
-    public_project_reference: str,
+    public_project_reference: PublicProjectReferencePath,
     body: ResolveProjectModelsRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),

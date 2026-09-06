@@ -12,6 +12,7 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import PROJECT_PATH, PROJECTS_PATH
 from atelier2.api.problems import ApiProblem
 from atelier2.api.projection.projects import project_list_resource, project_resource
+from atelier2.api.references import PublicProjectReferencePath
 from atelier2.api.wire.resources import ProjectListResource, ProjectResource
 from atelier2.application.read_projects import (
     ProjectListRead,
@@ -45,7 +46,7 @@ async def list_projects_route(
 
 @router.get(PROJECT_PATH, response_model=ProjectResource)
 async def get_project_route(
-    public_project_reference: str,
+    public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectResource:
     project_id = decode_public_project_reference_value(

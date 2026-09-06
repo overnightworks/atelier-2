@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
-    parse_limit,
     require_json_media_dependency,
     resource_response,
     run_control_query,
@@ -20,6 +19,7 @@ from atelier2.api.projection.agents import (
     agent_configuration_revision_resource,
     auth_profile_revision_resource,
 )
+from atelier2.api.references import PageLimitQuery, RevisionHashQuery
 from atelier2.api.wire.requests import (
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
@@ -56,6 +56,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AuthProfileRevisionHash,
 )
+from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 
 router = APIRouter()
 
@@ -102,8 +103,8 @@ async def publish_auth_profile_revision_route(
     response_model=AuthProfileRevisionPageResource,
 )
 async def list_auth_profile_revisions_route(
-    after_revision_hash: str | None = None,
-    limit: str = "50",
+    after_revision_hash: RevisionHashQuery | None = None,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     context: ApiContext = api_context_dependency,
 ) -> AuthProfileRevisionPageResource:
     after = None
@@ -112,10 +113,9 @@ async def list_auth_profile_revisions_route(
             after = AuthProfileRevisionHash(after_revision_hash)
         except ValueError as error:
             raise ApiProblem("invalid-revision-hash") from error
-    parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_auth_profile_revisions(after, parsed_limit),
+        lambda: context.use_cases.list_auth_profile_revisions(after, limit),
     )
     match result:
         case AuthProfileRevisionsListed(items, next_after):
@@ -184,8 +184,8 @@ async def publish_agent_configuration_revision_route(
     response_model=AgentConfigurationRevisionPageResource,
 )
 async def list_agent_configuration_revisions_route(
-    after_revision_hash: str | None = None,
-    limit: str = "50",
+    after_revision_hash: RevisionHashQuery | None = None,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     context: ApiContext = api_context_dependency,
 ) -> AgentConfigurationRevisionPageResource:
     after = None
@@ -194,12 +194,9 @@ async def list_agent_configuration_revisions_route(
             after = AgentConfigurationRevisionHash(after_revision_hash)
         except ValueError as error:
             raise ApiProblem("invalid-revision-hash") from error
-    parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_agent_configuration_revisions(
-            after, parsed_limit
-        ),
+        lambda: context.use_cases.list_agent_configuration_revisions(after, limit),
     )
     match result:
         case AgentConfigurationRevisionsListed(items, next_after):
