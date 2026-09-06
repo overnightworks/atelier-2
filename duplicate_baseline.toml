@@ -8,18 +8,6 @@
 # executor adapters, one result payload for the GitHub effects.
 
 [[pair]]
-left = "atelier2.adapters.claude_subscription.ClaudeAtelierDoorsExecutor.release_credential_channel"
-right = "atelier2.adapters.claude_subscription.ClaudeSubscriptionExecutor.release_credential_channel"
-
-[[pair]]
-left = "atelier2.adapters.claude_subscription.ClaudeAtelierDoorsExecutor.release_credential_channel"
-right = "atelier2.adapters.claude_subscription.ClaudeWorkspaceToolExecutor.release_credential_channel"
-
-[[pair]]
-left = "atelier2.adapters.claude_subscription.ClaudeSubscriptionExecutor.release_credential_channel"
-right = "atelier2.adapters.claude_subscription.ClaudeWorkspaceToolExecutor.release_credential_channel"
-
-[[pair]]
 left = "atelier2.adapters.claude_subscription._content_blocks"
 right = "atelier2.adapters.grok_subscription._message_content_blocks"
 
