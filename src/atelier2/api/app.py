@@ -493,6 +493,23 @@ def bound_use_cases(
     )
 
 
+# The order of these router includes is the order of the published document's
+# `paths` keys, which the frozen artefact pins byte for byte.
+def _install_routers(app: FastAPI) -> None:
+    app.include_router(health.router)
+    app.include_router(seat.router)
+    app.include_router(agents.router)
+    app.include_router(artifacts.router)
+    app.include_router(revisions.router)
+    app.include_router(catalog_lineage.router)
+    app.include_router(projects.router)
+    app.include_router(models.router)
+    app.include_router(project_source_connection.router)
+    app.include_router(runs.router)
+    app.include_router(events.router)
+    app.include_router(queue.router)
+
+
 def create_app(
     *,
     source_commit: str,
@@ -578,20 +595,7 @@ def create_app(
         include_in_schema=False,
     )
 
-    # The order of these router includes is the order of the published
-    # document's `paths` keys, which the frozen artefact pins byte for byte.
-    app.include_router(health.router)
-    app.include_router(seat.router)
-    app.include_router(agents.router)
-    app.include_router(artifacts.router)
-    app.include_router(revisions.router)
-    app.include_router(catalog_lineage.router)
-    app.include_router(projects.router)
-    app.include_router(models.router)
-    app.include_router(project_source_connection.router)
-    app.include_router(runs.router)
-    app.include_router(events.router)
-    app.include_router(queue.router)
+    _install_routers(app)
 
     install_custom_openapi(app, limits)
     return app
