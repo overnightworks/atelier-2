@@ -83,9 +83,23 @@ def _parse_numstat_line(line: str) -> tuple[int, int, str]:
     return added, deleted, path
 
 
-def _numstat_lines(project_root: Path, base: str, head: str) -> tuple[str, ...]:
+def git_diff_lines(
+    project_root: Path,
+    base: str,
+    head: str,
+    *arguments: str,
+    rename_detection: str,
+    pathspecs: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """`rename_detection` is `--no-renames` or a `-M` flag; it has no default
+    because a numstat file count and an added-lines diff need opposite answers
+    to "does a rename count as a full add"."""
+
+    command = ["git", "diff", rename_detection, *arguments, f"{base}...{head}"]
+    if pathspecs:
+        command.extend(("--", *pathspecs))
     result = subprocess.run(
-        ["git", "diff", "--numstat", "--no-renames", f"{base}...{head}"],
+        command,
         cwd=project_root,
         check=False,
         capture_output=True,
@@ -93,12 +107,16 @@ def _numstat_lines(project_root: Path, base: str, head: str) -> tuple[str, ...]:
     )
     if result.returncode != 0:
         raise CorridorError(f"git diff failed: {result.stderr.strip()}")
-    return tuple(line for line in result.stdout.splitlines() if line.strip())
+    return tuple(result.stdout.splitlines())
 
 
 def corridor_report(project_root: Path, base: str, head: str) -> CorridorReport:
     file_count = added_total = deleted_total = 0
-    for line in _numstat_lines(project_root, base, head):
+    for line in git_diff_lines(
+        project_root, base, head, "--numstat", rename_detection="--no-renames"
+    ):
+        if not line.strip():
+            continue
         added, deleted, path = _parse_numstat_line(line)
         if not _is_production_path(path, PRODUCTION_SCOPE):
             continue

@@ -3349,10 +3349,6 @@ export function decodeProblem(value: unknown): Problem {
   return problemSchema.parse(value);
 }
 
-export function decodeRunEvent(value: unknown): RunEvent {
-  return runEventSchema.parse(value);
-}
-
 export function decodeStreamFrame(value: unknown): StreamFrame {
   return streamFrameSchema.parse(value);
 }
@@ -3365,12 +3361,6 @@ export function isRunProjectionCorrupt(
   frame: StreamFrame,
 ): frame is RunProjectionCorrupt {
   return frame.event === "RUN_PROJECTION_CORRUPT";
-}
-
-export function decodeWorkflowRevisionDetail(
-  value: unknown,
-): WorkflowRevisionDetail {
-  return workflowRevisionDetailSchema.parse(value);
 }
 
 async function requestJson<T>(

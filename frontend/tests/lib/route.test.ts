@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   cockpitRoute,
-  PUBLIC_REFERENCE_PLACEHOLDER,
   runPath,
-  SERVED_PATHS,
-  WORKFLOW_NAME_PLACEHOLDER,
   workflowPath,
   type CockpitRoute
 } from "../../src/lib/route";
+import {
+  PUBLIC_REFERENCE_PLACEHOLDER,
+  SERVED_PATHS,
+  WORKFLOW_NAME_PLACEHOLDER
+} from "../support/servedPaths";
 
 const SAMPLE_PUBLIC_REFERENCE = "run1.cnVu";
 const SAMPLE_WORKFLOW_NAME = "iterate-code";

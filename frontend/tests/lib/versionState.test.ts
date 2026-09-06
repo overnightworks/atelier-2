@@ -1,52 +1,49 @@
 import { get } from "svelte/store";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  loadedVersion,
-  newVersionAvailable,
-  noteObservedVersion,
-  recordLoadedVersion,
-  resetVersionState
-} from "../../src/lib/versionState";
+import type * as VersionState from "../../src/lib/versionState";
 
 const LOADED = { commit: "a".repeat(40), deployedAt: "2026-08-31T08:00:00Z" };
 
-beforeEach(() => {
-  resetVersionState();
+let versionState: typeof VersionState;
+
+beforeEach(async () => {
+  vi.resetModules();
+  versionState = await import("../../src/lib/versionState");
 });
 
 describe("the loaded serve version, compared against later health answers (#1100)", () => {
   it("names the version the page loaded with", () => {
-    recordLoadedVersion(LOADED);
+    versionState.recordLoadedVersion(LOADED);
 
-    expect(get(loadedVersion)).toEqual(LOADED);
-    expect(get(newVersionAvailable)).toBe(false);
+    expect(get(versionState.loadedVersion)).toEqual(LOADED);
+    expect(get(versionState.newVersionAvailable)).toBe(false);
   });
 
   it("flags a mismatch only once a different commit is observed", () => {
-    recordLoadedVersion(LOADED);
+    versionState.recordLoadedVersion(LOADED);
 
-    noteObservedVersion(LOADED);
-    expect(get(newVersionAvailable)).toBe(false);
+    versionState.noteObservedVersion(LOADED);
+    expect(get(versionState.newVersionAvailable)).toBe(false);
 
-    noteObservedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
-    expect(get(newVersionAvailable)).toBe(true);
+    versionState.noteObservedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
+    expect(get(versionState.newVersionAvailable)).toBe(true);
   });
 
   it("resets the mismatch on the next fresh load", () => {
-    recordLoadedVersion(LOADED);
-    noteObservedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
-    expect(get(newVersionAvailable)).toBe(true);
+    versionState.recordLoadedVersion(LOADED);
+    versionState.noteObservedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
+    expect(get(versionState.newVersionAvailable)).toBe(true);
 
-    recordLoadedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
+    versionState.recordLoadedVersion({ commit: "b".repeat(40), deployedAt: "2026-09-01T08:00:00Z" });
 
-    expect(get(newVersionAvailable)).toBe(false);
+    expect(get(versionState.newVersionAvailable)).toBe(false);
   });
 
   it("adopts the first observed version as the baseline when the mount read never landed one", () => {
-    noteObservedVersion(LOADED);
+    versionState.noteObservedVersion(LOADED);
 
-    expect(get(loadedVersion)).toEqual(LOADED);
-    expect(get(newVersionAvailable)).toBe(false);
+    expect(get(versionState.loadedVersion)).toEqual(LOADED);
+    expect(get(versionState.newVersionAvailable)).toBe(false);
   });
 });
