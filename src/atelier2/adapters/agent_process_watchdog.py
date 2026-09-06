@@ -512,9 +512,7 @@ class Watchdog:
     def _handle_exchange(
         self, connection: _Connection, request: dict[str, Any], now: float
     ) -> None:
-        """Take this relay's bytes and hold the answer until there is one.
-
-        The parent counts in cumulative bytes on both directions, so an
+        """The parent counts in cumulative bytes on both directions, so an
         exchange the control channel had to retry delivers no byte twice: what
         this watchdog already accepted is skipped, and what it already sent is
         simply sent again. It answers as soon as the child said something or
@@ -581,9 +579,7 @@ class Watchdog:
         )
 
     def _exchange_ending(self) -> str | None:
-        """How this process ended, as far as a relay needs to know.
-
-        A reaped child answers `COMPLETED` even when a cancellation is what
+        """A reaped child answers `COMPLETED` even when a cancellation is what
         reaped it, so termination is asked first: to a conversation, output
         that stopped because someone stopped the process is not output that
         simply ran out.
@@ -689,8 +685,7 @@ class Watchdog:
         if self._termination_owner is None:
             if (
                 return_code is not None
-                and not self._has_provider_stream("stdout")
-                and not self._has_provider_stream("stderr")
+                and self._provider_output_closed()
                 and not _cgroup_populated(self._cgroup)
             ):
                 process.wait()
@@ -701,8 +696,7 @@ class Watchdog:
         if (
             process.poll() is not None
             and not _cgroup_populated(self._cgroup)
-            and not self._has_provider_stream("stdout")
-            and not self._has_provider_stream("stderr")
+            and self._provider_output_closed()
         ):
             process.wait()
             self._finish_termination(now)
@@ -744,9 +738,7 @@ class Watchdog:
         }[owner]
         if self._process.poll() is not None and not _cgroup_populated(self._cgroup):
             self._termination_disposition = "EXITED_BEFORE_SIGNAL"
-            if not self._has_provider_stream(
-                "stdout"
-            ) and not self._has_provider_stream("stderr"):
+            if self._provider_output_closed():
                 self._process.wait()
                 self._finish_termination(now)
                 return
@@ -928,9 +920,7 @@ class Watchdog:
         connection.socket.close()
 
     def _rest_standard_input(self) -> None:
-        """Stop watching a drained standard input, and close it if nothing follows.
-
-        A print-mode child is told everything at once, so a drained input is a
+        """A print-mode child is told everything at once, so a drained input is a
         finished one and end of file is what it waits for. A conversation's
         child is told more later, so its pipe stays open -- unwatched, because
         a writable pipe nobody has anything for would wake this selector
@@ -965,9 +955,7 @@ class Watchdog:
         return len(self._standard_input) - self._standard_input_offset
 
     def _drop_unwritten_input(self) -> None:
-        """Forget input nobody will write, without calling it delivered.
-
-        A stop drops whatever the child never took, so those bytes leave the
+        """A stop drops whatever the child never took, so those bytes leave the
         count of what it has: a conversation that heard them acknowledged
         would be told the provider received an answer that in fact went
         nowhere.
@@ -978,9 +966,7 @@ class Watchdog:
         self._standard_input_offset = 0
 
     def _written_input_bytes(self) -> int:
-        """How many of the relay's bytes the child's own pipe has taken.
-
-        The acknowledgement a conversation is held to its input bound by: bytes
+        """The acknowledgement a conversation is held to its input bound by: bytes
         this watchdog merely buffered are still the relay's to count, or the
         bound the executor declared would end at this side of a pipe a child
         never reads and the real backlog would grow behind it. What a launch
@@ -991,8 +977,6 @@ class Watchdog:
         return max(0, self._delivered_input_bytes - self._unwritten_input_bytes())
 
     def _close_drained_standard_input(self) -> None:
-        """Let a completed conversation's child see end of file, once it may."""
-
         if self._close_input_after_drain and not self._unwritten_input_bytes():
             self._standard_input_watched = False
             self._close_provider_stream("stdin")
@@ -1011,9 +995,7 @@ class Watchdog:
         )
 
     def _write_cancellation_frame(self) -> None:
-        """Ask this provider to stop, in one nonblocking write, and stop waiting.
-
-        The frame was composed while the conversation still ran, so stopping
+        """The frame was composed while the conversation still ran, so stopping
         costs no round trip through it. What does not fit the pipe right now is
         dropped rather than waited for: the signal that follows in this same
         selector turn is the actual stop, and a cancellation that waited on a
@@ -1030,8 +1012,8 @@ class Watchdog:
         except OSError:
             pass
 
-    def _has_provider_stream(self, role: str) -> bool:
-        return role in self._provider_streams.values()
+    def _provider_output_closed(self) -> bool:
+        return not {"stdout", "stderr"} & set(self._provider_streams.values())
 
     def _close_provider_stream(self, role: str) -> None:
         descriptor = next(
