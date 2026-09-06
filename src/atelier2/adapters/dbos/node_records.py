@@ -63,6 +63,9 @@ class NodeReceiptConflict(RuntimeError):
     """
 
 
+_OR_IGNORE = "OR IGNORE"
+
+
 def node_receipt_from_record(connection: Any, record: Mapping[Any, Any]) -> NodeReceipt:
     """Rebuild and verify one immutable node receipt and its ordered outputs."""
 
@@ -144,7 +147,7 @@ def persist_bound_node_executions(
         )
         connection.execute(
             context_packages_v3.insert()
-            .prefix_with("OR IGNORE")
+            .prefix_with(_OR_IGNORE)
             .values(
                 package_hash=bound.context_package.package_hash.value,
                 manifest=bound.context_package.manifest,
@@ -153,7 +156,7 @@ def persist_bound_node_executions(
         for round_ordinal in graph.declared_rounds_of(node.id):
             connection.execute(
                 node_execution_requests_v3.insert()
-                .prefix_with("OR IGNORE")
+                .prefix_with(_OR_IGNORE)
                 .values(
                     request_hash=bound.request.request_hash.value,
                     node_execution_id=NodeExecutionId.for_node(
@@ -208,7 +211,7 @@ def keep_node_receipt(
             raise ValueError("the artifact belongs to another node execution")
         connection.execute(
             node_artifacts_v3.insert()
-            .prefix_with("OR IGNORE")
+            .prefix_with(_OR_IGNORE)
             .values(
                 run_id=artifact.run_id.value,
                 node_id=artifact.node_id,
@@ -243,7 +246,7 @@ def keep_node_receipt(
     )
     connection.execute(
         node_receipts_v3.insert()
-        .prefix_with("OR IGNORE")
+        .prefix_with(_OR_IGNORE)
         .values(
             node_execution_id=receipt.node_execution_id.value,
             disposition=receipt.disposition.value,
@@ -268,7 +271,7 @@ def keep_node_receipt(
     for position, output in enumerate(receipt.outputs):
         connection.execute(
             node_receipt_outputs_v3.insert()
-            .prefix_with("OR IGNORE")
+            .prefix_with(_OR_IGNORE)
             .values(
                 node_execution_id=receipt.node_execution_id.value,
                 position=position,

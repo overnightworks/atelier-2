@@ -1272,6 +1272,10 @@ platform effect (a push, an open-pr) also writes that effect's own
 an execution can carry two members of this set without carrying two answers.
 """
 
+_MORE_THAN_ONE_ANSWER_BEARING_EVENT = (
+    "a node execution has more than one answer-bearing event"
+)
+
 
 def _own_answer_event_kind(node: object) -> RunEventKind:
     """The one event kind that carries this node's own declared output."""
@@ -1332,14 +1336,10 @@ def _node_answer(
     ):
         if str(candidate.event_kind) == own_kind.value:
             if record is not None:
-                raise RunTransitionConflict(
-                    "a node execution has more than one answer-bearing event"
-                )
+                raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
             record = candidate
         elif embedded_kind is None or str(candidate.event_kind) != embedded_kind.value:
-            raise RunTransitionConflict(
-                "a node execution has more than one answer-bearing event"
-            )
+            raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
     if record is None:
         return None
     return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
@@ -1424,18 +1424,14 @@ def _run_terminal_results(
         event_kind = str(record.event_kind)
         if event_kind == own_answer_kind_by_execution[execution_value].value:
             if execution_value in answers_by_execution:
-                raise RunTransitionConflict(
-                    "a node execution has more than one answer-bearing event"
-                )
+                raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
             answers_by_execution[execution_value] = NodeAnswer(
                 bytes(record.payload), Sha256Hash(str(record.payload_hash))
             )
             continue
         embedded_kind = embedded_effect_kind_by_execution[execution_value]
         if embedded_kind is None or event_kind != embedded_kind.value:
-            raise RunTransitionConflict(
-                "a node execution has more than one answer-bearing event"
-            )
+            raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
 
     receipts_by_execution = {
         str(record.node_execution_id): record
