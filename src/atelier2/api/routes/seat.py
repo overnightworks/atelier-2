@@ -11,7 +11,7 @@ from atelier2.api.wire.resources import SeatResource
 router = APIRouter()
 
 
-@router.get(SEAT_PATH, response_model=SeatResource)
+@router.get(SEAT_PATH)
 async def seat(context: ApiContext = api_context_dependency) -> SeatResource:
     reading = context.seat()
     return SeatResource(
