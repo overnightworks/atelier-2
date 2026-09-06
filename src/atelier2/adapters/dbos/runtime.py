@@ -13,6 +13,10 @@ from dbos import DBOS, DBOSConfig, SQLAlchemyDatasource, WorkflowStatusString
 from sqlalchemy import event
 from sqlalchemy.engine import Connection, Engine
 
+from atelier2.adapters.agent_claim_cli import (
+    AGENT_CLAIM_ADAPTER_REVISION,
+    AgentClaimCli,
+)
 from atelier2.adapters.agent_processes import (
     AgentProcessSupervisor,
     delegated_cgroup_root,
@@ -41,6 +45,7 @@ from atelier2.adapters.dbos.uncontinuable_runs import (
     DbosUncontinuableRunStore,
     retag_stranded_continuations,
 )
+from atelier2.adapters.dbos.work_item_claims import WorkItemClaimLedger
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
     register_durable_run_workflow,
@@ -185,6 +190,7 @@ class DbosRuntimeSettings:
     agent_scratch_root: Path | None = None
     project_id: ProjectId | None = None
     bootstrap_project_root: Path | None = None
+    agent_claim_executable: Path | None = None
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
     # The receipt gate (`#1013`): declared together or not at all -- a
@@ -354,6 +360,43 @@ class _BoundRuntime:
     storage_ready: bool = False
 
 
+def _work_item_claim_ledger(
+    executable: Path | None, project_checkout: Path | None
+) -> WorkItemClaimLedger | None:
+    """The claim boundary this instance holds, where it was given both halves.
+
+    The command runs beside the project's own checkout, because the ledger it
+    writes belongs to that repository. Without an executable or without a
+    served project there is no claim boundary at all, and a node that owes a
+    claim then refuses rather than building unclaimed.
+    """
+
+    if executable is None or project_checkout is None:
+        return None
+    return WorkItemClaimLedger(
+        AgentClaimCli(executable, project_checkout),
+        EffectAdapterBinding(
+            AdapterRevision(AGENT_CLAIM_ADAPTER_REVISION),
+            EffectDestination(str(project_checkout)),
+            AdapterOperationalIdentity(str(executable)),
+            AdapterOperationName.CLAIM_WORK_ITEM,
+        ),
+    )
+
+
+def _project_checkout_for(engine: Engine, project_id: ProjectId | None) -> Path | None:
+    """Where the project this process serves is checked out, or nothing."""
+
+    if project_id is None:
+        return None
+    try:
+        return project_root_for(engine, project_id)
+    except ProjectRootMissing as missing:
+        raise ProjectUnknown(
+            f"{PROJECT_UNKNOWN}: project {project_id.value!r} has no configured root"
+        ) from missing
+
+
 def _declared_project_for(
     engine: Engine, project_id: ProjectId | None, database_path: Path
 ) -> DeclaredProject | None:
@@ -368,14 +411,8 @@ def _declared_project_for(
     is served from rather than inside the checkout it reads.
     """
 
-    if project_id is None:
-        return None
-    try:
-        return declared_project(project_root_for(engine, project_id), database_path)
-    except ProjectRootMissing as missing:
-        raise ProjectUnknown(
-            f"{PROJECT_UNKNOWN}: project {project_id.value!r} has no configured root"
-        ) from missing
+    checkout = _project_checkout_for(engine, project_id)
+    return None if checkout is None else declared_project(checkout, database_path)
 
 
 # DBOS owns this table and these tokens; read only to decide whether an open
@@ -665,6 +702,12 @@ def _open_binding(
         declared_project_source = _declared_project_for(
             engine, settings.project_id, settings.database_path
         )
+        work_item_claims = _work_item_claim_ledger(
+            settings.agent_claim_executable,
+            _project_checkout_for(engine, settings.project_id),
+        )
+        if work_item_claims is not None:
+            effect_bindings = (*effect_bindings, work_item_claims.binding)
         with engine.connect() as connection:
             open_effect_intents = _still_open_effect_intents(connection)
             durable_bindings = {
@@ -772,6 +815,7 @@ def _open_binding(
             adapters,
             effect_bindings,
             settings.project_id,
+            work_item_claims,
         )
     except BaseException as original:
         cleanup_errors: list[BaseException] = []

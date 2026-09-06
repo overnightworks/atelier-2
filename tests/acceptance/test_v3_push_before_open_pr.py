@@ -115,6 +115,7 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PROJECT = ProjectId("p3-public")
@@ -451,6 +452,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
+            agent_claim_executable=fake_agent_claim_executable(tmp_path),
         ),
         registry,
         (executor,),
@@ -461,7 +463,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement P3.",
+            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
             WorkItemChangeMarker("issue-642-v1"),
             RecordedAt("2026-08-27T12:00:00Z"),
         )
@@ -523,18 +525,22 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
                     effect_receipts.c.result,
                 ).order_by(sa.literal_column("rowid"))
             ).all()
+        # The lane claim is the run's first effect: it is held before the
+        # builder works, and its receipt stands beside the push and the PR.
         assert [intent.binding.operation_name for intent in intents] == [
+            AdapterOperationName.CLAIM_WORK_ITEM,
             AdapterOperationName.PUSH_ATELIER_COMMIT,
             AdapterOperationName.OPEN_PR,
         ]
         assert [row.operation_name for row in receipts] == [
+            AdapterOperationName.CLAIM_WORK_ITEM.value,
             AdapterOperationName.PUSH_ATELIER_COMMIT.value,
             AdapterOperationName.OPEN_PR.value,
         ]
-        push_receipt = json.loads(bytes(receipts[0].result).decode("utf-8"))
+        push_receipt = json.loads(bytes(receipts[1].result).decode("utf-8"))
         assert push_receipt["commit_oid"] == commit
         assert push_receipt["candidate_tree"] == pushed_tree
-        open_request = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
+        open_request = OpenPullRequest.from_canonical_bytes(intents[2].request.payload)
         assert open_request.head_branch.value == branch
     finally:
         runtime.close()

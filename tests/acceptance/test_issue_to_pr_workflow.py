@@ -48,8 +48,10 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effect_requests import (
+    ClaimWorkItem,
     GitCommitIdentity,
     OpenPullRequest,
+    PushAtelierCommit,
     PushAtelierCommitReceipt,
 )
 from atelier2.contracts.effects import (
@@ -98,6 +100,7 @@ from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_wait_answer
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 WORKFLOW_PATH = Path("workflows/issue-to-pr.yaml")
 BUDGET_PATH = Path("workflows/budgets/push-implement.json")
@@ -245,6 +248,7 @@ def _runtime(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
+            agent_claim_executable=fake_agent_claim_executable(tmp_path),
         ),
         EffectAdapterRegistry(
             (
@@ -381,7 +385,7 @@ def _start(
     item = ObservedWorkItemRevision(
         ITEM,
         WorkItemKind.ISSUE,
-        b"Write the line this run is for.",
+        b"Write the line this run is for.\n\n## Dateien\n`one.txt`\n",
         WorkItemChangeMarker("issue-1232-v1"),
         RecordedAt("2026-09-04T12:00:00Z"),
     )
@@ -459,14 +463,29 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
 
         wait_for_run_state(runtime.engine, RUN, RunState.WAITING_INPUT)
         with runtime.engine.connect() as connection:
-            push_intent = intent_snapshot_from_record(
-                connection.execute(sa.select(effect_intents)).mappings().one()
-            ).intent
+            intents = tuple(
+                intent_snapshot_from_record(row).intent
+                for row in connection.execute(
+                    sa.select(effect_intents).order_by(sa.literal_column("rowid"))
+                ).mappings()
+            )
             redemption = (
                 connection.execute(sa.select(tool_redemptions)).mappings().one()
             )
-        assert push_intent.binding.operation_name is (
-            AdapterOperationName.PUSH_ATELIER_COMMIT
+        # The claim comes first, before the builder's own workspace exists;
+        # the push it earned stands beside it in the same ledger.
+        assert [intent.binding.operation_name for intent in intents] == [
+            AdapterOperationName.CLAIM_WORK_ITEM,
+            AdapterOperationName.PUSH_ATELIER_COMMIT,
+        ]
+        claim_request = ClaimWorkItem.from_canonical_bytes(intents[0].request.payload)
+        assert claim_request.item == 1232
+        assert claim_request.scope == ("one.txt",)
+        assert (
+            claim_request.head_branch
+            == PushAtelierCommit.from_canonical_bytes(
+                intents[1].request.payload
+            ).head_branch
         )
         assert str(redemption["node_id"]) == BUILD_NODE
         assert str(redemption["capability"]) == (
@@ -554,30 +573,32 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
                 ).order_by(sa.literal_column("rowid"))
             ).all()
         assert [intent.binding.operation_name for intent in intents] == [
+            AdapterOperationName.CLAIM_WORK_ITEM,
             AdapterOperationName.PUSH_ATELIER_COMMIT,
             AdapterOperationName.OPEN_PR,
         ]
         assert [receipt.operation_name for receipt in receipts] == [
+            AdapterOperationName.CLAIM_WORK_ITEM.value,
             AdapterOperationName.PUSH_ATELIER_COMMIT.value,
             AdapterOperationName.OPEN_PR.value,
         ]
 
         push_receipt = PushAtelierCommitReceipt.from_result_bytes(
-            bytes(receipts[0].result)
+            bytes(receipts[1].result)
         )
         assert push_receipt.author == author
         assert push_receipt.committer == committer
         assert push_receipt.commit_oid == run_git(
             remote, "rev-parse", push_receipt.full_ref
         )
-        opened = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
+        opened = OpenPullRequest.from_canonical_bytes(intents[2].request.payload)
         assert opened.head_branch.value == push_receipt.branch
         assert opened.work_item_reference == ITEM
 
         (recorded,) = github.recorded_pull_requests()
         assert recorded.branch == push_receipt.branch
         assert body_carries_request_hash(
-            recorded.body, intents[1].request.request_hash.value
+            recorded.body, intents[2].request.request_hash.value
         )
         assert BUILDER_SUMMARY in recorded.body
         assert CANDIDATE_FILE_NAME in recorded.body

@@ -1120,7 +1120,7 @@
       },
       "AgentExecutorBindingUnavailableEventResourceV3": {
         "additionalProperties": false,
-        "description": "An Agent node stopped before any provider attempt could be claimed.",
+        "description": "An Agent node stopped before any provider attempt could be claimed.\n\n`reason` is `AgentExecutionRefusal`'s closed set -- an executor nothing can\nbind, and the lane claim a node must hold before it works -- written out\nhere because a wire schema may name no contract enum inline;\n`test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the\ntwo spellings to set equality.",
         "properties": {
           "cursor": {
             "pattern": "^event1\\.[A-Za-z0-9_-]+\\.[1-9][0-9]*$",
@@ -1161,7 +1161,15 @@
             "type": "string"
           },
           "reason": {
-            "const": "agent-executor-binding-unavailable",
+            "enum": [
+              "agent-executor-binding-unavailable",
+              "work-item-claim-unconfigured",
+              "work-item-names-no-scope",
+              "work-item-claim-refused-by-priority",
+              "work-item-claim-ledger-unreadable",
+              "work-item-claim-refused",
+              "work-item-claim-touches-another-lane"
+            ],
             "title": "Reason",
             "type": "string"
           },

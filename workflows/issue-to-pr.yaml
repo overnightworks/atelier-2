@@ -24,9 +24,10 @@ nodes:
     instruction: >-
       You are working in an isolated snapshot of the repository at the pinned
       commit: deliberately no .git directory, no gh, no agent-claim, and no
-      board access. The lane claim is already held outside this workspace, so
-      the repository's guidance about claiming and pushing does not apply
-      here. Read AGENTS.md in this workspace and work to it. Implement the
+      board access. The atelier holds this item's lane claim for this run
+      before you start and releases it afterwards, so the repository's
+      guidance about claiming and pushing is already met and asks nothing of
+      you here. Read AGENTS.md in this workspace and work to it. Implement the
       work item carried under "context": its body is the whole brief, and
       nothing outside this workspace is yours to change. Leave the tree
       green -- the atelier runs the project's own declared verification here

@@ -1254,6 +1254,19 @@ class NodeDetailResource(ApiModel):
 # the enum's value into it, past pyright, so
 # `test_the_wire_reason_literal_and_the_refusal_enum_cannot_drift` pins the two
 # spellings to set equality and fails the moment either side drifts.
+# The refusal vocabulary the wire spells is `AgentExecutionRefusal`'s closed
+# set (its owner in `contracts/executions.py`), written out here for the same
+# reason as the cancellation names below, and pinned to it by
+# `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift`.
+AgentNodeRefusalName = Literal[
+    "agent-executor-binding-unavailable",
+    "work-item-claim-unconfigured",
+    "work-item-names-no-scope",
+    "work-item-claim-refused-by-priority",
+    "work-item-claim-ledger-unreadable",
+    "work-item-claim-refused",
+    "work-item-claim-touches-another-lane",
+]
 RunNotCancellableReasonName = Literal[
     "between-nodes",
     "waiting-for-you",

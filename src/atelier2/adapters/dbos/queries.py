@@ -987,12 +987,13 @@ def _unavailable_executor_refusal(
     connection: Connection,
     execution_id: NodeExecutionId,
 ) -> str | None:
-    """Read the terminal pre-attempt refusal written for a declared binding.
+    """Read the terminal pre-attempt refusal this node execution ended on.
 
-    This durable terminal event deliberately has no node receipt or attempt:
-    the executor was known to be unavailable before a provider invocation could
-    begin. Its product reason is nevertheless part of the run's own record,
-    rather than a fresh current-host recomputation.
+    Such a durable terminal event deliberately has no node receipt or attempt:
+    the node was stopped -- by an unavailable executor, or by a claim it could
+    not hold -- before a provider invocation could begin. Its product reason is
+    nevertheless part of the run's own record, rather than a fresh current-host
+    recomputation.
     """
     event = connection.execute(
         sa.select(run_events.c.payload).where(
@@ -1004,11 +1005,16 @@ def _unavailable_executor_refusal(
     ).one_or_none()
     if event is None:
         return None
-    if event.payload != AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode(
-        "ascii"
-    ):
-        return None
-    return AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+    return _refusal_word(bytes(event.payload))
+
+
+def _refusal_word(payload: bytes) -> str | None:
+    """The pre-attempt refusal these exact event bytes name, if they name one."""
+
+    for refusal in AgentExecutionRefusal:
+        if payload == refusal.value.encode("ascii"):
+            return refusal.value
+    return None
 
 
 def _node_job_and_refusal(
@@ -2846,14 +2852,13 @@ class DbosQueries:
             raise RunTransitionConflict("V1 run carries an agent failure event")
         if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
             *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
-            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
+            *(refusal.value.encode("ascii") for refusal in AgentExecutionRefusal),
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
-            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+            _refusal_word(event.payload)
             if event.event_kind is RunEventKind.AGENT_FAILED
-            and event.payload
-            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+            and _refusal_word(event.payload) is not None
             else (
                 _node_receipt_refusal(
                     connection,
