@@ -14,7 +14,7 @@ from pathlib import Path
 
 from report_corridor import CorridorError, git_diff_lines
 
-PYTHON_PATHS = (":(glob)src/**/*.py", ":(glob)scripts/**/*.py")
+CHECKED_SOURCE_ROOTS = ("src", "scripts")
 NARRATIVE_PATTERN = re.compile(
     r"\b(?:formerly|superseded|since\s+PR\b|PR\s*#|"
     r"\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}|"
@@ -92,26 +92,36 @@ def _patch_path(header: str) -> Path | None:
     return Path(path.removeprefix("b/"))
 
 
+def _checked_source_path(header: str) -> Path | None:
+    """The Python path a `+++` header names under a checked root, else None."""
+    path = _patch_path(header)
+    if (
+        path is None
+        or path.suffix != ".py"
+        or path.parts[0] not in CHECKED_SOURCE_ROOTS
+    ):
+        return None
+    return path
+
+
 def _added_line_numbers(
     project_root: Path, base: str, head: str
 ) -> dict[Path, set[int]]:
+    """Added lines per checked file. The diff runs over the whole tree on purpose:
+    a pathspec would hide the source of a file moved in from outside it, and git
+    would then report the move as a full add."""
     changed_lines: dict[Path, set[int]] = {}
     current_path: Path | None = None
     next_line_number: int | None = None
     for diff_line in git_diff_lines(
-        project_root,
-        base,
-        head,
-        "-U0",
-        rename_detection="-M",
-        pathspecs=PYTHON_PATHS,
+        project_root, base, head, "-U0", rename_detection="-M"
     ):
         if diff_line.startswith("diff --git "):
             current_path = None
             next_line_number = None
             continue
         if diff_line.startswith("+++ "):
-            current_path = _patch_path(diff_line)
+            current_path = _checked_source_path(diff_line)
             continue
         hunk = HUNK_PATTERN.match(diff_line)
         if hunk is not None:
