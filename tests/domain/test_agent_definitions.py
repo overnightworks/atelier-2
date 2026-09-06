@@ -174,7 +174,7 @@ def test_the_order_tools_are_typed_in_does_not_change_the_definition() -> None:
     assert parsed("Read, Grep, Bash") == parsed("Bash, Read, Grep")
 
 
-@pytest.mark.proves("missing-or-unknown-frontmatter-is-refused-by-name")
+@pytest.mark.proves("missing-frontmatter-minimum-is-refused-unknown-keys-are-carried")
 @pytest.mark.parametrize(
     ("frontmatter", "refusal", "subject"),
     [

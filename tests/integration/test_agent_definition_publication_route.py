@@ -152,6 +152,33 @@ def test_the_definition_door_answers_an_unrestricted_definition_with_no_tools(
     assert body["tools"] is None
 
 
+def test_the_definition_door_accepts_a_provider_native_key_it_does_not_model(
+    runtime: DbosRuntime,
+) -> None:
+    """The gap this closes: `color: cyan` used to be a named refusal.
+
+    A provider-native key a real agent file's own tool writes is not a guess
+    for this door to make and refuse; it is carried through opaquely, and the
+    published identity is still the exact bytes handed in.
+    """
+
+    document = (
+        b"---\n"
+        b"name: witness\n"
+        b"description: Watches.\n"
+        b"color: cyan\n"
+        b"---\n"
+        b"Body.\n"
+    )
+
+    created = publish(durable_api_client(runtime), document)
+
+    assert created.status_code == 201
+    assert created.json()["agent_definition_revision_hash"] == (
+        PublishedRevisionHash.of(document).value
+    )
+
+
 def test_the_definition_door_refuses_a_hash_nothing_published(
     runtime: DbosRuntime,
 ) -> None:
@@ -363,7 +390,7 @@ def test_two_definitions_differing_only_in_prompt_are_two_distinct_revisions(
     assert watching_hash != idling_hash
 
 
-@pytest.mark.proves("missing-or-unknown-frontmatter-is-refused-by-name")
+@pytest.mark.proves("missing-frontmatter-minimum-is-refused-unknown-keys-are-carried")
 @pytest.mark.parametrize(
     ("document", "problem_code", "named_subject"),
     (
@@ -378,12 +405,6 @@ def test_two_definitions_differing_only_in_prompt_are_two_distinct_revisions(
             "agent-definition-field-missing",
             "name",
             id="required-field-missing",
-        ),
-        pytest.param(
-            b"---\nname: witness\ndescription: Watches.\ncolor: cyan\n---\nBody.\n",
-            "agent-definition-field-unknown",
-            "color",
-            id="unknown-field",
         ),
         pytest.param(
             b"---\nname: [unclosed\n---\nBody.\n",

@@ -4091,33 +4091,6 @@
         ],
         "type": "object"
       },
-      "ProblemAgentDefinitionFieldUnknown": {
-        "additionalProperties": false,
-        "properties": {
-          "detail": {
-            "type": "string"
-          },
-          "status": {
-            "const": 422,
-            "type": "integer"
-          },
-          "title": {
-            "const": "Invalid agent definition document",
-            "type": "string"
-          },
-          "type": {
-            "const": "urn:atelier2:problem:v1:agent-definition-field-unknown",
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "title",
-          "status",
-          "detail"
-        ],
-        "type": "object"
-      },
       "ProblemAgentDefinitionFrontmatterMissing": {
         "additionalProperties": false,
         "properties": {
@@ -11979,9 +11952,6 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAgentDefinitionFrontmatterNotAMapping"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProblemAgentDefinitionFieldUnknown"
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAgentDefinitionFieldMissing"
