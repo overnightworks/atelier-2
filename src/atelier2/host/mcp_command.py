@@ -31,13 +31,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from stat import S_ISREG
 from typing import IO, Any, assert_never
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
-from atelier2.api.openapi import API_PREFIX
 from atelier2.api.wire.requests import (
     ArtifactOrderResource,
     RevisionListingView,
@@ -47,7 +44,6 @@ from atelier2.api.wire.requests import (
 from atelier2.api.wire.resources import (
     ArtifactResource,
     CatalogNameResolutionResource,
-    ProblemResource,
     RunResourceV3,
     VersionedWorkflowRevisionPageResource,
 )
@@ -59,6 +55,7 @@ from atelier2.host.address import (
     DEFAULT_SERVICE_URL,
     is_loopback_service_url,
 )
+from atelier2.host.atelier_api_client import AtelierApi, AtelierApiTransportFailure
 from atelier2.host.mcp_tools import (
     ARTIFACT_CONTENT_BASE64_FIELD,
     ARTIFACT_HASH_FIELD,
@@ -98,7 +95,10 @@ from atelier2.host.run_command import (
     UnreadableServiceAnswer,
     UnusableRunOrder,
     catalog_name_path,
+    decoded,
     resolve_published_name,
+    service_api,
+    service_refusal,
     start_request_body,
 )
 
@@ -287,30 +287,30 @@ def _tool_handlers() -> dict[McpToolName, ToolHandler]:
 
 def list_workflows(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     del arguments
-    api = _api_url(service_url)
     items: list[CatalogNameResolutionResource] = []
     seen: set[str] = set()
     after: str | None = None
-    while True:
-        query = {"view": RevisionListingView.DESCRIBED.value}
-        if after is not None:
-            query["after_revision_hash"] = after
-        page = _decoded(
-            _described_page,
-            _get(f"{api}{WORKFLOW_REVISION_PATH}?{urlencode(query)}"),
-            "a described revision page",
-        )
-        for revision in page.items:
-            name = revision.name
-            if name is None or name in seen:
-                continue
-            seen.add(name)
-            resolved = _resolve_listed_name(api, name)
-            if resolved is not None:
-                items.append(resolved)
-        if page.next_after_revision_hash is None:
-            break
-        after = page.next_after_revision_hash
+    with service_api(service_url) as api:
+        while True:
+            query = {"view": RevisionListingView.DESCRIBED.value}
+            if after is not None:
+                query["after_revision_hash"] = after
+            page = decoded(
+                _described_page,
+                _get(api, f"{WORKFLOW_REVISION_PATH}?{urlencode(query)}"),
+                "a described revision page",
+            )
+            for revision in page.items:
+                name = revision.name
+                if name is None or name in seen:
+                    continue
+                seen.add(name)
+                resolved = _resolve_listed_name(api, name)
+                if resolved is not None:
+                    items.append(resolved)
+            if page.next_after_revision_hash is None:
+                break
+            after = page.next_after_revision_hash
     return catalog_listing_resource(tuple(items))
 
 
@@ -323,34 +323,37 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     bindings = _bindings(arguments.get("agent_bindings"))
     orders = _orders(arguments.get("orders"))
     resolution = resolve_published_name(NameOrder(service_url, name, position))
-    started = _decoded(
-        _run_resource,
-        _post(
-            _api_url(service_url) + RUN_PATH,
-            start_request_body(
-                run_id,
-                resolution.revision_hash,
-                tuple(
-                    AgentRoleBinding(
-                        binding.role, binding.agent_configuration_revision_hash
-                    )
-                    for binding in bindings
+    with service_api(service_url) as api:
+        started = decoded(
+            _run_resource,
+            _post(
+                api,
+                RUN_PATH,
+                start_request_body(
+                    run_id,
+                    resolution.revision_hash,
+                    tuple(
+                        AgentRoleBinding(
+                            binding.role, binding.agent_configuration_revision_hash
+                        )
+                        for binding in bindings
+                    ),
+                    orders,
                 ),
-                orders,
             ),
-        ),
-        "a run",
-    )
+            "a run",
+        )
     return started.model_dump(mode="json")
 
 
 def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     reference = _required_text(arguments, "public_run_reference")
-    ended = _decoded(
-        _run_resource,
-        _get(f"{_api_url(service_url)}{RUN_PATH}/{quote(reference, safe='')}"),
-        "a run",
-    )
+    with service_api(service_url) as api:
+        ended = decoded(
+            _run_resource,
+            _get(api, f"{RUN_PATH}/{quote(reference, safe='')}"),
+            "a run",
+        )
     resource = ended.model_dump(mode="json")
     resource["answerable_wait"] = _answerable_wait(ended)
     return resource
@@ -380,40 +383,46 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
     expected_node_execution_id = _required_text(arguments, "expected_node_execution_id")
     actor = _required_text(arguments, "actor")
     answer_base64 = _required_text(arguments, "answer_base64")
-    answered = _decoded(
-        _run_resource,
-        _post(
-            f"{_api_url(service_url)}{RUN_PATH}/{quote(reference, safe='')}/answers",
-            json.dumps(
-                {
-                    "workflow_revision_hash": workflow_revision_hash,
-                    "node_id": node_id,
-                    "expected_node_execution_id": expected_node_execution_id,
-                    "actor": actor,
-                    "answer_base64": answer_base64,
-                }
-            ).encode(),
-        ),
-        "a run",
-    )
+    with service_api(service_url) as api:
+        answered = decoded(
+            _run_resource,
+            _post(
+                api,
+                f"{RUN_PATH}/{quote(reference, safe='')}/answers",
+                json.dumps(
+                    {
+                        "workflow_revision_hash": workflow_revision_hash,
+                        "node_id": node_id,
+                        "expected_node_execution_id": expected_node_execution_id,
+                        "actor": actor,
+                        "answer_base64": answer_base64,
+                    }
+                ).encode(),
+            ),
+            "a run",
+        )
     return answered.model_dump(mode="json")
 
 
 def publish_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     content = _artifact_content(arguments)
-    published = _decoded(
-        _artifact_resource,
-        _post_octet_stream(_api_url(service_url) + ARTIFACT_PATH, content),
-        "an artifact",
-    )
+    with service_api(service_url) as api:
+        published = decoded(
+            _artifact_resource,
+            _post(api, ARTIFACT_PATH, content, media_type=OCTET_STREAM_MEDIA_TYPE),
+            "an artifact",
+        )
     return published.model_dump(mode="json")
 
 
 def read_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     asked = _required_text(arguments, ARTIFACT_HASH_FIELD)
-    content = _get_octet_stream(
-        f"{_api_url(service_url)}{ARTIFACT_PATH}/{quote(asked, safe='')}"
-    )
+    with service_api(service_url) as api:
+        content = _get(
+            api,
+            f"{ARTIFACT_PATH}/{quote(asked, safe='')}",
+            accept=OCTET_STREAM_MEDIA_TYPE,
+        )
     if ArtifactHash.of(content).value != asked:
         raise McpLocalRefusal(
             McpRefusal.ARTIFACT_ANSWER_NOT_ITS_ADDRESS,
@@ -427,12 +436,14 @@ def read_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, A
     return artifact_content_answer(asked, content)
 
 
-def _resolve_listed_name(api: str, name: str) -> CatalogNameResolutionResource | None:
+def _resolve_listed_name(
+    api: AtelierApi, name: str
+) -> CatalogNameResolutionResource | None:
     """Resolve one listed title. An unadmitted name is not a catalog member."""
 
-    asked = api + catalog_name_path(RevisionKind.WORKFLOW, name)
+    asked = catalog_name_path(RevisionKind.WORKFLOW, name)
     try:
-        return _decoded(_catalog_name_resolution, _get(asked), "a catalog name")
+        return decoded(_catalog_name_resolution, _get(api, asked), "a catalog name")
     except ServiceRefused as refused:
         if refused.problem is not None and refused.problem.type.endswith(
             "catalog-name-not-found"
@@ -606,88 +617,22 @@ def _require_loopback_service(service_url: str) -> None:
         )
 
 
-def _api_url(service_url: str) -> str:
-    address = urlsplit(service_url)
-    if address.scheme not in ADDRESSABLE_SCHEMES or not address.netloc:
-        raise UnusableRunOrder(
-            f"{service_url!r} is not the address of a served Atelier API; "
-            f"name one as {DEFAULT_SERVICE_URL!r}"
-        )
-    return service_url.rstrip("/") + API_PREFIX
-
-
-def _post(url: str, payload: bytes) -> bytes:
-    return _read(
-        Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={"content-type": JSON_MEDIA_TYPE, "accept": JSON_MEDIA_TYPE},
-        )
-    )
-
-
-def _post_octet_stream(url: str, payload: bytes) -> bytes:
-    return _read(
-        Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={
-                "content-type": OCTET_STREAM_MEDIA_TYPE,
-                "accept": JSON_MEDIA_TYPE,
-            },
-        )
-    )
-
-
-def _get(url: str) -> bytes:
-    return _read(Request(url, method="GET", headers={"accept": JSON_MEDIA_TYPE}))
-
-
-def _get_octet_stream(url: str) -> bytes:
-    return _read(
-        Request(url, method="GET", headers={"accept": OCTET_STREAM_MEDIA_TYPE})
-    )
-
-
-def _read(request: Request) -> bytes:
+def _post(
+    api: AtelierApi, path: str, payload: bytes, *, media_type: str = JSON_MEDIA_TYPE
+) -> bytes:
     try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except HTTPError as refusal:
-        raise _service_refused(refusal) from refusal
-    except URLError as unreachable:
-        raise ServiceUnreachable(
-            f"no Atelier service answered at {request.full_url}: {unreachable.reason}"
-        ) from unreachable
-
-
-def _service_refused(refusal: HTTPError) -> ServiceRefused:
-    answered = refusal.read()
-    try:
-        problem = ProblemResource.model_validate_json(answered)
-    except ValidationError:
-        return ServiceRefused(
-            f"{refusal.url} answered {refusal.status} {refusal.reason}"
+        return api.post(
+            path, payload, media_type=media_type, timeout=REQUEST_TIMEOUT_SECONDS
         )
-    return ServiceRefused(
-        f"{refusal.url} refused this: {problem.status} {problem.title} "
-        f"[{problem.type}] {problem.detail}",
-        problem,
-    )
+    except AtelierApiTransportFailure as failure:
+        raise service_refusal(failure) from failure
 
 
-def _decoded[Resource](
-    adapter: TypeAdapter[Resource], answered: bytes, subject: str
-) -> Resource:
+def _get(api: AtelierApi, path: str, *, accept: str = JSON_MEDIA_TYPE) -> bytes:
     try:
-        return adapter.validate_json(answered)
-    except ValidationError as error:
-        raise UnreadableServiceAnswer(
-            f"the service answered something this command cannot read as "
-            f"{subject}: {error}"
-        ) from error
+        return api.get(path, accept=accept, timeout=REQUEST_TIMEOUT_SECONDS)
+    except AtelierApiTransportFailure as failure:
+        raise service_refusal(failure) from failure
 
 
 def _result(message_id: object, result: Mapping[str, Any]) -> dict[str, Any]:

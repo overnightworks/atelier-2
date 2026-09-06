@@ -89,6 +89,7 @@ from atelier2.contracts.schemas_v3 import (
 )
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_REVISION,
+    WorkItemScopeMalformed,
     read_work_item_order_document,
     work_item_order_document,
 )
@@ -145,14 +146,10 @@ def _pin_authored_orders(
 ) -> tuple[RunInput, ...] | DurableV3StartInputRefused:
     """Bind each authored order to the schema the document pinned, and to its bytes.
 
-    A caller does not name a schema hash. Repeating the pin would make a typo
-    a SCHEMA_MISMATCH instead of the order the operator meant.
-
-    This is also where an order that names an artifact becomes an order that has
-    bytes. It resolves here rather than anywhere later for the reason every other
-    reference resolves at the start: what a run promised its author is settled
-    before the run exists, so an address nobody published refuses the start by
-    name instead of failing an attempt nobody could have foreseen.
+    A caller does not name a schema hash, so a typo is the order the operator
+    meant rather than a SCHEMA_MISMATCH. An order naming an artifact also
+    becomes bytes here, before the run exists, so an address nobody published
+    refuses the start by name rather than failing an unforeseen attempt later.
     """
     declared = {entry.name for entry in graph.graph_inputs}
     names = [order.name for order in authored]
@@ -188,15 +185,11 @@ def _order_value_bytes(
 ) -> bytes | DurableV3StartInputRefused:
     """The exact bytes one authored order is, whichever way it was supplied.
 
-    The inline bound bites here rather than at the schema reading below, because
-    it is a property of the route and not of the value: the same bytes are
-    admitted when they arrive as an artifact somebody published, and the refusal
-    an operator gets should say which door they were at.
-
-    A work item is the one value whose *kind* the document must have declared:
-    it is stored only under the schema the house owns, so a graph input pinning
-    anything else -- a permissive shape above all -- refuses the start rather
-    than letting a run carry a "work item" nothing checked.
+    The inline bound bites here rather than at the schema reading below, so
+    every route's refusal names the same door. A work item is the one value
+    whose *kind* must be declared: it is stored only under the house schema,
+    and a malformed `## Dateien` token in its body refuses the order by name,
+    never as corruption.
     """
     match order.value:
         case InlineOrderValue(content):
@@ -227,7 +220,12 @@ def _order_value_bytes(
                     f"{pinned.value} instead of the work item schema "
                     f"{WORK_ITEM_ORDER_SCHEMA_REVISION.value}",
                 )
-            content = work_item_order_document(revision)
+            try:
+                content = work_item_order_document(revision)
+            except WorkItemScopeMalformed as malformed:
+                return DurableV3StartInputRefused(
+                    order.name, V3InputRefusal.VALUE_REFUSED, str(malformed)
+                )
             if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
                 return DurableV3StartInputRefused(
                     order.name,

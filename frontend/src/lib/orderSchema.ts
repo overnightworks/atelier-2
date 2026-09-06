@@ -48,7 +48,7 @@ const UNSUPPORTED_ORDER_WAY_OUT =
  * mirrors the server's discriminator instead of inferring it from field names.
  */
 export const WORK_ITEM_ORDER_SCHEMA_REVISION =
-  "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a";
+  "0bffb19e43509cb4cb446dd33c1d70b0d19f8a9a65cbe270d382edc2860d2921";
 
 /**
  * What a person reads for a schema this door cannot render at all -- a
@@ -90,7 +90,8 @@ const WORK_ITEM_FIELDS = [
   "digest",
   "kind",
   "observed_at",
-  "reference"
+  "reference",
+  "scope"
 ] as const;
 
 /**

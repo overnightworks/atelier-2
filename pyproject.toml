@@ -207,8 +207,9 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "error"
 
-# Every GitHub credential exchange is the only production caller of httpx; a
-# fourth import site would otherwise reach the network with no declared owner.
+# Every GitHub credential exchange and the one host API client are the only
+# declared callers of httpx; a fifth import site would otherwise reach the
+# network with no declared owner.
 [[tool.importlinter.contracts]]
 id = "httpx-owner"
 name = "httpx stays inside its declared transport owners"
@@ -221,6 +222,7 @@ ignore_imports = [
     "atelier2.adapters.github.observation -> httpx",
     "atelier2.adapters.github.live_effects -> httpx",
     "atelier2.adapters.github.project_connections -> httpx",
+    "atelier2.host.atelier_api_client -> httpx",
 ]
 unmatched_ignore_imports_alerting = "error"
 

@@ -40,14 +40,15 @@ const workItemSchema = {
   title: "work item",
   type: "object",
   additionalProperties: false,
-  required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+  required: ["body", "change_marker", "digest", "kind", "observed_at", "reference", "scope"],
   properties: {
     body: { type: "string" },
     change_marker: { type: "string" },
     digest: { type: "string" },
     kind: { type: "string" },
     observed_at: { type: "string" },
-    reference: { type: "string" }
+    reference: { type: "string" },
+    scope: { type: "array" }
   }
 };
 

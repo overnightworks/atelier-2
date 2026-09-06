@@ -33,16 +33,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import IO, Final
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from typing import Final
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
-from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import decode_canonical_base64
 from atelier2.api.wire.events import (
     ActionReconciliationRequiredEventResourceV3,
@@ -81,7 +79,12 @@ from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
-from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
+from atelier2.host.atelier_api_client import (
+    AtelierApi,
+    AtelierApiAddressUnusable,
+    AtelierApiTransportFailure,
+    opened_api,
+)
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 
@@ -333,19 +336,19 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     of its own -- it asks, and hands the service's own words on.
     """
 
-    api = _api_url(order.service_url)
-    asked = api + catalog_name_path(RevisionKind.WORKFLOW, order.name)
-    if order.position != DEFAULT_CATALOG_POSITION:
-        asked = f"{asked}?position={quote(order.position, safe='')}"
-    resolved = _decoded(
-        _catalog_name_resolution_resource, _get(asked), "a catalog name"
-    )
-    return NameResolution(
-        resolved.display_name,
-        resolved.lineage_id,
-        resolved.catalog_revision_hash,
-        resolved.revision_number,
-    )
+    with service_api(order.service_url) as api:
+        asked = catalog_name_path(RevisionKind.WORKFLOW, order.name)
+        if order.position != DEFAULT_CATALOG_POSITION:
+            asked = f"{asked}?position={quote(order.position, safe='')}"
+        resolved = decoded(
+            _catalog_name_resolution_resource, _get(api, asked), "a catalog name"
+        )
+        return NameResolution(
+            resolved.display_name,
+            resolved.lineage_id,
+            resolved.catalog_revision_hash,
+            resolved.revision_number,
+        )
 
 
 def catalog_name_path(kind: RevisionKind, name: str) -> str:
@@ -373,18 +376,18 @@ def catalog_activated_at(now: datetime | None = None) -> str:
 def execute_run(order: RunOrder) -> RunReport:
     """Publish what the run binds, name a V3 revision, start it, and report it."""
 
-    api = _api_url(order.service_url)
-    bindings = tuple(_published_binding(api, source) for source in order.bindings)
-    activated_at = order.catalog_activated_at or catalog_activated_at()
-    revision_hash = _published_workflow_revision(
-        api,
-        order.workflow_document,
-        actor=order.catalog_actor,
-        activated_at=activated_at,
-    )
-    return _run_published_revision(
-        api, revision_hash, bindings, order.run_id, order.orders
-    )
+    with service_api(order.service_url) as api:
+        bindings = tuple(_published_binding(api, source) for source in order.bindings)
+        activated_at = order.catalog_activated_at or catalog_activated_at()
+        revision_hash = _published_workflow_revision(
+            api,
+            order.workflow_document,
+            actor=order.catalog_actor,
+            activated_at=activated_at,
+        )
+        return _run_published_revision(
+            api, revision_hash, bindings, order.run_id, order.orders
+        )
 
 
 def execute_named_run(order: NamedRunOrder) -> RunReport:
@@ -397,19 +400,19 @@ def execute_named_run(order: NamedRunOrder) -> RunReport:
     republishing it would mint a second identity for the same bytes.
     """
 
-    api = _api_url(order.service_url)
     resolution = resolve_published_name(
         NameOrder(order.service_url, order.name, order.position)
     )
-    bindings = tuple(_published_binding(api, source) for source in order.bindings)
-    report = _run_published_revision(
-        api, resolution.revision_hash, bindings, order.run_id, order.orders
-    )
-    return replace(report, resolved_name=resolution)
+    with service_api(order.service_url) as api:
+        bindings = tuple(_published_binding(api, source) for source in order.bindings)
+        report = _run_published_revision(
+            api, resolution.revision_hash, bindings, order.run_id, order.orders
+        )
+        return replace(report, resolved_name=resolution)
 
 
 def _run_published_revision(
-    api: str,
+    api: AtelierApi,
     revision_hash: str,
     bindings: tuple[AgentRoleBinding, ...],
     asked_run_id: str | None,
@@ -424,17 +427,18 @@ def _run_published_revision(
 
     run_id = asked_run_id or derived_run_id(revision_hash, bindings, orders)
     published_orders = _published_orders(api, orders)
-    started = _decoded(
+    started = decoded(
         _run_resource,
         _post(
-            api + RUN_PATH,
+            api,
+            RUN_PATH,
             start_request_body(run_id, revision_hash, bindings, published_orders),
         ),
         "a run",
     )
     reference = started.public_run_reference
     history = _read_history(api, reference)
-    ended = _decoded(_run_resource, _get(f"{api}{RUN_PATH}/{reference}"), "a run")
+    ended = decoded(_run_resource, _get(api, f"{RUN_PATH}/{reference}"), "a run")
     if (
         ended.state not in {RunState.COMPLETED, RunState.FAILED}
         or ended.terminal_hash is None
@@ -510,36 +514,34 @@ def describe_receipt(report: RunReport) -> str:
     return "\n".join(lines)
 
 
-def _api_url(service_url: str) -> str:
-    address = urlsplit(service_url)
-    if address.scheme not in ADDRESSABLE_SCHEMES or not address.netloc:
-        raise UnusableRunOrder(
-            f"{service_url!r} is not the address of a served Atelier API; "
-            f"name one as {DEFAULT_SERVICE_URL!r}"
-        )
-    return service_url.rstrip("/") + API_PREFIX
+@contextmanager
+def service_api(service_url: str) -> Iterator[AtelierApi]:
+    """The one client every command opens from an operator-named service."""
+
+    try:
+        with opened_api(service_url) as api:
+            yield api
+    except AtelierApiAddressUnusable as invalid:
+        raise UnusableRunOrder(str(invalid)) from invalid
 
 
-def _published_binding(api: str, source: AgentBindingSource) -> AgentRoleBinding:
+def _published_binding(api: AtelierApi, source: AgentBindingSource) -> AgentRoleBinding:
     try:
         document = AgentBindingDocument.model_validate_json(source.document)
     except ValidationError as error:
         raise _unpublishable_binding(source.role, error) from error
-    profile = _decoded(
+    profile = decoded(
         _auth_profile_resource,
-        _post(
-            api + AUTH_PROFILE_PATH,
-            document.auth_profile.model_dump_json().encode(),
-        ),
+        _post(api, AUTH_PROFILE_PATH, document.auth_profile.model_dump_json().encode()),
         "an auth profile revision",
     )
     try:
         publication = document.publication(profile.auth_profile_revision_hash)
     except ValidationError as error:
         raise _unpublishable_binding(source.role, error) from error
-    configuration = _decoded(
+    configuration = decoded(
         _agent_configuration_resource,
-        _post(api + AGENT_CONFIGURATION_PATH, publication.model_dump_json().encode()),
+        _post(api, AGENT_CONFIGURATION_PATH, publication.model_dump_json().encode()),
         "an agent configuration revision",
     )
     return AgentRoleBinding(
@@ -554,7 +556,7 @@ def _unpublishable_binding(role: str, error: ValidationError) -> UnusableRunOrde
 
 
 def _published_orders(
-    api: str, orders: tuple[SuppliedOrder, ...]
+    api: AtelierApi, orders: tuple[SuppliedOrder, ...]
 ) -> tuple[SuppliedArtifactOrder, ...]:
     """Publish every order's exact bytes as an artifact before a start names it.
 
@@ -569,21 +571,21 @@ def _published_orders(
     )
 
 
-def _published_artifact_hash(api: str, content: bytes) -> str:
-    published = _decoded(
+def _published_artifact_hash(api: AtelierApi, content: bytes) -> str:
+    published = decoded(
         _artifact_resource,
-        _post(api + ARTIFACT_PATH, content, media_type=OCTET_STREAM_MEDIA_TYPE),
+        _post(api, ARTIFACT_PATH, content, media_type=OCTET_STREAM_MEDIA_TYPE),
         "an artifact",
     )
     return published.artifact_hash
 
 
 def _published_workflow_revision(
-    api: str, document: bytes, *, actor: str, activated_at: str
+    api: AtelierApi, document: bytes, *, actor: str, activated_at: str
 ) -> str:
-    revision = _decoded(
+    revision = decoded(
         _workflow_revision_resource,
-        _post(api + WORKFLOW_REVISION_PATH, document, media_type=YAML_MEDIA_TYPE),
+        _post(api, WORKFLOW_REVISION_PATH, document, media_type=YAML_MEDIA_TYPE),
         "a workflow revision",
     )
     _admit_published_v3(api, revision, actor=actor, activated_at=activated_at)
@@ -591,7 +593,7 @@ def _published_workflow_revision(
 
 
 def _admit_published_v3(
-    api: str,
+    api: AtelierApi,
     revision: WorkflowRevisionDetailResource,
     *,
     actor: str,
@@ -618,13 +620,8 @@ def _admit_published_v3(
         activated_at=activated_at,
     )
     try:
-        _decoded(
-            _catalog_admission_resource,
-            _post(
-                api + CATALOG_LINEAGE_PATH,
-                founding.model_dump_json(exclude_none=True).encode(),
-            ),
-            "a catalog admission",
+        _admitted(
+            api, CATALOG_LINEAGE_PATH, founding.model_dump_json(exclude_none=True)
         )
         return
     except ServiceRefused as refused:
@@ -633,9 +630,9 @@ def _admit_published_v3(
             return
         if code != "catalog-name-held":
             raise
-    resolution = _decoded(
+    resolution = decoded(
         _catalog_name_resolution_resource,
-        _get(api + catalog_name_path(RevisionKind.WORKFLOW, revision.graph.name)),
+        _get(api, catalog_name_path(RevisionKind.WORKFLOW, revision.graph.name)),
         "a catalog name",
     )
     member = AdmitCatalogMemberRequestResource(
@@ -645,18 +642,23 @@ def _admit_published_v3(
         activated_at=activated_at,
     )
     try:
-        _decoded(
-            _catalog_admission_resource,
-            _post(
-                f"{api}{CATALOG_LINEAGE_PATH}/{resolution.lineage_id}/members",
-                member.model_dump_json().encode(),
-            ),
-            "a catalog admission",
+        _admitted(
+            api,
+            f"{CATALOG_LINEAGE_PATH}/{resolution.lineage_id}/members",
+            member.model_dump_json(),
         )
     except ServiceRefused as refused:
         if _problem_code(refused) == "catalog-revision-owned":
             return
         raise
+
+
+def _admitted(api: AtelierApi, path: str, body: str) -> CatalogAdmissionResource:
+    return decoded(
+        _catalog_admission_resource,
+        _post(api, path, body.encode()),
+        "a catalog admission",
+    )
 
 
 def _problem_code(refused: ServiceRefused) -> str | None:
@@ -720,7 +722,7 @@ def _wire_start_order(order: SuppliedStartOrder) -> AnyStartRunOrderResource:
     return InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
 
 
-def _read_history(api: str, public_run_reference: str) -> RunHistory:
+def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
     """Read the run's own event history, which is where its output lives.
 
     The stream ends itself when the run reaches its terminal event, so this
@@ -734,20 +736,21 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
     weigh that against the run's own latest event.
     """
 
-    url = f"{api}{RUN_PATH}/{public_run_reference}/events"
-    request = Request(url, method="GET", headers={"accept": EVENT_STREAM_MEDIA_TYPE})
+    path = f"{RUN_PATH}/{public_run_reference}/events"
     outputs: list[AgentOutput] = []
     last_cursor: str | None = None
-    with _open(request, timeout=None) as stream:
-        for data in _server_sent_data(stream):
+    try:
+        for data in _server_sent_data(
+            api.event_lines(path, accept=EVENT_STREAM_MEDIA_TYPE)
+        ):
             carried = _carried_event(data)
             if carried.kind == STREAM_FAILURE_NAME:
-                raise ServiceRefused(_failed_stream(url, data))
+                raise ServiceRefused(_failed_stream(api.base_url + path, data))
             if carried.cursor is not None:
                 last_cursor = carried.cursor
             if carried.kind not in ACTED_EVENT_NAMES:
                 continue
-            event = _decoded(_acted_event_resource, data.encode(), "a run event")
+            event = decoded(_acted_event_resource, data.encode(), "a run event")
             match event:
                 case AgentCompletedEventResourceV3():
                     outputs.append(
@@ -773,11 +776,13 @@ def _read_history(api: str, public_run_reference: str) -> RunHistory:
                         "accountable operator determination resolves it, and this "
                         "command makes none"
                     )
+    except AtelierApiTransportFailure as failure:
+        raise service_refusal(failure) from failure
     return RunHistory(tuple(outputs), last_cursor)
 
 
 def _why_the_run_stops(
-    api: str,
+    api: AtelierApi,
     public_run_reference: str,
     event: AgentFailedEventResourceV3,
 ) -> RunNeedsAnotherActor:
@@ -796,9 +801,9 @@ def _why_the_run_stops(
             "this run has ended; a new run continues the work"
         )
     node = quote(event.node_id, safe="")
-    detail = _decoded(
+    detail = decoded(
         _node_detail_resource,
-        _get(f"{api}{RUN_PATH}/{public_run_reference}/nodes/{node}"),
+        _get(api, f"{RUN_PATH}/{public_run_reference}/nodes/{node}"),
         "a node detail",
     )
     named = (
@@ -847,19 +852,13 @@ def _carried_event(data: str) -> CarriedEvent:
 
 
 def _failed_stream(url: str, data: str) -> str:
-    failure = _decoded(_stream_failure_resource, data.encode(), "a stream failure")
+    failure = decoded(_stream_failure_resource, data.encode(), "a stream failure")
     return _refusal_sentence(url, failure.problem)
 
 
-def _server_sent_data(stream: IO[bytes]) -> Iterator[str]:
+def _server_sent_data(lines: Iterator[str]) -> Iterator[str]:
     data_lines: list[str] = []
-    for raw_line in stream:
-        try:
-            line = raw_line.decode().rstrip("\r\n")
-        except UnicodeDecodeError as error:
-            raise UnreadableServiceAnswer(
-                "the event stream carried bytes that are not UTF-8 text"
-            ) from error
+    for line in lines:
         if not line:
             if data_lines:
                 yield "\n".join(data_lines)
@@ -872,48 +871,38 @@ def _server_sent_data(stream: IO[bytes]) -> Iterator[str]:
         yield "\n".join(data_lines)
 
 
-def _post(url: str, payload: bytes, media_type: str = JSON_MEDIA_TYPE) -> bytes:
-    return _read(
-        Request(
-            url,
-            data=payload,
-            method="POST",
-            headers={"content-type": media_type, "accept": JSON_MEDIA_TYPE},
-        )
-    )
-
-
-def _get(url: str) -> bytes:
-    return _read(Request(url, method="GET", headers={"accept": JSON_MEDIA_TYPE}))
-
-
-def _read(request: Request) -> bytes:
-    with _open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-        return response.read()
-
-
-def _open(request: Request, timeout: float | None) -> IO[bytes]:
+def _post(
+    api: AtelierApi, path: str, payload: bytes, media_type: str = JSON_MEDIA_TYPE
+) -> bytes:
     try:
-        return urlopen(request, timeout=timeout)
-    except HTTPError as refusal:
-        raise _service_refused(refusal) from refusal
-    except URLError as unreachable:
-        raise ServiceUnreachable(
-            f"no Atelier service answered at {request.full_url}: {unreachable.reason}"
-        ) from unreachable
+        return api.post(
+            path, payload, media_type=media_type, timeout=REQUEST_TIMEOUT_SECONDS
+        )
+    except AtelierApiTransportFailure as failure:
+        raise service_refusal(failure) from failure
 
 
-def _service_refused(refusal: HTTPError) -> ServiceRefused:
+def _get(api: AtelierApi, path: str) -> bytes:
+    try:
+        return api.get(path, timeout=REQUEST_TIMEOUT_SECONDS)
+    except AtelierApiTransportFailure as failure:
+        raise service_refusal(failure) from failure
+
+
+def service_refusal(failure: AtelierApiTransportFailure) -> RunCommandRefusal:
     """Hand the service's own typed refusal on, without inventing prose for it."""
 
-    answered = refusal.read()
+    if failure.status is None:
+        return ServiceUnreachable(
+            f"no Atelier service answered at {failure.url}: {failure.reason}"
+        )
     try:
-        problem = ProblemResource.model_validate_json(answered)
+        problem = ProblemResource.model_validate_json(failure.body)
     except ValidationError:
         return ServiceRefused(
-            f"{refusal.url} answered {refusal.status} {refusal.reason}"
+            f"{failure.url} answered {failure.status} {failure.reason}"
         )
-    return ServiceRefused(_refusal_sentence(refusal.url, problem), problem)
+    return ServiceRefused(_refusal_sentence(failure.url, problem), problem)
 
 
 def _refusal_sentence(url: str, problem: ProblemResource) -> str:
@@ -925,7 +914,7 @@ def _refusal_sentence(url: str, problem: ProblemResource) -> str:
     )
 
 
-def _decoded[Resource](
+def decoded[Resource](
     adapter: TypeAdapter[Resource], answered: bytes, subject: str
 ) -> Resource:
     try:

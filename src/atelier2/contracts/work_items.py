@@ -24,6 +24,7 @@ inside an order value (ADR 0010 decision 1, 2026-08-26 amendment).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -119,6 +120,82 @@ class ObservedWorkItemRevision:
         object.__setattr__(self, "digest", Sha256Hash.of(self.body))
 
 
+_FILES_SECTION_HEADING = "## Dateien"
+_BACKTICK_TOKEN = re.compile(r"`([^`]+)`")
+_GLOB_CHARACTERS = frozenset("*?[]")
+
+
+class WorkItemScopeMalformed(ValueError):
+    """A `## Dateien` token that is not a repository-relative path."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(f"work item scope token {token!r} is not a relative path")
+        self.token = token
+
+
+def _canonical_scope_path(token: str) -> str:
+    normalized = token.rstrip("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or any(character.isspace() for character in token)
+        or any(character in _GLOB_CHARACTERS for character in token)
+        or ".." in normalized.split("/")
+    ):
+        raise WorkItemScopeMalformed(token)
+    return normalized
+
+
+def _files_section(body_text: str) -> str | None:
+    lines = body_text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != _FILES_SECTION_HEADING:
+            continue
+        section_lines: list[str] = []
+        for later_line in lines[index + 1 :]:
+            if later_line.startswith("## "):
+                break
+            section_lines.append(later_line)
+        return "\n".join(section_lines)
+    return None
+
+
+@dataclass(frozen=True)
+class WorkItemScope:
+    """The repository-relative paths one work item body names under `## Dateien`.
+
+    Canonically sorted and duplicate-free, so two reads of the same section
+    always compare equal and a later owner (a claim, a push fence) can trust
+    the tuple as it stands rather than re-deriving it from prose.
+    """
+
+    paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.paths, tuple):
+            raise TypeError("a work item scope holds its paths as a tuple")
+        canonical = tuple(sorted({_canonical_scope_path(path) for path in self.paths}))
+        if canonical != self.paths:
+            raise ValueError(
+                "a work item scope holds sorted, duplicate-free, normalized paths"
+            )
+
+    @classmethod
+    def from_body(cls, body: bytes) -> WorkItemScope:
+        """The scope one work item body declares, read exactly once.
+
+        Prose outside the backtick tokens of `## Dateien` is ignored; a token
+        that is not a relative path is a named error, not a silent exclusion.
+        No `## Dateien` section, or one without a token, is a valid empty scope.
+        """
+
+        section = _files_section(body.decode("utf-8"))
+        if section is None:
+            return cls(())
+        tokens = _BACKTICK_TOKEN.findall(section)
+        return cls(tuple(sorted({_canonical_scope_path(token) for token in tokens})))
+
+
 def work_item_order_document(revision: ObservedWorkItemRevision) -> bytes:
     """The exact bytes one work-item order carries into the run that reads it.
 
@@ -137,6 +214,7 @@ def work_item_order_document(revision: ObservedWorkItemRevision) -> bytes:
             "kind": revision.kind.value,
             "observed_at": revision.observed_at.value,
             "reference": revision.item.value,
+            "scope": list(WorkItemScope.from_body(revision.body).paths),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -156,6 +234,7 @@ _WORK_ITEM_ORDER_SCHEMA: Final = {
         "kind",
         "observed_at",
         "reference",
+        "scope",
     ],
     "properties": {
         "body": {"type": "string"},
@@ -171,6 +250,11 @@ _WORK_ITEM_ORDER_SCHEMA: Final = {
             "type": "string",
             "minLength": 1,
             "maxLength": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+        },
+        "scope": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": True,
         },
     },
 }
@@ -219,6 +303,7 @@ class WorkItemOrderDocument:
     kind: WorkItemKind
     observed_at: RecordedAt
     reference: TrackerItemReference
+    scope: WorkItemScope
 
 
 def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | None:
@@ -241,7 +326,16 @@ def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | No
         return None
     if not isinstance(value, dict) or set(value) != _WORK_ITEM_ORDER_FIELDS:
         return None
-    if not all(isinstance(field_value, str) for field_value in value.values()):
+    scope_value = value.get("scope")
+    if not isinstance(scope_value, list) or not all(
+        isinstance(path, str) for path in scope_value
+    ):
+        return None
+    if not all(
+        isinstance(field_value, str)
+        for name, field_value in value.items()
+        if name != "scope"
+    ):
         return None
     try:
         read = WorkItemOrderDocument(
@@ -251,6 +345,7 @@ def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | No
             WorkItemKind(value["kind"]),
             RecordedAt(value["observed_at"]),
             TrackerItemReference(value["reference"]),
+            WorkItemScope(tuple(scope_value)),
         )
     except ValueError:
         # Every field is read back through the contract that wrote it, so a
