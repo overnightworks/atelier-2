@@ -206,7 +206,7 @@ def hold_prepared_claim(
         or held.claimed_scope != scope
     ):
         return WorkItemClaimRefused(AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED)
-    confirmed = _confirmed(held)
+    confirmed = _confirmed_claim(held)
     if held.touches:
         return WorkItemClaimRefused(
             AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE, confirmed
@@ -219,7 +219,7 @@ def confirm_work_item_claim(
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
     confirmed: ClaimWorkItemReceipt,
-) -> str:
+) -> None:
     """Record the claim the ledger confirmed as this intent's own receipt."""
 
     intent = load_intent(session, logical_key, revision_hash.value)
@@ -232,7 +232,6 @@ def confirm_work_item_claim(
     commit_resolution(
         session, logical_key, revision_hash.value, encode_readback(receipt)
     )
-    return confirmed.claim_id
 
 
 def commit_work_item_claim_refusal(
@@ -261,7 +260,7 @@ def commit_work_item_claim_refusal(
     ).state.value
 
 
-def _confirmed(receipt: ClaimReceipt) -> ClaimWorkItemReceipt:
+def _confirmed_claim(receipt: ClaimReceipt) -> ClaimWorkItemReceipt:
     return ClaimWorkItemReceipt(
         receipt.item,
         receipt.claim_id,
