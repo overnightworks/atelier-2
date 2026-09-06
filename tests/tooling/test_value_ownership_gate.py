@@ -90,12 +90,6 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "about the queue is the project policy's cap and label, never this "
         "deployment's look-rate (#1337)",
     ),
-    "adapters/dbos/queue_sweep.py::_SWEEP_HANDOVER_SECONDS": SpelledValue(
-        1,
-        "stable slice invariant: how long a closing runtime waits for a sweep "
-        "already under way before leaving it to its daemon end -- a fact about "
-        "the stop path, never an operator's patience (#1337)",
-    ),
     "host/run_command.py::REQUEST_TIMEOUT_SECONDS": SpelledValue(
         1,
         "one named owner for every CLI request; the run/resolve flag is still "

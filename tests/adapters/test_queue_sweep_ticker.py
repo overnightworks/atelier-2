@@ -17,6 +17,8 @@ from atelier2.adapters.dbos.queue_sweep import QueueSweepTicker
 _FAST_TICK_SECONDS = 0.02
 _SLOW_TICK_SECONDS = 30.0
 _PATIENCE_SECONDS = 5.0
+# Long enough for a stop that does not wait to have returned.
+_A_MOMENT_SECONDS = 0.1
 
 
 @dataclass
@@ -80,3 +82,28 @@ def test_a_stopped_ticker_sweeps_no_more() -> None:
     ticker.sweep_now()
 
     assert sweeps.counted() == settled
+
+
+def test_stop_returns_only_once_a_sweep_under_way_has_ended() -> None:
+    entered = threading.Event()
+    may_end = threading.Event()
+
+    def sweep_that_waits_to_end() -> None:
+        entered.set()
+        assert may_end.wait(_PATIENCE_SECONDS), "the sweep was never let go"
+
+    ticker = QueueSweepTicker(
+        sweep_that_waits_to_end, interval_seconds=_SLOW_TICK_SECONDS
+    )
+    ticker.start()
+    ticker.sweep_now()
+    assert entered.wait(_PATIENCE_SECONDS), "the sweep was never run"
+    stopping = threading.Thread(target=ticker.stop)
+    stopping.start()
+
+    stopping.join(_A_MOMENT_SECONDS)
+    assert stopping.is_alive(), "stop returned while a sweep was still under way"
+
+    may_end.set()
+    stopping.join(_PATIENCE_SECONDS)
+    assert not stopping.is_alive(), "stop never returned after the sweep ended"
