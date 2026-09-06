@@ -35,6 +35,7 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.host import main
+from atelier2.host.atelier_api_client import AtelierApi
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS,
     PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
@@ -1095,7 +1096,9 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
         poll_interval_seconds=1,
     )
     http = AtelierApiProviderCanaryHttp(
-        canary_settings.service_url, transport=httpx.MockTransport(hung_start)
+        AtelierApi(
+            canary_settings.service_url, transport=httpx.MockTransport(hung_start)
+        )
     )
 
     report = execute_provider_canaries(canary_settings, http=http, clock=FakeClock())
@@ -1187,7 +1190,9 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
         poll_interval_seconds=1,
     )
     http = AtelierApiProviderCanaryHttp(
-        canary_settings.service_url, transport=httpx.MockTransport(answering)
+        AtelierApi(
+            canary_settings.service_url, transport=httpx.MockTransport(answering)
+        )
     )
 
     report = execute_provider_canaries(canary_settings, http=http, clock=FakeClock())

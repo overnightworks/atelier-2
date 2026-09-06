@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final
@@ -82,6 +83,7 @@ from atelier2.host.atelier_api_client import (
     AtelierApi,
     AtelierApiAddressUnusable,
     AtelierApiTransportFailure,
+    opened_api,
 )
 
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -335,31 +337,18 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     """
 
     with service_api(order.service_url) as api:
-        return resolved_name(api, order.name, order.position)
-
-
-def resolved_name(
-    api: AtelierApi, name: str, position: str = DEFAULT_CATALOG_POSITION
-) -> NameResolution:
-    """Ask an already-reached service which revision one catalog name holds.
-
-    The single owner `resolve_published_name` and a run started by name share:
-    a caller already holding a client asks through this, rather than opening a
-    second one for the same question.
-    """
-
-    asked = catalog_name_path(RevisionKind.WORKFLOW, name)
-    if position != DEFAULT_CATALOG_POSITION:
-        asked = f"{asked}?position={quote(position, safe='')}"
-    resolved = decoded(
-        _catalog_name_resolution_resource, _get(api, asked), "a catalog name"
-    )
-    return NameResolution(
-        resolved.display_name,
-        resolved.lineage_id,
-        resolved.catalog_revision_hash,
-        resolved.revision_number,
-    )
+        asked = catalog_name_path(RevisionKind.WORKFLOW, order.name)
+        if order.position != DEFAULT_CATALOG_POSITION:
+            asked = f"{asked}?position={quote(order.position, safe='')}"
+        resolved = decoded(
+            _catalog_name_resolution_resource, _get(api, asked), "a catalog name"
+        )
+        return NameResolution(
+            resolved.display_name,
+            resolved.lineage_id,
+            resolved.catalog_revision_hash,
+            resolved.revision_number,
+        )
 
 
 def catalog_name_path(kind: RevisionKind, name: str) -> str:
@@ -411,8 +400,10 @@ def execute_named_run(order: NamedRunOrder) -> RunReport:
     republishing it would mint a second identity for the same bytes.
     """
 
+    resolution = resolve_published_name(
+        NameOrder(order.service_url, order.name, order.position)
+    )
     with service_api(order.service_url) as api:
-        resolution = resolved_name(api, order.name, order.position)
         bindings = tuple(_published_binding(api, source) for source in order.bindings)
         report = _run_published_revision(
             api, resolution.revision_hash, bindings, order.run_id, order.orders
@@ -523,11 +514,13 @@ def describe_receipt(report: RunReport) -> str:
     return "\n".join(lines)
 
 
-def service_api(service_url: str) -> AtelierApi:
-    """The one client every command builds from an operator-named service."""
+@contextmanager
+def service_api(service_url: str) -> Iterator[AtelierApi]:
+    """The one client every command opens from an operator-named service."""
 
     try:
-        return AtelierApi(service_url)
+        with opened_api(service_url) as api:
+            yield api
     except AtelierApiAddressUnusable as invalid:
         raise UnusableRunOrder(str(invalid)) from invalid
 

@@ -11,6 +11,7 @@ translates that one failure into whatever vocabulary its own callers expect.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -24,9 +25,6 @@ JSON_MEDIA_TYPE = "application/json"
 MAXIMUM_FAILURE_BODY_BYTES = 4_096
 """How much of a non-2xx or malformed answer a caller reads before giving up
 on classifying it further; past this, further bytes buy nothing but memory."""
-
-AtelierApiTransport = httpx.BaseTransport
-"""Re-exported so a caller's test seam names no second `httpx` import site."""
 
 
 class AtelierApiAddressUnusable(ValueError):
@@ -164,6 +162,21 @@ class AtelierApi:
             status=response.status_code,
             body=_bounded_body(response),
         )
+
+
+@contextmanager
+def opened_api(
+    service_url: str, *, transport: httpx.BaseTransport | None = None
+) -> Iterator[AtelierApi]:
+    """One `AtelierApi` for a caller's whole invocation, closed when it ends.
+
+    The one place every command builds and closes its own client: a caller
+    already holding one -- an injected test double, or one it opened itself
+    for a wider invocation -- never reaches this at all.
+    """
+
+    with AtelierApi(service_url, transport=transport) as api:
+        yield api
 
 
 def _transport_unavailable(

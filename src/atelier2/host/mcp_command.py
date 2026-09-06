@@ -86,6 +86,7 @@ from atelier2.host.run_command import (
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
+    NameOrder,
     ServiceRefused,
     ServiceUnreachable,
     SuppliedArtifactOrder,
@@ -95,7 +96,7 @@ from atelier2.host.run_command import (
     UnusableRunOrder,
     catalog_name_path,
     decoded,
-    resolved_name,
+    resolve_published_name,
     service_api,
     service_refusal,
     start_request_body,
@@ -321,8 +322,8 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         raise UnusableRunOrder("position must be a nonempty string")
     bindings = _bindings(arguments.get("agent_bindings"))
     orders = _orders(arguments.get("orders"))
+    resolution = resolve_published_name(NameOrder(service_url, name, position))
     with service_api(service_url) as api:
-        resolution = resolved_name(api, name, position)
         started = decoded(
             _run_resource,
             _post(
