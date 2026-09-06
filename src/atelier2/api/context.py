@@ -411,6 +411,11 @@ class ApiContext:
     event_runner: BoundedQueryRunner
     workflow_projection_limit: WorkflowPublicationLimits
     event_poll_backoff: EventPollBackoff
+    # What an admission asks for the moment it commits, so a newly admitted
+    # item does not wait out the sweep's tick before it starts. `None` where no
+    # runtime clock stands behind this app -- every composition without one
+    # says so rather than pretending an admission started anything.
+    request_queue_sweep: Callable[[], None] | None = None
 
 
 def install_api_context(app: FastAPI, context: ApiContext) -> None:

@@ -500,6 +500,7 @@ def create_app(
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
+    request_queue_sweep: Callable[[], None] | None = None,
     source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
     connection_clock: Callable[[], RecordedAt] = recorded_instant,
     boot_clock: Callable[[], RecordedAt] = recorded_instant,
@@ -541,9 +542,7 @@ def create_app(
                 workflow_projection_limit,
                 EnrichedPageBudget(
                     maximum_nodes=limits.maximum_enriched_page_nodes,
-                    maximum_document_bytes=(
-                        limits.maximum_enriched_page_document_bytes
-                    ),
+                    maximum_document_bytes=limits.maximum_enriched_page_document_bytes,
                 ),
                 served_project_id,
                 source_id_generator,
@@ -561,6 +560,7 @@ def create_app(
             ),
             workflow_projection_limit=workflow_projection_limit,
             event_poll_backoff=event_poll_backoff,
+            request_queue_sweep=request_queue_sweep,
         ),
     )
 

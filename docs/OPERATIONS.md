@@ -567,8 +567,18 @@ everything" is not a ruled value.
 Two things this does not do. It admits nothing that has no inspected proposal
 yet -- the label says "go", never which workflow or priority to go with, so
 plan the item through `PUT /queue-proposals` first -- and it never overrides a
-proposal marked `HUMAN_REQUIRED`. The sweep runs at Serve start, so a policy
-published against a running Serve takes effect at its next start.
+proposal marked `HUMAN_REQUIRED`.
+
+The sweep runs at Serve start, then once a minute on the runtime's own tick,
+and again the moment `POST /queue-admissions` records an admission -- so a
+policy published against a running Serve takes effect within a minute, and an
+item admitted through the door starts without waiting for that minute. Nothing
+here needs a restart, and nothing here is an operator's handgrip: the cap and
+the priority still decide what actually starts.
+
+One thing the tick does not do: an item whose run ended stays bound to that
+run. A failed or cancelled run is therefore not tried again by itself, and an
+item in that state waits for the decision that frees it.
 
 ### A red project verification's own output (#1137)
 

@@ -1254,6 +1254,7 @@ def compose_application(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
             lifespan=lifespan,
+            request_queue_sweep=runtime.request_queue_sweep,
             ports=ApiPorts(
                 workflow_revision_publisher=DbosWorkflowRevisionPublisher(
                     runtime.engine

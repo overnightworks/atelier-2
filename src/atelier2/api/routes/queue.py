@@ -244,6 +244,10 @@ async def confirm_queue_proposal_route(
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
+    if context.request_queue_sweep is not None:
+        # Admission is not a start: the sweep decides, under the cap and the
+        # priority, and it is asked here so that decision is not a tick away.
+        context.request_queue_sweep()
     return resource_response(
         QueueAdmissionDecisionResource(
             item_id=item_reference.item_id.value,
