@@ -48,13 +48,27 @@ SCOPE_UNIT_SUFFIX = ".scope"
 
 # What tmux answers when the seat is simply not there. Every other failing
 # probe is an unread answer, never an absence: an unreachable socket would
-# otherwise read as "gone" and cost a living session its scope. These wordings
-# are measured against the installed tmux when the seat gets its caller; an
-# answer this list does not know stays a failed probe.
-TMUX_ABSENT_ANSWERS = ("no server running", "can't find session", "session not found")
+# otherwise read as "gone" and cost a living session its scope.
+#
+# Measured against the installed tmux (3.4) when the seat got its caller: a
+# socket that was never created answers `error connecting to <socket> (No such
+# file or directory)`, which is the same absence as "no server running" and
+# the one every first start meets. A socket that exists but refuses -- the
+# permission case -- keeps its own wording and stays a failed probe.
+TMUX_ABSENT_ANSWERS = (
+    "no server running",
+    "can't find session",
+    "session not found",
+    "No such file or directory",
+)
 # `systemctl is-active` answers 3 for a unit that is not active and 4 for one it
 # does not know; an unreachable bus answers otherwise.
 SYSTEMCTL_ABSENT_EXIT_CODES = frozenset({3, 4})
+# `systemctl stop` answers 5 for a unit it no longer knows. Measured when the
+# seat got its caller: `--collect` removes the transient scope the moment its
+# last process is gone, so a scope stopped right after its own session was
+# killed is already collected. That is this call's goal reached without it.
+SYSTEMCTL_STOP_ABSENT_EXIT_CODE = 5
 
 
 class TerminalSeatCommandFailed(RuntimeError):
@@ -203,11 +217,15 @@ class TerminalSeat:
         systemctl = self.host.locate_executable(SYSTEMCTL_PROGRAM)
         if systemd_run is None or systemctl is None:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
-        if not self.host.loopback_port_is_free(self.settings.port):
-            return TerminalSeatOutcome.REFUSED_PORT_BUSY
         session, scope = self._established_presence(systemctl)
         if session is SeatPresence.ALIVE:
+            # The session is the seat; the port only carries a terminal to it.
+            # Judging the port first refused a living seat whenever an
+            # unclean serve death left its own ttyd holding the port -- the
+            # one case re-attaching exists for.
             return TerminalSeatOutcome.ALREADY_RUNNING
+        if not self.host.loopback_port_is_free(self.settings.port):
+            return TerminalSeatOutcome.REFUSED_PORT_BUSY
         orphaned_scope = scope is SeatPresence.ALIVE
         if orphaned_scope:
             self._stop_scope(systemctl)
@@ -269,6 +287,18 @@ class TerminalSeat:
 
         return f"={self.settings.session_name}"
 
+    @property
+    def _pane_target(self) -> str:
+        """Where keys are typed: this session's current pane, exactly named.
+
+        Measured against the installed tmux (3.4): a bare `=session` is a
+        session target and is refused as a pane one ("can't find pane"), while
+        `=session:` resolves the session's current window and pane and keeps
+        the exact-name form a prefix match would give away.
+        """
+
+        return f"{self._session_target}:"
+
     def _tmux_command(self, *arguments: str) -> tuple[str, ...]:
         return (
             str(self.settings.tmux_executable),
@@ -316,7 +346,15 @@ class TerminalSeat:
         return session, scope
 
     def _stop_scope(self, systemctl: Path) -> None:
-        self._run_checked((str(systemctl), "--user", "stop", self.settings.scope_unit))
+        """End the scope, or accept the one that already ended with its tree."""
+
+        argv = (str(systemctl), "--user", "stop", self.settings.scope_unit)
+        answer = self.host.run(argv)
+        if answer.exit_code in (0, SYSTEMCTL_STOP_ABSENT_EXIT_CODE):
+            return
+        raise TerminalSeatCommandFailed(
+            f"{shlex.join(argv)} exited {answer.exit_code}: {answer.stderr}"
+        )
 
     def _create_session(self, systemd_run: Path, systemctl: Path) -> None:
         configuration = self._persist_mcp_document()
@@ -358,15 +396,15 @@ class TerminalSeat:
         nobody could discard is what the next call would otherwise find.
         """
 
-        teardown = (
-            self._tmux_command("kill-session", "-t", self._session_target),
-            (str(systemctl), "--user", "stop", self.settings.scope_unit),
-        )
         left_behind: list[str] = []
-        for argv in teardown:
-            answer = self.host.run(argv)
-            if answer.exit_code != 0:
-                left_behind.append(f"{shlex.join(argv)} exited {answer.exit_code}")
+        kill_session = self._tmux_command("kill-session", "-t", self._session_target)
+        answer = self.host.run(kill_session)
+        if answer.exit_code != 0:
+            left_behind.append(f"{shlex.join(kill_session)} exited {answer.exit_code}")
+        try:
+            self._stop_scope(systemctl)
+        except TerminalSeatCommandFailed as scope_failure:
+            left_behind.append(str(scope_failure))
         cleanup = (
             "session and scope discarded"
             if not left_behind
@@ -385,11 +423,11 @@ class TerminalSeat:
 
         self._run_checked(
             self._tmux_command(
-                "send-keys", "-t", self._session_target, "-l", shlex.join(argv)
+                "send-keys", "-t", self._pane_target, "-l", shlex.join(argv)
             )
         )
         self._run_checked(
-            self._tmux_command("send-keys", "-t", self._session_target, "Enter")
+            self._tmux_command("send-keys", "-t", self._pane_target, "Enter")
         )
 
     def _persist_mcp_document(self) -> Path:

@@ -47,6 +47,7 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
     RUN_CANCELLATION_PATH,
     RUN_FORK_PATH,
+    SEAT_PATH,
 )
 from atelier2.api.problems import problem_resource
 from atelier2.api.references import (
@@ -104,6 +105,7 @@ NODE_DETAIL_PATH = API_PREFIX + "/runs/{public_ref}/nodes/{node_id}"
 
 EXPECTED_PATHS = {
     API_PREFIX + "/health",
+    SEAT_PATH,
     ARTIFACTS_PATH,
     ARTIFACT_PATH,
     API_PREFIX + "/auth-profile-revisions",
@@ -153,6 +155,7 @@ EXPECTED_PATHS = {
 
 EXPECTED_ROUTE_SEQUENCE = (
     ("GET", API_PREFIX + "/health", "health"),
+    ("GET", SEAT_PATH, "seat"),
     (
         "POST",
         API_PREFIX + "/auth-profile-revisions",

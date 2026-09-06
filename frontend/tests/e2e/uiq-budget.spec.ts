@@ -2,7 +2,6 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import type { RunListRow, RunV3 } from "../../src/api/client";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
-import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { nodeAriaName } from "../../src/lib/stateMarkCopy";
@@ -20,15 +19,12 @@ import { healthyRunListItems } from "../support/runListRows";
  * view, not §07's 4-click start-by-hand / Start-run remainder. The Run view
  * adds its standing sentence and node Log path from frame #v8-14-run-log.
  * Queue-admit is named in §07 and has no Workbench door yet — not asserted
- * here. Settings' connect-a-source path is measured against mockup v8.
+ * here, and neither is the terminal seat, which §07 gives no budget of its
+ * own (#1099). Settings' connect-a-source path is measured against mockup v8.
  *
  * Contract only: user-click count to the goal, and the named goal elements in
  * the viewport without scrolling at the picture's 390 and 1280 widths.
  */
-
-/** Frame "Empty — only the ear" / "Loaded — the ear stays reachable without scrolling" (§02). */
-const SEND_A_MESSAGE_CLICKS = 0;
-const SEND_A_MESSAGE_GLANCES = 1;
 
 /** Frame "Full — two open questions, two runs, the conversation with its cards" (§02). */
 const ANSWER_A_DECISION_CLICKS = 1;
@@ -450,52 +446,11 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
   await startHeldRun(page, runningName, `uiq/running-${suffix}`);
   const waitRevision = await publishWaitWorkflow(page, waitingName, DECISION_QUESTION);
   const catalogSchemaHash = await publishSchema(page, "true");
-  // The send-a-message task below needs a real conductor to send into
-  // (#1103): without one the composer stays honestly locked and Enter does
-  // nothing, so this budget seeds the production conductor catalog the same
-  // way `workbench-conductor.spec.ts` does. A server-side publish, not a
-  // browser action, so it costs neither a click nor a glance.
-  const seeded = await page.request.post("/__e2e/seed-conductor");
-  expect(seeded.ok()).toBeTruthy();
 
-  for (const [index, viewport] of VIEWPORTS.entries()) {
+  for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
     await startWaitRun(page, `uiq/waiting-${suffix}-${viewport.width}`, waitRevision);
     await openWorkbench(page);
-    // A fresh page load resolves the conductor's own connection, and
-    // restores its already-started run, asynchronously; typing before that
-    // settles would either find Send disabled (locked while "reading",
-    // #1103, #1114) or race a second run into existence instead of
-    // continuing the one from the last viewport. The connected composer hint
-    // is the actual signal that resolution finished -- the first viewport's
-    // message is the conversation's own first round, so it still "begins"
-    // it, but the reload before every later viewport replays that round's
-    // events, so the composer already carries `composerHintOngoing` by then
-    // (`connectedComposerHint`, WorkbenchPage.svelte).
-    const resolvedComposerHint =
-      index === 0 ? conductorConversationCopy.composerHint : conductorConversationCopy.composerHintOngoing;
-    await expect(page.getByText(resolvedComposerHint)).toBeVisible({
-      timeout: 20_000
-    });
-    await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled({
-      timeout: 20_000
-    });
-
-    const composer = page.getByLabel(workbenchPageCopy.composerLabel);
-    const sendGlances = [composer];
-    for (const glance of sendGlances) {
-      await expect(glance, `send-a-message glance at ${viewport.width}`).toBeInViewport();
-    }
-    expect(sendGlances).toHaveLength(SEND_A_MESSAGE_GLANCES);
-    const send = clickBudget();
-    const spoken = `budget probe ${viewport.width}`;
-    await composer.fill(spoken);
-    await composer.press("Enter");
-    await expect(page.getByText(spoken)).toBeVisible();
-    expect(send.count, `send-a-message clicks at ${viewport.width}`).toBeLessThanOrEqual(
-      SEND_A_MESSAGE_CLICKS
-    );
-
     const findRunning = clickBudget();
     const runningRow = page.getByRole("link", { name: new RegExp(runningName) });
     await expect(runningRow).toBeVisible({ timeout: 20_000 });

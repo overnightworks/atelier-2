@@ -135,13 +135,6 @@ function openWorkbench(runs: readonly RunV3[], overrides: Partial<CockpitApi> = 
   return { ...view, journal };
 }
 
-async function say(words: string): Promise<void> {
-  await fireEvent.input(screen.getByLabelText(workbenchPageCopy.composerLabel), {
-    target: { value: words }
-  });
-  await fireEvent.click(screen.getByRole("button", { name: workbenchPageCopy.send }));
-}
-
 beforeEach(() => {
   sessionStorage.clear();
 });
@@ -149,11 +142,11 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("the Workbench pins open decisions (#580)", () => {
-  // This test drives more real interactions (three sends, two navigations)
+  // This test drives more real interactions (two navigations and an answer)
   // than its neighbours, so v8 coverage instrumentation's overhead pushes it
   // past the default 5s timeout; the raised timeout accommodates the
   // instrumented run without hiding a real regression.
-  it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): holds the decision through continued chatting and a walk away and back, then retires it once answered on the shared audited path", async () => {
+  it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): holds the decision through a walk away and back, then retires it once answered on the shared audited path", async () => {
     const waiting = waitingRun();
     const answer = vi.fn(async (mutation: { body_base64: string }) => {
       void mutation;
@@ -165,14 +158,8 @@ describe("the Workbench pins open decisions (#580)", () => {
     expect((await within(needsYou).findByRole("heading", { name: question })).isConnected).toBe(true);
     await within(needsYou).findByRole("button", { name: runPageCopy.answerYes });
 
-    // The whole point: the decision lives in the pinned region, never inside
-    // the conversation that scrolls. Three sent turns grow the stream; the
-    // decision does not move into it and does not disappear.
-    await say("start the preview door");
-    await say("and the wait bug");
-    await say("in parallel");
-    const conversation = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
-    expect(within(conversation).queryByRole("heading", { name: question })).toBeNull();
+    // The whole point: the decision lives in its own pinned region, and
+    // stands there until it is answered.
     expect(within(needsYou).getByRole("heading", { name: question }).isConnected).toBe(true);
 
     // Leaving for another room and coming back is not answering: the pin is

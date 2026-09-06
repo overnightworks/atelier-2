@@ -143,6 +143,18 @@ class _JsonRpcRequest:
     notification: bool = False
 
 
+def stdio_door_command(service_url: str) -> tuple[str, ...]:
+    """How this process launches its own MCP door as a child process.
+
+    One owner for that vector: the same interpreter that serves, this
+    subcommand, and the address the service answers on. Every caller that
+    hands an agent a door -- the doors executor's invocation, the terminal
+    seat's configuration -- names it here rather than spelling it again.
+    """
+
+    return (sys.executable, "-m", "atelier2", "mcp", "--service", service_url)
+
+
 def execute_mcp(service_url: str, stdin: IO[bytes], stdout: IO[bytes]) -> int:
     """Speak MCP on the given streams against one loopback service."""
 

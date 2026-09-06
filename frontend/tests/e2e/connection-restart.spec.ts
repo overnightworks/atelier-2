@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { restartNoticeCopy } from "../../src/lib/connectionState";
-import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
 const widths = [
   { name: "desktop", width: 1280, height: 900 },
@@ -23,22 +21,16 @@ const widths = [
  * cockpit): the harness's graceful shutdown only disables
  * keep-alive on an in-flight connection, it never closes one still
  * streaming, so an open `EventSource` at the moment of the restart would
- * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
- * scope), so it is both the surface the issue names and a safe one.
+ * hang `/__e2e/recompose` forever. The restart itself is asked for over HTTP
+ * and the harness drops its sockets after a one-second grace
+ * (`RESTART_CONNECTION_GRACE_SECONDS`), so the Workbench's own attention
+ * stream cannot wedge it (#1114).
  *
- * A locked composer (#1103) makes "Send starts and returns enabled" a real
- * assertion about the conductor's own connection state, not merely about the
- * restart -- so this test can no longer stay agnostic to whether an earlier
- * spec in this shared server (#742: one server, one worker, no particular
- * file order) left a conductor seeded. It resets to the harness's cold-boot
- * baseline and seeds the production conductor catalog itself, the same two
- * calls `workbench-conductor.spec.ts` uses, before the restart under proof:
- * a known "connected" precondition, regardless of what ran before it. What
- * this test owns is that the hint returns to that exact same honest sentence
- * once the connection recovers, not merely to *something other than* the
- * restart line -- a composer stuck naming a read that "could not be read"
- * would still pass a weaker check (the live bug this test now pins). A full
- * app restart proven recoverable here leaves the server equally healthy for
+ * The Workbench no longer speaks its own connection state -- its ear became
+ * the terminal seat (#1099) -- so the one restart line is the shell's own
+ * banner, and what this test owns is that the banner appears on the open room
+ * and clears itself once the connection recovers, with no reload. A full app
+ * restart proven recoverable here leaves the server equally healthy for
  * whatever spec runs next, in whatever order that is.
  */
 test("shows the calm restart line on the open workbench, and clears it on its own with no reload", async ({ page }) => {
@@ -50,24 +42,8 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(async () => {
     expect(await (await page.request.get("/__e2e/generation")).text()).toBe(resetGeneration);
   }).toPass({ timeout: 20_000 });
-  const seeded = await page.request.post("/__e2e/seed-conductor");
-  expect(seeded.ok()).toBeTruthy();
-
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
-  const composerHint = page.locator(".composer-hint");
-  await expect(composerHint).toBeVisible();
-  // The mount read is still in flight for a moment after the heading lands,
-  // and the "checking..." wording it shows meanwhile is a state the workbench
-  // passes through, not one it promises (#1159): reading whatever text stood
-  // here pinned that transient sentence as the healthy baseline on a slow
-  // mount, and the recovery assertion below then failed against the settled
-  // one. The conductor seeded above makes the settled promise a named
-  // sentence -- the same one `workbench-conductor.spec.ts` reads after these
-  // very two calls -- so the outage's before and after are the same statement.
-  const healthyComposerHint = conductorConversationCopy.composerHint;
-  await expect(composerHint).toHaveText(healthyComposerHint);
-  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 
   const restarted = await page.request.post("/__e2e/recompose");
   expect(restarted.status()).toBe(202);
@@ -121,8 +97,8 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
     stage.scrollTop = 0;
   });
 
-  // The shell's own top banner, on a room that holds no ear of its own: the
-  // one place the fixed evidence below covers.
+  // The shell's own top banner, the one line every room shows: the fixed
+  // evidence below covers it.
   for (const viewport of widths) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.screenshot({
@@ -133,14 +109,11 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await page.setViewportSize({ width: 1280, height: 900 });
 
   // Back on the workbench the issue names, with no network call of its own:
-  // it already reads the one central store. The ear (HEART) speaks the line
-  // itself as its own composer hint here, so the shell's top banner stays
-  // silent on this one room -- the same fact said once, not twice.
+  // it already reads the one central store, and the one restart line stands
+  // above it like above every other room.
   await page.getByRole("link", { name: "Workbench" }).click();
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
-  await expect(composerHint).toHaveText(restartNoticeCopy);
-  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
-  await expect(page.getByRole("status").filter({ hasText: "restarting" })).toHaveCount(0);
+  await expect(notice).toContainText(restartNoticeCopy);
 
   for (const viewport of widths) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -158,15 +131,9 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
     expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
   }).toPass({ timeout: 20_000 });
 
-  // No page.reload() anywhere above: the notice clearing and Send
-  // re-enabling on their own is the automatic recovery itself. The composer
-  // hint returns to the exact sentence it held before the outage -- not
-  // merely something other than the restart line -- proving the read behind
-  // it (#700's own declared minimum: the conductor-link read) was asked
-  // again on its own, not left stuck on a stale failure.
+  // No page.reload() anywhere above: the notice clearing on its own is the
+  // automatic recovery itself.
   await expect(notice).toBeHidden({ timeout: 20_000 });
-  await expect(composerHint).toHaveText(healthyComposerHint);
-  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 });
 
 /**

@@ -9,6 +9,7 @@ import {
   decodeStreamFrame,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
+  nodeRailEntrySchema,
   projectSourceConnectionRevisionSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
@@ -41,6 +42,7 @@ const servedDocument = JSON.parse(
           type?: { const?: string };
           title?: { const?: string };
           status?: { const?: number };
+          state?: { enum?: string[] };
         };
       }
     >;
@@ -2082,5 +2084,38 @@ describe("the node a click asks the server about", () => {
         }
       })
     ).toThrow();
+  });
+});
+
+describe("a run's node rail", () => {
+  it("proves(the-browser-and-the-served-contract-know-the-same-node-states): accepts exactly the node states the document declares", () => {
+    const servedStates = servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum;
+
+    expect(nodeRailEntrySchema.shape.state.options).toEqual(servedStates);
+    expect(nodeDetailSchema.shape.state.options).toEqual(servedStates);
+  });
+
+  it("refuses partial reuse evidence and reuse on a node that did not succeed", () => {
+    const completeEvidence = {
+      reused_from_run_reference: "run1.cnVu",
+      source_event_hash: "a".repeat(64),
+      source_receipt_hash: "b".repeat(64),
+      source_declared_context_package_hash: "c".repeat(64)
+    };
+    const ordinary = { node_id: "implement", state: "succeeded", attempt: null };
+
+    for (const field of Object.keys(completeEvidence) as Array<keyof typeof completeEvidence>) {
+      const partial: Partial<typeof completeEvidence> = { ...completeEvidence };
+      delete partial[field];
+      expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...partial }).success).toBe(false);
+    }
+    expect(
+      nodeRailEntrySchema.safeParse({
+        ...ordinary,
+        state: "failed",
+        ...completeEvidence
+      }).success
+    ).toBe(false);
+    expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...completeEvidence }).success).toBe(true);
   });
 });

@@ -102,7 +102,6 @@ _COMPONENTS = (
 _COPY = (
     Path("frontend/src/lib/backLinkCopy.ts"),
     Path("frontend/src/lib/catalogPageCopy.ts"),
-    Path("frontend/src/lib/conductorChatCopy.ts"),
     Path("frontend/src/lib/decisionStatusCopy.ts"),
     Path("frontend/src/lib/displayCopy.ts"),
     Path("frontend/src/lib/historyPageCopy.ts"),
@@ -113,6 +112,7 @@ _COPY = (
     Path("frontend/src/lib/readStateCopy.ts"),
     Path("frontend/src/lib/runPageCopy.ts"),
     Path("frontend/src/lib/runResultCopy.ts"),
+    Path("frontend/src/lib/seatCopy.ts"),
     Path("frontend/src/lib/settingsPageCopy.ts"),
     Path("frontend/src/lib/stateMarkCopy.ts"),
     Path("frontend/src/lib/workbenchPageCopy.ts"),

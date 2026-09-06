@@ -213,7 +213,7 @@ function workbenchRuns() {
 
 /**
  * This suite shares one server across every spec file (#742): durable state
- * an earlier spec left behind (a completed run, a seeded conductor) can still
+ * an earlier spec left behind (a completed run, a seeded fixture) can still
  * reach a mocked Workbench frame through a channel its route mocks don't
  * cover. Each mocked frame therefore resets the server to its cold-boot
  * baseline before it stages anything, instead of depending on running before
@@ -508,9 +508,7 @@ test("proves(every-rendered-workbench-control-is-inventoried): every rendered Wo
       page.getByRole("button", { name: /workbench runs/ })
     ).toHaveCount(0);
     await expectWorkbenchControlsAreInventoried(page, [
-      workbenchQuestions.openRun.id,
-      workbenchQuestions.saySomething.id,
-      workbenchQuestions.emptyStart.id
+      workbenchQuestions.openRun.id
     ]);
   }
 
@@ -525,7 +523,6 @@ test("proves(every-rendered-workbench-control-is-inventoried): every rendered Wo
       page.getByRole("link", { name: workbenchPageCopy.emptyStart })
     ).toBeVisible();
     await expectWorkbenchControlsAreInventoried(page, [
-      workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
     ]);
   }
