@@ -65,6 +65,7 @@ from atelier2.ports.provider_conversations import (
     ProviderConversationEnding,
     ProviderFilesystemAnswer,
     ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
     ProviderFilesystemReply,
     ProviderFilesystemRequest,
     ProviderFilesystemRequestId,
@@ -752,9 +753,20 @@ def test_a_file_the_agent_wants_written_carries_its_content_to_that_side() -> No
     [
         (
             ProviderFilesystemReply(
-                ProviderFilesystemRequestId(1), ProviderFilesystemAnswer.REFUSED
+                ProviderFilesystemRequestId(1),
+                ProviderFilesystemAnswer.REFUSED,
+                refusal=ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE,
             ),
-            "this client refused the file",
+            "this client refused the file: path-left-the-lease",
+        ),
+        (
+            ProviderFilesystemReply(
+                ProviderFilesystemRequestId(1),
+                ProviderFilesystemAnswer.REFUSED,
+                refusal=ProviderFilesystemRefusal.WORKSPACE_IO_FAILED,
+                detail="ENOSPC",
+            ),
+            "this client refused the file: workspace-io-failed (ENOSPC)",
         ),
         (
             ProviderFilesystemReply(

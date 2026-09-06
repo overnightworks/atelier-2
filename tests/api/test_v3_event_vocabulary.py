@@ -19,6 +19,7 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResourceV3,
     RunEventResourceV3,
 )
+from atelier2.api.wire.resources import AgentNodeRefusalName
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode, AgentAttemptId
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -100,7 +101,9 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
     )
 
 
-def unavailable_v3_projection() -> PersistedRunEvent:
+def refused_v3_projection(
+    refusal: AgentExecutionRefusal = AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE,
+) -> PersistedRunEvent:
     event = RunEvent(
         RUN_ID,
         REVISION_HASH,
@@ -108,7 +111,7 @@ def unavailable_v3_projection() -> PersistedRunEvent:
         NODE_ID,
         NodeExecutionId.for_node(RUN_ID, REVISION_HASH, NODE_ID),
         RunEventKind.AGENT_FAILED,
-        AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
+        refusal.value.encode("ascii"),
     )
     return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
 
@@ -161,7 +164,7 @@ def test_format_3_agent_failed_names_its_failure_code_and_its_attempt(
 
 @pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
 def test_format_3_pre_attempt_executor_refusal_has_no_attempt_failure_shape() -> None:
-    dumped = run_event_resource(unavailable_v3_projection(), SERVED_RAIL).model_dump(
+    dumped = run_event_resource(refused_v3_projection(), SERVED_RAIL).model_dump(
         mode="json"
     )
 
@@ -170,6 +173,25 @@ def test_format_3_pre_attempt_executor_refusal_has_no_attempt_failure_shape() ->
     assert "failure_code" not in dumped
     assert "attempt_id" not in dumped
     assert "attempt_ordinal" not in dumped
+
+
+def test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift() -> None:
+    """A node that never started says why in the vocabulary the API serves.
+
+    The wire spells this set out as a Literal, so a refusal the runtime can
+    write and the wire cannot name would answer a reader with a 500 instead of
+    the reason its run ended on.
+    """
+
+    served = {
+        run_event_resource(refused_v3_projection(refusal), SERVED_RAIL).model_dump(
+            mode="json"
+        )["reason"]
+        for refusal in AgentExecutionRefusal
+    }
+
+    assert served == {refusal.value for refusal in AgentExecutionRefusal}
+    assert served == set(get_args(AgentNodeRefusalName))
 
 
 @pytest.mark.proves("an-agent-failed-event-carries-the-stored-receipt-reason")

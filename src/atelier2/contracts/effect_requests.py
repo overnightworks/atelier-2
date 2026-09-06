@@ -11,11 +11,16 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from atelier2.contracts.effect_markers import commit_message
+from atelier2.contracts.hashing import frame
+from atelier2.contracts.runs import RunId
 
 if TYPE_CHECKING:
     from atelier2.contracts.queue_projection import TrackerItemReference
 
 _SAFE_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+# agent-claim 0.12.0 accepts exactly this claim id shape (its
+# `protocol.CLAIM_ID_PATTERN`), so a request it would reject never reaches it.
+_CLAIM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _UNSAFE_BRANCH_FRAGMENTS = ("..", "@{", "//")
 
 
@@ -156,6 +161,174 @@ class OpenPullRequest:
         if not isinstance(reference, str):
             raise TypeError("open-pr work_item_reference is text")
         return cls(body, HeadBranch(branch), _tracker_item_reference(reference))
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimWorkItem:
+    """The lane claim one run holds on its work item before it edits anything.
+
+    The claim id is minted by `work_item_claim_id` from the run and the item,
+    so a retry asks the ledger about the same claim instead of taking a second
+    one, and the ledger answers under an identity this runtime can read back.
+    The agent identity is not restated here: the intent's own binding names the
+    run, and the claim boundary renders `atelier2 run <run-id>` from it.
+    """
+
+    item: int
+    claim_id: str
+    head_branch: HeadBranch
+    scope: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.item <= 0:
+            raise ValueError("a claim names its work item by positive number")
+        if _CLAIM_ID.fullmatch(self.claim_id) is None:
+            raise ValueError(f"unsafe claim id {self.claim_id!r}")
+        if not self.scope or tuple(sorted(set(self.scope))) != self.scope:
+            raise ValueError("a claim scope is nonempty, sorted and duplicate-free")
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json(
+            {
+                "claim_id": self.claim_id,
+                "head_branch": self.head_branch.value,
+                "item": self.item,
+                "scope": list(self.scope),
+            }
+        )
+
+    @classmethod
+    def from_canonical_bytes(cls, request: bytes) -> Self:
+        value = _object(request, "claim-work-item request")
+        _fields(
+            value,
+            frozenset(("claim_id", "head_branch", "item", "scope")),
+            "claim-work-item request",
+        )
+        item = value["item"]
+        scope = value["scope"]
+        if type(item) is not int or not isinstance(scope, list):
+            raise TypeError("a claim request carries an item number and a scope list")
+        if any(not isinstance(path, str) for path in scope):
+            raise TypeError("a claim request scope is text")
+        if not isinstance(value["claim_id"], str):
+            raise TypeError("a claim request claim id is text")
+        return cls(
+            item,
+            value["claim_id"],
+            HeadBranch(value["head_branch"]),
+            tuple(scope),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedLanePath:
+    """One foreign live claim whose scope touches the claim just acquired."""
+
+    claim_id: str
+    agent: str
+    scope: tuple[str, ...]
+    item: int | None = None
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "agent": self.agent,
+            "claim_id": self.claim_id,
+            "item": self.item,
+            "scope": list(self.scope),
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> Self:
+        if not isinstance(value, dict):
+            raise TypeError("a touched lane is an object")
+        _fields(
+            value, frozenset(("agent", "claim_id", "item", "scope")), "touched lane"
+        )
+        item = value["item"]
+        scope = value["scope"]
+        if item is not None and type(item) is not int:
+            raise TypeError("a touched lane names its item by number or not at all")
+        if not isinstance(scope, list) or any(
+            not isinstance(path, str) for path in scope
+        ):
+            raise TypeError("a touched lane scope is text")
+        if any(not isinstance(value[name], str) for name in ("agent", "claim_id")):
+            raise TypeError("a touched lane agent and claim id are text")
+        return cls(value["claim_id"], value["agent"], tuple(scope), item)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimWorkItemReceipt:
+    """What the claim ledger confirmed for one exact claim request.
+
+    `claimed_scope` is the ledger's own answer about this run's paths, and
+    `touches` are the foreign lanes it found standing on them -- never this
+    run's own scope, which is why the two are separate fields rather than one
+    list a reader would have to take apart.
+    """
+
+    item: int
+    claim_id: str
+    agent: str
+    branch: HeadBranch
+    claimed_scope: tuple[str, ...]
+    touches: tuple[ClaimedLanePath, ...] = ()
+
+    def result_bytes(self) -> bytes:
+        return _canonical_json(
+            {
+                "agent": self.agent,
+                "branch": self.branch.value,
+                "claim_id": self.claim_id,
+                "claimed_scope": list(self.claimed_scope),
+                "item": self.item,
+                "touches": [touch.as_json() for touch in self.touches],
+            }
+        )
+
+    @classmethod
+    def from_result_bytes(cls, result: bytes) -> Self:
+        value = _object(result, "claim-work-item receipt")
+        _fields(
+            value,
+            frozenset(
+                ("agent", "branch", "claim_id", "claimed_scope", "item", "touches")
+            ),
+            "claim-work-item receipt",
+        )
+        item = value["item"]
+        claimed_scope = value["claimed_scope"]
+        touches = value["touches"]
+        if type(item) is not int or not isinstance(claimed_scope, list):
+            raise TypeError("a claim receipt carries an item number and its scope")
+        if any(not isinstance(path, str) for path in claimed_scope):
+            raise TypeError("a claim receipt scope is text")
+        if not isinstance(touches, list):
+            raise TypeError("a claim receipt carries its touched lanes as a list")
+        if any(not isinstance(value[name], str) for name in ("agent", "claim_id")):
+            raise TypeError("a claim receipt agent and claim id are text")
+        return cls(
+            item,
+            value["claim_id"],
+            value["agent"],
+            HeadBranch(value["branch"]),
+            tuple(claimed_scope),
+            tuple(ClaimedLanePath.from_json(touch) for touch in touches),
+        )
+
+
+def work_item_claim_id(run_id: RunId, item: int) -> str:
+    """The one claim id this run takes on this item, however often it retries."""
+
+    digest = hashlib.sha256(
+        frame(
+            "work-item-claim-id/v1",
+            run_id.value.encode("utf-8"),
+            str(item).encode("ascii"),
+        )
+    ).hexdigest()
+    return f"atelier2-{digest}"
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.bounded_processes import bounded_process_streams
@@ -11,14 +12,18 @@ from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.runs import RunId
 from atelier2.ports.work_item_claims import (
     Abandoned,
+    ClaimAbsent,
+    ClaimReadback,
     ClaimReceipt,
     ClaimRefusal,
     ClaimRefusalReason,
     ClaimReleaseOutcome,
-    ClaimState,
     ClaimTouch,
     Merged,
 )
+
+AGENT_CLAIM_ADAPTER_REVISION = "agent-claim-cli/0.12.0"
+"""Which command contract this adapter speaks, as the revision an intent binds."""
 
 AGENT_CLAIM_TIMEOUT_SECONDS = 30.0
 MAXIMUM_AGENT_CLAIM_OUTPUT_BYTES = 65_536
@@ -75,6 +80,27 @@ _RELEASE_FIELDS = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _ClaimPeer:
+    """A claim the ledger names as overlapping another, without its scope."""
+
+    item: int | None
+    claim_id: str
+    agent: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StandingClaim:
+    """One live claim of the ledger, read back in full."""
+
+    item: int | None
+    claim_id: str
+    agent: str
+    branch: HeadBranch
+    scope: tuple[PurePosixPath, ...]
+    overlaps: tuple[_ClaimPeer, ...]
+
+
 class AgentClaimCli:
     """Runs the claim command in the checkout whose ledger it owns."""
 
@@ -82,15 +108,11 @@ class AgentClaimCli:
         self,
         executable: Path,
         working_directory: Path,
-        run_id: RunId,
-        branch: HeadBranch,
         *,
         timeout_seconds: float = AGENT_CLAIM_TIMEOUT_SECONDS,
     ) -> None:
         self._executable = executable
         self._working_directory = working_directory
-        self._run_id = run_id
-        self._branch = branch
         self._timeout_seconds = timeout_seconds
 
     def claim(
@@ -99,10 +121,9 @@ class AgentClaimCli:
         agent: RunId,
         branch: HeadBranch,
         scope: tuple[PurePosixPath, ...],
+        claim_id: str,
         out_of_order_reason: str | None,
     ) -> ClaimReceipt | ClaimRefusal:
-        if agent != self._run_id or branch != self._branch:
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
         arguments = [
             "claim",
             str(item),
@@ -112,6 +133,8 @@ class AgentClaimCli:
             _BUILDER_ROLE,
             "--branch",
             branch.value,
+            "--claim-id",
+            claim_id,
         ]
         for path in scope:
             arguments.extend(("--scope", path.as_posix()))
@@ -123,72 +146,66 @@ class AgentClaimCli:
         if _is_claim_refusal(payload):
             return ClaimRefusal(_claim_refusal_reason(payload))
         try:
-            _require_fields(payload, _CLAIM_FIELDS)
-            claimed_item = _integer(payload["issue"])
-            claim_id = _text(payload["claim_id"])
-            claimed_branch = HeadBranch(_text(payload["branch"]))
-            _text(payload["url"])
-            claimed_agent = _text(payload["agent"])
-            claimed_role = _text(payload["role"])
-            _text(payload["base"])
-            claimed_scope = _scope(payload["scope"])
-            _identity(payload["issue"], payload["lane"])
-            _resource(payload["resource"], payload["resource_value"])
-            _integer(payload["versioned_files"])
-            _integer(payload["versioned_files_total"])
-            _number(payload["share"])
-            for check in _list(payload["checks"]):
-                _check(check)
-            touches = tuple(_touch(value) for value in _list(payload["touches"]))
+            acquired = _acquired_claim(payload)
         except (TypeError, ValueError):
             return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
         if (
-            claimed_item != item
-            or claimed_branch != branch
-            or claimed_agent != _agent_name(agent)
-            or claimed_role != _BUILDER_ROLE
-            or claimed_scope != scope
+            acquired.item != item
+            or acquired.claim_id != claim_id
+            or acquired.branch != branch
+            or acquired.agent != _agent_name(agent)
         ):
             return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
-        return ClaimReceipt(claimed_item, claim_id, claimed_branch, touches)
+        return acquired
 
-    def status(self, branch: HeadBranch) -> ClaimState:
-        payload, _diagnostics = self._command("status", _JSON_FLAG)
+    def read_back(self, item: int, claim_id: str) -> ClaimReadback:
+        payload, diagnostics = self._command("status", _JSON_FLAG)
         if payload is None:
-            return ClaimState.UNKNOWN
+            return ClaimRefusal(_diagnostic_refusal(diagnostics))
         try:
             _require_fields(payload, _STATUS_FIELDS)
             _integer(payload["ledger"])
             if payload["issue"] is not None:
                 _integer(payload["issue"])
-            ClaimState(_text(payload["state"]))
-            claims = _list(payload["claims"])
+            _text(payload["state"])
+            claims = tuple(_status_claim(value) for value in _list(payload["claims"]))
             unreadable = _list(payload["unreadable"])
             for value in unreadable:
                 _unreadable(value)
-            matching_states = tuple(
-                state
-                for value in claims
-                if (state := _status_claim(value, branch)) is not None
-            )
         except (TypeError, ValueError):
-            return ClaimState.UNKNOWN
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
         if unreadable:
-            return ClaimState.LEDGER_UNREADABLE
-        if not matching_states:
-            return ClaimState.UNCLAIMED
-        if ClaimState.CONFLICT in matching_states:
-            return ClaimState.CONFLICT
-        return ClaimState.CLAIMED
+            return ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE)
+        held = tuple(claim for claim in claims if claim.claim_id == claim_id)
+        if not held:
+            return ClaimAbsent()
+        if len(held) != 1 or held[0].item != item:
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+        standing = held[0]
+        scopes = {claim.claim_id: claim for claim in claims}
+        return ClaimReceipt(
+            item,
+            standing.claim_id,
+            standing.agent,
+            standing.branch,
+            standing.scope,
+            tuple(
+                ClaimTouch(
+                    peer.item, peer.claim_id, peer.agent, scopes[peer.claim_id].scope
+                )
+                for peer in standing.overlaps
+                if peer.claim_id in scopes
+            ),
+        )
 
     def release(
-        self, item: int, claim_id: str, outcome: ClaimReleaseOutcome
+        self, item: int, agent: RunId, claim_id: str, outcome: ClaimReleaseOutcome
     ) -> ClaimRefusal | None:
         arguments = [
             "release",
             str(item),
             "--agent",
-            _agent_name(self._run_id),
+            _agent_name(agent),
             "--claim-id",
             claim_id,
         ]
@@ -207,15 +224,14 @@ class AgentClaimCli:
             ):
                 return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
             _identity(payload["issue"], payload["lane"])
-            released_branch = HeadBranch(_text(payload["branch"]))
+            HeadBranch(_text(payload["branch"]))
             released_agent = _text(payload["agent"])
             released_role = _text(payload["role"])
             released_reason = _text(payload["reason"])
         except (TypeError, ValueError):
             return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
         if (
-            released_branch != self._branch
-            or released_agent != _agent_name(self._run_id)
+            released_agent != _agent_name(agent)
             or released_role != _BUILDER_ROLE
             or released_reason != _release_reason(outcome)
         ):
@@ -242,6 +258,30 @@ class AgentClaimCli:
             return _object(json.loads(standard_output.decode("utf-8"))), diagnostics
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             return None, diagnostics
+
+
+def _acquired_claim(payload: dict[str, object]) -> ClaimReceipt:
+    """The claim `agent-claim claim --json` says it posted, read in full."""
+
+    _require_fields(payload, _CLAIM_FIELDS)
+    item = _integer(payload["issue"])
+    claim_id = _text(payload["claim_id"])
+    branch = HeadBranch(_text(payload["branch"]))
+    _text(payload["url"])
+    agent = _text(payload["agent"])
+    if _text(payload["role"]) != _BUILDER_ROLE:
+        raise ValueError("agent-claim posted a claim under another role")
+    _text(payload["base"])
+    scope = _scope(payload["scope"])
+    _identity(payload["issue"], payload["lane"])
+    _resource(payload["resource"], payload["resource_value"])
+    _integer(payload["versioned_files"])
+    _integer(payload["versioned_files_total"])
+    _number(payload["share"])
+    for check in _list(payload["checks"]):
+        _check(check)
+    touches = tuple(_touch(value) for value in _list(payload["touches"]))
+    return ClaimReceipt(item, claim_id, agent, branch, scope, touches)
 
 
 def _agent_name(agent: RunId) -> str:
@@ -366,34 +406,38 @@ def _claim_refusal_reason(value: dict[str, object]) -> ClaimRefusalReason:
     return ClaimRefusalReason.UNKNOWN
 
 
-def _status_claim(value: object, branch: HeadBranch) -> ClaimState | None:
+def _status_claim(value: object) -> _StandingClaim:
+    """One live ledger claim as `agent-claim status --json` states it."""
     claim = _object(value)
     fields = frozenset(claim)
     if fields not in (_STATUS_CLAIM_FIELDS, _STATUS_CLAIM_FIELDS | {"whole"}):
         raise ValueError("agent-claim returned fields outside its pinned contract")
-    _identity(claim["issue"], claim["lane"])
-    claimed_branch = _text(claim["branch"])
-    _text(claim["agent"])
+    item = _identity(claim["issue"], claim["lane"])
+    branch = HeadBranch(_text(claim["branch"]))
+    agent = _text(claim["agent"])
     _text(claim["role"])
     _text(claim["base"])
-    _text(claim["claim_id"])
-    _scope(claim["scope"])
+    claim_id = _text(claim["claim_id"])
+    scope = _scope(claim["scope"])
     _resource(claim["resource"], claim["resource_value"])
     if "whole" in claim:
         _text(claim["whole"])
+    overlaps: list[_ClaimPeer] = []
     for overlap in _list(claim["overlaps"]):
         overlap_fields = _object(overlap)
         _require_fields(overlap_fields, _OVERLAP_FIELDS)
-        _identity(overlap_fields["issue"], overlap_fields["lane"])
-        _text(overlap_fields["claim_id"])
-        _text(overlap_fields["agent"])
+        overlaps.append(
+            _ClaimPeer(
+                _identity(overlap_fields["issue"], overlap_fields["lane"]),
+                _text(overlap_fields["claim_id"]),
+                _text(overlap_fields["agent"]),
+            )
+        )
     _text(claim["age"])
     if type(claim["old"]) is not bool:
         raise TypeError("agent-claim returned an invalid old marker")
-    state = ClaimState(_text(claim["state"]))
-    if claimed_branch != branch.value:
-        return None
-    return state
+    _text(claim["state"])
+    return _StandingClaim(item, claim_id, agent, branch, scope, tuple(overlaps))
 
 
 def _check(value: object) -> tuple[str, str]:

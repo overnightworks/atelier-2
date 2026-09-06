@@ -1270,6 +1270,19 @@ class NodeDetailResource(ApiModel):
     )
 
 
+# The refusal vocabulary the wire spells is `AgentExecutionRefusal`'s closed
+# set (its owner in `contracts/executions.py`), written out here for the same
+# reason as the cancellation names below, and pinned to it by
+# `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift`.
+AgentNodeRefusalName = Literal[
+    "agent-executor-binding-unavailable",
+    "work-item-claim-unconfigured",
+    "work-item-names-no-scope",
+    "work-item-claim-refused-by-priority",
+    "work-item-claim-ledger-unreadable",
+    "work-item-claim-refused",
+    "work-item-claim-touches-another-lane",
+]
 # The reason vocabulary the wire spells is `RunCancellationRefusal`'s closed set
 # (its owner in `contracts/run_projections.py`), written out here because the
 # wire schema may name no contract enum inline; `api/projection/runs.py` casts

@@ -84,6 +84,7 @@ from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.projects import run_git
 from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 WORKFLOW_PATH = Path("workflows/push-before-open-pr.yaml")
 BUDGET_PATH = Path("workflows/budgets/push-implement.json")
@@ -266,6 +267,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
+            agent_claim_executable=fake_agent_claim_executable(tmp_path),
         ),
         registry,
         (executor,),
@@ -276,7 +278,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement the repository workflow proof.",
+            b"Implement the repository workflow proof.\n\n## Dateien\n`one.txt`\n",
             WorkItemChangeMarker("issue-883-v1"),
             RecordedAt("2026-08-29T12:00:00Z"),
         )
@@ -327,14 +329,19 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
                     effect_receipts.c.result,
                 ).order_by(sa.literal_column("rowid"))
             ).all()
+        # The claim stands first: the run held its item's lane before the
+        # builder ran, and its receipt is in the same ledger as the push.
         assert [intent.binding.operation_name for intent in final_intents] == [
+            AdapterOperationName.CLAIM_WORK_ITEM,
             AdapterOperationName.PUSH_ATELIER_COMMIT,
             AdapterOperationName.OPEN_PR,
         ]
         assert [receipt.operation_name for receipt in receipts] == [
+            AdapterOperationName.CLAIM_WORK_ITEM.value,
             AdapterOperationName.PUSH_ATELIER_COMMIT.value,
             AdapterOperationName.OPEN_PR.value,
         ]
+        receipts = receipts[1:]
 
         push_receipt = PushAtelierCommitReceipt.from_result_bytes(
             bytes(receipts[0].result)
@@ -350,7 +357,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         assert push_receipt.committer == committer
 
         open_request = OpenPullRequest.from_canonical_bytes(
-            final_intents[1].request.payload
+            final_intents[2].request.payload
         )
         assert open_request.head_branch.value == push_receipt.branch
         assert github.recorded_pull_requests()[0].branch == push_receipt.branch

@@ -32,6 +32,7 @@ from atelier2.api.wire.events import (
 )
 from atelier2.api.wire.resources import (
     AgentAttemptFailureCodeName,
+    AgentNodeRefusalName,
     CancellationDispositionName,
     NodeRailResource,
 )
@@ -120,15 +121,13 @@ def run_event_resource(
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
-        if (
-            event.payload
-            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
-        ):
+        refusal = AgentExecutionRefusal.named_by(event.payload)
+        if refusal is not None:
             if event.attempt_binding is not None:
-                raise ValueError("unavailable executor event has an attempt binding")
+                raise ValueError("a pre-attempt refusal event has an attempt binding")
             return AgentExecutorBindingUnavailableEventResourceV3(
                 event=event.event_kind.value,
-                reason=AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value,
+                reason=cast(AgentNodeRefusalName, refusal.value),
                 **common,
             )
         failure_code = event.payload.decode("ascii")

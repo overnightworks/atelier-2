@@ -70,8 +70,22 @@ from atelier2.ports.project_verification import (
     ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
 )
+from atelier2.ports.provider_conversations import (
+    ProviderFilesystemAccess,
+    ProviderFilesystemAuthority,
+)
 
 _LOG = logging.getLogger("atelier2")
+
+type WorkspaceFileAccessOpener = Callable[
+    [AgentAttemptWorkspaceLease, int, ProviderFilesystemAuthority],
+    ProviderFilesystemAccess,
+]
+"""The deployment's fenced file adapter, anchored to one lease, one read ceiling
+and one authority. Handed in because this layer must not reach the disk, and
+bound over whatever access the executor opened its conversation with: an
+executor reaching files on its own would be granting itself the workspace. The
+ceiling is the driver's reply bound, since nothing wider could be answered."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +100,11 @@ class _DecisionsKeptBeforeTheyAnswer:
     attempt is left to the convergence that owns every attempt whose driver is
     gone. What must never happen is the opposite order: a provider acting on a
     permission whose only record died with the process that granted it.
+
+    One object serves both seams that ask: the session relaying a permission
+    question, and the file access asking from inside its fence. `refuse` keeps
+    a question the policy is never put -- a path the fence found not to be the
+    workspace -- as a refusal under the same revision, never as a grant.
     """
 
     attempt_id: AgentAttemptId
@@ -94,7 +113,14 @@ class _DecisionsKeptBeforeTheyAnswer:
     clock: Callable[[], RecordedAt]
 
     def decide(self, request: PermissionRequest) -> PermissionDecision:
-        decision = self.policy.decide(request)
+        return self._kept(request, self.policy.decide(request))
+
+    def refuse(self, request: PermissionRequest) -> PermissionDecision:
+        return self._kept(request, self.policy.refuse(request))
+
+    def _kept(
+        self, request: PermissionRequest, decision: PermissionDecision
+    ) -> PermissionDecision:
         self.store.record_permission_decision(
             PermissionReceipt.of(self.attempt_id, request, decision, self.clock())
         )
@@ -112,6 +138,7 @@ def execute_agent_attempt(
     clock: Callable[[], RecordedAt] = recorded_instant,
     *,
     permissions: PermissionPolicyRevision,
+    workspace_files: WorkspaceFileAccessOpener,
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
@@ -204,21 +231,19 @@ def execute_agent_attempt(
         lease = workspaces.acquire(execution.attempt_id)
         if project is not None:
             project.source.materialize(project.pin, lease)
-        invocation = AgentProcessInvocation(
-            command,
-            lease,
-            executor.open_conversation(execution.request, command, lease),
+        authority = _DecisionsKeptBeforeTheyAnswer(
+            execution.attempt_id, PolicyPermissionDecider(permissions), store, clock
         )
-        completion = session.launch_and_wait(
-            execution,
-            invocation,
-            _DecisionsKeptBeforeTheyAnswer(
-                execution.attempt_id,
-                PolicyPermissionDecider(permissions),
-                store,
-                clock,
-            ),
-        )
+        conversation = executor.open_conversation(execution.request, command, lease)
+        if conversation is not None:
+            conversation = replace(
+                conversation,
+                files=workspace_files(
+                    lease, conversation.driver.bounds.maximum_reply_bytes, authority
+                ),
+            )
+        invocation = AgentProcessInvocation(command, lease, conversation)
+        completion = session.launch_and_wait(execution, invocation, authority)
         result = _with_recorded_transcript(
             executor.decode_process_completion(invocation, completion), clock
         )

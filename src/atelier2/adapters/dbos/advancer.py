@@ -454,7 +454,7 @@ def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, 
                 isinstance(current_node, AgentNodeV3)
                 and agent_node_redeems_platform_effect(connection, current_node)
                 and RunState(str(record["state"])) is RunState.COMPLETED
-                and not _effect_receipt_exists(
+                and not effect_receipt_exists(
                     connection,
                     logical_effect_key_for_node(
                         run_id,
@@ -478,7 +478,7 @@ def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, 
                 if (
                     not isinstance(node, AgentNodeV3)
                     or not agent_node_redeems_platform_effect(connection, node)
-                    or _effect_receipt_exists(
+                    or effect_receipt_exists(
                         connection,
                         logical_effect_key_for_node(
                             run_id, revision_hash, node_id, round_ordinal
@@ -494,7 +494,7 @@ def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, 
         return tuple(sorted(blocking, key=lambda run: run.value))
 
 
-def _effect_receipt_exists(connection: Any, logical_key: str) -> bool:
+def effect_receipt_exists(connection: Any, logical_key: str) -> bool:
     return (
         connection.scalar(
             sa.select(effect_receipts.c.logical_key).where(

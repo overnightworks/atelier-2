@@ -93,6 +93,7 @@ from tests.scenarios.agents import (
     agent_execution_request_v2,
     leased_directory_identity,
     prepared_agent_attempt,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.credentials import assembled
 from tests.scenarios.projects import (
@@ -538,6 +539,7 @@ class _RefusedAttempt:
             self.workspaces,  # type: ignore[arg-type]
             project,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
     @property
@@ -838,6 +840,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         clock=lambda: TRANSCRIPT_RECORDED_AT,
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -916,6 +919,7 @@ def _drive_through_a_real_failing_verification(
         ),
         artifacts,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
 
@@ -1100,6 +1104,7 @@ def test_a_zero_exit_verification_never_publishes_an_artifact(
         ),
         publisher,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert publisher.published == []
@@ -1192,6 +1197,7 @@ def test_a_provider_that_left_the_pinned_tree_alone_ends_before_any_check_runs(
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -1274,6 +1280,7 @@ def test_a_credential_shape_in_the_rejected_patch_is_redacted_before_it_is_kept(
         ),
         publisher,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     evidence = store.verification_failure_evidence
@@ -1350,6 +1357,7 @@ def _drive_through_a_real_passing_verification(
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
 

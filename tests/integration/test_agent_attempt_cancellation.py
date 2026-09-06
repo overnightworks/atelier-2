@@ -60,7 +60,11 @@ from tests.integration.test_agent_attempts import (
 )
 from tests.integration.test_v3_attempt_arm import runtime as _ordered_v3_runtime
 from tests.integration.test_v3_attempt_arm import started_string_ordered_v3_attempt
-from tests.scenarios.agents import agent_attempt_execution, runtime_workspace_owner
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    runtime_workspace_owner,
+    workspace_files_nobody_opens,
+)
 from tests.scenarios.api import durable_api_client, durable_queries
 
 ordered_v3_runtime = _ordered_v3_runtime
@@ -350,6 +354,7 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
                     runtime.agent_process_supervisor,
                     runtime_workspace_owner(runtime),
                     permissions=GRANTS_NOTHING,
+                    workspace_files=workspace_files_nobody_opens,
                 )
             except RuntimeError as error:
                 failures.append(error)

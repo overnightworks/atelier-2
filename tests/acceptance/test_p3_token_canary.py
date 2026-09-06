@@ -74,6 +74,7 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 _STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(logging.makeLogRecord({}).__dict__)
 
@@ -444,6 +445,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                 agent_scratch_root=agent_scratch_root(tmp_path),
                 project_id=PROJECT,
                 bootstrap_project_root=project,
+                agent_claim_executable=fake_agent_claim_executable(tmp_path),
             ),
             registry,
             (executor,),
@@ -459,7 +461,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                         ObservedWorkItemRevision(
                             ITEM,
                             WorkItemKind.ISSUE,
-                            b"Implement P3.",
+                            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
                             WorkItemChangeMarker("issue-642-canary"),
                             RecordedAt("2026-08-27T12:00:00Z"),
                         )

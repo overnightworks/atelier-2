@@ -1014,7 +1014,15 @@ const runEventSchema = z
       .object({
         ...v3EventBase,
         event: z.literal("AGENT_FAILED"),
-        reason: z.literal("agent-executor-binding-unavailable"),
+        reason: z.enum([
+          "agent-executor-binding-unavailable",
+          "work-item-claim-unconfigured",
+          "work-item-names-no-scope",
+          "work-item-claim-refused-by-priority",
+          "work-item-claim-ledger-unreadable",
+          "work-item-claim-refused",
+          "work-item-claim-touches-another-lane",
+        ]),
       })
       .strict(),
     z
