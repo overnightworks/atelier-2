@@ -42,6 +42,7 @@ const servedDocument = JSON.parse(
           type?: { const?: string };
           title?: { const?: string };
           status?: { const?: number };
+          state?: { enum?: string[] };
         };
       }
     >;
@@ -2087,6 +2088,13 @@ describe("the node a click asks the server about", () => {
 });
 
 describe("a run's node rail", () => {
+  it("proves(the-browser-and-the-served-contract-know-the-same-node-states): accepts exactly the node states the document declares", () => {
+    const servedStates = servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum;
+
+    expect(nodeRailEntrySchema.shape.state.options).toEqual(servedStates);
+    expect(nodeDetailSchema.shape.state.options).toEqual(servedStates);
+  });
+
   it("refuses partial reuse evidence and reuse on a node that did not succeed", () => {
     const completeEvidence = {
       reused_from_run_reference: "run1.cnVu",
