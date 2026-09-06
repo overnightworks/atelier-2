@@ -1491,7 +1491,6 @@ def main() -> None:
         frontend_dist: Path | None = None,
         served_project_id: ProjectId | None = None,
         lifespan: Lifespan[FastAPI] | None = None,
-        request_queue_sweep: Callable[[], None] | None = None,
     ) -> FastAPI:
         seeded = replace(
             ports,
@@ -1509,7 +1508,6 @@ def main() -> None:
             frontend_dist=frontend_dist,
             served_project_id=served_project_id,
             lifespan=lifespan,
-            request_queue_sweep=request_queue_sweep,
         )
         observed = seeded.queue_projection.reconcile_open_items(
             _E2E_WORK_ITEM.project,

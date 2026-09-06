@@ -2277,10 +2277,11 @@ def _queue_api(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=api_ports(queue_projection=queue),
+            ports=api_ports(
+                queue_projection=queue, request_queue_sweep=request_queue_sweep
+            ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
-            request_queue_sweep=request_queue_sweep,
         )
     )
 

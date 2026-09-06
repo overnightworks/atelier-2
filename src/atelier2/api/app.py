@@ -501,7 +501,6 @@ def create_app(
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
-    request_queue_sweep: Callable[[], None] | None = None,
     source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
     connection_clock: Callable[[], RecordedAt] = recorded_instant,
     boot_clock: Callable[[], RecordedAt] = recorded_instant,
@@ -561,7 +560,7 @@ def create_app(
             ),
             workflow_projection_limit=workflow_projection_limit,
             event_poll_backoff=event_poll_backoff,
-            request_queue_sweep=request_queue_sweep,
+            request_queue_sweep=ports.request_queue_sweep,
         ),
     )
 

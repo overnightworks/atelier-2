@@ -1254,7 +1254,6 @@ def compose_application(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
             lifespan=lifespan,
-            request_queue_sweep=runtime.request_queue_sweep,
             ports=ApiPorts(
                 workflow_revision_publisher=DbosWorkflowRevisionPublisher(
                     runtime.engine
@@ -1301,6 +1300,7 @@ def compose_application(
                     / MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY
                 ),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
+                request_queue_sweep=runtime.request_queue_sweep,
                 tracker_item_source=tracker_item_source,
                 model_registry_inspector=HostProviderModelInspector(
                     runtime.agent_executor_registry,
