@@ -775,6 +775,7 @@ jobs:
           esac
           python3 - "${component_key}" "${scope_query}" "${gate}" <<'PYTHON'
           import base64
+          import http.client
           import json
           import os
           import sys
@@ -798,7 +799,7 @@ jobs:
                   return 500 <= error.code < 600
               if isinstance(error, urllib.error.URLError):
                   return isinstance(error.reason, OSError)
-              return isinstance(error, TimeoutError)
+              return isinstance(error, (http.client.RemoteDisconnected, ConnectionError, TimeoutError))
 
           def fetch(url: str, token: str | None) -> dict:
               request = urllib.request.Request(url)
@@ -810,7 +811,7 @@ jobs:
                   try:
                       with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                           return json.load(response)
-                  except (urllib.error.URLError, TimeoutError) as error:
+                  except (urllib.error.URLError, OSError, http.client.RemoteDisconnected, TimeoutError) as error:
                       if not _is_transport_failure(error):
                           raise
                       last_error = error
