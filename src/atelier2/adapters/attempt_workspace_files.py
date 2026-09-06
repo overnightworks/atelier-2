@@ -33,12 +33,13 @@ way to obtain data access to an already-resolved `O_PATH` descriptor's own
 inode without any further name lookup.
 
 A request is refused, never raised past `answer`: every reachable failure --
-an escape, a symlink, a mount boundary, a hard link, a non-regular file, a
-lease or a resolved file changing identity underneath this call, a file wider
-than the injected ceiling, a write naming a protected path, a write whose
-parent directory does not exist, a write onto a name that is itself a
-symlink, or an unclassified I/O fault -- is a typed member of
-`AttemptWorkspaceFileRefusal`, carried on the outcome `describe` returns.
+an escape, a path no filesystem encoding could ever hold, a symlink, a mount
+boundary, a hard link, a non-regular file, a lease or a resolved file
+changing identity underneath this call, a file wider than the injected
+ceiling, a write naming a protected path, a write whose parent directory does
+not exist, a write onto a name that is itself a symlink, or an unclassified
+I/O fault -- is a typed member of `AttemptWorkspaceFileRefusal`, carried on
+the outcome `describe` returns.
 
 A write is staged, never opened onto its final name directly. Its content is
 checked against the same ceiling before anything is created; its parent
@@ -48,10 +49,11 @@ freshly created, exclusively named sibling in that same directory; and only a
 successful `fsync` followed by a directory-entry `replace` ever makes them
 visible under the requested name. A name that already stands there as a
 symlink is refused before any sibling is even created, and a name naming a
-protected entry -- an SSH identity directory, a shell startup file, or a Git
-hook -- is refused lexically, before any resolution is attempted at all: a
-provider that could plant its own key, startup script, or hook would run code
-the next login, shell, or Git operation trusted implicitly.
+protected entry -- an SSH identity directory, a shell startup file, or any
+Git-managed name -- is refused lexically, before any resolution is attempted
+at all: a provider that could plant its own key, startup script, or redirect
+Git's own trust would run code the next login, shell, or Git operation
+trusted implicitly.
 """
 
 from __future__ import annotations
@@ -171,6 +173,7 @@ class AttemptWorkspaceFileRefusal(StrEnum):
     """Why one filesystem request inside an attempt's lease was not granted."""
 
     PATH_LEFT_THE_LEASE = "path-left-the-lease"
+    PATH_NOT_ENCODABLE = "path-not-encodable"
     PATH_NAMED_A_SYMLINK = "path-named-a-symlink"
     PATH_CROSSED_A_MOUNT = "path-crossed-a-mount"
     FILE_NOT_FOUND = "file-not-found"
@@ -218,9 +221,15 @@ _PARENT_OPENAT2_ERRNO_REFUSALS: dict[int, AttemptWorkspaceFileRefusal] = {
 
 # Product-owned names, not the CLI-specific globs a provider's own tooling
 # might use: a segment matching one of these, anywhere in a write's relative
-# path, is refused before any resolution is even attempted.
-_PROTECTED_SINGLE_SEGMENTS = frozenset(
-    {
+# path, is refused before any resolution is even attempted. Every `.git`
+# segment is refused wholesale rather than only `.git/hooks`: a gitdir
+# redirection file or a rewritten `.git/config` can run a command just as
+# reliably as a hook can. Compared casefolded, since a case-insensitive mount
+# (FAT/exFAT, or a filesystem with case-insensitive lookup enabled) would
+# otherwise let `.SSH` reach the very directory `.ssh` names.
+_PROTECTED_SEGMENTS_CASEFOLDED = frozenset(
+    name.casefold()
+    for name in (
         ".ssh",
         ".bashrc",
         ".profile",
@@ -229,14 +238,18 @@ _PROTECTED_SINGLE_SEGMENTS = frozenset(
         ".grok",
         ".claude",
         ".cursor",
-    }
+        ".git",
+    )
 )
-_PROTECTED_PARENT_CHILD_SEGMENTS = (".git", "hooks")
 
 # Matches `host.terminal_seat`'s staged-replace pattern: an exclusively named
 # sibling nobody else could be racing for, private-mode because a provider's
-# own file is nobody else's to read.
+# own file is nobody else's to read. A bounded number of fresh names is tried
+# before giving up: `O_EXCL` already refuses a genuine collision, and the
+# random suffix makes one vanishingly unlikely, but a name this call never
+# created must never be the one a caller cleans up.
 _STAGED_WRITE_NAME_BYTES = 8
+_STAGED_WRITE_NAME_ATTEMPTS = 8
 _STAGED_WRITE_MODE = 0o600
 _STAGED_WRITE_FLAGS = (
     os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_WRONLY
@@ -247,17 +260,29 @@ def _names_a_protected_path(parts: tuple[str, ...]) -> bool:
     """Whether any segment of a write's relative path names a protected entry.
 
     A provider that could plant an SSH key, rewrite a shell startup file, or
-    add a Git hook would run its own code the next login, shell, or Git
+    redirect Git's own trust -- a hook, its config, or a gitdir pointer --
+    would run its own code, or somebody else's, the next login, shell, or Git
     operation trusts implicitly.
     """
 
-    if any(part in _PROTECTED_SINGLE_SEGMENTS for part in parts):
-        return True
-    parent, child = _PROTECTED_PARENT_CHILD_SEGMENTS
-    return any(
-        parts[index] == parent and parts[index + 1] == child
-        for index in range(len(parts) - 1)
-    )
+    return any(part.casefold() in _PROTECTED_SEGMENTS_CASEFOLDED for part in parts)
+
+
+def _has_unencodable_component(parts: tuple[str, ...]) -> bool:
+    """Whether any part cannot round-trip through the filesystem encoding.
+
+    `openat2`'s own `os.fsencode` call would otherwise raise
+    `UnicodeEncodeError` for a lone surrogate no real path can ever contain --
+    an exception past the `OSError` boundary everything else here is refused
+    through.
+    """
+
+    for part in parts:
+        try:
+            os.fsencode(part)
+        except UnicodeEncodeError:
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +356,10 @@ class AttemptWorkspaceFileAccess:
             return _refused(
                 request.request_id, AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
             )
+        if _has_unencodable_component(parts):
+            return _refused(
+                request.request_id, AttemptWorkspaceFileRefusal.PATH_NOT_ENCODABLE
+            )
         if request.effect is ProviderFilesystemEffect.WRITE:
             if _names_a_protected_path(parts):
                 return _refused(
@@ -355,11 +384,7 @@ class AttemptWorkspaceFileAccess:
                 request.request_id, AttemptWorkspaceFileRefusal.LEASED_DIRECTORY_CHANGED
             )
         except OSError as error:
-            return _refused(
-                request.request_id,
-                AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED,
-                _errno_name(error),
-            )
+            return _workspace_io_failure(request.request_id, error)
 
     def _read_within(
         self,
@@ -448,14 +473,17 @@ class AttemptWorkspaceFileAccess:
         final_name: str,
         content: bytes,
     ) -> AttemptWorkspaceFileOutcome:
-        """Write `content` beside `final_name` and move it on, or leave nothing.
+        """Write `content` beside `final_name` and move it on, or leave nothing durable.
 
-        The name's own identity is checked with `lstat` through the same
-        `parent_fd`, never by opening it: a symlink standing there is refused
-        before a single byte is staged. Everything after that check works on
-        a freshly created, exclusively named sibling -- a reader of
-        `final_name` never observes a partial write, and a failure after
-        staging unlinks the sibling and leaves `final_name` exactly as it was.
+        `os.replace` is a `rename(2)`, which never follows a symlink at its
+        destination -- it replaces the directory entry itself -- so even a
+        swap landed between the `lstat` check below and this call still
+        lands on the name, never on what it used to point at. A crash
+        between creating the staged sibling and replacing `final_name` with
+        it is the one failure this call cannot observe or clean up after;
+        the sibling it leaves behind is removed not by a later write but by
+        `LocalAgentAttemptWorkspaceOwner.release` (`adapters.agent_workspaces`),
+        which deletes an attempt's entire workspace tree once its lease ends.
         """
 
         try:
@@ -468,11 +496,13 @@ class AttemptWorkspaceFileAccess:
                     request_id, AttemptWorkspaceFileRefusal.TARGET_IS_SYMLINK
                 )
 
-        staged_name = f"{final_name}.{secrets.token_hex(_STAGED_WRITE_NAME_BYTES)}"
         try:
-            descriptor = os.open(
-                staged_name, _STAGED_WRITE_FLAGS, _STAGED_WRITE_MODE, dir_fd=parent_fd
-            )
+            staged_name, descriptor = _create_staged_sibling(parent_fd, final_name)
+        except OSError as error:
+            return _workspace_io_failure(request_id, error)
+
+        staged_exists = True
+        try:
             try:
                 _write_all(descriptor, content)
                 os.fsync(descriptor)
@@ -481,17 +511,40 @@ class AttemptWorkspaceFileAccess:
             os.replace(
                 staged_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
             )
+            staged_exists = False
         except OSError as error:
-            with suppress(FileNotFoundError):
-                os.unlink(staged_name, dir_fd=parent_fd)
-            return _refused(
-                request_id,
-                AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED,
-                _errno_name(error),
-            )
+            return _workspace_io_failure(request_id, error)
+        finally:
+            if staged_exists:
+                with suppress(FileNotFoundError):
+                    os.unlink(staged_name, dir_fd=parent_fd)
         return AttemptWorkspaceFileOutcome(
             ProviderFilesystemReply(request_id, ProviderFilesystemAnswer.ANSWERED)
         )
+
+
+def _create_staged_sibling(parent_fd: int, final_name: str) -> tuple[str, int]:
+    """A freshly created, exclusively named sibling of `final_name`.
+
+    Only a name this attempt actually returns as created is ever the caller's
+    to clean up: a collision on one random name (`OSError` from `O_EXCL`)
+    tries a fresh one instead of reporting the name that lost the race as
+    though this call had made it.
+    """
+
+    attempts = 0
+    while True:
+        attempts += 1
+        staged_name = f"{final_name}.{secrets.token_hex(_STAGED_WRITE_NAME_BYTES)}"
+        try:
+            descriptor = os.open(
+                staged_name, _STAGED_WRITE_FLAGS, _STAGED_WRITE_MODE, dir_fd=parent_fd
+            )
+        except FileExistsError:
+            if attempts >= _STAGED_WRITE_NAME_ATTEMPTS:
+                raise
+            continue
+        return staged_name, descriptor
 
 
 def _write_all(descriptor: int, content: bytes) -> None:
@@ -576,4 +629,12 @@ def _refused(
         ProviderFilesystemReply(request_id, ProviderFilesystemAnswer.REFUSED),
         refusal,
         detail,
+    )
+
+
+def _workspace_io_failure(
+    request_id: ProviderFilesystemRequestId, error: OSError
+) -> AttemptWorkspaceFileOutcome:
+    return _refused(
+        request_id, AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED, _errno_name(error)
     )
