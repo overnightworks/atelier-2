@@ -38,12 +38,9 @@ def _canonical_schema_bytes(schema: dict[str, object]) -> bytes:
     return json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
 
 
-# `conductorConversationShape` classifies the wait's answer schema as
-# "string" only for exactly this shape.
 CONDUCTOR_MESSAGE_SCHEMA = _canonical_schema_bytes({"type": "string", "minLength": 1})
 
-# What `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`) answers with, and what
-# `readableWaitAnswer` reads `answer` back out of.
+# The declared shape `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`) answers with.
 CONDUCTOR_REPORT_SCHEMA = _canonical_schema_bytes(
     {
         "type": "object",

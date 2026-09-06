@@ -1170,14 +1170,16 @@ class BrowserProofHarness:
     def seed_conductor(self) -> bytes:
         """Publish the whole conductor catalog through the production doors.
 
-        Everything the workbench needs to see a connected conductor: the
-        message and report schemas, the production conductor document (built
-        by its own owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
-        auth profile plus agent configuration bound to the fake conductor
-        executor, and the project level-2 model default selecting that exact
-        model. On demand rather than at startup, so one served
-        instance proves BOTH workbench states: the honest refusal before this
-        endpoint is called, the real conversation after.
+        The message and report schemas, the conversation document
+        (`conductor_seed.py`) and its catalog lineage, an auth profile plus
+        agent configuration bound to the fake conductor executor, its model
+        registry entry, and the project level-2 default selecting that exact
+        model. The configuration hash comes back so a run can bind its
+        `conductor` role to the executor seeded here.
+
+        A door rather than startup state, because the cold-boot baseline
+        carries no conductor: a spec that resets this one shared server back
+        to that baseline seeds the catalog again for itself.
         """
 
         context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
