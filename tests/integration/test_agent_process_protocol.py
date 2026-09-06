@@ -503,11 +503,17 @@ def test_provider_stream_error_deregisters_the_descriptor(
     finally:
         stepper.disarm()
         stepper.release()
-        if watchdog._process is not None and watchdog._process.poll() is None:
-            os.killpg(watchdog._process.pid, signal.SIGKILL)
+        if watchdog._process is not None:
+            if watchdog._process.poll() is None:
+                os.killpg(watchdog._process.pid, signal.SIGKILL)
             watchdog._process.wait(timeout=5)
+        # A live cgroup reports empty only once every member process has
+        # actually exited; this fake one holds "populated 1" until told
+        # otherwise, so left untouched it would hide the reaped child from
+        # _advance_process and strand serve() escalating its grace forever.
+        (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
         os.close(owner_writer)
-        thread.join(timeout=5)
+        _wait_until(lambda: not thread.is_alive())
         endpoint.unlink(missing_ok=True)
     assert not thread.is_alive()
     assert errors == []
