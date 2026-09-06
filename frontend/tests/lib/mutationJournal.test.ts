@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  JournalUnreadableError,
   MutationJournal,
   cancelMutation,
   startMutation,
@@ -44,17 +45,25 @@ describe("MutationJournal exact transport truth", () => {
       { ...cancel(), target: `/atelier/api/v1/runs/${publicReference}/answers` }
     ];
     for (const envelope of invalid) {
-      await expect(
-        new MutationJournal(sessionStorage).prepare(envelope as MutationEnvelope)
-      ).rejects.toThrow();
+      const rejection = new MutationJournal(sessionStorage).prepare(envelope as MutationEnvelope);
+      await expect(rejection).rejects.toThrow();
+      // The caller's own envelope is invalid, not the stored journal --
+      // JournalUnreadableError is entries()'s own type, never prepare()'s.
+      await expect(rejection).rejects.not.toBeInstanceOf(JournalUnreadableError);
     }
   });
 
-  it("rejects corrupt stored JSON, schema, and duplicate ids", async () => {
+  it("rejects corrupt stored JSON, schema, and duplicate ids, each as a JournalUnreadableError", async () => {
     sessionStorage.setItem("atelier2.mutation-journal.v1", "{");
-    await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(/valid JSON/);
+    const notJson = new MutationJournal(sessionStorage).entries();
+    await expect(notJson).rejects.toThrow(/valid JSON/);
+    await expect(notJson).rejects.toBeInstanceOf(JournalUnreadableError);
+
     sessionStorage.setItem("atelier2.mutation-journal.v1", JSON.stringify([{ ...start(), delivery: "prepared", extra: true }]));
-    await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(/unknown fields/);
+    const unknownField = new MutationJournal(sessionStorage).entries();
+    await expect(unknownField).rejects.toThrow(/unknown fields/);
+    await expect(unknownField).rejects.toBeInstanceOf(JournalUnreadableError);
+
     sessionStorage.setItem(
       "atelier2.mutation-journal.v1",
       JSON.stringify([
@@ -62,7 +71,9 @@ describe("MutationJournal exact transport truth", () => {
         { ...start(), delivery: "uncertain" }
       ])
     );
-    await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(/duplicate/);
+    const duplicate = new MutationJournal(sessionStorage).entries();
+    await expect(duplicate).rejects.toThrow(/duplicate/);
+    await expect(duplicate).rejects.toBeInstanceOf(JournalUnreadableError);
   });
 
   it("treats stored field names as a set independent of JSON key order", async () => {
@@ -91,7 +102,9 @@ describe("MutationJournal exact transport truth", () => {
         "atelier2.mutation-journal.v1",
         JSON.stringify([{ ...corrupt, delivery: "prepared" }])
       );
-      await expect(new MutationJournal(sessionStorage).entries()).rejects.toThrow(/bytes|document/);
+      const rejection = new MutationJournal(sessionStorage).entries();
+      await expect(rejection).rejects.toThrow(/bytes|document/);
+      await expect(rejection).rejects.toBeInstanceOf(JournalUnreadableError);
     }
   });
 
