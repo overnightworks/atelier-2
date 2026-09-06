@@ -1,7 +1,6 @@
-"""No file this repository tracks may repeat the operator's own machine
-identity: a home directory path or a hostname is a personal or hardware
-identifier, not a credential, so no secret scanner catches it (audit
-git-e2-session, 06.09.2026)."""
+"""Tracked text carries no operator identifiers: a home directory path or a
+machine hostname is personal or hardware information, not a credential, so
+no secret scanner catches it."""
 
 from __future__ import annotations
 
@@ -11,8 +10,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parents[2]
 PLACEHOLDER_USER = "operator"
+_HOME_DIRECTORY_PREFIX = "/home/"
 
-_REAL_HOME_PATH = re.compile(rf"/home/(?!{PLACEHOLDER_USER}/)[^/\s\"'<>]+/")
+_REAL_HOME_PATH = re.compile(
+    re.escape(_HOME_DIRECTORY_PREFIX) + rf"(?!{PLACEHOLDER_USER}/)[^/\s\"'<>]+/"
+)
 _MACHINE_HOSTNAME = re.compile(r"\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+-PC-[0-9]+\b")
 
 
@@ -59,12 +61,14 @@ def test_no_tracked_file_names_the_operators_real_home_path_or_hostname() -> Non
 def test_the_matcher_flags_a_synthetic_home_path_and_hostname_but_not_the_placeholder() -> (
     None
 ):
-    synthetic_home = "/home/" + "jane" + "/project"
+    synthetic_home = _HOME_DIRECTORY_PREFIX + "jane" + "/project"
     synthetic_hostname = "alpha-beta" + "-PC-" + "3"
-    placeholder_home = "/home/" + PLACEHOLDER_USER + "/project"
+    placeholder_home = _HOME_DIRECTORY_PREFIX + PLACEHOLDER_USER + "/project"
     placeholder_hostname = PLACEHOLDER_USER + "-host"
 
-    assert operator_identifier_matches(f"cwd={synthetic_home}") == ["/home/jane/"]
+    assert operator_identifier_matches(f"cwd={synthetic_home}") == [
+        _HOME_DIRECTORY_PREFIX + "jane" + "/"
+    ]
     assert operator_identifier_matches(f"host={synthetic_hostname}") == [
         synthetic_hostname
     ]
