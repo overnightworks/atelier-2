@@ -521,15 +521,6 @@ def unbound_serving_answers() -> dict[tuple[str, str], list[Answer]]:
     return serving_answers()
 
 
-@pytest.fixture(autouse=True)
-def run_from_the_temporary_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The command reads the files it is named from beneath where it runs."""
-
-    monkeypatch.chdir(tmp_path)
-
-
 @pytest.fixture
 def order(tmp_path: Path) -> Iterator[list[str]]:
     workflow = tmp_path / "workflow.yaml"
@@ -1165,18 +1156,6 @@ def test_a_run_names_either_a_document_or_a_name_and_never_both(
         )
 
     assert b"--name" in capsysbinary.readouterr().err
-
-
-def test_a_workflow_outside_the_working_directory_is_refused_before_any_request(
-    capsysbinary: pytest.CaptureFixture[bytes],
-) -> None:
-    with ScriptedService(serving_answers()) as service:
-        with pytest.raises(SystemExit):
-            main(["run", "--workflow", "../workflow.yaml", "--service", service.url])
-        sent = service.calls
-
-    assert sent == []
-    assert b"outside the working directory" in capsysbinary.readouterr().err
 
 
 def test_a_run_that_names_no_workflow_at_all_is_refused_before_any_request(

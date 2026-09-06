@@ -77,7 +77,6 @@ from atelier2.host.definition_source_command import (
 )
 from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
-from atelier2.host.operator_files import OperatorFileRefused, read_operator_file
 from atelier2.host.provider_canary import (
     PROVIDER_CANARY_TERMINAL_TIMEOUT_SECONDS,
     ProviderCanaryAnswerUnreadable,
@@ -187,11 +186,9 @@ command read and whose terminal event it saw.
 
 The command owns nothing. It publishes the workflow document and each binding
 file through the public API of the service named by --service, and starts the
-run there, exactly as any other client would. Every file named here is read from
-beneath the directory the command runs in; a path that leaves it is refused. All
-three publications are idempotent, and the run identity is derived from the
-published hashes, so the same command run twice reports one run instead of
-paying for two.
+run there, exactly as any other client would. All three publications are
+idempotent, and the run identity is derived from the published hashes, so the
+same command run twice reports one run instead of paying for two.
 
 With --name nothing is published for the workflow: the service is asked which
 revision the name holds -- the same question `resolve` asks, and its refusals are
@@ -670,9 +667,9 @@ def _supplied_orders(
 
 def _file_bytes(parser: argparse.ArgumentParser, path: Path) -> bytes:
     try:
-        return read_operator_file(path, Path.cwd())
-    except OperatorFileRefused as refusal:
-        parser.error(str(refusal))
+        return path.read_bytes()
+    except OSError as unreadable:
+        parser.error(f"cannot read {path}: {unreadable.strerror}")
 
 
 def _attested_agent_scratch_root(
