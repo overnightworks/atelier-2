@@ -12777,6 +12777,7 @@
             "name": "lineage_id",
             "required": true,
             "schema": {
+              "pattern": "^[0-9a-f]{64}$",
               "title": "Lineage Id",
               "type": "string"
             }
@@ -12927,6 +12928,7 @@
             "name": "lineage_id",
             "required": true,
             "schema": {
+              "pattern": "^[0-9a-f]{64}$",
               "title": "Lineage Id",
               "type": "string"
             }
