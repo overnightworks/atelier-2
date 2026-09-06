@@ -9,6 +9,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "check:dead": "knip --production",
+    "generate:api": "orval --config orval.config.ts",
+    "check:generated": "npm run generate:api && git diff --exit-code -- src/api/generated",
     "test": "vitest run",
     "e2e": "playwright test",
     "e2e:reversed": "E2E_ORDER=reversed playwright test"
@@ -30,6 +32,7 @@
     "eslint-plugin-svelte": "3.22.0",
     "jsdom": "30.0.1",
     "knip": "6.34.0",
+    "orval": "8.28.1",
     "svelte-check": "4.7.5",
     "typescript": "5.9.3",
     "typescript-eslint": "8.67.0",
