@@ -128,8 +128,8 @@ WAITING_FOR_A_CALLER = (
         "names": ("adapters/attempt_workspace_files.py:AttemptWorkspaceFileAccess",),
         "why": (
             "The descriptor-fenced ProviderFilesystemAccess adapter for one "
-            "attempt's own workspace (2-C2a): it answers READ inside the lease "
-            "and refuses WRITE outright, but nothing binds it into "
+            "attempt's own workspace: it answers both READ and staged WRITE "
+            "inside the lease, but nothing binds it into "
             "`ProviderConversationBinding.files` yet -- that overwrite is "
             "`execute_agent_attempt`'s own job."
         ),

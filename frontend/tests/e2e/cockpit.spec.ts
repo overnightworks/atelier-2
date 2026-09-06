@@ -456,7 +456,18 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   observed.length = 0;
   await retry.focus();
+  const buttonBeforeRetry = await retry.elementHandle();
+  if (buttonBeforeRetry === null) {
+    throw new Error("the focused retry button vanished before Enter reached it");
+  }
   await page.keyboard.press("Enter");
+  // A retry that fails the same way repeats the exact same failure text, so
+  // that text can never mark the moment recovery reran: the button mounts
+  // only in the failed state and is destroyed and remounted on every attempt
+  // (ReadState.svelte), so waiting for this captured element to leave the
+  // DOM is the one signal that a fresh attempt -- and the focus restore the
+  // remounted button performs -- has actually started.
+  await buttonBeforeRetry.waitForElementState("hidden");
   await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
   expectOnlyRoomRead();
@@ -464,7 +475,6 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
-  await expect(retry).toBeFocused();
   await expectVisibleFocus(retry);
   await assertNoSeriousAccessibilityFindings(page);
   await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
@@ -715,6 +725,7 @@ async function assertNoSeriousAccessibilityFindings(page: Page): Promise<void> {
 }
 
 async function expectVisibleFocus(control: Locator): Promise<void> {
+  await expect(control).toBeFocused();
   const outline = await control.evaluate((element) => {
     const style = getComputedStyle(element);
     return { style: style.outlineStyle, width: Number.parseFloat(style.outlineWidth) };

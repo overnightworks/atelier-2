@@ -61,9 +61,21 @@ def _read(path: Path) -> ProviderFilesystemRequest:
     return ProviderFilesystemRequest(ProviderFilesystemEffect.READ, path, REQUEST_ID)
 
 
+def _write(path: Path, content: bytes) -> ProviderFilesystemRequest:
+    return ProviderFilesystemRequest(
+        ProviderFilesystemEffect.WRITE, path, REQUEST_ID, content
+    )
+
+
 def _answered(content: bytes) -> AttemptWorkspaceFileOutcome:
     return AttemptWorkspaceFileOutcome(
         ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, content)
+    )
+
+
+def _answered_write() -> AttemptWorkspaceFileOutcome:
+    return AttemptWorkspaceFileOutcome(
+        ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED)
     )
 
 
@@ -272,12 +284,12 @@ def test_a_fifo_probe_never_performs_a_data_open(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     os.mkfifo(workspace / "pipe")
-    opened_names = _spying_open(monkeypatch)
+    open_calls = _spying_open(monkeypatch)
 
     outcome = _access(workspace).describe(_read(Path("pipe")))
 
     assert outcome.refusal is AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE
-    assert opened_names == []
+    assert open_calls == []
 
 
 def test_a_lease_whose_directory_changed_identity_is_refused(tmp_path: Path) -> None:
@@ -459,7 +471,7 @@ def test_an_already_oversize_file_is_refused_without_opening_or_reading_its_data
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "big.bin").write_bytes(b"x" * 10)
-    opened_names = _spying_open(monkeypatch)
+    open_calls = _spying_open(monkeypatch)
     read_calls: list[int] = []
     real_read = os.read
 
@@ -475,7 +487,7 @@ def test_an_already_oversize_file_is_refused_without_opening_or_reading_its_data
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
     )
     assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
-    assert opened_names == []
+    assert open_calls == []
     assert read_calls == []
 
 
@@ -514,32 +526,372 @@ def test_a_file_that_grows_during_the_read_is_refused_once_past_the_ceiling(
     assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
 
 
-def test_a_write_request_is_refused_as_not_yet_granted(tmp_path: Path) -> None:
+@dataclass(frozen=True)
+class _WriteTargetScenario:
+    name: str
+    build_parent: Callable[[Path], None]
+    requested: Path
+
+
+def _no_parent_needed(_workspace: Path) -> None:
+    pass
+
+
+def _an_existing_sub_parent(workspace: Path) -> None:
+    (workspace / "sub").mkdir()
+
+
+_WRITE_TARGET_SCENARIOS = (
+    _WriteTargetScenario("at the lease root", _no_parent_needed, Path("notes.md")),
+    _WriteTargetScenario(
+        "nested under an existing parent", _an_existing_sub_parent, Path("sub/deep.txt")
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    _WRITE_TARGET_SCENARIOS,
+    ids=[scenario.name for scenario in _WRITE_TARGET_SCENARIOS],
+)
+def test_a_write_creates_the_exact_bytes(
+    tmp_path: Path, scenario: _WriteTargetScenario
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    write = ProviderFilesystemRequest(
-        ProviderFilesystemEffect.WRITE, Path("notes.md"), REQUEST_ID, b"new content"
-    )
+    scenario.build_parent(workspace)
+    target = workspace / scenario.requested
 
-    outcome = _access(workspace).describe(write)
+    outcome = _access(workspace).describe(_write(scenario.requested, b"exact bytes"))
+
+    assert outcome == _answered_write()
+    assert target.read_bytes() == b"exact bytes"
+    assert {entry.name for entry in target.parent.iterdir()} == {target.name}
+
+
+def test_a_write_overwrites_an_existing_file_atomically(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original content")
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), b"replaced content"))
+
+    assert outcome == _answered_write()
+    assert (workspace / "notes.md").read_bytes() == b"replaced content"
+    assert list(workspace.iterdir()) == [workspace / "notes.md"]
+
+
+@pytest.mark.parametrize("failing_call", ["write", "fsync", "replace"])
+def test_a_failure_during_staging_leaves_the_target_unchanged_and_no_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_call: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original content")
+
+    def raising(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EIO, "simulated staging failure")
+
+    monkeypatch.setattr(attempt_workspace_files.os, failing_call, raising)
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), b"new content"))
 
     assert outcome.reply == ProviderFilesystemReply(
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
     )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
+    assert outcome.detail == "EIO"
+    assert (workspace / "notes.md").read_bytes() == b"original content"
+    assert list(workspace.iterdir()) == [workspace / "notes.md"]
+
+
+def test_a_write_completes_despite_short_underlying_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX `write(2)` may transfer fewer bytes than asked; only a caller
+    that loops past that short count can promise every byte lands."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    content = b"exact bytes, one at a time"
+    real_write = os.write
+
+    def one_byte_at_a_time(descriptor: int, data: bytes) -> int:
+        return real_write(descriptor, data[:1])
+
+    monkeypatch.setattr(attempt_workspace_files.os, "write", one_byte_at_a_time)
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), content))
+
+    assert outcome == _answered_write()
+    assert (workspace / "notes.md").read_bytes() == content
+
+
+def test_a_target_swapped_for_a_symlink_after_the_check_still_leaves_its_referent_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lstat` and `replace` are not one atomic step, so a request could swap
+    `final_name` for a symlink in between. `rename(2)` never follows a
+    symlink at its destination -- it replaces the directory entry itself --
+    so even that race lands the new content under `final_name`'s own name,
+    leaving whatever the symlink pointed at completely untouched."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original content")
+    referent = workspace / "referent.txt"
+    referent.write_bytes(b"referent content")
+    real_replace = os.replace
+
+    def swap_then_replace(
+        src: str,
+        dst: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        os.unlink(dst, dir_fd=dst_dir_fd)
+        os.symlink(os.fspath(referent), dst, dir_fd=dst_dir_fd)
+        real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(attempt_workspace_files.os, "replace", swap_then_replace)
+
+    outcome = _access(workspace).describe(_write(Path("notes.md"), b"new content"))
+
+    assert outcome == _answered_write()
+    assert not (workspace / "notes.md").is_symlink()
+    assert (workspace / "notes.md").read_bytes() == b"new content"
+    assert referent.read_bytes() == b"referent content"
+
+
+@pytest.mark.parametrize(
+    "effect", [ProviderFilesystemEffect.READ, ProviderFilesystemEffect.WRITE]
+)
+def test_a_path_no_filesystem_encoding_could_hold_is_refused(
+    tmp_path: Path, effect: ProviderFilesystemEffect
+) -> None:
+    """A lone surrogate survives `pathlib.Path.parts` unchanged, so a request
+    could carry one all the way to `openat2`'s own `os.fsencode` call, which
+    raises `UnicodeEncodeError` rather than an `OSError` -- refused here,
+    before either effect ever opens anything."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    requested = Path("bad\ud800name")
+    request = (
+        _read(requested)
+        if effect is ProviderFilesystemEffect.READ
+        else _write(requested, b"content")
+    )
+
+    outcome = _access(workspace).describe(request)
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NOT_ENCODABLE
     assert list(workspace.iterdir()) == []
 
 
-def _spying_open(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[str]:
-    """Record every real name `os.open` is asked to open, still opening it.
+@pytest.mark.parametrize(
+    "requested",
+    [
+        Path(".ssh/id_rsa"),
+        Path(".bashrc"),
+        Path(".profile"),
+        Path(".zshrc"),
+        Path(".bash_profile"),
+        Path(".grok/config.json"),
+        Path(".claude/settings.json"),
+        Path(".cursor/config.json"),
+        Path(".git/hooks/pre-commit"),
+        Path(".git/config"),
+        Path(".git/HEAD"),
+        Path(".git"),
+        Path("sub/.ssh/id_rsa"),
+        Path(".SSH/id_rsa"),
+        Path(".Git/config"),
+    ],
+    ids=[
+        "ssh-directory",
+        "bashrc",
+        "profile",
+        "zshrc",
+        "bash-profile",
+        "grok-directory",
+        "claude-directory",
+        "cursor-directory",
+        "git-hooks",
+        "git-config",
+        "git-head",
+        "git-directory-itself",
+        "nested-ssh-directory",
+        "case-insensitive-ssh",
+        "case-insensitive-git",
+    ],
+)
+def test_a_write_naming_a_protected_path_is_refused(
+    tmp_path: Path, requested: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PROTECTED_PATH
+    assert list(workspace.rglob("*")) == []
+
+
+def test_a_write_naming_a_git_prefixed_but_distinct_file_is_not_protected(
+    tmp_path: Path,
+) -> None:
+    """The boundary is the whole segment `.git`, never a prefix match: a file
+    merely named `.gitignore` shares no segment with the protected `.git`
+    directory and is an ordinary write."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace).describe(_write(Path(".gitignore"), b"*.log"))
+
+    assert outcome == _answered_write()
+    assert (workspace / ".gitignore").read_bytes() == b"*.log"
+
+
+def test_a_write_onto_a_symlinked_name_is_refused_leaving_the_real_file_unchanged(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real = workspace / "real.txt"
+    real.write_bytes(b"actual content")
+    (workspace / "alias.txt").symlink_to(real)
+
+    outcome = _access(workspace).describe(
+        _write(Path("alias.txt"), b"attempted overwrite")
+    )
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.TARGET_IS_SYMLINK
+    assert real.read_bytes() == b"actual content"
+    assert (workspace / "alias.txt").is_symlink()
+
+
+def test_an_oversize_write_is_refused_without_creating_anything(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace, maximum_read_bytes=5).describe(
+        _write(Path("notes.md"), b"too many bytes")
+    )
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+    assert list(workspace.iterdir()) == []
+
+
+def test_a_write_whose_parent_directory_is_missing_is_refused(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = _access(workspace).describe(_write(Path("sub/notes.md"), b"content"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PARENT_MISSING
+    assert list(workspace.iterdir()) == []
+
+
+_WRITE_REUSES_READ_ESCAPE_SCENARIOS = tuple(
+    scenario
+    for scenario in _REFUSAL_SCENARIOS
+    if scenario.name
+    in {
+        "parent directory escape",
+        "foreign absolute address",
+        "absolute address only sharing the lease name as a prefix",
+        "embedded NUL byte",
+        "symlink path component",
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    _WRITE_REUSES_READ_ESCAPE_SCENARIOS,
+    ids=[scenario.name for scenario in _WRITE_REUSES_READ_ESCAPE_SCENARIOS],
+)
+def test_a_write_reaching_outside_the_lease_is_refused_the_same_way_as_a_read(
+    tmp_path: Path, scenario: _RefusalScenario
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    requested = scenario.build(tmp_path, workspace)
+
+    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is scenario.refusal
+
+
+def test_a_write_parent_mount_crossing_is_mapped_to_its_own_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors the read-side mount test: building a real mount needs
+    privileges this suite does not have, so only the errno-to-refusal mapping
+    for the parent resolution is under test here."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def raising_openat2_directory(dir_fd: int, relative_path: str) -> int:
+        raise OSError(errno.EXDEV, "simulated mount crossing")
+
+    monkeypatch.setattr(
+        attempt_workspace_files,
+        "_openat2_directory_descriptor",
+        raising_openat2_directory,
+    )
+
+    outcome = _access(workspace).describe(_write(Path("sub/file.txt"), b"content"))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+
+
+@dataclass(frozen=True)
+class _OpenCall:
+    """One real `os.open` call this adapter made, and where it landed.
+
+    `dir_fd_identity` is read while the descriptor is still open, inside the
+    spy itself: by the time a test can inspect the call afterward, the
+    adapter has already closed every descriptor it held."""
+
+    name: str
+    flags: int
+    dir_fd_identity: tuple[int, int] | None
+
+
+def _spying_open(monkeypatch: pytest.MonkeyPatch) -> list[_OpenCall]:
+    """Record every real `os.open` call this adapter makes, still opening it.
 
     `openat2` runs through the raw `ctypes` syscall boundary, never through
-    `os.open`, so any name recorded here is a data descriptor this adapter
+    `os.open`, so any call recorded here is a data descriptor this adapter
     actually opened after a successful, already-fenced resolution."""
 
-    opened_names: list[str] = []
+    calls: list[_OpenCall] = []
     real_open = os.open
 
     def spy(
@@ -550,11 +902,15 @@ def _spying_open(
         dir_fd: int | None = None,
     ) -> int:
         if isinstance(path, str):
-            opened_names.append(path)
+            dir_fd_identity = None
+            if dir_fd is not None:
+                status = os.fstat(dir_fd)
+                dir_fd_identity = (status.st_dev, status.st_ino)
+            calls.append(_OpenCall(path, flags, dir_fd_identity))
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(attempt_workspace_files.os, "open", spy)
-    return opened_names
+    return calls
 
 
 def test_a_pure_escape_calls_openat2_never_at_all(
@@ -624,6 +980,55 @@ def test_a_symlink_escape_calls_openat2_exactly_once_against_the_lease_root(
     assert "sentinel" not in called_path
 
 
+def test_a_write_opens_only_relative_names_through_a_lease_internal_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every `os.open` a staged write performs must be a bare relative staged
+    name resolved through `dir_fd`, never an absolute path that could address
+    something outside the lease; every one of those `dir_fd` values must
+    itself be a directory the lease actually owns; the staging create must
+    carry `O_EXCL | O_NOFOLLOW | O_CLOEXEC`; and the one `openat2` directory
+    resolution for the parent must be anchored at the lease root, naming a
+    relative path that never mentions the host's real directory."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / "sub").mkdir(parents=True)
+    open_calls = _spying_open(monkeypatch)
+    lease_internal_identities = {
+        (os.stat(workspace).st_dev, os.stat(workspace).st_ino),
+        (os.stat(workspace / "sub").st_dev, os.stat(workspace / "sub").st_ino),
+    }
+    real_openat2_directory = attempt_workspace_files._openat2_directory_descriptor
+    directory_calls: list[tuple[tuple[int, int], str]] = []
+
+    def recording_openat2_directory(dir_fd: int, relative_path: str) -> int:
+        status = os.fstat(dir_fd)
+        directory_calls.append(((status.st_dev, status.st_ino), relative_path))
+        return real_openat2_directory(dir_fd, relative_path)
+
+    monkeypatch.setattr(
+        attempt_workspace_files,
+        "_openat2_directory_descriptor",
+        recording_openat2_directory,
+    )
+
+    outcome = _access(workspace).describe(_write(Path("sub/deep.txt"), b"deep bytes"))
+
+    assert outcome == _answered_write()
+    assert len(directory_calls) == 1
+    called_dir_identity, called_path = directory_calls[0]
+    assert called_dir_identity in lease_internal_identities
+    assert called_path == "sub"
+    assert open_calls
+    assert all(not os.path.isabs(call.name) for call in open_calls)
+    assert all(str(tmp_path) not in call.name for call in open_calls)
+    assert all(call.dir_fd_identity in lease_internal_identities for call in open_calls)
+    staging_calls = [call for call in open_calls if call.name.startswith("deep.txt.")]
+    assert len(staging_calls) == 1
+    required_flags = os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    assert staging_calls[0].flags & required_flags == required_flags
+
+
 def test_the_constructor_rejects_a_ceiling_above_the_artifact_bound(
     tmp_path: Path,
 ) -> None:
@@ -642,7 +1047,7 @@ def test_an_answered_outcome_cannot_also_carry_a_refusal() -> None:
             ProviderFilesystemReply(
                 REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, b"x"
             ),
-            AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
+            AttemptWorkspaceFileRefusal.PARENT_MISSING,
         )
 
 
@@ -657,7 +1062,7 @@ def test_only_a_workspace_io_failure_may_name_an_errno() -> None:
     with pytest.raises(ValueError, match="only a workspace I/O failure"):
         AttemptWorkspaceFileOutcome(
             ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED),
-            AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
+            AttemptWorkspaceFileRefusal.PARENT_MISSING,
             "EIO",
         )
 
