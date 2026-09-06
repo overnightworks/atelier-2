@@ -90,4 +90,9 @@ port design); nothing here is production code.
 
 Every fixture was scanned for the private credential copy's exact token,
 refresh-token, email, and OIDC client id values (never printed) before commit;
-none were present.
+none were present. The recording machine's hostname, the operator's user
+name, and its recorded home directory path and session scratch paths under
+`/tmp/claude-1000/…` were scrubbed too, each replaced everywhere by the same
+placeholder: `operator-host` for the hostname, `operator` for the user name,
+`/home/operator` for the home directory prefix, and
+`/tmp/operator-session/…` for the session scratch prefix.
