@@ -18,6 +18,7 @@ import {
   type RunProjectionCorrupt
 } from "../../src/api/client";
 import { cancelMutation } from "../../src/lib/mutationJournal";
+import { healthResource } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
 
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
@@ -171,6 +172,44 @@ function v3Event(eventName: string, fields: Record<string, unknown> = {}) {
 }
 
 const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
+
+describe("the health probe #700's recovery reuses", () => {
+  it("asks the health door and refuses fields the server did not declare", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(healthResource()), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const health = await createCockpitApi(fetcher).health();
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/atelier/api/v1/health");
+    expect(health).toEqual(healthResource());
+
+    fetcher.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...healthResource(), unexpected_field: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    await expect(createCockpitApi(fetcher).health()).rejects.toThrow("durable wire contract");
+  });
+
+  it("parses the redeploy block a stalled auto-redeploy watcher names", async () => {
+    const blocked = healthResource({
+      redeploy: { blocked_since: null, reason: "watcher status file unreadable" }
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(blocked), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    await expect(createCockpitApi(fetcher).health()).resolves.toEqual(blocked);
+  });
+});
 
 describe("closed API decoders", () => {
   it("decodes a published revision and refuses an unknown field on it", () => {

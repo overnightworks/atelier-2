@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { HealthResource } from "./generated/health.zod";
 import {
   reportConnectionLost,
   reportConnectionRestored,
@@ -271,17 +272,7 @@ export const projectSourceListSchema = z
   .object({ items: z.array(projectSourceResourceSchema) })
   .strict();
 
-/** The wire shape `GET /health` answers -- reused as #700's own recovery
- * probe, an existing cheap read rather than a purpose-built endpoint. */
-const healthResourceSchema = z
-  .object({
-    status: z.literal("serving"),
-    source_commit: z.string(),
-    source_tree: z.string(),
-    serve_started_at: recordedAtStamp,
-  })
-  .strict();
-export type HealthResource = z.infer<typeof healthResourceSchema>;
+export type { HealthResource };
 
 /**
  * The wire shape `GET /seat` answers: whether this serve holds a terminal
@@ -2732,7 +2723,7 @@ export function createCockpitApi(
         "/atelier/api/v1/health",
         { signal },
         [200],
-        healthResourceSchema,
+        HealthResource,
       ),
     getSeat: () =>
       requestJson(fetcher, "/atelier/api/v1/seat", {}, [200], seatResourceSchema),

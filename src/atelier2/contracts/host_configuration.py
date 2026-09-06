@@ -65,9 +65,6 @@ PROJECT_ROOT_MISSING = "project-root-missing"
 HOST_CONFIGURATION_UNREADABLE = "host-configuration-unreadable"
 MODEL_REGISTRY_REVISION_CONFLICT = "model-registry-revision-conflict"
 PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT = "project-model-defaults-revision-conflict"
-# ADR 0010's refusal for an operation or observation naming a project with no
-# connection record.
-PLATFORM_CONNECTION_UNKNOWN = "platform-connection-unknown"
 
 
 class ProjectUnknown(Exception):

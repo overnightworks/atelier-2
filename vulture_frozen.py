@@ -137,15 +137,15 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("contracts/host_configuration.py:PLATFORM_CONNECTION_UNKNOWN",),
+        "names": ("adapters/attempt_workspace_files.py:AttemptWorkspaceFileAccess",),
         "why": (
-            "ADR 0010 names `platform-connection-unknown` as the refusal for an "
-            "operation naming a project with no connection record, but the served "
-            "route answers `project-source-not-connected` and the application "
-            "answers the typed `PlatformConnectionUnknown`. The word has no "
-            "speaker yet; which of the two the product keeps is the open question."
+            "The descriptor-fenced ProviderFilesystemAccess adapter for one "
+            "attempt's own workspace (2-C2a): it answers READ inside the lease "
+            "and refuses WRITE outright, but nothing binds it into "
+            "`ProviderConversationBinding.files` yet -- that overwrite is "
+            "`execute_agent_attempt`'s own job."
         ),
-        "item": "#1168 (Verteiler, Befund 10)",
+        "item": "#1177 Zeile 23 (2-C2c Receipts + Bindung im Dispatch)",
     },
     {
         "names": (
