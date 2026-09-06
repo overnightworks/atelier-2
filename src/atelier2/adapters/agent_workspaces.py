@@ -51,29 +51,28 @@ def _marks_a_git_worktree(git_entry: Path) -> bool:
     return (git_entry / "HEAD").exists() or (git_entry / "HEAD").is_symlink()
 
 
-def _refuse_unusable_path(scratch_root: Path) -> None:
-    """Read the named path before it is opened, and refuse what it stands in.
+def _attested_directory(scratch_root: Path) -> Path:
+    """Read the named path before it is opened, and answer what it truly names.
 
-    A symbolic link anywhere above the root would let whoever controls it move
-    every attempt's directory somewhere else between two calls, and a root
-    inside a git worktree would put provider scratch files into a checkout the
-    operator is working in. Both are refused by name, because whoever first
-    points `--agent-scratch-root` at a repository path deserves to read why.
-    The walk only reads: a `.git` marker that was not there before this call
-    is not created by it.
+    The path is followed to the directory it resolves to, and refused unless
+    that directory stays beneath the declared root -- which a root can only do
+    by resolving to itself: a symbolic link anywhere above it would let whoever
+    controls the link move every attempt's directory somewhere else between two
+    calls. A root inside a git worktree would put provider scratch files into a
+    checkout the operator is working in. Both are refused by name, because
+    whoever first points `--agent-scratch-root` at such a path deserves to read
+    why. The walk only reads: a `.git` marker that was not there before this
+    call is not created by it.
     """
 
-    if not scratch_root.is_absolute():
+    resolved = scratch_root.resolve()
+    if not resolved.is_relative_to(scratch_root):
         raise AgentScratchRootRefused(
-            f"the agent scratch root must be an absolute path, not {scratch_root}"
+            f"the agent scratch root must be reached through no symbolic link, "
+            f"but {scratch_root} resolves to {resolved}: a link above the root "
+            "can move every attempt's directory between two calls"
         )
     for component in (scratch_root, *scratch_root.parents):
-        if component.is_symlink():
-            raise AgentScratchRootRefused(
-                f"the agent scratch root must contain no symbolic link, but "
-                f"{component} is one: a link above the root can move every "
-                "attempt's directory between two calls"
-            )
         git_entry = component / _GIT_ENTRY
         if _marks_a_git_worktree(git_entry):
             raise AgentScratchRootRefused(
@@ -81,12 +80,13 @@ def _refuse_unusable_path(scratch_root: Path) -> None:
                 f"{git_entry} exists: a provider writes into its workspace, so a "
                 "root inside a checkout would write into that checkout"
             )
+    return resolved
 
 
 def _open_scratch_root(scratch_root: Path) -> int:
-    _refuse_unusable_path(scratch_root)
+    attested = _attested_directory(scratch_root)
     try:
-        return os.open(scratch_root, _DIRECTORY_FLAGS)
+        return os.open(attested, _DIRECTORY_FLAGS)
     except OSError as error:
         raise AgentScratchRootRefused(
             f"the agent scratch root must be an existing directory the serving "
@@ -215,7 +215,7 @@ class LocalAgentAttemptWorkspaceOwner:
     def __init__(self, scratch_root: Path) -> None:
         # Absolute but deliberately unresolved: resolving would erase the very
         # symbolic links the attestation below refuses, and this exact path is
-        # both what is attested and what is opened.
+        # what is attested and, once it resolves to itself, what is opened.
         self._scratch_root = Path(os.path.abspath(scratch_root))
         self._root_fd = _open_scratch_root(self._scratch_root)
         try:
