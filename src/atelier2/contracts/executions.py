@@ -106,9 +106,23 @@ class RunEventKind(StrEnum):
 
 
 class AgentExecutionRefusal(StrEnum):
-    """The product-level reason an Agent node could not start."""
+    """The product-level reason an Agent node could not start.
+
+    Every word here ends its node before an attempt exists, so a run carrying
+    one never launched a provider, never leased a workspace and never pushed.
+    The claim words are the lane precondition's own endings: a node that may
+    change the project holds its work item's claim first, and each way that can
+    fail is named rather than folded into one refusal an operator would have to
+    read a log to understand.
+    """
 
     EXECUTOR_BINDING_UNAVAILABLE = "agent-executor-binding-unavailable"
+    WORK_ITEM_CLAIM_UNCONFIGURED = "work-item-claim-unconfigured"
+    WORK_ITEM_NAMES_NO_SCOPE = "work-item-names-no-scope"
+    WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY = "work-item-claim-refused-by-priority"
+    WORK_ITEM_CLAIM_LEDGER_UNREADABLE = "work-item-claim-ledger-unreadable"
+    WORK_ITEM_CLAIM_REFUSED = "work-item-claim-refused"
+    WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE = "work-item-claim-touches-another-lane"
 
 
 class WaitAnswerState(StrEnum):
@@ -466,6 +480,31 @@ def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:
         frame("logical-effect-key/v1", execution_id.value.encode("ascii"))
     )
     return LogicalEffectKey(f"atelier2-node-effect-{digest.value}")
+
+
+def logical_effect_key_for_work_item_claim(
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> LogicalEffectKey:
+    """The key of the claim one node's execution takes before it works.
+
+    Framed apart from `logical_effect_key_for_node` because the same execution
+    also prepares the effect its own grant earns: two effects of one node
+    execution are two keys, or the second would find the first's intent and
+    call it its own.
+    """
+    execution_id = NodeExecutionId.for_node(
+        run_id, revision_hash, node_id, round_ordinal
+    )
+    digest = Sha256Hash.of(
+        frame(
+            "logical-effect-key/work-item-claim/v1",
+            execution_id.value.encode("ascii"),
+        )
+    )
+    return LogicalEffectKey(f"atelier2-work-item-claim-{digest.value}")
 
 
 def logical_effect_key_for_node(

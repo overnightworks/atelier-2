@@ -8,10 +8,13 @@ because someone called them one, so this module is the reading that turns them
 into one -- a pure function over bytes, asked once by the publication door and
 again by the reference resolution that binds a run.
 
-The vocabulary is closed and deliberately holds two operations. A document naming
-anything else is refused where it was declared rather than resolved and then
-silently unperformed, because a run started under an operation nothing performs
-would tell its author that the atelier did what the document asked.
+The vocabulary is closed. A document may declare only the two operations a
+graph performs on its author's word; `claim-work-item` is the runtime's own
+precondition and belongs to no document, so declaring it is refused here just
+like a word no runtime performs. A document naming anything else is refused
+where it was declared rather than resolved and then silently unperformed,
+because a run started under an operation nothing performs would tell its author
+that the atelier did what the document asked.
 """
 
 from __future__ import annotations
@@ -27,14 +30,16 @@ MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES = 4_096
 
 
 class AdapterOperationName(StrEnum):
-    """The closed set of operations a published adapter-operation revision may name.
+    """The closed set of operations this runtime performs.
 
     An operation enters here together with the adapter that performs it, so the
-    set and the performance never disagree.
+    set and the performance never disagree. Which of them a published revision
+    may name is the narrower question `_DECLARABLE_OPERATIONS` answers.
     """
 
     OPEN_PR = "open-pr"
     PUSH_ATELIER_COMMIT = "push-atelier-commit"
+    CLAIM_WORK_ITEM = "claim-work-item"
 
 
 class AdapterOperationRefusal(StrEnum):
@@ -73,6 +78,15 @@ type AdapterOperationVerdict = AdapterOperationAccepted | AdapterOperationRefuse
 
 _OPERATION_FIELD = "operation"
 _IDENTITY_FIELDS = frozenset(("author", "committer"))
+_DECLARABLE_OPERATIONS = frozenset(
+    operation.value
+    for operation in (
+        AdapterOperationName.OPEN_PR,
+        AdapterOperationName.PUSH_ATELIER_COMMIT,
+    )
+)
+"""Which operations a document may name. `claim-work-item` is the runtime's own
+precondition, taken by the node workflow rather than declared by an author."""
 
 
 def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
@@ -106,17 +120,16 @@ def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
             f"an adapter operation names the operation it performs under "
             f"{_OPERATION_FIELD}",
         )
-    try:
-        operation = AdapterOperationName(named)
-    except ValueError:
+    if named not in _DECLARABLE_OPERATIONS:
         return AdapterOperationRefused(
             AdapterOperationRefusal.UNKNOWN_OPERATION,
-            f"no runtime here performs {named!r}",
+            f"no document here declares {named!r}",
         )
+    operation = AdapterOperationName(named)
     allowed = (
-        frozenset((_OPERATION_FIELD,))
-        if operation is AdapterOperationName.OPEN_PR
-        else frozenset((_OPERATION_FIELD, *_IDENTITY_FIELDS))
+        frozenset((_OPERATION_FIELD, *_IDENTITY_FIELDS))
+        if operation is AdapterOperationName.PUSH_ATELIER_COMMIT
+        else frozenset((_OPERATION_FIELD,))
     )
     unknown = sorted(set(decoded) - allowed)
     if unknown:
@@ -129,7 +142,7 @@ def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
             AdapterOperationRefusal.NOT_AN_OPERATION_OBJECT,
             "push-atelier-commit declares author and committer identities",
         )
-    if operation is AdapterOperationName.OPEN_PR:
+    if operation is not AdapterOperationName.PUSH_ATELIER_COMMIT:
         return AdapterOperationAccepted(operation)
     try:
         author = GitCommitIdentity.from_json(decoded["author"])
