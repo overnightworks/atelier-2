@@ -95,7 +95,7 @@ lines = 850
 
 [[file]]
 path = "src/atelier2/api/routes/revisions.py"
-lines = 1038
+lines = 887
 
 [[file]]
 path = "src/atelier2/api/wire/resources.py"

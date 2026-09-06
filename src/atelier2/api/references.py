@@ -113,6 +113,9 @@ ArtifactHashPath = Annotated[
 AgentAttemptIdPath = Annotated[
     str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
 ]
+CatalogLineageIdPath = Annotated[
+    str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
+]
 QueueItemIdQuery = Annotated[
     str, Query(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
 ]

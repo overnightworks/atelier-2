@@ -56,6 +56,7 @@ from atelier2.api.references import (
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
+    SHA256_HASH_PATTERN,
     encode_public_run_reference,
 )
 from atelier2.api.wire import events as wire_events
@@ -233,16 +234,6 @@ EXPECTED_ROUTE_SEQUENCE = (
         "found_catalog_lineage_route",
     ),
     (
-        "POST",
-        CATALOG_LINEAGE_MEMBERS_PATH,
-        "admit_catalog_member_route",
-    ),
-    (
-        "POST",
-        CATALOG_LINEAGE_RETIREMENTS_PATH,
-        "retire_catalog_lineage_route",
-    ),
-    (
         "GET",
         CATALOG_REVISION_BY_NAME_PATH,
         "get_revision_by_name",
@@ -251,6 +242,16 @@ EXPECTED_ROUTE_SEQUENCE = (
         "GET",
         API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
         "get_revision",
+    ),
+    (
+        "POST",
+        CATALOG_LINEAGE_MEMBERS_PATH,
+        "admit_catalog_member_route",
+    ),
+    (
+        "POST",
+        CATALOG_LINEAGE_RETIREMENTS_PATH,
+        "retire_catalog_lineage_route",
     ),
     ("GET", PROJECTS_PATH, "list_projects_route"),
     ("GET", PROJECT_PATH, "get_project_route"),
@@ -601,6 +602,26 @@ def test_project_and_source_reference_routes_publish_the_pattern_at_the_paramete
     assert schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
         "public_source_reference"
     ] == {"$ref": "#/components/schemas/PublicSourceReference"}
+
+
+def test_catalog_lineage_routes_publish_the_pattern_at_the_lineage_id_parameter() -> (
+    None
+):
+    """Each catalog-lineage route declares its own typed parameter
+    (`references.py`'s `CatalogLineageIdPath`), so the document inlines the
+    SHA-256 pattern directly at the parameter.
+    """
+    schema = served_app().openapi()
+    for path in (CATALOG_LINEAGE_MEMBERS_PATH, CATALOG_LINEAGE_RETIREMENTS_PATH):
+        parameters = {
+            (parameter["name"], parameter["in"]): parameter
+            for parameter in schema["paths"][path]["post"]["parameters"]
+        }
+        assert parameters[("lineage_id", "path")]["schema"] == {
+            "type": "string",
+            "pattern": SHA256_HASH_PATTERN,
+            "title": "Lineage Id",
+        }
 
 
 def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:

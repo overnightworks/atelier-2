@@ -25,6 +25,7 @@ from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import (
     agents,
     artifacts,
+    catalog_lineage,
     events,
     health,
     models,
@@ -541,9 +542,7 @@ def create_app(
                 workflow_projection_limit,
                 EnrichedPageBudget(
                     maximum_nodes=limits.maximum_enriched_page_nodes,
-                    maximum_document_bytes=(
-                        limits.maximum_enriched_page_document_bytes
-                    ),
+                    maximum_document_bytes=limits.maximum_enriched_page_document_bytes,
                 ),
                 served_project_id,
                 source_id_generator,
@@ -581,6 +580,7 @@ def create_app(
     app.include_router(agents.router)
     app.include_router(artifacts.router)
     app.include_router(revisions.router)
+    app.include_router(catalog_lineage.router)
     app.include_router(projects.router)
     app.include_router(models.router)
     app.include_router(project_source_connection.router)
