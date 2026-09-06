@@ -17,9 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
+
+from dbos import SQLAlchemyDatasource
 
 from atelier2.adapters.dbos.advancer import (
+    effect_receipt_exists,
     prepared_effect_intent,
     read_pinned_effect_tool_grant,
 )
@@ -30,6 +33,12 @@ from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     encode_readback,
     load_intent,
+)
+from atelier2.adapters.dbos.names import (
+    WORK_ITEM_CLAIM_CONFIRM_STEP_NAME,
+    WORK_ITEM_CLAIM_INTENT_STEP_NAME,
+    WORK_ITEM_CLAIM_PREPARE_STEP_NAME,
+    WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
 )
 from atelier2.adapters.dbos.run_transitions import _commit_event, load_graph
 from atelier2.adapters.dbos.work_item_intents import (
@@ -60,6 +69,8 @@ from atelier2.contracts.executions import (
     logical_effect_key_for_work_item_claim,
 )
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -71,6 +82,7 @@ from atelier2.ports.work_item_claims import (
 
 LOGICAL_KEY_FIELD = "logical_key"
 REFUSAL_FIELD = "refusal"
+HELD_FIELD = "held"
 _UNCONFIGURED_CLAIM_LEDGER = AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED.value
 
 _REFUSAL_WORDS = {
@@ -142,35 +154,35 @@ def prepare_work_item_claim(
 
     Answers nothing where the node changes nothing: only a node whose own
     pinned grant publishes a commit holds its item's claim. Otherwise it
-    answers either the prepared intent's logical key or the refusal word this
-    node ends on -- a runtime that cannot claim never quietly builds unclaimed.
+    answers the claim already receipted for this execution, the prepared
+    intent's logical key, or the refusal word this node ends on -- a runtime
+    that cannot claim never quietly builds unclaimed.
+
+    The receipt is what makes the decision once: a node execution whose claim
+    is already confirmed answers `HELD_FIELD` here and never asks the ledger
+    again, so a recovery that runs while the attempt is in flight cannot turn
+    a later ledger answer into a refusal of work already under way.
     """
 
     node = load_graph(session, revision_hash).node(node_id)
     grant = read_pinned_effect_tool_grant(session, node)
     if push_atelier_commit_capability_for(grant) is None:
         return None
+    logical_key = logical_effect_key_for_work_item_claim(
+        run_id, revision_hash, node_id, round_ordinal
+    )
+    if effect_receipt_exists(session, logical_key.value):
+        return {HELD_FIELD: logical_key.value}
     if ledger_binding is None or project_id is None:
         return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
-    order = issue_work_item_order(session, run_id)
-    item = github_issue_number_or_none(order.reference)
-    if item is None:
-        return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
-    if not order.scope.paths:
-        return {REFUSAL_FIELD: AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE.value}
-    request = ClaimWorkItem(
-        item,
-        work_item_claim_id(run_id, item),
-        head_branch_for_work_item(order, project_id),
-        order.scope.paths,
-    )
+    request = _requested_claim(session, run_id, project_id)
+    if isinstance(request, AgentExecutionRefusal):
+        return {REFUSAL_FIELD: request.value}
     # The claim's own binding is held beside the graph's effect adapters rather
     # than among them: no published document declares this operation, so no
     # graph node can select it.
     binding = EffectBinding(
-        logical_effect_key_for_work_item_claim(
-            run_id, revision_hash, node_id, round_ordinal
-        ),
+        logical_key,
         run_id,
         revision_hash,
         ledger_binding.adapter_revision,
@@ -178,10 +190,28 @@ def prepare_work_item_claim(
         ledger_binding.operational_identity,
         AdapterOperationName.CLAIM_WORK_ITEM,
     )
-    prepared = prepared_effect_intent(
-        session, EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
-    )
+    intent = EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
+    prepared = prepared_effect_intent(session, intent)
     return {LOGICAL_KEY_FIELD: prepared.intent.binding.logical_key.value}
+
+
+def _requested_claim(
+    session: Any, run_id: RunId, project_id: ProjectId
+) -> ClaimWorkItem | AgentExecutionRefusal:
+    """The claim this run's own work-item order asks for, or why it asks none."""
+
+    order = issue_work_item_order(session, run_id)
+    item = github_issue_number_or_none(order.reference)
+    if item is None:
+        return AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED
+    if not order.scope.paths:
+        return AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE
+    return ClaimWorkItem(
+        item,
+        work_item_claim_id(run_id, item),
+        head_branch_for_work_item(order, project_id),
+        order.scope.paths,
+    )
 
 
 def hold_prepared_claim(
@@ -214,14 +244,20 @@ def hold_prepared_claim(
         if isinstance(standing, ClaimRefusal):
             return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason])
     held: ClaimReceipt = standing
+    confirmed = ConfirmedWorkItemClaim(_confirmed_claim(held), source)
     if (
         held.item != request.item
         or held.claim_id != request.claim_id
         or held.branch != request.head_branch
         or held.claimed_scope != scope
     ):
-        return WorkItemClaimRefused(AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED)
-    confirmed = ConfirmedWorkItemClaim(_confirmed_claim(held), source)
+        # The ledger granted this run's own claim id over another branch or
+        # another scope: the grant exists and this run may not build under it,
+        # so it is receipted as it stands -- an unreceipted grant would be a
+        # claim nothing can ever release.
+        return WorkItemClaimRefused(
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, confirmed
+        )
     if held.touches:
         return WorkItemClaimRefused(
             AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE, confirmed
@@ -291,4 +327,151 @@ def _confirmed_claim(receipt: ClaimReceipt) -> ClaimWorkItemReceipt:
             )
             for touch in receipt.touches
         ),
+    )
+
+
+def hold_work_item_claim(
+    datasource: SQLAlchemyDatasource,
+    ledger: WorkItemClaimLedger | None,
+    project_id: ProjectId | None,
+    binding: AgentNodeBindingV2,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+) -> str | None:
+    """Hold this node's work-item claim, or end the node where it cannot.
+
+    Runs before the attempt is executed, so a node that may not claim never
+    leases a workspace, never starts a provider and never pushes. The intent is
+    written durably before the ledger is asked, and the claim it confirms is
+    recorded before the builder is allowed to begin. A claim this execution
+    already has a receipt for is held without asking the ledger again, so a
+    recovery cannot refuse work already under way on a newer answer.
+
+    Answers `None` where the node may work, and the run's own terminal state
+    where it may not.
+    """
+
+    round_ordinal = binding.round_ordinal
+    prepared = _prepared_claim(
+        datasource, ledger, project_id, run_id, revision_hash, node_id, round_ordinal
+    )
+    if prepared is None or HELD_FIELD in prepared:
+        return None
+    refused = prepared.get(REFUSAL_FIELD)
+    if refused is not None:
+        return _refuse_claim(
+            datasource,
+            run_id,
+            revision_hash,
+            node_id,
+            round_ordinal,
+            AgentExecutionRefusal(refused),
+        )
+    if ledger is None:
+        raise RunBindingConflict(
+            "a prepared work-item claim requires the ledger that bound it"
+        )
+    logical_key = prepared[LOGICAL_KEY_FIELD]
+    outcome = hold_prepared_claim(
+        _prepared_intent(datasource, logical_key, revision_hash), ledger
+    )
+    _confirm_claim(datasource, logical_key, revision_hash, outcome)
+    if isinstance(outcome, WorkItemClaimHeld):
+        return None
+    return _refuse_claim(
+        datasource, run_id, revision_hash, node_id, round_ordinal, outcome.reason
+    )
+
+
+def _prepared_claim(
+    datasource: SQLAlchemyDatasource,
+    ledger: WorkItemClaimLedger | None,
+    project_id: ProjectId | None,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+) -> dict[str, str] | None:
+    """Write this node's claim intent before any command runs, or answer why not."""
+
+    return cast(
+        dict[str, str] | None,
+        datasource.run_tx_step(
+            {"name": WORK_ITEM_CLAIM_PREPARE_STEP_NAME},
+            lambda: prepare_work_item_claim(
+                datasource.sql_session(),
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+                None if ledger is None else ledger.binding,
+                project_id,
+            ),
+        ),
+    )
+
+
+def _prepared_intent(
+    datasource: SQLAlchemyDatasource,
+    logical_key: str,
+    revision_hash: WorkflowRevisionHash,
+) -> EffectIntent:
+    """The exact claim intent this node prepared, read back from the store."""
+
+    return cast(
+        EffectIntent,
+        datasource.run_tx_step(
+            {"name": WORK_ITEM_CLAIM_INTENT_STEP_NAME},
+            lambda: load_intent(
+                datasource.sql_session(), logical_key, revision_hash.value
+            ),
+        ),
+    )
+
+
+def _confirm_claim(
+    datasource: SQLAlchemyDatasource,
+    logical_key: str,
+    revision_hash: WorkflowRevisionHash,
+    outcome: WorkItemClaimOutcome,
+) -> None:
+    """Record the claim the ledger granted, whatever the node does next.
+
+    A claim that touches another lane, or that the ledger recorded over
+    another branch or scope, still exists: its receipt is written before the
+    node ends on it, so nothing is left granted and unaccounted for.
+    """
+
+    confirmed = outcome.confirmed
+    if confirmed is None:
+        return
+    datasource.run_tx_step(
+        {"name": WORK_ITEM_CLAIM_CONFIRM_STEP_NAME},
+        lambda: confirm_work_item_claim(
+            datasource.sql_session(), logical_key, revision_hash, confirmed
+        ),
+    )
+
+
+def _refuse_claim(
+    datasource: SQLAlchemyDatasource,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    refusal: AgentExecutionRefusal,
+) -> str:
+    return str(
+        datasource.run_tx_step(
+            {"name": WORK_ITEM_CLAIM_REFUSE_STEP_NAME},
+            lambda: commit_work_item_claim_refusal(
+                datasource.sql_session(),
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+                refusal,
+            ),
+        )
     )

@@ -82,6 +82,11 @@ import sys
 from pathlib import Path
 
 LEDGER = Path(__file__).with_name("claim-ledger.json")
+ANSWER = Path(__file__).with_name("claim-answer")
+
+
+def _scripted() -> str:
+    return ANSWER.read_text().strip() if ANSWER.is_file() else "grant"
 
 
 def _claims() -> list[dict[str, object]]:
@@ -93,6 +98,28 @@ def _option(arguments: list[str], name: str) -> str:
 
 
 def _claim(arguments: list[str]) -> int:
+    scripted = _scripted()
+    if scripted == "priority":
+        json.dump(
+            {
+                "refused": True,
+                "issue": int(arguments[1]),
+                "checks": [
+                    {
+                        "level": "error",
+                        "check": "out-of-order",
+                        "text": "a higher-priority item is free",
+                        "slice": None,
+                        "issue": 1,
+                    }
+                ],
+            },
+            sys.stdout,
+        )
+        return 2
+    if scripted == "unknown":
+        json.dump({"refused": True, "issue": int(arguments[1]), "checks": []}, sys.stdout)
+        return 2
     scope = [
         arguments[index + 1]
         for index, value in enumerate(arguments)
@@ -113,7 +140,19 @@ def _claim(arguments: list[str]) -> int:
         "versioned_files": len(scope),
         "versioned_files_total": 100,
         "share": 0.01,
-        "touches": [],
+        "touches": (
+            [
+                {
+                    "issue": 77,
+                    "lane": None,
+                    "claim_id": "another-lane",
+                    "agent": "atelier2 run another",
+                    "scope": scope,
+                }
+            ]
+            if scripted == "touches"
+            else []
+        ),
         "checks": [],
     }
     standing = _claims()
@@ -176,18 +215,24 @@ sys.exit(main(sys.argv[1:]))
 '''
 
 
-def fake_agent_claim_executable(root: Path) -> Path:
+def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     """A claim command a run can really invoke, holding its ledger in one file.
 
     The stub answers `agent-claim` 0.12.0's pinned JSON for the commands a run
     uses, and it remembers: a claim already posted is refused a second time and
     read back by `status`, exactly as the real ledger behaves, so a scenario
     proves the retry path rather than assuming it.
+
+    `answer` scripts what the ledger says to a claim: `grant` posts it,
+    `priority` refuses it with the tool's own out-of-order check, `unknown`
+    refuses it without one, and `touches` grants it while naming a foreign
+    lane on the same paths.
     """
 
     executable = root / "agent-claim"
     executable.write_text(f"#!{sys.executable}\n{_LEDGER_STUB}")
     executable.chmod(0o755)
+    (root / "claim-answer").write_text(answer)
     return executable
 
 

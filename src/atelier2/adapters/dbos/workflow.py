@@ -52,10 +52,6 @@ from atelier2.adapters.dbos.names import (
     SUBWORKFLOW_COMMIT_STEP_NAME,
     SUBWORKFLOW_WORKFLOW_NAME,
     WAIT_COMMIT_STEP_NAME,
-    WORK_ITEM_CLAIM_CONFIRM_STEP_NAME,
-    WORK_ITEM_CLAIM_INTENT_STEP_NAME,
-    WORK_ITEM_CLAIM_PREPARE_STEP_NAME,
-    WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
     WORKFLOW_NAME,
 )
 from atelier2.adapters.dbos.node_binding_codec import (
@@ -85,15 +81,8 @@ from atelier2.adapters.dbos.schema import (
     reconcile_commands,
 )
 from atelier2.adapters.dbos.work_item_claims import (
-    LOGICAL_KEY_FIELD,
-    REFUSAL_FIELD,
-    WorkItemClaimHeld,
     WorkItemClaimLedger,
-    WorkItemClaimRefused,
-    commit_work_item_claim_refusal,
-    confirm_work_item_claim,
-    hold_prepared_claim,
-    prepare_work_item_claim,
+    hold_work_item_claim,
 )
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
@@ -135,7 +124,6 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
-    AgentExecutionRefusal,
     NodeExecutionId,
 )
 from atelier2.contracts.host_configuration import ProjectId
@@ -629,129 +617,6 @@ def register_durable_run_workflow(
             permissions=agent_permission_policy,
         )
 
-    def prepared_work_item_claim(
-        run_id: RunId,
-        revision_hash: WorkflowRevisionHash,
-        node_id: str,
-        round_ordinal: int,
-    ) -> dict[str, str] | None:
-        """Write this node's claim intent before any command runs, or answer why not.
-
-        `None` says the node changes nothing and owes no claim; otherwise the
-        answer carries the prepared intent's key or the refusal it ends on.
-        """
-
-        ledger = work_item_claims
-        return cast(
-            dict[str, str] | None,
-            datasource.run_tx_step(
-                {"name": WORK_ITEM_CLAIM_PREPARE_STEP_NAME},
-                lambda: prepare_work_item_claim(
-                    datasource.sql_session(),
-                    run_id,
-                    revision_hash,
-                    node_id,
-                    round_ordinal,
-                    None if ledger is None else ledger.binding,
-                    project_id,
-                ),
-            ),
-        )
-
-    def held_work_item_claim(
-        binding: AgentNodeBindingV2,
-        run_id: RunId,
-        revision_hash: WorkflowRevisionHash,
-        node_id: str,
-    ) -> str | None:
-        """Hold this node's work-item claim, or end the node where it cannot.
-
-        Runs before the attempt exists, so a node that may not claim never
-        leases a workspace, never starts a provider and never pushes. The
-        intent is written durably before the ledger is asked, and the claim it
-        confirms is recorded before the builder is allowed to begin.
-        """
-
-        round_ordinal = binding.round_ordinal
-        prepared = prepared_work_item_claim(
-            run_id, revision_hash, node_id, round_ordinal
-        )
-        ledger = work_item_claims
-        if prepared is None:
-            return None
-        refused = prepared.get(REFUSAL_FIELD)
-        if refused is not None:
-            return refuse_work_item_claim(
-                run_id,
-                revision_hash,
-                node_id,
-                round_ordinal,
-                AgentExecutionRefusal(refused),
-            )
-        if ledger is None:
-            raise RunBindingConflict(
-                "a prepared work-item claim requires the ledger that bound it"
-            )
-        logical_key = prepared[LOGICAL_KEY_FIELD]
-        intent = cast(
-            EffectIntent,
-            datasource.run_tx_step(
-                {"name": WORK_ITEM_CLAIM_INTENT_STEP_NAME},
-                lambda: load_intent(
-                    datasource.sql_session(), logical_key, revision_hash.value
-                ),
-            ),
-        )
-        outcome = hold_prepared_claim(intent, ledger)
-        confirm_held_claim(logical_key, revision_hash, outcome)
-        if isinstance(outcome, WorkItemClaimHeld):
-            return None
-        return refuse_work_item_claim(
-            run_id, revision_hash, node_id, round_ordinal, outcome.reason
-        )
-
-    def confirm_held_claim(
-        logical_key: str,
-        revision_hash: WorkflowRevisionHash,
-        outcome: WorkItemClaimHeld | WorkItemClaimRefused,
-    ) -> None:
-        """Record the claim the ledger confirmed, whatever the node does next.
-
-        A claim that touches another lane still happened, so its receipt is
-        written before the node ends on it.
-        """
-
-        confirmed = outcome.confirmed
-        if confirmed is None:
-            return
-        datasource.run_tx_step(
-            {"name": WORK_ITEM_CLAIM_CONFIRM_STEP_NAME},
-            lambda: confirm_work_item_claim(
-                datasource.sql_session(), logical_key, revision_hash, confirmed
-            ),
-        )
-
-    def refuse_work_item_claim(
-        run_id: RunId,
-        revision_hash: WorkflowRevisionHash,
-        node_id: str,
-        round_ordinal: int,
-        refusal: AgentExecutionRefusal,
-    ) -> str:
-        return str(
-            datasource.run_tx_step(
-                {"name": WORK_ITEM_CLAIM_REFUSE_STEP_NAME},
-                lambda: commit_work_item_claim_refusal(
-                    datasource.sql_session(),
-                    run_id,
-                    revision_hash,
-                    node_id,
-                    round_ordinal,
-                    refusal,
-                ),
-            )
-        )
-
     def agent_node_attempt(
         binding: AgentNodeBindingV2,
         run_id: RunId,
@@ -796,16 +661,29 @@ def register_durable_run_workflow(
         revision_hash: WorkflowRevisionHash,
         node_id: str,
     ) -> str:
-        """One Agent node from its precondition to wherever the run stands next."""
+        """One Agent node from its preconditions to wherever the run stands next.
 
-        unclaimed = held_work_item_claim(binding, run_id, revision_hash, node_id)
-        if unclaimed is not None:
-            return unclaimed
+        The executor is asked for first: a node no bound executor can start
+        ends on that, and posting a claim for work this host cannot begin
+        would leave a lane held for nothing.
+        """
+
         attempt = agent_node_attempt(
             binding, run_id, revision_hash, node_id, AGENT_ATTEMPT_ORDINAL
         )
         if attempt.executor is None:
             return refuse_unavailable_executor(attempt.execution.request)
+        unclaimed = hold_work_item_claim(
+            datasource,
+            work_item_claims,
+            project_id,
+            binding,
+            run_id,
+            revision_hash,
+            node_id,
+        )
+        if unclaimed is not None:
+            return unclaimed
         outcome = execute_v2_attempt(attempt.execution, attempt.executor, binding)
         return continue_run_after(
             outcome, binding, run_id, revision_hash, node_id, binding.round_ordinal

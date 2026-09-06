@@ -200,13 +200,24 @@ def test_an_unreadable_ledger_refuses_before_any_claim_is_attempted() -> None:
     ids=("another-branch", "another-scope"),
 )
 def test_a_claim_the_ledger_recorded_differently_refuses(answer: ClaimReceipt) -> None:
-    """A run may build only under the claim it asked for, not under a neighbour."""
+    """A run may build only under the claim it asked for, not under a neighbour.
+
+    The grant exists all the same, so it is receipted as the ledger recorded
+    it: a refusal that dropped it would leave a claim nothing can release.
+    """
 
     claims = FakeWorkItemClaims(claim_answer=answer)
 
-    assert _held(claims) == WorkItemClaimRefused(
-        AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
-    )
+    outcome = _held(claims)
+
+    assert isinstance(outcome, WorkItemClaimRefused)
+    assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+    assert outcome.confirmed is not None
+    assert outcome.confirmed.receipt.claim_id == CLAIM_ID
+    assert (
+        outcome.confirmed.receipt.branch,
+        outcome.confirmed.receipt.claimed_scope,
+    ) == (answer.branch, tuple(path.as_posix() for path in answer.claimed_scope))
 
 
 def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:

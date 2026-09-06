@@ -15,7 +15,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
-from atelier2.adapters.dbos import workflow as workflow_module
+from atelier2.adapters.dbos import work_item_claims as claim_module
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.names import RESOLVE_STEP_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -364,7 +364,7 @@ def _crash_before_the_claim_receipt() -> None:
     def die(*_arguments: object, **_keywords: object) -> None:
         os._exit(CRASHED)
 
-    workflow_module.confirm_work_item_claim = die
+    claim_module.confirm_work_item_claim = die
 
 
 def _launch_child(command: str, root: Path) -> None:

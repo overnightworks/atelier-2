@@ -414,13 +414,18 @@ nodes:
 
 
 def _public_runtime(
-    tmp_path: Path, project: Path, remote: Path, *, claims: bool = True
+    tmp_path: Path,
+    project: Path,
+    remote: Path,
+    *,
+    claims: str | None = "grant",
+    claim_root: Path | None = None,
 ) -> tuple[DbosRuntime, GitHubEffectAdapterFactory]:
     """The served instance this proof drives: both effects, and its claim ledger.
 
-    `claims` says whether this instance was given a claim command at all --
-    an operator who serves the project without one is what the unconfigured
-    refusal is about.
+    `claims` is what that ledger answers a claim -- or `None` for an operator
+    who served the project without a claim command at all, which is what the
+    unconfigured refusal is about.
     """
 
     github = GitHubEffectAdapterFactory(
@@ -462,7 +467,9 @@ def _public_runtime(
             project_id=PROJECT,
             bootstrap_project_root=project,
             agent_claim_executable=(
-                fake_agent_claim_executable(tmp_path) if claims else None
+                None
+                if claims is None
+                else fake_agent_claim_executable(claim_root or tmp_path, claims)
             ),
         ),
         registry,
@@ -511,33 +518,65 @@ def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
     )
 
 
+_SCOPED_ITEM = b"Implement P3.\n\n## Dateien\n`one.txt`\n"
+
+
 @pytest.mark.parametrize(
-    ("body", "claims", "refusal"),
+    ("body", "claims", "refusal", "receipts"),
     (
         pytest.param(
             b"Implement P3.",
-            True,
+            "grant",
             AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE,
+            0,
             id="the-item-names-no-scope",
         ),
         pytest.param(
-            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
-            False,
+            _SCOPED_ITEM,
+            None,
             AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED,
+            0,
             id="this-instance-holds-no-claim-command",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "priority",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY,
+            0,
+            id="the-ledger-refuses-on-priority",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "unknown",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+            0,
+            id="the-ledger-refuses-without-a-reason-this-reader-knows",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "touches",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+            1,
+            id="the-claim-touches-another-lane",
         ),
     ),
 )
 def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
-    tmp_path: Path, body: bytes, claims: bool, refusal: AgentExecutionRefusal
+    tmp_path: Path,
+    body: bytes,
+    claims: str | None,
+    refusal: AgentExecutionRefusal,
+    receipts: int,
 ) -> None:
-    """A claim nobody could take ends the run where it stands, and nothing ran.
+    """A claim this run cannot hold ends it where it stands, and nothing ran.
 
-    The scope is the item's own `## Dateien`, and a wide claim is not this
+    The scope is the item's own `## Dateien` and a wide claim is not this
     runtime's to invent; an instance serving without a claim command holds no
-    lane at all. Either way the node ends under its own word before an attempt
-    of it exists -- which is what proves no workspace was leased, no provider
-    started and nothing was pushed.
+    lane at all; and the ledger itself may refuse, or grant a claim over paths
+    another lane already holds. Every one of them ends the node under its own
+    word before an attempt of it exists -- which is what proves no workspace
+    was leased, no provider started and nothing was pushed. A grant that did
+    happen is receipted all the same.
     """
 
     project, remote, _base = _repositories(tmp_path)
@@ -556,15 +595,33 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
             attempts = connection.execute(
                 sa.select(sa.func.count()).select_from(agent_attempts)
             ).scalar()
-            intents = connection.execute(
-                sa.select(sa.func.count()).select_from(effect_intents)
+            confirmed = connection.execute(
+                sa.select(sa.func.count()).select_from(effect_receipts)
             ).scalar()
         assert failures == [(refusal.value.encode("ascii"), None)]
-        assert (attempts, intents) == (0, 0)
+        assert (attempts, confirmed) == (0, receipts)
         assert github.recorded_pull_requests() == ()
         assert _git(remote, "branch", "--list", "atelier2/*") == ""
     finally:
         runtime.close()
+
+    _restarts_without_an_open_binding(tmp_path, project, remote)
+
+
+def _restarts_without_an_open_binding(
+    tmp_path: Path, project: Path, remote: Path
+) -> None:
+    """A finished run leaves no effect intent a differing identity must answer for.
+
+    The claim's binding names the command this instance was served with, so an
+    instance serving the same project with another one is refused at start
+    while any claim intent of a finished run still counts as open (#1218).
+    """
+
+    moved = tmp_path / "moved-claim-command"
+    moved.mkdir(exist_ok=True)
+    restarted, _github = _public_runtime(tmp_path, project, remote, claim_root=moved)
+    restarted.close()
 
 
 @pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
@@ -574,9 +631,7 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
     project, remote, base = _repositories(tmp_path)
     runtime, github = _public_runtime(tmp_path, project, remote)
     try:
-        response = _start_public_run(
-            runtime, b"Implement P3.\n\n## Dateien\n`one.txt`\n"
-        )
+        response = _start_public_run(runtime, _SCOPED_ITEM)
         assert response.status_code == 201, response.text
         runtime.launch()
         wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
@@ -628,6 +683,8 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         assert open_request.head_branch.value == branch
     finally:
         runtime.close()
+
+    _restarts_without_an_open_binding(tmp_path, project, remote)
 
 
 class _CrashAfterDocumentationPush(RuntimeError):
