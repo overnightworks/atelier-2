@@ -24,12 +24,13 @@ through `ctypes`, the same way `adapters.runner_child` calls Landlock.
 The resolved descriptor is opened `O_PATH`: no device's own open routine runs,
 so a FIFO or a device node can neither block this call nor misbehave before
 its type is known. Its `fstat` decides everything before any data is ever
-touched -- not a regular file, or hard-linked (`st_nlink > 1`, which no
-`RESOLVE_*` flag addresses since a hard link is neither a symlink nor a mount)
-is refused right there. Only a confirmed regular, singly-linked file is
-promoted to a readable descriptor, and only through `/proc/self/fd/<n>` -- the
-documented way to obtain data access to an already-resolved `O_PATH`
-descriptor's own inode without any further name lookup.
+touched -- not a regular file, hard-linked (`st_nlink > 1`, which no
+`RESOLVE_*` flag addresses since a hard link is neither a symlink nor a mount),
+or already past the read ceiling is refused right there, before a single byte
+is read. Only a confirmed regular, singly-linked, bounded file is promoted to
+a readable descriptor, and only through `/proc/self/fd/<n>` -- the documented
+way to obtain data access to an already-resolved `O_PATH` descriptor's own
+inode without any further name lookup.
 
 A request is refused, never raised past `answer`: every reachable failure --
 an escape, a symlink, a mount boundary, a hard link, a non-regular file, a
@@ -136,6 +137,8 @@ class AttemptWorkspaceFileRefusal(StrEnum):
     PATH_LEFT_THE_LEASE = "path-left-the-lease"
     PATH_NAMED_A_SYMLINK = "path-named-a-symlink"
     PATH_CROSSED_A_MOUNT = "path-crossed-a-mount"
+    FILE_NOT_FOUND = "file-not-found"
+    ACCESS_DENIED = "access-denied"
     FILE_IS_HARD_LINKED = "file-is-hard-linked"
     NOT_A_REGULAR_FILE = "not-a-regular-file"
     LEASED_DIRECTORY_CHANGED = "leased-directory-changed"
@@ -147,17 +150,22 @@ class AttemptWorkspaceFileRefusal(StrEnum):
 
 # `openat2`'s own errno already names most refusals; `ENOSYS`/`EINVAL` (no
 # kernel support) and anything else unclassified are left to the outer I/O
-# boundary in `describe` rather than guessed at here. `RESOLVE_BENEATH` and
-# `RESOLVE_NO_XDEV` both report `EXDEV`; the pre-open lexical fence already
-# refuses every `..` and every foreign absolute address before this call is
-# ever made, so an `EXDEV` reaching here is a mount crossing. `EACCES` is the
-# errno `RESOLVE_BENEATH` reports for the cases `EXDEV` does not cover.
+# boundary in `describe` rather than guessed at here.
+#
+# `ENOENT`/`ENOTDIR` name a plain missing path, and `EACCES` names an
+# ordinary permission refusal -- neither is an escape, so neither shares
+# `PATH_LEFT_THE_LEASE` with the lexical fence. `RESOLVE_BENEATH` and
+# `RESOLVE_NO_XDEV` both report `EXDEV`, but the pre-open lexical fence
+# already refuses every `..` and every foreign absolute address before this
+# call is ever made, so an `EXDEV` this classifier can actually observe is a
+# mount crossing, never a `RESOLVE_BENEATH` escape the lexical fence let
+# through -- `PATH_LEFT_THE_LEASE` stays reserved for that fence itself.
 _OPENAT2_ERRNO_REFUSALS: dict[int, AttemptWorkspaceFileRefusal] = {
     errno.ELOOP: AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
     errno.EXDEV: AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT,
-    errno.EACCES: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
-    errno.ENOENT: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
-    errno.ENOTDIR: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+    errno.EACCES: AttemptWorkspaceFileRefusal.ACCESS_DENIED,
+    errno.ENOENT: AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
+    errno.ENOTDIR: AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
 }
 
 
@@ -279,6 +287,10 @@ class AttemptWorkspaceFileAccess:
                 return _refused(
                     request_id, AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED
                 )
+            if probed.st_size > self._maximum_read_bytes:
+                return _refused(
+                    request_id, AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+                )
             data_fd = os.open(f"/proc/self/fd/{path_fd}", os.O_RDONLY | os.O_CLOEXEC)
         finally:
             os.close(path_fd)
@@ -306,11 +318,13 @@ class AttemptWorkspaceFileAccess:
 def _bounded_read(descriptor: int, ceiling: int) -> bytes | None:
     """Every byte this file holds, or `None` once more than `ceiling` arrived.
 
-    Never trusts a size read before this call: a file that grows between an
-    `fstat` and a fixed-length `read` would otherwise answer a silently
-    truncated prefix as though it were the whole file. Reading in a loop,
-    bounded by one byte past the ceiling, means the true byte count decides
-    the outcome instead.
+    A size already past the ceiling is refused before this is ever called;
+    this is the guard for what that one check cannot see -- a file that
+    grows past the ceiling between the check and the last byte read. A fixed-
+    length `read` sized from that earlier `fstat` would otherwise answer a
+    silently truncated prefix as though it were the whole file. Reading in a
+    loop, bounded by one byte past the ceiling, means the true byte count
+    decides the outcome instead.
     """
 
     chunks: list[bytes] = []

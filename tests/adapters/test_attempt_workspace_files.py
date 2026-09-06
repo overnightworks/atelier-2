@@ -207,12 +207,12 @@ _REFUSAL_SCENARIOS = (
     _RefusalScenario(
         "missing file",
         _a_missing_file,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
     ),
     _RefusalScenario(
         "an unreadable intermediate directory",
         _an_unreadable_intermediate_directory,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        AttemptWorkspaceFileRefusal.ACCESS_DENIED,
     ),
     _RefusalScenario(
         "symlink path component",
@@ -447,10 +447,27 @@ def test_a_resolved_file_that_changed_identity_before_the_data_reopen_is_refused
     assert outcome.refusal is AttemptWorkspaceFileRefusal.RESOLVED_FILE_CHANGED_IDENTITY
 
 
-def test_a_file_wider_than_the_injected_ceiling_is_refused(tmp_path: Path) -> None:
+def test_an_already_oversize_file_is_refused_without_opening_or_reading_its_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe's own `fstat` already knows the size is past the ceiling, so
+    this is refused there -- before the data descriptor is even opened
+    through `/proc/self/fd`, let alone read. The bounded read loop exists
+    only to catch a file that grows past the ceiling after this check, not
+    to discover one that already is."""
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "big.bin").write_bytes(b"x" * 10)
+    opened_names = _spying_open(monkeypatch)
+    read_calls: list[int] = []
+    real_read = os.read
+
+    def spying_read(descriptor: int, size: int) -> bytes:
+        read_calls.append(descriptor)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(attempt_workspace_files.os, "read", spying_read)
 
     outcome = _access(workspace, maximum_read_bytes=5).describe(_read(Path("big.bin")))
 
@@ -458,6 +475,8 @@ def test_a_file_wider_than_the_injected_ceiling_is_refused(tmp_path: Path) -> No
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
     )
     assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+    assert opened_names == []
+    assert read_calls == []
 
 
 def test_a_file_that_grows_during_the_read_is_refused_once_past_the_ceiling(
