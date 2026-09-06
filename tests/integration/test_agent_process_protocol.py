@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import select
@@ -512,16 +513,23 @@ def test_provider_stream_error_deregisters_the_descriptor(
     finally:
         stepper.disarm()
         stepper.release()
-        # The child is the watchdog's to signal and to reap, so a second
-        # reaper here would race it into a lookup of a pid already gone;
-        # closing the owner pipe below terminates the group either way.
         # A live cgroup reports empty only once every member process has
         # actually exited; this fake one holds "populated 1" until told
         # otherwise, so left untouched it would hide the reaped child from
         # _advance_process and strand serve() escalating its grace forever.
         (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
         os.close(owner_writer)
-        _wait_until(lambda: not thread.is_alive())
+        # While the watchdog runs, the child is its to signal and to reap, so
+        # the join comes first: a kill beside a live watchdog is a second
+        # reaper racing it for one pid. Past the join nobody owns the child --
+        # an assertion killing the served thread never reaches a reap -- so a
+        # survivor is killed here instead of holding its session for a minute.
+        thread.join(timeout=5)
+        child = watchdog._process
+        if child is not None and child.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
         endpoint.unlink(missing_ok=True)
     assert not thread.is_alive()
     assert errors == []
