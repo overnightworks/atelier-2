@@ -207,15 +207,15 @@ test("captures every surface at both widths", async ({ page }) => {
   const schemaHash = await anyJsonSchema(page);
   const agentHash = await immediateAgent(page);
 
-  // The Workbench before anything is said: the empty room teaches the one
-  // next move instead of staying blank, and the composer is already within
-  // reach (#580, REQ-UI-24).
+  // The Workbench as a cold server serves it: the terminal, and whatever the
+  // harness's own baseline is already carrying above it. Not the empty room --
+  // that baseline always holds its two reconciliation fixtures, so the empty
+  // room's own card is proven where it can be staged, in
+  // `frontend/tests/app/workbenchPage.test.ts` (REQ-UI-24).
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: workbenchPageCopy.emptyTitle })
-  ).toBeVisible();
-  await shoot(page, "workbench-empty");
+  await expect(page.getByRole("region", { name: seatCopy.regionLabel })).toBeVisible();
+  await shoot(page, "workbench-cold");
 
   const iterate = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },

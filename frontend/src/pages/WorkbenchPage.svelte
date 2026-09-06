@@ -539,15 +539,7 @@
     {#if seat.kind === "reading"}
       <p class="seat-connecting" role="status">{wrapDisplayCopy(seatCopy.connecting)}</p>
     {:else if seatSource !== null}
-      <!-- A terminal that stopped answering leaves the frame refusing to
-           load; the room asks the door again rather than framing a dead
-           address, and shows whatever it then says. -->
-      <iframe
-        class="seat-terminal"
-        title={wrapDisplayCopy(seatCopy.terminalTitle)}
-        src={seatSource}
-        onerror={() => { void readSeat(); }}
-      ></iframe>
+      <iframe class="seat-terminal" title={wrapDisplayCopy(seatCopy.terminalTitle)} src={seatSource}></iframe>
     {:else}
       <ProblemNotice
         title={wrapDisplayCopy(seatCopy.unreachableTitle)}

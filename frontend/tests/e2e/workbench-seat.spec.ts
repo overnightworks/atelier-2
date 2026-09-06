@@ -11,9 +11,10 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  * on a real tmux session -- the pipeline's runner carries neither binary
  * (`tests/e2e/serve_cockpit.py` says so at startup, and
  * `tests/integration/test_terminal_seat_live.py` drives the real ones where
- * they exist). What is proven here is the room: the frame and whose seat it
- * is, the address a reload reattaches to, the refusal below the readable
- * width, and the stage standing unchanged beside all of it.
+ * they exist). What is proven here is the room: the framed terminal and whose
+ * seat it is on a desktop, the same terminal edge to edge on a phone with a
+ * tap typing into it, the one refusal with its way out when the door answers
+ * that no terminal is there, and a run arriving as an ordinary row beside it.
  */
 const WIDE = { width: 1280, height: 900 };
 const NARROW = { width: 390, height: 844 };
