@@ -4,16 +4,22 @@ and what it refuses before ever reaching outside it.
 Every scenario runs against a real temporary directory tree: the fence is a
 descriptor discipline over actual `openat` calls, so a filesystem fake could
 only assert that the adapter believes its own abstraction, never that a
-symlink, a swapped directory, or an escaping path is truly refused.
+symlink, a mount boundary, a hard link, a swapped directory, or an escaping
+path is truly refused. A few scenarios this host cannot construct for real
+without privileges -- a second mounted filesystem -- fake the kernel's own
+report for exactly the one descriptor the scenario is about, real open calls
+and real bytes everywhere else.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,8 +71,8 @@ def _answered(content: bytes) -> AttemptWorkspaceFileOutcome:
 
 @pytest.mark.parametrize(
     "requested",
-    [Path("notes.md"), None],
-    ids=["relative", "lease-absolute"],
+    [Path("notes.md"), None, Path("./notes.md")],
+    ids=["relative", "lease-absolute", "leading-dot-collapses"],
 )
 def test_a_file_inside_the_lease_is_read(
     tmp_path: Path, requested: Path | None
@@ -82,12 +88,25 @@ def test_a_file_inside_the_lease_is_read(
     assert outcome == _answered(b"hello workspace")
 
 
-def test_a_nested_relative_path_inside_the_lease_is_read(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "requested",
+    [Path("sub/deep.txt"), Path("sub/./deep.txt"), Path("sub//deep.txt")],
+    ids=["plain", "dot-component-collapses", "double-slash-collapses"],
+)
+def test_a_nested_relative_path_inside_the_lease_is_read(
+    tmp_path: Path, requested: Path
+) -> None:
+    """`pathlib.PurePath` collapses a `.` component and a doubled separator
+    lexically, at parse time, regardless of how the `Path` was built -- there
+    is no `Path` value this port's `ProviderFilesystemRequest.path` could ever
+    carry from which either survives to reach this adapter. All three forms
+    therefore name the same file."""
+
     workspace = tmp_path / "workspace"
     (workspace / "sub").mkdir(parents=True)
     (workspace / "sub" / "deep.txt").write_bytes(b"deep bytes")
 
-    outcome = _access(workspace).describe(_read(Path("sub/deep.txt")))
+    outcome = _access(workspace).describe(_read(requested))
 
     assert outcome == _answered(b"deep bytes")
 
@@ -149,6 +168,18 @@ def _a_symlink_as_the_requested_file(_tmp_path: Path, workspace: Path) -> Path:
     return Path("alias.txt")
 
 
+def _a_fifo(_tmp_path: Path, workspace: Path) -> Path:
+    os.mkfifo(workspace / "pipe")
+    return Path("pipe")
+
+
+def _a_hard_link_reaching_outside_the_lease(tmp_path: Path, workspace: Path) -> Path:
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside content")
+    os.link(outside, workspace / "linked.txt")
+    return Path("linked.txt")
+
+
 _REFUSAL_SCENARIOS = (
     _RefusalScenario(
         "parent directory escape",
@@ -184,6 +215,16 @@ _REFUSAL_SCENARIOS = (
         "symlink as the requested file",
         _a_symlink_as_the_requested_file,
         AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
+    ),
+    _RefusalScenario(
+        "a FIFO named where a file was expected",
+        _a_fifo,
+        AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE,
+    ),
+    _RefusalScenario(
+        "a hard link reaching a file outside the lease",
+        _a_hard_link_reaching_outside_the_lease,
+        AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED,
     ),
 )
 
@@ -234,13 +275,14 @@ def test_a_lease_whose_directory_changed_identity_is_refused(tmp_path: Path) -> 
     assert outcome.refusal is AttemptWorkspaceFileRefusal.LEASED_DIRECTORY_CHANGED
 
 
-def test_a_path_component_swapped_for_a_symlink_after_the_lease_is_still_refused(
-    tmp_path: Path,
+def test_a_path_component_swapped_for_a_symlink_between_walk_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The lease was taken while `sub` was a real directory; a peer later
-    replaces it with a symlink reaching outside. Because every step of the
-    walk is opened fresh with `O_NOFOLLOW`, the swap that happened after the
-    lease is caught exactly like a symlink that was there from the start."""
+    """The swap happens after the adapter has already opened `sub` and before
+    it opens `file.txt` relative to it -- the real race window a
+    descriptor-by-descriptor walk is exposed to, not a directory replaced
+    before the call even starts. Once `sub` is open, its own descriptor is
+    unaffected by the swap; only the still-unopened next name is."""
 
     workspace = tmp_path / "workspace"
     (workspace / "sub").mkdir(parents=True)
@@ -250,8 +292,23 @@ def test_a_path_component_swapped_for_a_symlink_after_the_lease_is_still_refused
     sentinel = tmp_path / "sentinel"
     sentinel.mkdir()
     (sentinel / "file.txt").write_bytes(b"sentinel secret")
-    shutil.rmtree(workspace / "sub")
-    (workspace / "sub").symlink_to(sentinel)
+
+    real_open = os.open
+
+    def swap_after_sub_opens(
+        path: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        opened = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "sub":
+            (workspace / "sub" / "file.txt").unlink()
+            (workspace / "sub" / "file.txt").symlink_to(sentinel / "file.txt")
+        return opened
+
+    monkeypatch.setattr(attempt_workspace_files.os, "open", swap_after_sub_opens)
 
     outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
         _read(Path("sub/file.txt"))
@@ -264,12 +321,100 @@ def test_a_path_component_swapped_for_a_symlink_after_the_lease_is_still_refused
     assert (sentinel / "file.txt").read_bytes() == b"sentinel secret"
 
 
+def test_an_intermediate_directory_on_a_different_device_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`O_NOFOLLOW` does not stop a bind mount grafted under the leased tree:
+    it is not a symlink, so the fence checks device identity on every opened
+    descriptor instead. Building a real second filesystem needs privileges
+    this suite does not have, so the kernel's own report is faked for exactly
+    the one descriptor this scenario is about; every other call is real."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / "sub").mkdir(parents=True)
+    (workspace / "sub" / "file.txt").write_bytes(b"content")
+    lease = _lease(workspace)
+
+    real_open = os.open
+    real_fstat = os.fstat
+    foreign_descriptors: set[int] = set()
+
+    def marking_open(
+        path: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        opened = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "sub":
+            foreign_descriptors.add(opened)
+        return opened
+
+    def spoofing_fstat(descriptor: int) -> os.stat_result | SimpleNamespace:
+        status = real_fstat(descriptor)
+        if descriptor in foreign_descriptors:
+            return SimpleNamespace(
+                st_dev=status.st_dev + 1,
+                st_mode=status.st_mode,
+                st_nlink=status.st_nlink,
+            )
+        return status
+
+    monkeypatch.setattr(attempt_workspace_files.os, "open", marking_open)
+    monkeypatch.setattr(attempt_workspace_files.os, "fstat", spoofing_fstat)
+
+    outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
+        _read(Path("sub/file.txt"))
+    )
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+
+
 def test_a_file_wider_than_the_injected_ceiling_is_refused(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "big.bin").write_bytes(b"x" * 10)
 
     outcome = _access(workspace, maximum_read_bytes=5).describe(_read(Path("big.bin")))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+
+
+def test_a_file_that_grows_during_the_read_is_refused_once_past_the_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A size read before the read call is never trusted: the file starts
+    within the ceiling and grows past it between chunks, so only a bounded
+    read loop -- never a single fixed-length read sized from a stale
+    `fstat` -- can catch this instead of silently answering a truncated
+    prefix as though it were the whole file."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "growing.bin"
+    target.write_bytes(b"a" * 3)
+    real_read = os.read
+
+    def growing_read(descriptor: int, size: int) -> bytes:
+        chunk = real_read(descriptor, min(size, 2))
+        if chunk:
+            with open(target, "r+b") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.write(b"b" * 10)
+        return chunk
+
+    monkeypatch.setattr(attempt_workspace_files.os, "read", growing_read)
+
+    outcome = _access(workspace, maximum_read_bytes=5).describe(
+        _read(Path("growing.bin"))
+    )
 
     assert outcome.reply == ProviderFilesystemReply(
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
@@ -291,6 +436,27 @@ def test_a_write_request_is_refused_as_not_yet_granted(tmp_path: Path) -> None:
     )
     assert outcome.refusal is AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED
     assert list(workspace.iterdir()) == []
+
+
+def test_an_unexpected_os_error_is_refused_as_workspace_io_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"hello")
+
+    def failing_fstat(descriptor: int) -> os.stat_result:
+        raise OSError(errno.EIO, "simulated I/O fault")
+
+    monkeypatch.setattr(attempt_workspace_files.os, "fstat", failing_fstat)
+
+    outcome = _access(workspace).describe(_read(Path("notes.md")))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
+    assert outcome.detail == "EIO"
 
 
 def _spying_open(
@@ -332,22 +498,66 @@ def test_a_pure_escape_opens_nothing_at_all(
     assert opened_names == []
 
 
-def test_a_symlink_escape_never_opens_the_directory_it_points_to(
+def test_a_path_deeper_than_the_component_bound_opens_nothing_at_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    opened_names = _spying_open(monkeypatch)
+    too_deep = Path(*(f"level{n}" for n in range(65)))
+
+    outcome = _access(workspace).describe(_read(too_deep))
+
+    assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
+    assert opened_names == []
+
+
+def _identity(path: Path) -> tuple[int, int]:
+    status = os.stat(path, follow_symlinks=False)
+    return status.st_dev, status.st_ino
+
+
+def test_a_symlink_escape_never_reaches_a_descriptor_inside_the_sentinel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not merely "never named `secret.txt`": every relative `open` this call
+    makes is checked, by `fstat` identity, never to be resolved against a
+    directory descriptor that is the sentinel itself -- and no call names an
+    absolute path mentioning it either."""
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     sentinel = tmp_path / "sentinel"
     sentinel.mkdir()
     (sentinel / "secret.txt").write_bytes(b"do not read me")
     (workspace / "escape").symlink_to(sentinel)
-    opened_names = _spying_open(monkeypatch)
+    sentinel_identity = _identity(sentinel)
+
+    real_open = os.open
+
+    def guarded_open(
+        path: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if dir_fd is not None:
+            parent_status = os.fstat(dir_fd)
+            assert (parent_status.st_dev, parent_status.st_ino) != sentinel_identity, (
+                "opened a name relative to a descriptor inside the sentinel"
+            )
+        if isinstance(path, str):
+            assert "sentinel" not in path
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(attempt_workspace_files.os, "open", guarded_open)
 
     outcome = _access(workspace).describe(_read(Path("escape/secret.txt")))
 
     assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
     assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
-    assert "secret.txt" not in opened_names
 
 
 def test_the_constructor_rejects_a_ceiling_above_the_artifact_bound(
@@ -376,4 +586,13 @@ def test_a_refused_outcome_must_name_its_reason() -> None:
     with pytest.raises(ValueError, match="names why"):
         AttemptWorkspaceFileOutcome(
             ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED)
+        )
+
+
+def test_only_a_workspace_io_failure_may_name_an_errno() -> None:
+    with pytest.raises(ValueError, match="only a workspace I/O failure"):
+        AttemptWorkspaceFileOutcome(
+            ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED),
+            AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
+            "EIO",
         )
