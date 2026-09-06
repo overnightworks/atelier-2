@@ -128,12 +128,12 @@ def test_the_first_file_request_and_the_first_question_are_two_questions() -> No
 
     attempt_id = an_attempt_id()
 
-    assert PermissionCorrelationId.for_file_call(
-        attempt_id, 1
-    ) != PermissionCorrelationId.for_call(attempt_id, 1)
-    assert PermissionCorrelationId.for_file_call(
-        attempt_id, 1
-    ) == PermissionCorrelationId.for_file_call(attempt_id, 1)
+    first_construction = PermissionCorrelationId.for_file_call(attempt_id, 1)
+    second_construction = PermissionCorrelationId.for_file_call(attempt_id, 1)
+
+    assert first_construction == second_construction
+    assert first_construction != PermissionCorrelationId.for_call(attempt_id, 1)
+    assert first_construction != PermissionCorrelationId.for_file_call(attempt_id, 2)
 
 
 def test_a_question_refused_unasked_names_the_revision_it_ran_under() -> None:
