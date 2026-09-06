@@ -8,6 +8,7 @@ import pytest
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
 from atelier2.adapters.dbos.work_item_claims import (
+    ConfirmedWorkItemClaim,
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
@@ -24,6 +25,7 @@ from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
     CanonicalRequest,
+    ConfirmationSource,
     EffectAdapterBinding,
     EffectBinding,
     EffectDestination,
@@ -125,12 +127,18 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
         )
     ]
     assert outcome == WorkItemClaimHeld(
-        ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE)
+        ConfirmedWorkItemClaim(
+            ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE),
+            ConfirmationSource.ADAPTER_EXECUTION,
+        )
     )
 
 
 def test_a_claim_this_run_already_holds_is_read_back_and_never_taken_twice() -> None:
-    """The retry path: the ledger's own claim answers, and no command mutates it."""
+    """The retry path: the ledger's own claim answers, and no command mutates it.
+
+    The receipt then says a read established it, never a command that ran.
+    """
 
     claims = FakeWorkItemClaims(read_back_answer=_receipt())
 
@@ -138,7 +146,10 @@ def test_a_claim_this_run_already_holds_is_read_back_and_never_taken_twice() -> 
 
     assert claims.claim_requests == []
     assert outcome == WorkItemClaimHeld(
-        ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE)
+        ConfirmedWorkItemClaim(
+            ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE),
+            ConfirmationSource.ADAPTER_READBACK,
+        )
     )
 
 
@@ -211,8 +222,8 @@ def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:
     assert isinstance(outcome, WorkItemClaimRefused)
     assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
     assert outcome.confirmed is not None
-    assert outcome.confirmed.touches[0].claim_id == "other-claim"
-    assert outcome.confirmed.touches[0].scope == ("tests",)
+    assert outcome.confirmed.receipt.touches[0].claim_id == "other-claim"
+    assert outcome.confirmed.receipt.touches[0].scope == ("tests",)
 
 
 def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
@@ -233,10 +244,12 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     first = hold_prepared_claim(intent, ledger)
     second = hold_prepared_claim(intent, ledger)
 
-    assert (
-        first
-        == second
-        == WorkItemClaimHeld(ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE))
+    receipt = ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE)
+    assert first == WorkItemClaimHeld(
+        ConfirmedWorkItemClaim(receipt, ConfirmationSource.ADAPTER_EXECUTION)
+    )
+    assert second == WorkItemClaimHeld(
+        ConfirmedWorkItemClaim(receipt, ConfirmationSource.ADAPTER_READBACK)
     )
     assert [request.claim_id for request in claimed_ledger(executable)] == [CLAIM_ID]
 

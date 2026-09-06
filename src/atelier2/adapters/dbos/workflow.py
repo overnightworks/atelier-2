@@ -721,11 +721,7 @@ def register_durable_run_workflow(
         written before the node ends on it.
         """
 
-        confirmed = (
-            outcome.receipt
-            if isinstance(outcome, WorkItemClaimHeld)
-            else outcome.confirmed
-        )
+        confirmed = outcome.confirmed
         if confirmed is None:
             return
         datasource.run_tx_step(

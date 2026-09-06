@@ -94,10 +94,24 @@ class WorkItemClaimLedger:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfirmedWorkItemClaim:
+    """The claim the ledger answered with, and how this run learned of it.
+
+    `source` is the effect contract's own provenance: a claim this drive
+    posted is `ADAPTER_EXECUTION`, and one it found already standing under
+    its claim id is `ADAPTER_READBACK`, so a receipt never says a command
+    ran where a read answered.
+    """
+
+    receipt: ClaimWorkItemReceipt
+    source: ConfirmationSource
+
+
+@dataclass(frozen=True, slots=True)
 class WorkItemClaimHeld:
     """The ledger holds this run's claim, and this is what it confirmed."""
 
-    receipt: ClaimWorkItemReceipt
+    confirmed: ConfirmedWorkItemClaim
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +124,7 @@ class WorkItemClaimRefused:
     """
 
     reason: AgentExecutionRefusal
-    confirmed: ClaimWorkItemReceipt | None = None
+    confirmed: ConfirmedWorkItemClaim | None = None
 
 
 type WorkItemClaimOutcome = WorkItemClaimHeld | WorkItemClaimRefused
@@ -185,9 +199,11 @@ def hold_prepared_claim(
     request = ClaimWorkItem.from_canonical_bytes(intent.request.payload)
     scope = tuple(PurePosixPath(path) for path in request.scope)
     standing = ledger.claims.read_back(request.item, request.claim_id)
+    source = ConfirmationSource.ADAPTER_READBACK
     if isinstance(standing, ClaimRefusal):
         return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason])
     if isinstance(standing, ClaimAbsent):
+        source = ConfirmationSource.ADAPTER_EXECUTION
         standing = ledger.claims.claim(
             request.item,
             intent.binding.run_id,
@@ -206,7 +222,7 @@ def hold_prepared_claim(
         or held.claimed_scope != scope
     ):
         return WorkItemClaimRefused(AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED)
-    confirmed = _confirmed_claim(held)
+    confirmed = ConfirmedWorkItemClaim(_confirmed_claim(held), source)
     if held.touches:
         return WorkItemClaimRefused(
             AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE, confirmed
@@ -218,16 +234,16 @@ def confirm_work_item_claim(
     session: Any,
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
-    confirmed: ClaimWorkItemReceipt,
+    confirmed: ConfirmedWorkItemClaim,
 ) -> None:
     """Record the claim the ledger confirmed as this intent's own receipt."""
 
     intent = load_intent(session, logical_key, revision_hash.value)
     receipt = EffectReceipt(
         intent,
-        EffectId(confirmed.claim_id),
-        EffectResult(confirmed.result_bytes()),
-        ConfirmationSource.ADAPTER_EXECUTION,
+        EffectId(confirmed.receipt.claim_id),
+        EffectResult(confirmed.receipt.result_bytes()),
+        confirmed.source,
     )
     commit_resolution(
         session, logical_key, revision_hash.value, encode_readback(receipt)
