@@ -1,12 +1,8 @@
 import { defineConfig, type OpenApiDocument } from "orval";
 
 /**
- * Restricts the frozen document to the roots this slice's client actually
- * calls (#1317): the `GET /health` operation and the component schemas its
- * 200 response transitively references. Every generated-schema slice narrows
- * this the same way for its own roots; Orval's own `input.filters` cannot
- * prune paths without OpenAPI tags, which the served document does not
- * carry, so the transformer walks `$ref`s itself.
+ * Orval's `input.filters` can only scope generation by OpenAPI tags, which
+ * this document does not carry, so a transformer picks the roots instead.
  */
 const HEALTH_OPERATION_PATH = "/atelier/api/v1/health";
 
@@ -68,16 +64,24 @@ export default defineConfig({
       override: { transformer: restrictToHealthOperation },
     },
     output: {
-      target: "./src/api/generated",
-      schemas: { path: "./src/api/generated", type: "zod", routes: { default: "model" } },
-      mode: "split",
+      // A single named file the facade imports directly: `client:"zod"` has no
+      // HTTP operations of its own, so a per-operation target file would carry
+      // no caller while `CockpitApi` stays hand-written (`override.zod.generate`
+      // below already empties its would-be content).
+      target: "./src/api/generated/health.zod.ts",
+      mode: "single",
       client: "zod",
-      indexFiles: false,
-      clean: true,
       override: {
         zod: {
           generateReusableSchemas: true,
           strict: { body: true, response: true },
+          generate: {
+            param: false,
+            query: false,
+            header: false,
+            body: false,
+            response: false,
+          },
         },
       },
     },

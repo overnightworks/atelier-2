@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "check:dead": "knip --production",
     "generate:api": "orval --config orval.config.ts",
-    "check:generated": "npm run generate:api && git diff --exit-code -- src/api/generated",
+    "check:generated": "npm run generate:api && git add -N -- src/api/generated && git diff --exit-code -- src/api/generated",
     "test": "vitest run",
     "e2e": "playwright test",
     "e2e:reversed": "E2E_ORDER=reversed playwright test"

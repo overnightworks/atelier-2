@@ -17,3 +17,18 @@ export const RedeployBlockedResource = zod.strictObject({
 
 export type RedeployBlockedResource = zod.input<typeof RedeployBlockedResource>;
 export type RedeployBlockedResourceOutput = zod.output<typeof RedeployBlockedResource>;
+
+export const healthResourceServeStartedAtRegExp = new RegExp('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$');
+
+
+export const HealthResource = zod.strictObject({
+  "redeploy": zod.union([RedeployBlockedResource,zod.null()]).optional().describe('Named only once the auto-redeploy watcher has failed three or more ticks in a row, or its own status file is unreadable.'),
+  "serve_started_at": zod.string().regex(healthResourceServeStartedAtRegExp).describe('When this serve process started, so a client can tell a redeploy from the commit it loaded with.'),
+  "source_commit": zod.string(),
+  "source_tree": zod.string(),
+  "status": zod.literal("serving").meta({ title: 'Status' })
+});
+
+export type HealthResource = zod.input<typeof HealthResource>;
+export type HealthResourceOutput = zod.output<typeof HealthResource>;
+

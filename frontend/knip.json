@@ -2,6 +2,6 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["src/main.ts!"],
   "project": ["src/**/*.{ts,svelte}!"],
-  "ignore": ["src/api/generated/**"],
+  "ignoreIssues": { "src/api/generated/**": ["exports", "types"] },
   "ignoreExportsUsedInFile": true
 }

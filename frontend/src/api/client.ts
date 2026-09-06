@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { HealthResource } from "./generated/model/healthResource.zod";
+import { HealthResource } from "./generated/health.zod";
 import {
   reportConnectionLost,
   reportConnectionRestored,
