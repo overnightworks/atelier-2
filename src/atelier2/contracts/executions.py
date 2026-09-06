@@ -496,22 +496,15 @@ def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:
     return LogicalEffectKey(f"atelier2-node-effect-{digest.value}")
 
 
-def logical_effect_key_for_work_item_claim(
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-    round_ordinal: int = FIRST_ROUND_ORDINAL,
-) -> LogicalEffectKey:
-    """The key of the claim one node's execution takes before it works.
+def work_item_claim_effect_key(execution_id: NodeExecutionId) -> LogicalEffectKey:
+    """The key of the claim one node execution takes before it works.
 
-    Framed apart from `logical_effect_key_for_node` because the same execution
-    also prepares the effect its own grant earns: two effects of one node
-    execution are two keys, or the second would find the first's intent and
-    call it its own.
+    Framed apart from `logical_effect_key_for` because the same execution also
+    prepares the effect its own grant earns: two effects of one node execution
+    are two keys, or the second would find the first's intent and call it its
+    own. Derived from the execution alone, so a reader that holds only that --
+    the restart sweep asking who owns an open intent -- computes it too.
     """
-    execution_id = NodeExecutionId.for_node(
-        run_id, revision_hash, node_id, round_ordinal
-    )
     digest = Sha256Hash.of(
         frame(
             "logical-effect-key/work-item-claim/v1",
@@ -519,6 +512,18 @@ def logical_effect_key_for_work_item_claim(
         )
     )
     return LogicalEffectKey(f"atelier2-work-item-claim-{digest.value}")
+
+
+def logical_effect_key_for_work_item_claim(
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> LogicalEffectKey:
+    """That same key, from the four coordinates a preparer holds."""
+    return work_item_claim_effect_key(
+        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal)
+    )
 
 
 def logical_effect_key_for_node(

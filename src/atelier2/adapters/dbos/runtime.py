@@ -39,6 +39,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     initialize_schema,
     run_agent_bindings,
+    run_events,
     runs,
 )
 from atelier2.adapters.dbos.uncontinuable_runs import (
@@ -92,6 +93,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     logical_effect_key_for,
+    work_item_claim_effect_key,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
@@ -512,30 +514,52 @@ def _agent_redeemed_owning_workflow_ids(
     rather than stored: every agent attempt of the intent's own run names its
     node execution, and the logical key that execution mints
     (`logical_effect_key_for`, the derivation `logical_effect_key_for_node`
-    composes for the preparer) either is this intent's key or is not. No match
-    names no owner, so the caller keeps the intent -- a store whose attempt
-    rows are gone fails closed rather than exempting an intent nothing
-    accounts for.
+    composes for the preparer) either is this intent's key or is not. The lane
+    claim a builder node holds before it works is prepared by that same node
+    workflow under its own key (`work_item_claim_effect_key`), so both keys of
+    one execution name it. No match names no owner, so the caller keeps the
+    intent -- a store whose rows are gone fails closed rather than exempting
+    an intent nothing accounts for.
     """
 
     run_ids = {str(record.run_id) for record in records}
     if not run_ids:
         return {}
     node_workflow_ids_by_key: dict[str, str] = {}
-    for attempt in connection.execute(
-        sa.select(agent_attempts.c.node_execution_id)
-        .where(agent_attempts.c.run_id.in_(run_ids))
-        .distinct()
-    ):
-        execution_id = NodeExecutionId(str(attempt.node_execution_id))
-        node_workflow_ids_by_key[logical_effect_key_for(execution_id).value] = (
-            node_workflow_id_for(execution_id)
-        )
+    for execution_id in _node_executions_of(connection, run_ids):
+        workflow_id = node_workflow_id_for(execution_id)
+        for logical_key in (
+            logical_effect_key_for(execution_id),
+            work_item_claim_effect_key(execution_id),
+        ):
+            node_workflow_ids_by_key[logical_key.value] = workflow_id
     return {
         logical_key: node_workflow_ids_by_key[logical_key]
         for record in records
         if (logical_key := str(record.logical_key)) in node_workflow_ids_by_key
     }
+
+
+def _node_executions_of(
+    connection: Connection, run_ids: set[str]
+) -> tuple[NodeExecutionId, ...]:
+    """Every node execution these runs are known to have reached.
+
+    An attempt names one, and so does every event a node wrote -- which is the
+    only trace left by a node that ended before an attempt of it existed, as a
+    refused lane claim does.
+    """
+
+    executions = {
+        str(record.node_execution_id)
+        for table in (agent_attempts, run_events)
+        for record in connection.execute(
+            sa.select(table.c.node_execution_id)
+            .where(table.c.run_id.in_(run_ids))
+            .distinct()
+        )
+    }
+    return tuple(NodeExecutionId(execution) for execution in sorted(executions))
 
 
 def _still_open_effect_intents(
