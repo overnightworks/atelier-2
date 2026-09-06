@@ -1,14 +1,16 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import PinnedDecision from "../../src/components/PinnedDecision.svelte";
 import RunCancelCard from "../../src/components/RunCancelCard.svelte";
 import V3RunView from "../../src/components/V3RunView.svelte";
+import { prepareCancel } from "../../src/lib/cancelRunDelivery";
 import { journalPoisonedCopy } from "../../src/lib/journalPoisonedCopy";
 import { cancelMutation, MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { MUTATION_JOURNAL_STORAGE_KEY } from "../../src/lib/storageKeys";
+import { prepareWaitAnswer } from "../../src/lib/waitAnswerDelivery";
 import { cockpitApiStub } from "../support/cockpitApi";
 import {
   publicReference,
@@ -266,5 +268,140 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
 
     await flushUnhandledRejectionQueue();
     expect(unhandledRejections).toEqual([]);
+  });
+});
+
+/**
+ * The three write paths that read the journal before they write it --
+ * `discard()` on both cards and `deliverWaitAnswer`'s own re-read on retry --
+ * are blocked by the identical poisoned journal a read site already refuses.
+ * Each proves the room's own visible reaction (the one sentence and door) for
+ * every one of `entries()`'s own rejection reasons, never an unhandled
+ * rejection -- the run page, not a bare callback count, is what an operator
+ * actually sees.
+ */
+describe("a mutation journal turning poisoned between a write path's own load and its own write", () => {
+  it.each(POISONED_JOURNAL_FIXTURES)(
+    "RunCancelCard.discardCancel shows the same sentence and door a read site would, for $name",
+    async ({ stored }) => {
+      const journal = new MutationJournal(sessionStorage);
+      const run = startedRun();
+      await prepareCancel(journal, run.public_run_reference, "d".repeat(64));
+      render(App, {
+        props: {
+          cockpitApi: cockpitApiStub({
+            getRun: async () => run,
+            getWorkflowRevision: async () => workflowRevision()
+          }),
+          mutationJournal: journal
+        }
+      });
+      const discardButton = await screen.findByRole("button", { name: runPageCopy.cancel.discard });
+
+      sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
+      await fireEvent.click(discardButton);
+
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.cancel.discard })).toBeNull();
+
+      await flushUnhandledRejectionQueue();
+      expect(unhandledRejections).toEqual([]);
+    }
+  );
+
+  it.each(POISONED_JOURNAL_FIXTURES)(
+    "V3RunView.discardWait shows the same sentence and door a read site would, for $name",
+    async ({ stored }) => {
+      const journal = new MutationJournal(sessionStorage);
+      const run = waitingInputRun();
+      await prepareWaitAnswer(
+        journal,
+        run.public_run_reference,
+        run.workflow_revision_hash,
+        run.current_node_id,
+        run.current_node_execution_id,
+        "an earlier answer",
+        false
+      );
+      render(App, {
+        props: {
+          cockpitApi: cockpitApiStub({
+            getRun: async () => run,
+            getWorkflowRevision: async () => workflowRevision()
+          }),
+          mutationJournal: journal
+        }
+      });
+      const discardButton = await screen.findByRole("button", { name: runPageCopy.discard });
+
+      sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
+      await fireEvent.click(discardButton);
+
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+
+      await flushUnhandledRejectionQueue();
+      expect(unhandledRejections).toEqual([]);
+    }
+  );
+
+  it.each(POISONED_JOURNAL_FIXTURES)(
+    "V3RunView.retryWait shows the same sentence and door a read site would, for $name",
+    async ({ stored }) => {
+      const journal = new MutationJournal(sessionStorage);
+      const run = waitingInputRun();
+      await prepareWaitAnswer(
+        journal,
+        run.public_run_reference,
+        run.workflow_revision_hash,
+        run.current_node_id,
+        run.current_node_execution_id,
+        "an earlier answer",
+        false
+      );
+      render(App, {
+        props: {
+          cockpitApi: cockpitApiStub({
+            getRun: async () => run,
+            getWorkflowRevision: async () => workflowRevision(),
+            answer: async () => ({ status: 200, value: waitingInputRun() })
+          }),
+          mutationJournal: journal
+        }
+      });
+      const retryButton = await screen.findByRole("button", { name: runPageCopy.retry });
+
+      sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
+      await fireEvent.click(retryButton);
+
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+
+      await flushUnhandledRejectionQueue();
+      expect(unhandledRejections).toEqual([]);
+    }
+  );
+
+  it("does not swallow a failure that is not the journal itself: discardCancel rethrows it and shows no poisoned-journal door", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const run = startedRun();
+    await prepareCancel(journal, run.public_run_reference, "d".repeat(64));
+    const notAJournalFailure = new Error("the browser's storage quota is exceeded");
+    vi.spyOn(journal, "discard").mockRejectedValueOnce(notAJournalFailure);
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          getRun: async () => run,
+          getWorkflowRevision: async () => workflowRevision()
+        }),
+        mutationJournal: journal
+      }
+    });
+    const discardButton = await screen.findByRole("button", { name: runPageCopy.cancel.discard });
+
+    await fireEvent.click(discardButton);
+
+    await waitFor(() => expect(unhandledRejections).toEqual([notAJournalFailure]));
+    expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
   });
 });

@@ -10,7 +10,7 @@
   } from "../lib/cancelRunDelivery";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import { MutationJournal, type CancelMutation } from "../lib/mutationJournal";
+  import { JournalUnreadableError, MutationJournal, type CancelMutation } from "../lib/mutationJournal";
   import { cancelConsequence, cancelReasonSentence, runPageCopy } from "../lib/runPageCopy";
   import { runHasEnded } from "../lib/runState";
 
@@ -118,7 +118,8 @@
   ): Promise<PendingCancelLookup> {
     try {
       return { kind: "found", pending: await loadPendingCancelForRun(mutationJournal, publicRunReference) };
-    } catch {
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
       onJournalPoisoned();
       return { kind: "poisoned" };
     }
@@ -202,9 +203,21 @@
     }
   }
 
+  /**
+   * `discard` reads the whole journal before it writes, so a journal that
+   * turned unreadable since this card last loaded refuses here exactly as it
+   * would on a fresh read -- reported through the same `onJournalPoisoned`
+   * door rather than left as an unhandled rejection.
+   */
   async function discardCancel(): Promise<void> {
     if (pending === null) return;
-    await mutationJournal.discard(pending.mutation_id);
+    try {
+      await mutationJournal.discard(pending.mutation_id);
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
+      onJournalPoisoned();
+      return;
+    }
     pending = null;
     accepted = false;
     uncertainMessage = null;

@@ -31,7 +31,9 @@ def test_an_artifacts_address_is_the_digest_of_its_exact_bytes() -> None:
 
 
 def test_the_same_bytes_are_the_same_artifact_and_different_bytes_are_not() -> None:
-    assert accepted(b"one").artifact_hash == accepted(b"one").artifact_hash
+    assert accepted(b"one").artifact_hash == ArtifactHash(
+        hashlib.sha256(b"one").hexdigest()
+    )
     assert accepted(b"one").artifact_hash != accepted(b"one ").artifact_hash
 
 

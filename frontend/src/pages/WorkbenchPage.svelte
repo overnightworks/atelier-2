@@ -48,7 +48,7 @@
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import type { MutationJournal } from "../lib/mutationJournal";
+  import { JournalUnreadableError, type MutationJournal } from "../lib/mutationJournal";
   import {
     beginRead,
     confirmRead,
@@ -310,7 +310,8 @@
         run.current_node_id,
         run.current_node_execution_id
       );
-    } catch {
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
       journalPoisoned = true;
       return null;
     }
