@@ -134,7 +134,7 @@ class WorkItemScopeMalformed(ValueError):
 
 
 def _canonical_scope_path(token: str) -> str:
-    normalized = token.removesuffix("/")
+    normalized = token.rstrip("/")
     if (
         not normalized
         or normalized.startswith("/")

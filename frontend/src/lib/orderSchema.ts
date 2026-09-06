@@ -90,7 +90,8 @@ const WORK_ITEM_FIELDS = [
   "digest",
   "kind",
   "observed_at",
-  "reference"
+  "reference",
+  "scope"
 ] as const;
 
 /**

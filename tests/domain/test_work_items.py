@@ -173,6 +173,7 @@ def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
     [
         (b"## Dateien\n`a/file.py`.", ("a/file.py",)),
         (b"## Dateien\n`a/dir`, `a/dir/`.", ("a/dir",)),
+        (b"## Dateien\n`a/dir//`.", ("a/dir",)),
         (b"## Dateien\n`b/one`, `a/two`.", ("a/two", "b/one")),
         (b"## Dateien\n`a/one`, `a/one`.", ("a/one",)),
         (b"## Dateien\nprose names `a/one` here.", ("a/one",)),
@@ -183,6 +184,7 @@ def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
     ids=[
         "one-file",
         "directory-with-and-without-trailing-slash",
+        "directory-with-multiple-trailing-slashes",
         "unsorted-becomes-sorted",
         "duplicate-collapses",
         "prose-outside-backticks-ignored",
@@ -199,20 +201,23 @@ def test_the_files_section_grammar_reads_exactly_its_backtick_tokens(
 
 @pytest.mark.parametrize(
     "token",
-    ["../etc/passwd", "a/../b", "with space", "*.py", "/absolute"],
+    ["../etc/passwd", "a/../b", "with space", "*.py", "/absolute", "//"],
     ids=[
         "leading-traversal",
         "embedded-traversal",
         "whitespace",
         "glob",
         "absolute",
+        "only-separators",
     ],
 )
 def test_a_files_section_token_that_is_not_a_relative_path_is_a_named_error(
     token: str,
 ) -> None:
-    with pytest.raises(WorkItemScopeMalformed):
+    with pytest.raises(WorkItemScopeMalformed) as error:
         WorkItemScope.from_body(f"## Dateien\n`{token}`.".encode())
+
+    assert error.value.token == token
 
 
 def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
