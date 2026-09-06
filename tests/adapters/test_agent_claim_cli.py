@@ -30,6 +30,7 @@ SCOPE = (PurePosixPath("src/atelier2/ports/work_item_claims.py"),)
 @dataclass
 class RecordedProcess:
     outputs: list[bytes]
+    errors: list[bytes] = field(default_factory=list)
     commands: list[tuple[str, ...]] = field(default_factory=list)
 
     def start(self, arguments: tuple[str, ...], **_options: object) -> object:
@@ -39,7 +40,8 @@ class RecordedProcess:
     def streams(
         self, _process: object, _timeout: float, _maximum: int
     ) -> tuple[int, bytes, bytes]:
-        return 0, self.outputs.pop(0), b""
+        error = self.errors.pop(0) if self.errors else b""
+        return 0, self.outputs.pop(0), error
 
 
 def _claim_payload(
@@ -188,6 +190,19 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
     ]
 
 
+def test_adapter_forwards_the_out_of_order_reason_to_argv(
+    recorded_process: RecordedProcess,
+) -> None:
+    recorded_process.outputs.append(_claim_payload())
+
+    _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, "fixing a live outage first")
+
+    assert recorded_process.commands[0][-3:-1] == (
+        "--out-of-order",
+        "fixing a live outage first",
+    )
+
+
 @pytest.mark.parametrize(
     "payload",
     (
@@ -261,6 +276,9 @@ def test_adapter_refuses_release_output_outside_the_pinned_json_contract(
 
 
 def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> None:
+    # Pinned verbatim against agent-claim 0.12.0's `_out_of_order_check`
+    # (cli.py:1042-1058): the structured check id is "out-of-order", not a
+    # word this adapter would have to find in prose.
     recorded_process.outputs.append(
         json.dumps(
             {
@@ -269,40 +287,38 @@ def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> N
                 "checks": [
                     {
                         "level": "error",
-                        "check": "priority",
-                        "text": "priority needs --out-of-order",
+                        "check": "out-of-order",
+                        "text": (
+                            "higher-priority actionable item #42 (score 7) is "
+                            "free: fix the flake; use --out-of-order REASON to proceed"
+                        ),
                         "slice": None,
-                        "issue": ITEM,
+                        "issue": 42,
                     }
                 ],
             }
         ).encode()
     )
 
-    assert _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, "needed") == ClaimRefusal(
+    assert _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, None) == ClaimRefusal(
         ClaimRefusalReason.PRIORITY
     )
 
 
-def test_adapter_maps_an_unreadable_ledger_refusal(
+def test_adapter_maps_a_ledger_unreadable_diagnostic_refusal(
     recorded_process: RecordedProcess,
 ) -> None:
-    recorded_process.outputs.append(
-        json.dumps(
-            {
-                "refused": True,
-                "issue": ITEM,
-                "checks": [
-                    {
-                        "level": "error",
-                        "check": "ledger",
-                        "text": "ledger is unreadable; upgrade the installed tool",
-                        "slice": None,
-                        "issue": None,
-                    }
-                ],
-            }
-        ).encode()
+    # agent-claim 0.12.0 never reaches its `--json` refusal payload for an
+    # unreadable ledger: `_reject_unreadable_claims` (protocol.py:1191-1200)
+    # raises before one exists, and the top-level `ClaimError` handler
+    # (cli.py:1990-1992) prints this documented sentence to stderr instead,
+    # with empty stdout.
+    recorded_process.outputs.append(b"")
+    recorded_process.errors.append(
+        b"ERROR: claim refused: claim 'claim-1' at "
+        b"https://example.invalid/claims/1 is unreadable (unknown fields: "
+        b"extra); upgrade the installed tool before claiming a scope that "
+        b"could overlap it\n"
     )
 
     assert _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, None) == ClaimRefusal(

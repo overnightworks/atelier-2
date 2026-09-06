@@ -24,6 +24,7 @@ AGENT_CLAIM_TIMEOUT_SECONDS = 30.0
 MAXIMUM_AGENT_CLAIM_OUTPUT_BYTES = 65_536
 _JSON_FLAG = "--json"
 _BUILDER_ROLE = "builder"
+_OUT_OF_ORDER_CHECK = "out-of-order"
 
 _CLAIM_FIELDS = frozenset(
     {
@@ -333,6 +334,11 @@ def _is_claim_refusal(value: dict[str, object]) -> bool:
 
 
 def _diagnostic_refusal(diagnostics: str) -> ClaimRefusalReason:
+    # agent-claim 0.12.0 fails a claim or release against an unreadable ledger
+    # by raising `ClaimError` before any `--json` payload exists, so the tool
+    # prints no stdout and this documented stderr sentence instead (its
+    # `_reject_unreadable_claims`, cli.py's top-level `ClaimError` handler):
+    # match that fragment as the tool's stderr contract.
     if "unreadable" in diagnostics or "upgrade the installed tool" in diagnostics:
         return ClaimRefusalReason.LEDGER_UNREADABLE
     return ClaimRefusalReason.UNKNOWN
@@ -348,16 +354,15 @@ def _claim_refusal_reason(value: dict[str, object]) -> ClaimRefusalReason:
     try:
         _require_fields(value, _CLAIM_REFUSAL_FIELDS)
         _integer(value["issue"])
-        checks = _list(value["checks"])
-        texts = tuple(_check(check) for check in checks)
+        checks = tuple(_check(check) for check in _list(value["checks"]))
     except (TypeError, ValueError):
         return ClaimRefusalReason.UNKNOWN
-    if any("out-of-order" in text or "priority" in text for text in texts):
+    # agent-claim 0.12.0 names the out-of-order slice rule with the structured
+    # check id "out-of-order" (cli.py `_out_of_order_check`); a ledger-unreadable
+    # claim refusal never reaches this JSON payload -- it fails before one
+    # exists (see `_diagnostic_refusal`).
+    if any(name == _OUT_OF_ORDER_CHECK for name, _level in checks):
         return ClaimRefusalReason.PRIORITY
-    if any(
-        "unreadable" in text or "upgrade the installed tool" in text for text in texts
-    ):
-        return ClaimRefusalReason.LEDGER_UNREADABLE
     return ClaimRefusalReason.UNKNOWN
 
 
@@ -391,17 +396,19 @@ def _status_claim(value: object, branch: HeadBranch) -> ClaimState | None:
     return state
 
 
-def _check(value: object) -> str:
+def _check(value: object) -> tuple[str, str]:
+    """Validate one ``SliceCheck`` and return its ``(check, level)`` pair --
+    agent-claim 0.12.0's structured refusal fields, not its rendered text."""
     check = _object(value)
     _require_fields(check, _CHECK_FIELDS)
-    _text(check["level"])
-    _text(check["check"])
-    text = _text(check["text"])
+    level = _text(check["level"])
+    name = _text(check["check"])
+    _text(check["text"])
     if check["slice"] is not None:
         _integer(check["slice"])
     if check["issue"] is not None:
         _integer(check["issue"])
-    return text
+    return name, level
 
 
 def _unreadable(value: object) -> None:
