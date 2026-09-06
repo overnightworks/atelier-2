@@ -1,2 +1,5 @@
 # Ideen tragen das Label `idee` und ranken ohne Projektion (agent-claim README: idea_label).
 idea_label = "idee"
+# Jedes offene Item trägt seine Projektion im typisierten `agent-claim`-Zaun statt in Prosa;
+# ein Body ohne gültigen Zaun wird namentlich verweigert (agent-claim README: body_contract).
+body_contract = "block"
