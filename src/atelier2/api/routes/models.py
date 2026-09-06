@@ -98,7 +98,7 @@ async def put_model_registry_route(
     ],
     body: PutModelRegistryRevisionRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
@@ -151,7 +151,7 @@ async def validate_model_registry_entry_route(
     ],
     body: ValidateModelRegistryEntryRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
@@ -179,7 +179,7 @@ async def validate_model_registry_entry_route(
     return resource_response(model_registry_resource(revision), status)
 
 
-@router.get(MODEL_REGISTRY_PATH, response_model=ModelRegistryRevisionResource)
+@router.get(MODEL_REGISTRY_PATH)
 async def get_model_registry_route(
     provider_id: Annotated[
         str,
@@ -220,7 +220,7 @@ async def put_project_model_defaults_route(
     public_project_reference: PublicProjectReferencePath,
     body: PutProjectModelDefaultsRevisionRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> JSONResponse:
     project = _project_id(public_project_reference, context)
     result = await run_control_query(
@@ -262,9 +262,7 @@ async def put_project_model_defaults_route(
     return resource_response(project_model_defaults_resource(revision), status)
 
 
-@router.get(
-    PROJECT_MODEL_DEFAULTS_PATH, response_model=ProjectModelDefaultsRevisionResource
-)
+@router.get(PROJECT_MODEL_DEFAULTS_PATH)
 async def get_project_model_defaults_route(
     public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
@@ -289,15 +287,12 @@ async def get_project_model_defaults_route(
             assert_never(unreachable)
 
 
-@router.post(
-    PROJECT_MODEL_RESOLUTION_PATH,
-    response_model=ProjectModelResolutionResource,
-)
+@router.post(PROJECT_MODEL_RESOLUTION_PATH)
 async def resolve_project_models_route(
     public_project_reference: PublicProjectReferencePath,
     body: ResolveProjectModelsRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> ProjectModelResolutionResource:
     project = _project_id(public_project_reference, context)
     result = await run_control_query(

@@ -58,10 +58,7 @@ from atelier2.application.refusals import (
 router = APIRouter()
 
 
-@router.get(
-    PROJECT_SOURCE_CONNECTION_PATH,
-    response_model=ProjectSourceConnectionRevisionResource,
-)
+@router.get(PROJECT_SOURCE_CONNECTION_PATH)
 async def get_project_source_connection_route(
     public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
@@ -110,7 +107,7 @@ def _source_problem(result: object) -> None:
             raise ApiProblem("internal-error")
 
 
-@router.get(PROJECT_SOURCES_PATH, response_model=ProjectSourceListResource)
+@router.get(PROJECT_SOURCES_PATH)
 async def list_project_sources_route(
     public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
@@ -134,7 +131,6 @@ async def list_project_sources_route(
 
 @router.post(
     PROJECT_SOURCES_PATH,
-    response_model=ProjectSourceResource,
     status_code=status.HTTP_201_CREATED,
 )
 async def connect_project_source_route(
@@ -186,7 +182,7 @@ async def disconnect_project_source_route(
             raise ApiProblem("internal-error")
 
 
-@router.put(PROJECT_SOURCE_TOKEN_PATH, response_model=ProjectSourceResource)
+@router.put(PROJECT_SOURCE_TOKEN_PATH)
 async def rotate_project_source_token_route(
     request: RotateProjectSourceTokenRequestResource,
     public_project_reference: PublicProjectReferencePath,
