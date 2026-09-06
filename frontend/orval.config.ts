@@ -1,10 +1,56 @@
-import { defineConfig, type OpenApiDocument } from "orval";
+import {
+  defineConfig,
+  type OpenApiDocument,
+  type OpenApiParameterObject,
+} from "orval";
 
 /**
  * Orval's `input.filters` can only scope generation by OpenAPI tags, which
- * this document does not carry, so a transformer picks the roots instead.
+ * this document does not carry, so a transformer picks the roots instead:
+ * one root per operation whose response body this file decodes, walked out
+ * to its transitive `$ref`s. Request bodies stay out of every root here --
+ * they belong to the hand-written facade (`CockpitApi`), which owns what it
+ * sends, not what the wire hands back.
  */
+interface OperationRoot {
+  readonly path: string;
+  readonly method: "get" | "post";
+  readonly keptStatuses: readonly string[];
+}
+
 const HEALTH_OPERATION_PATH = "/atelier/api/v1/health";
+
+const HEALTH_ROOTS: readonly OperationRoot[] = [
+  { path: HEALTH_OPERATION_PATH, method: "get", keptStatuses: ["200"] },
+];
+
+const WORKFLOW_AND_CATALOG_ROOTS: readonly OperationRoot[] = [
+  {
+    path: "/atelier/api/v1/workflow-revisions",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/workflow-revisions/{workflow_revision_hash}",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/catalog-lineages",
+    method: "post",
+    keptStatuses: ["201"],
+  },
+  {
+    path: "/atelier/api/v1/catalog-lineages/{lineage_id}/members",
+    method: "post",
+    keptStatuses: ["201"],
+  },
+  {
+    path: "/atelier/api/v1/catalog-revisions/by-name/{kind}/{name}",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+];
 
 function findRefs(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(findRefs);
@@ -30,60 +76,106 @@ function collectSchemaNames(
   return collected;
 }
 
-function restrictToHealthOperation(spec: OpenApiDocument): OpenApiDocument {
-  const healthPathItem = spec.paths?.[HEALTH_OPERATION_PATH];
-  if (!healthPathItem?.get) {
-    throw new Error(
-      `orval.config.ts expected a GET ${HEALTH_OPERATION_PATH} operation in the frozen document`,
-    );
-  }
-  const okResponse = healthPathItem.get.responses?.["200"];
-  const schemas = spec.components?.schemas ?? {};
-  const keptSchemaNames = collectSchemaNames(findRefs(okResponse), schemas);
-  return {
-    ...spec,
-    paths: {
-      [HEALTH_OPERATION_PATH]: {
-        ...healthPathItem,
-        get: { ...healthPathItem.get, responses: { "200": okResponse } },
+function restrictToOperations(roots: readonly OperationRoot[]) {
+  return function restrict(spec: OpenApiDocument): OpenApiDocument {
+    const schemas = spec.components?.schemas ?? {};
+    const keptSchemaNames = new Set<string>();
+    const keptPaths: NonNullable<OpenApiDocument["paths"]> = {};
+    for (const root of roots) {
+      const operation = spec.paths?.[root.path]?.[root.method];
+      if (!operation) {
+        throw new Error(
+          `orval.config.ts expected a ${root.method.toUpperCase()} ${root.path} operation in the frozen document`,
+        );
+      }
+      const keptResponses = Object.fromEntries(
+        root.keptStatuses.map((status) => {
+          const response = operation.responses?.[status];
+          if (!response) {
+            throw new Error(
+              `orval.config.ts expected a ${status} response on ${root.method.toUpperCase()} ${root.path} in the frozen document`,
+            );
+          }
+          return [status, response];
+        }),
+      );
+      collectSchemaNames(findRefs(keptResponses), schemas, keptSchemaNames);
+      // The request body drops out entirely: this file decodes response
+      // bodies only, and a request-body `$ref` must not pull an otherwise
+      // unrelated schema into the reusable-schema output. A path parameter
+      // stays, because OpenAPI validation requires one declared per `{...}`
+      // placeholder in the path -- but its schema is flattened to a plain
+      // string, since `generate.param` is off and no code reads its type.
+      const pathParametersOnly = (operation.parameters ?? [])
+        .filter(
+          (parameter): parameter is OpenApiParameterObject =>
+            !("$ref" in parameter) && parameter.in === "path",
+        )
+        .map((parameter) => ({ ...parameter, schema: { type: "string" as const } }));
+      keptPaths[root.path] = {
+        ...keptPaths[root.path],
+        [root.method]: {
+          operationId: operation.operationId,
+          parameters: pathParametersOnly,
+          responses: keptResponses,
+        },
+      };
+    }
+    return {
+      ...spec,
+      paths: keptPaths,
+      components: {
+        ...spec.components,
+        schemas: Object.fromEntries(
+          Object.entries(schemas).filter(([name]) => keptSchemaNames.has(name)),
+        ),
       },
-    },
-    components: {
-      ...spec.components,
-      schemas: Object.fromEntries(
-        Object.entries(schemas).filter(([name]) => keptSchemaNames.has(name)),
-      ),
-    },
-  } as OpenApiDocument;
+    } as OpenApiDocument;
+  };
 }
+
+// `client:"zod"` has no HTTP operations of its own, so a per-operation target
+// file would carry no caller while `CockpitApi` stays hand-written -- this
+// override empties its would-be operation content and keeps only the named
+// reusable schemas each project's transformer selected.
+const ZOD_SCHEMAS_ONLY = {
+  zod: {
+    generateReusableSchemas: true,
+    strict: { body: true, response: true },
+    generate: {
+      param: false,
+      query: false,
+      header: false,
+      body: false,
+      response: false,
+    },
+  },
+} as const;
 
 export default defineConfig({
   cockpit: {
     input: {
       target: "../tests/api/openapi_frozen.json",
-      override: { transformer: restrictToHealthOperation },
+      override: { transformer: restrictToOperations(HEALTH_ROOTS) },
     },
     output: {
-      // A single named file the facade imports directly: `client:"zod"` has no
-      // HTTP operations of its own, so a per-operation target file would carry
-      // no caller while `CockpitApi` stays hand-written (`override.zod.generate`
-      // below already empties its would-be content).
+      // A single named file the facade imports directly.
       target: "./src/api/generated/health.zod.ts",
       mode: "single",
       client: "zod",
-      override: {
-        zod: {
-          generateReusableSchemas: true,
-          strict: { body: true, response: true },
-          generate: {
-            param: false,
-            query: false,
-            header: false,
-            body: false,
-            response: false,
-          },
-        },
-      },
+      override: ZOD_SCHEMAS_ONLY,
+    },
+  },
+  workflowAndCatalog: {
+    input: {
+      target: "../tests/api/openapi_frozen.json",
+      override: { transformer: restrictToOperations(WORKFLOW_AND_CATALOG_ROOTS) },
+    },
+    output: {
+      target: "./src/api/generated/workflowAndCatalog.zod.ts",
+      mode: "single",
+      client: "zod",
+      override: ZOD_SCHEMAS_ONLY,
     },
   },
 });

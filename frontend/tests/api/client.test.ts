@@ -257,6 +257,37 @@ describe("closed API decoders", () => {
     ).toThrow();
   });
 
+  it.each([
+    { kind: "enum" as const, values: ["accepted", "revise"], valid: true },
+    { kind: "enum" as const, values: null, valid: false },
+    { kind: "boolean" as const, values: null, valid: true },
+    { kind: "boolean" as const, values: ["true"], valid: false }
+  ])(
+    "names values only for an enum wait-answer schema: $kind/$values",
+    ({ kind, values, valid }) => {
+      const revision = v3RevisionWithoutLoop();
+      if (revision.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
+      const waitAnswerSchema = {
+        node_id: "implement",
+        schema: { ref: "answer-schema", revision: "schema-answer" },
+        kind,
+        string_typed: false,
+        values
+      };
+      const parse = () =>
+        workflowRevisionDetailSchema.parse({
+          ...revision,
+          graph: { ...revision.graph, wait_answer_schemas: [waitAnswerSchema] }
+        });
+
+      if (valid) {
+        expect(parse().graph.wait_answer_schemas).toEqual([waitAnswerSchema]);
+      } else {
+        expect(parse).toThrow();
+      }
+    }
+  );
+
   it.each(["not-base64", "YQ", "YQ===", "Y Q==", "YQ-_", "===="])(
     "refuses a noncanonical document base64 value: %s",
     (document_base64) => {
