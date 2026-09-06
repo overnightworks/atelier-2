@@ -125,7 +125,6 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowNodeV3,
 )
 from atelier2.ports.durable_runs import (
-    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -1103,12 +1102,6 @@ def _wait_answer_binds_request(
     )
 
 
-def _refusal_for_actor(expected: WaitAnswerActor | None) -> DurableAnswerResult:
-    if expected is None:
-        return DurableStateCorrupt()
-    return DurableAnswerActorMismatch(expected)
-
-
 def _wait_answer_binds_execution(
     snapshot: WaitAnswerSnapshot,
     run_id: RunId,
@@ -1362,11 +1355,6 @@ class DbosWaitAnswerer:
                     ):
                         connection.rollback()
                         return DurableStateCorrupt()
-                    if waiting_events and (
-                        waiting_events[0].wait_answer_actor != request.actor
-                    ):
-                        connection.rollback()
-                        return _refusal_for_actor(waiting_events[0].wait_answer_actor)
                     if requested_snapshot is not None:
                         if (
                             not _wait_answer_binds_request(requested_snapshot, request)
@@ -1419,9 +1407,6 @@ class DbosWaitAnswerer:
                     if not isinstance(current_node, WaitNodeV3):
                         connection.rollback()
                         return DurableStateCorrupt()
-                    if head_event.wait_answer_actor != request.actor:
-                        connection.rollback()
-                        return _refusal_for_actor(head_event.wait_answer_actor)
                     if request.node_id != run.current_node_id:
                         connection.rollback()
                         return DurableStateCorrupt()
@@ -1445,10 +1430,8 @@ class DbosWaitAnswerer:
                         round_ordinal,
                     )
                     answer_workflow_id = answer_workflow_id_for(execution_id)
-                    inserted = connection.execute(
-                        wait_answers.insert()
-                        .prefix_with("OR IGNORE")
-                        .values(
+                    connection.execute(
+                        wait_answers.insert().values(
                             run_id=answer.run_id.value,
                             revision_hash=answer.revision_hash.value,
                             node_id=answer.node_id,
@@ -1470,22 +1453,6 @@ class DbosWaitAnswerer:
                         connection.rollback()
                         return DurableStateCorrupt()
                     snapshot = wait_answer_snapshot_from_record(stored_record)
-                    if inserted.rowcount == 0:
-                        if snapshot.answer.revision_hash != request.revision_hash:
-                            connection.rollback()
-                            return DurableAnswerRevisionConflict()
-                        if snapshot.answer.answer_bytes != request.answer_bytes:
-                            connection.rollback()
-                            return DurableAnswerRoundAnswered()
-                        if (
-                            not _wait_answer_binds_request(snapshot, request)
-                            or snapshot.answer.round_ordinal != round_ordinal
-                            or snapshot.answer.actor != request.actor
-                        ):
-                            connection.rollback()
-                            return DurableStateCorrupt()
-                        connection.commit()
-                        return DurableAnswerExisting(snapshot)
                     unanswerable = why_a_wait_node_does_not_admit_an_answer(
                         connection, current_node, request.answer_bytes
                     )
