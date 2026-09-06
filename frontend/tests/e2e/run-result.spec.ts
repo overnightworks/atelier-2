@@ -30,13 +30,10 @@ const api = "/atelier/api/v1";
  * in `tests/app/readableResultDisplay.test.ts`.
  *
  * `/__e2e/seed-conductor` durably mutates the one shared harness server's
- * state for the rest of the run, so this used to need a `zz-` name sorting it
- * after `workbench-conductor.spec.ts`, whose own first act asserted the
- * *pre*-seed "no conductor" state (#742). That file now resets the server to
- * its own cold-boot baseline itself instead of depending on file order, so
- * this spec no longer needs to sort after it -- it resets and seeds its own
- * conductor executor either way (below), regardless of what any other spec
- * already did to the shared server.
+ * state for every spec that runs after it, so this spec owns the state it
+ * drives instead of depending on file order: it resets that server to its
+ * cold-boot baseline and seeds its own conductor executor (below), whatever
+ * another spec already did to the shared server.
  */
 const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";
