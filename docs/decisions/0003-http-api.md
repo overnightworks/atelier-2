@@ -93,9 +93,11 @@ that same named refusal. A proven prior waiting execution that was never
 answered remains the definitive `409 answer-execution-stale`. The same answer
 from the same actor is
 idempotent: PENDING returns `202`, while an already APPLIED answer returns `200`.
-A missing or duplicate answer row for an answered execution, contradictory
-bindings, different bytes for one execution, or a WAITING_INPUT run pointing at
-a non-Wait node is `500 durable-state-corrupt`. V3 `WAIT_ANSWERED` receipts
+Different bytes for an execution that already holds an answer, pending or
+applied, are `409 answer-state-conflict`, and the first answer stands. A
+missing or duplicate answer row for an answered execution, contradictory
+bindings, or a WAITING_INPUT run pointing at a non-Wait node is
+`500 durable-state-corrupt`. V3 `WAIT_ANSWERED` receipts
 require a non-null actor attribution. V45-to-V46 migration names its distinct
 historical case `legacy-unattributed` instead of making attribution optional or
 inventing `operator`; new answers record `operator`. The cockpit, MCP

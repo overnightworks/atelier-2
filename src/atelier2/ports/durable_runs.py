@@ -296,6 +296,16 @@ class DurableAnswerStateConflict:
 
 
 @dataclass(frozen=True)
+class DurableAnswerRoundAnswered:
+    """The round named already holds a different answer, pending or applied.
+
+    The same bytes again are `DurableAnswerExisting`; a row the store cannot
+    read stays `DurableStateCorrupt`. Only a second answer that contradicts the
+    one recorded lands here, and it is a valid state, not a corrupt one.
+    """
+
+
+@dataclass(frozen=True)
 class DurableAnswerStale:
     pass
 
@@ -322,6 +332,7 @@ type DurableAnswerResult = (
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
+    | DurableAnswerRoundAnswered
     | DurableAnswerStale
     | DurableAnswerNotAdmitted
     | DurableWriteUnavailable

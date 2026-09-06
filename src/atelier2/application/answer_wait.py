@@ -17,6 +17,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerNodeMissing,
     DurableAnswerNotAdmitted,
     DurableAnswerRevisionConflict,
+    DurableAnswerRoundAnswered,
     DurableAnswerRunMissing,
     DurableAnswerStale,
     DurableAnswerStateConflict,
@@ -65,7 +66,13 @@ class AnswerRevisionConflict:
 
 @dataclass(frozen=True)
 class AnswerStateConflict:
-    pass
+    """The run is not waiting for this answer.
+
+    Two ways reach it: the run is not waiting at all, or the round named
+    already holds a different answer. Whoever asked does the same either way --
+    reload the run and answer only what it is waiting for now -- so the two
+    share one word.
+    """
 
 
 @dataclass(frozen=True)
@@ -153,7 +160,7 @@ def answer_wait_result(
             return NodeMissing()
         case DurableAnswerRevisionConflict():
             return AnswerRevisionConflict()
-        case DurableAnswerStateConflict():
+        case DurableAnswerStateConflict() | DurableAnswerRoundAnswered():
             return AnswerStateConflict()
         case DurableAnswerStale():
             return AnswerStale()

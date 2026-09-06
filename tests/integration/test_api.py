@@ -1357,8 +1357,8 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     assert accepted.json() == existing.json()
     assert accepted.json()["state"] == RunState.WAITING_INPUT.value
     assert accepted.json()["current_node_id"] == "wait"
-    assert conflict.status_code == 500
-    assert conflict.json()["type"].endswith(":durable-state-corrupt")
+    assert conflict.status_code == 409
+    assert conflict.json()["type"].endswith(":answer-state-conflict")
     assert _durable_snapshot(runtime) == before_conflict
 
 
@@ -1501,9 +1501,18 @@ def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
     before_second = _durable_snapshot(runtime)
 
     second = client.post(_wait_answer_path(request), json=_wait_answer_body(request))
+    contradicting = client.post(
+        _wait_answer_path(request),
+        json={
+            **_wait_answer_body(request),
+            "answer_base64": encode_canonical_base64(b"a different answer"),
+        },
+    )
 
     assert second.status_code == 200
     assert second.json()["state"] == RunState.COMPLETED.value
+    assert contradicting.status_code == 409
+    assert contradicting.json()["type"].endswith(":answer-state-conflict")
     assert _durable_snapshot(runtime) == before_second
 
     with runtime.engine.begin() as connection:
