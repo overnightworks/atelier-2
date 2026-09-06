@@ -87,7 +87,15 @@ describe("native durable event transport", () => {
           agent_roles: [],
           orders: [],
           wait_answer_schemas: [],
-          node_previews: [],
+          node_previews: [
+            {
+              id: "only",
+              kind: "agent",
+              role: null,
+              instruction_start: null,
+              depends_on: []
+            }
+          ],
           loops: [],
           name: "Not the requested revision",
           description: null

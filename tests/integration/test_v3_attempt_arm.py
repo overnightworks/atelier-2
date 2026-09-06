@@ -312,7 +312,8 @@ def test_restoring_a_run_v2_only_query_reds_the_prepared_v3_attempt(
     spec = importlib.util.spec_from_file_location(
         "atelier2.adapters.dbos.queries_mutated", mutated_path
     )
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     mutated = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mutated)
     found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
@@ -380,7 +381,8 @@ def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
     spec = importlib.util.spec_from_file_location(
         "atelier2.adapters.dbos.queries_completed_mutated", mutated_path
     )
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     mutated = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mutated)
     found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(

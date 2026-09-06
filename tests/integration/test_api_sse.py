@@ -574,7 +574,8 @@ def test_receipt_result_limit_stays_in_each_indexed_snapshot_query(
 
     assert isinstance(page, RunEventPage)
     assert len(receipt_selects) == 2
-    assert connection_ids and len(connection_ids) == 1
+    assert connection_ids
+    assert len(connection_ids) == 1
     assert transaction_states == [True, True]
     for statement, parameters in receipt_selects:
         assert "THEN effect_receipts.result END AS result" in statement

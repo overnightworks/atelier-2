@@ -21,7 +21,8 @@ SCRIPT_PATH = Path(__file__).with_name("serve_cockpit.py")
 
 def load_harness() -> ModuleType:
     specification = importlib.util.spec_from_file_location("serve_cockpit", SCRIPT_PATH)
-    assert specification is not None and specification.loader is not None
+    assert specification is not None
+    assert specification.loader is not None
     module = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = module
     specification.loader.exec_module(module)

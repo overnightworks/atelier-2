@@ -25,6 +25,7 @@ from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import (
     agents,
     artifacts,
+    catalog_lineage,
     events,
     health,
     models,
@@ -492,28 +493,6 @@ def bound_use_cases(
     )
 
 
-# The order of these router includes is the order of the published document's
-# `paths` keys, which the frozen artefact pins byte for byte.
-SERVED_ROUTERS = (
-    health,
-    seat,
-    agents,
-    artifacts,
-    revisions,
-    projects,
-    models,
-    project_source_connection,
-    runs,
-    events,
-    queue,
-)
-
-
-def _install_routers(app: FastAPI) -> None:
-    for served in SERVED_ROUTERS:
-        app.include_router(served.router)
-
-
 def create_app(
     *,
     source_commit: str,
@@ -567,9 +546,7 @@ def create_app(
                 workflow_projection_limit,
                 EnrichedPageBudget(
                     maximum_nodes=limits.maximum_enriched_page_nodes,
-                    maximum_document_bytes=(
-                        limits.maximum_enriched_page_document_bytes
-                    ),
+                    maximum_document_bytes=limits.maximum_enriched_page_document_bytes,
                 ),
                 served_project_id,
                 source_id_generator,
@@ -601,7 +578,20 @@ def create_app(
         include_in_schema=False,
     )
 
-    _install_routers(app)
+    # The order of these router includes is the order of the published
+    # document's `paths` keys, which the frozen artefact pins byte for byte.
+    app.include_router(health.router)
+    app.include_router(seat.router)
+    app.include_router(agents.router)
+    app.include_router(artifacts.router)
+    app.include_router(revisions.router)
+    app.include_router(catalog_lineage.router)
+    app.include_router(projects.router)
+    app.include_router(models.router)
+    app.include_router(project_source_connection.router)
+    app.include_router(runs.router)
+    app.include_router(events.router)
+    app.include_router(queue.router)
 
     install_custom_openapi(app, limits)
     return app

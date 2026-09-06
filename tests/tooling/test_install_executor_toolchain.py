@@ -25,7 +25,8 @@ def load_script() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "install_executor_toolchain", SCRIPT_PATH
     )
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -405,5 +406,6 @@ def test_the_operations_claude_fence_names_a_version_when_several_releases_are_c
     assert "--version" in tokens
     stated = tokens[tokens.index("--version") + 1]
     parts = stated.split(".")
-    assert len(parts) == 3 and all(part.isdigit() for part in parts)
+    assert len(parts) == 3
+    assert all(part.isdigit() for part in parts)
     assert (int(parts[0]), int(parts[1]), int(parts[2])) in CONFORMANT_CLAUDE_VERSIONS

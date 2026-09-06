@@ -18,12 +18,6 @@ import {
   attemptTranscriptSchema,
   assistantTurnEventSchema,
   authProfileRevisionPageSchema,
-  waitAnswerSchemaV3Schema,
-  workflowDeclaredOrderSchema,
-  workflowDeclaredSchemaSchema,
-  workflowNodePreviewSchema,
-  workflowRevisionDetailSchema,
-  catalogNameResolutionSchema,
   modelRegistryRevisionSchema,
   projectModelDefaultsRevisionSchema,
   projectModelResolutionSchema,
@@ -42,7 +36,6 @@ import {
   usageEventSchema,
   runV3Schema,
   observedQueueItemSchema,
-  workflowRevisionSummarySchema,
   decodeStreamFrame
 } from "../../src/api/client";
 
@@ -228,147 +221,6 @@ describe("the served vocabulary", () => {
     expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
       servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
         ?.anyOf?.[0]?.enum
-    );
-  });
-
-  /**
-   * This one exists because it was missing. The described listing was built
-   * server-side while this decoder still refused its fields, and every frontend
-   * test mocked the call away, so nothing red until the page threw in a browser.
-   * Comparing the decoder's own keys against the document's makes a wire
-   * enrichment fail here instead of on the operator's screen.
-   */
-  it("decodes exactly the fields the described revision listing serves", () => {
-    const served = servedDocument.components.schemas.WorkflowRevisionSummaryResourceV2;
-
-    expect(Object.keys(workflowRevisionSummarySchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-  });
-
-  it("accepts a described revision built from the document's own field set", () => {
-    const served = servedDocument.components.schemas.WorkflowRevisionSummaryResourceV2;
-    const sample: Record<string, unknown> = {
-      workflow_revision_hash: "a".repeat(64),
-      workflow_format_version: 3,
-      executable: false,
-      not_executable_reason: "agent forms nothing binds yet: outputs",
-      name: "Implement a candidate, then review it for defects",
-      description: null,
-      provenance: null
-    };
-
-    expect(Object.keys(sample).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-    expect(workflowRevisionSummarySchema.parse(sample)).toEqual(sample);
-  });
-
-  it("bounds the node-preview instruction start to the length the document serves", () => {
-    const served = servedDocument.components.schemas.WorkflowNodePreviewResourceV3;
-    const instruction = (
-      served?.properties as {
-        instruction_start?: { anyOf?: Array<{ maxLength?: number }> };
-      } | undefined
-    )?.instruction_start;
-    const maxLength = instruction?.anyOf?.find((option) => option.maxLength !== undefined)
-      ?.maxLength;
-
-    expect(maxLength).toBe(120);
-    expect(
-      workflowNodePreviewSchema.parse({
-        id: "implement",
-        kind: "agent",
-        role: "builder",
-        instruction_start: "ä".repeat(maxLength ?? 0),
-        depends_on: []
-      }).instruction_start
-    ).toHaveLength(maxLength ?? 0);
-    expect(() =>
-      workflowNodePreviewSchema.parse({
-        id: "implement",
-        kind: "agent",
-        role: "builder",
-        instruction_start: "ä".repeat((maxLength ?? 0) + 1),
-        depends_on: []
-      })
-    ).toThrow();
-  });
-
-  it("decodes exactly the fields the published V3 graph serves", () => {
-    const served = servedDocument.components.schemas.WorkflowGraphResourceV3;
-    const sample = {
-      workflow_revision_hash: "a".repeat(64),
-      document_base64: "YQ==",
-      provenance: null,
-      graph: {
-        workflow_format_version: 3 as const,
-        executable: true,
-        not_executable_reason: null,
-        node_count: 1,
-        agent_roles: ["cook"],
-        orders: [
-          {
-            name: "portions",
-            schema: {
-              ref: "portions-schema",
-              revision: "schema-portions"
-            }
-          }
-        ],
-        wait_answer_schemas: [],
-        node_previews: [
-          {
-            id: "cook",
-            kind: "agent" as const,
-            role: "cook",
-            instruction_start: "Cook exactly what the order says.",
-            depends_on: []
-          }
-        ],
-        loops: [],
-        name: "Cook to order",
-        description: null
-      }
-    };
-
-    expect(Object.keys(sample.graph).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-    expect(Object.keys(workflowNodePreviewSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.WorkflowNodePreviewResourceV3?.properties ?? {}
-      ).sort()
-    );
-    expect(Object.keys(workflowDeclaredOrderSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.WorkflowDeclaredOrderResourceV3?.properties ?? {}
-      ).sort()
-    );
-    expect(Object.keys(workflowDeclaredSchemaSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.WorkflowDeclaredSchemaResourceV3?.properties ??
-          {}
-      ).sort()
-    );
-    expect(Object.keys(waitAnswerSchemaV3Schema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.WaitAnswerSchemaResourceV3?.properties ?? {}
-      ).sort()
-    );
-    expect(Object.keys(workflowRevisionDetailSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.WorkflowRevisionDetailResource?.properties ?? {}
-      ).sort()
-    );
-    expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);
-  });
-
-  it("decodes exactly the fields the catalog name resolution serves", () => {
-    const served = servedDocument.components.schemas.CatalogNameResolutionResource;
-
-    expect(Object.keys(catalogNameResolutionSchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
     );
   });
 

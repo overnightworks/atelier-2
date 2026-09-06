@@ -399,7 +399,8 @@ def stored_context_package_manifest(
                 context_packages_v3.c.package_hash == package_hash
             )
         )
-    assert package_hash is not None and manifest is not None
+    assert package_hash is not None
+    assert manifest is not None
     return bytes(manifest)
 
 

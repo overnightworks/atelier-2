@@ -226,6 +226,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "stable slice invariant: a bound against a hung agent-claim process, "
         "not an operator's patience -- the CLI answers within seconds (#1299)",
     ),
+    "adapters/attempt_workspace_files.py::_STAGED_WRITE_NAME_ATTEMPTS": SpelledValue(
+        1,
+        "stable slice invariant: a name collision on a random 8-byte suffix is "
+        "vanishingly unlikely, so this bounds the retry loop against a genuine "
+        "bug rather than shaping a patience an operator would ever dial (#1335)",
+    ),
 }
 """Every bare literal the operator families still contain, each with its owner.
 

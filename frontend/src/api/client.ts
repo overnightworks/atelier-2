@@ -2,6 +2,15 @@ import { z } from "zod";
 
 import { HealthResource } from "./generated/health.zod";
 import {
+  CatalogAdmissionResource,
+  CatalogNameResolutionResource,
+  VersionedWorkflowRevisionPageResource,
+  WaitAnswerSchemaResourceV3,
+  WorkflowGraphResourceV3,
+  WorkflowRevisionDetailResource,
+  WorkflowRevisionSummaryResourceV2,
+} from "./generated/workflowAndCatalog.zod";
+import {
   reportConnectionLost,
   reportConnectionRestored,
 } from "../lib/connectionState";
@@ -50,43 +59,6 @@ const invalidFieldSchema = z
   .strict();
 
 /**
- * A published V3 revision says what it is and whether this build runs it.
- *
- * `node_previews` is an excerpt — id, kind, role, instruction start, and the
- * authored `depends_on` edges — not the authored node. The browser must not
- * parse `document_base64` to learn the same facts. `orders` is the same class
- * of answer for the material a start must supply: name plus the author's own
- * `schema: {ref, revision}` hull, never the schema bytes.
- */
-const workflowNodePreviewSchema = z
-  .object({
-    id: z.string().min(1),
-    kind: z.enum(["agent", "deterministic", "wait", "subworkflow", "action"]),
-    role: z.string().min(1).max(1_024).nullable(),
-    instruction_start: z.string().min(1).max(120).nullable(),
-    depends_on: z.array(z.string().min(1)),
-  })
-  .strict();
-
-export { workflowNodePreviewSchema };
-
-const workflowDeclaredSchemaSchema = z
-  .object({
-    ref: z.string().min(1),
-    revision: z.string().min(1),
-  })
-  .strict();
-
-const workflowDeclaredOrderSchema = z
-  .object({
-    name: z.string().min(1),
-    schema: workflowDeclaredSchemaSchema,
-  })
-  .strict();
-
-export { workflowDeclaredOrderSchema, workflowDeclaredSchemaSchema };
-
-/**
  * The published bytes a `schema` revision pins, read only far enough to
  * summarize an order for a human -- this is not a JSON Schema evaluator, and
  * the browser must not pretend to be one. `atelier2.contracts.schemas_v3` is
@@ -102,135 +74,29 @@ const jsonSchemaDocumentSchema = z.union([
 export type JsonSchemaDocument = z.infer<typeof jsonSchemaDocumentSchema>;
 
 /**
- * One waiting node's answer schema, classified as far as the server's excerpt
- * may without evaluating it. `kind` is `boolean` only where the schema's own
- * top level names `type: boolean`, `enum` only where it names `enum` (with
- * `values` the author's own members), `string` only where it names
- * `type: string` and no `enum` -- and `free` for every other shape, including
- * a schema the server's own excerpt has not yet resolved.
- *
- * `string_typed` is the one fact a composer needs to send `values` back the
- * way the door reads them: true names a schema whose own top level is
- * `type: string` (every `string` kind, and an `enum` that also names
- * `type: string`), the one shape whose door
- * (`schemas_v3.instance_for_schema`) reads an answer's raw UTF-8 text as the
- * value directly -- so `values` there already carries each member's raw
- * text, sent back verbatim (`waitAnswer.ts`, #1091 PR #1108 finding 1).
- * Every other `enum`, and `boolean`/`free`, carry `string_typed: false` and
- * `values` (where present) stay the JSON-encoded text they always were.
+ * `WaitAnswerSchemaResourceV3` carries `kind` and `values` as two separately
+ * optional fields; only their pairing is a rule the generated shape cannot
+ * state: `values` names the enum's own members, and only an `enum` kind
+ * names any (`waitAnswer.ts`, #1091 PR #1108 finding 1).
  */
-const waitAnswerSchemaV3Schema = z
-  .object({
-    node_id: z.string().min(1),
-    schema: workflowDeclaredSchemaSchema,
-    kind: z.enum(["boolean", "enum", "string", "free"]),
-    string_typed: z.boolean(),
-    values: z.array(z.string()).nullable(),
-  })
-  .strict()
-  .superRefine((entry, context) => {
-    if ((entry.kind === "enum") !== (entry.values !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "values names the enum's own members, and only those",
-      });
-    }
-  });
+const waitAnswerSchemaV3Schema = WaitAnswerSchemaResourceV3.superRefine((entry, context) => {
+  const namesValues = entry.values !== undefined && entry.values !== null;
+  if ((entry.kind === "enum") !== namesValues) {
+    context.addIssue({
+      code: "custom",
+      message: "values names the enum's own members, and only those",
+    });
+  }
+});
 
-export { waitAnswerSchemaV3Schema };
+const workflowGraphV3Schema = WorkflowGraphResourceV3.extend({
+  wait_answer_schemas: z.array(waitAnswerSchemaV3Schema),
+});
 
-/**
- * The node and verdict that close a loop's round early, when the document
- * names one. Absent where the document declares no earlier exit at all.
- */
-const workflowLoopVerdictSchema = z
-  .object({
-    node: z.string().min(1),
-    verdict: z.enum(["accepted", "revise"]),
-  })
-  .strict();
-
-/**
- * One declared loop of a published V3 revision: its body and its bound.
- *
- * `member_node_ids` names the loop's one-line body by the same ids
- * `node_previews` already carries, never the nodes a second time.
- */
-const workflowLoopSchema = z
-  .object({
-    id: z.string().min(1),
-    member_node_ids: z.array(z.string().min(1)).min(1),
-    maximum_rounds: z.number().int().positive(),
-    repeat_while: workflowLoopVerdictSchema.nullable(),
-  })
-  .strict();
-
-const workflowGraphV3Schema = z
-  .object({
-    workflow_format_version: z.literal(3),
-    executable: z.boolean(),
-    not_executable_reason: z.string().nullable(),
-    node_count: z.number().int().positive(),
-    agent_roles: z.array(z.string().min(1)).max(100),
-    orders: z.array(workflowDeclaredOrderSchema),
-    wait_answer_schemas: z.array(waitAnswerSchemaV3Schema),
-    node_previews: z.array(workflowNodePreviewSchema),
-    loops: z.array(workflowLoopSchema),
-    name: z.string().min(1),
-    description: z.string().nullable(),
-  })
-  .strict();
-
-/**
- * Where a revision's bytes first entered the catalog from, as it was then --
- * mirrors `WorkflowRevisionProvenanceResource`. The source travels as its
- * public `source1.` reference, never the durable id the store keeps, and
- * every field is an intake-time fact: where that source points *now* is
- * absent on purpose (see the Python resource's docstring).
- */
-const workflowRevisionProvenanceSchema = z
-  .object({
-    source: z.string().regex(/^source1\.[A-Za-z0-9_-]+$/).max(94),
-    source_commit: z.string().regex(/^[0-9a-f]{40,64}$/),
-    source_path: z.string().min(1).max(1_024),
-    intaken_at: recordedAtStamp,
-  })
-  .strict();
-
-/**
- * The cockpit asks for the described listing, because a picker has to offer a
- * name rather than a hash. These fields mirror `WorkflowRevisionSummaryResourceV2`
- * in the frozen document and `servedVocabulary.test.ts` holds them to it: the
- * decoder is `.strict()`, so a field the server adds without this file throws on
- * every load instead of being quietly ignored.
- */
-export const workflowRevisionSummarySchema = z
-  .object({
-    workflow_revision_hash: sha256,
-    workflow_format_version: z.literal(3),
-    executable: z.boolean(),
-    not_executable_reason: z.string().nullable(),
-    name: z.string(),
-    description: z.string().nullable(),
-    provenance: workflowRevisionProvenanceSchema.nullable().optional(),
-  })
-  .strict();
-
-export const workflowRevisionDetailSchema = z
-  .object({
-    workflow_revision_hash: sha256,
-    document_base64: standardBase64,
-    graph: workflowGraphV3Schema,
-    provenance: workflowRevisionProvenanceSchema.nullable().optional(),
-  })
-  .strict();
-
-const workflowRevisionPageSchema = z
-  .object({
-    items: z.array(workflowRevisionSummarySchema),
-    next_after_revision_hash: sha256.nullable(),
-  })
-  .strict();
+export const workflowRevisionDetailSchema = WorkflowRevisionDetailResource.extend({
+  document_base64: standardBase64,
+  graph: workflowGraphV3Schema,
+});
 
 export const projectResourceSchema = z
   .object({ public_project_reference: publicProjectReference })
@@ -368,30 +234,6 @@ export const projectModelResolutionSchema = z
     public_project_reference: publicProjectReference,
     workflow_revision_hash: sha256,
     resolutions: z.array(roleModelResolutionSchema).max(100),
-  })
-  .strict();
-
-/**
- * What `GET /catalog-revisions/by-name/{kind}/{name}` answers: which revision
- * that catalog name holds under that kind. The described listing does not carry
- * lineage recency, so the picker reads this existing resource for the head
- * instead of inventing an order from the hash-sorted page.
- */
-export const catalogNameResolutionSchema = z
-  .object({
-    display_name: z.string().min(1).max(128),
-    lineage_id: sha256,
-    catalog_revision_hash: sha256,
-    revision_number: positiveSafeInteger,
-  })
-  .strict();
-
-const catalogAdmissionSchema = z
-  .object({
-    display_name: z.string().min(1).max(128),
-    lineage_id: sha256,
-    catalog_revision_hash: sha256,
-    revision_number: positiveSafeInteger,
   })
   .strict();
 
@@ -1645,10 +1487,6 @@ export const problemDefinitions = {
     status: 422,
     title: "Invalid agent definition document",
   },
-  "agent-definition-field-unknown": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
   "agent-definition-field-missing": {
     status: 422,
     title: "Invalid agent definition document",
@@ -2155,10 +1993,6 @@ const problemSchema = z.discriminatedUnion("type", [
     problemDefinitions["agent-definition-frontmatter-not-a-mapping"],
   ),
   problemVariant(
-    "agent-definition-field-unknown",
-    problemDefinitions["agent-definition-field-unknown"],
-  ),
-  problemVariant(
     "agent-definition-field-missing",
     problemDefinitions["agent-definition-field-missing"],
   ),
@@ -2461,15 +2295,13 @@ export type WorkflowRevisionDetail = z.infer<
   typeof workflowRevisionDetailSchema
 >;
 export type RunPage = z.infer<typeof runPageSchema>;
-export type WorkflowRevisionPage = z.infer<typeof workflowRevisionPageSchema>;
-export type WorkflowRevisionSummary = z.infer<
-  typeof workflowRevisionSummarySchema
->;
+export type WorkflowRevisionPage = VersionedWorkflowRevisionPageResource;
+export type WorkflowRevisionSummary = WorkflowRevisionSummaryResourceV2;
 type AgentDefinitionRevisionDetail = z.infer<
   typeof agentDefinitionRevisionDetailSchema
 >;
-type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
-type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
+type CatalogNameResolution = CatalogNameResolutionResource;
+type CatalogAdmission = CatalogAdmissionResource;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
 export type CatalogIntakeKind = z.infer<typeof catalogIntakeKindSchema>;
 type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
@@ -2961,7 +2793,7 @@ export function createCockpitApi(
           : `/atelier/api/v1/workflow-revisions?limit=50&view=described&after=${encodeURIComponent(after)}`,
         {},
         [200],
-        workflowRevisionPageSchema,
+        VersionedWorkflowRevisionPageResource,
       ),
     listAgentConfigurationRevisions: (after?: string) =>
       requestJson(
@@ -3076,13 +2908,16 @@ export function createCockpitApi(
         [200, 201],
         artifactResourceSchema,
       ),
+    // The described listing does not carry lineage recency, so the picker
+    // reads this existing resource for the head instead of inventing an
+    // order from the hash-sorted page.
     getRevisionByName: async (kind: CatalogLineageKind, name: string) => {
       const resolution = await requestJson(
         fetcher,
         `/atelier/api/v1/catalog-revisions/by-name/${kind}/${encodeURIComponent(name)}`,
         {},
         [200],
-        catalogNameResolutionSchema,
+        CatalogNameResolutionResource,
       );
       if (resolution.display_name !== name) {
         throw new CockpitRequestError(
@@ -3106,7 +2941,7 @@ export function createCockpitApi(
           }),
         },
         [200, 201],
-        catalogAdmissionSchema,
+        CatalogAdmissionResource,
       ),
     admitCatalogMember: (lineageId, input) =>
       requestJsonResult(
@@ -3123,7 +2958,7 @@ export function createCockpitApi(
           }),
         },
         [200, 201],
-        catalogAdmissionSchema,
+        CatalogAdmissionResource,
       ),
     retireCatalogLineage: (lineageId, input) =>
       requestJson(
