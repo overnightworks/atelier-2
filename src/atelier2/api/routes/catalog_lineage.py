@@ -52,7 +52,6 @@ router = APIRouter()
 
 @router.post(
     CATALOG_LINEAGE_MEMBERS_PATH,
-    response_model=CatalogAdmissionResource,
     status_code=201,
 )
 async def admit_catalog_member_route(
