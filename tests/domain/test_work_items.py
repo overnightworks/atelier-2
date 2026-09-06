@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+import yaml
 
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.schemas_v3 import (
@@ -16,16 +18,20 @@ from atelier2.contracts.schemas_v3 import (
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
     WorkItemKind,
     WorkItemOrderDocument,
+    WorkItemScope,
+    WorkItemScopeMalformed,
     read_work_item_order_document,
     work_item_order_document,
 )
 
 _ITEM = TrackerItemReference("gh:712")
 _OBSERVED_AT = RecordedAt("2026-08-26T09:15:00Z")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def revision(
@@ -98,6 +104,7 @@ def test_the_order_document_carries_the_read_a_run_has_to_reproduce() -> None:
         "kind": "issue",
         "observed_at": _OBSERVED_AT.value,
         "reference": _ITEM.value,
+        "scope": [],
     }
 
 
@@ -131,7 +138,7 @@ def test_the_house_schema_admits_the_order_document_it_describes(body: bytes) ->
     assert isinstance(verdict, InstanceAccepted), verdict
 
 
-def written(**fields: str) -> bytes:
+def written(**fields: object) -> bytes:
     """The document a read writes, with exactly the named fields bent."""
 
     written_document = json.loads(work_item_order_document(revision()))
@@ -150,7 +157,66 @@ def test_a_written_order_reads_back_as_the_document_it_was_written_from() -> Non
         kind=WorkItemKind.ISSUE,
         observed_at=_OBSERVED_AT,
         reference=_ITEM,
+        scope=WorkItemScope(()),
     )
+
+
+def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
+    body = b"## Dateien\n`src/atelier2/contracts/work_items.py`, `workflows/`."
+
+    document = read_work_item_order_document(work_item_order_document(revision(body)))
+
+    assert document is not None
+    assert document.scope == WorkItemScope(
+        ("src/atelier2/contracts/work_items.py", "workflows")
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "paths"),
+    [
+        (b"## Dateien\n`a/file.py`.", ("a/file.py",)),
+        (b"## Dateien\n`a/dir`, `a/dir/`.", ("a/dir",)),
+        (b"## Dateien\n`b/one`, `a/two`.", ("a/two", "b/one")),
+        (b"## Dateien\n`a/one`, `a/one`.", ("a/one",)),
+        (b"## Dateien\nprose names `a/one` here.", ("a/one",)),
+        (b"## Dateien\n", ()),
+        (b"no files section at all", ()),
+        (b"## Dateien\n`a/one`.\n## Nachbarn\n`b/two`.", ("a/one",)),
+    ],
+    ids=[
+        "one-file",
+        "directory-with-and-without-trailing-slash",
+        "unsorted-becomes-sorted",
+        "duplicate-collapses",
+        "prose-outside-backticks-ignored",
+        "section-without-a-token",
+        "no-files-section",
+        "stops-at-the-next-heading",
+    ],
+)
+def test_the_files_section_grammar_reads_exactly_its_backtick_tokens(
+    body: bytes, paths: tuple[str, ...]
+) -> None:
+    assert WorkItemScope.from_body(body).paths == paths
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["../etc/passwd", "a/../b", "with space", "*.py", "/absolute"],
+    ids=[
+        "leading-traversal",
+        "embedded-traversal",
+        "whitespace",
+        "glob",
+        "absolute",
+    ],
+)
+def test_a_files_section_token_that_is_not_a_relative_path_is_a_named_error(
+    token: str,
+) -> None:
+    with pytest.raises(WorkItemScopeMalformed):
+        WorkItemScope.from_body(f"## Dateien\n`{token}`.".encode())
 
 
 def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
@@ -178,6 +244,10 @@ def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
         written(reference=""),
         written(change_marker=""),
         written(extra="field"),
+        written(scope="src/atelier2/contracts/work_items.py"),
+        written(scope=[1]),
+        written(scope=["b", "a"]),
+        written(scope=["a", "a"]),
     ],
     ids=[
         "not-json",
@@ -193,9 +263,30 @@ def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
         "an-empty-reference",
         "an-empty-change-marker",
         "a-field-the-writer-never-writes",
+        "a-scope-that-is-not-a-list",
+        "a-scope-item-that-is-not-text",
+        "a-scope-not-sorted",
+        "a-scope-with-a-duplicate",
     ],
 )
 def test_bytes_this_module_never_wrote_are_not_that_document(document: bytes) -> None:
     """Every field is read back through the contract that wrote it, or not at all."""
 
     assert read_work_item_order_document(document) is None
+
+
+@pytest.mark.parametrize(
+    "workflow_name", ["issue-to-pr.yaml", "documentation-release.yaml"]
+)
+def test_the_schema_revision_matches_the_workflow_s_pin(workflow_name: str) -> None:
+    """A workflow pin and the code that owns the schema must never drift apart."""
+
+    document = yaml.safe_load(
+        (_PROJECT_ROOT / "workflows" / workflow_name).read_text(encoding="utf-8")
+    )
+    pins = [
+        graph_input["schema"]["revision"]
+        for graph_input in document["graph_inputs"]
+        if graph_input["schema"]["ref"] == "work-item"
+    ]
+    assert pins == [WORK_ITEM_ORDER_SCHEMA_REVISION.value]
