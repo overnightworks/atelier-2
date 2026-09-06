@@ -454,7 +454,8 @@ def _persisted_package(
             context_packages_v3.c.package_hash == package_hash
         )
     )
-    assert package_hash is not None and manifest is not None
+    assert package_hash is not None
+    assert manifest is not None
     return str(package_hash), bytes(manifest)
 
 

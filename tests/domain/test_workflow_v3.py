@@ -475,13 +475,18 @@ def test_every_node_kind_of_the_record_parses_into_its_own_closed_model() -> Non
     assert isinstance(builder, AgentNodeV3)
     assert (builder.role, builder.mode) == ("builder", "headless")
     assert builder.instruction.startswith("Implement every acceptance sentence")
-    assert builder.profile is not None and builder.profile.revision == "profile-1"
+    assert builder.profile is not None
+    assert builder.profile.revision == "profile-1"
     assert [skill.ref for skill in builder.skills] == ["workspace_discipline"]
     assert [tool.ref for tool in builder.tools] == ["repository_write"]
-    assert builder.policy is not None and builder.policy.ref == "house_rules"
-    assert builder.budget is not None and builder.budget.ref == "build_budget"
-    assert builder.retry is not None and builder.retry.ref == "twice"
-    assert builder.cancellation is not None and builder.cancellation.ref == "drain"
+    assert builder.policy is not None
+    assert builder.policy.ref == "house_rules"
+    assert builder.budget is not None
+    assert builder.budget.ref == "build_budget"
+    assert builder.retry is not None
+    assert builder.retry.ref == "twice"
+    assert builder.cancellation is not None
+    assert builder.cancellation.ref == "drain"
     assert builder.required_context[0].source.selector == "story_acceptance"
     assert [
         operation.ref for operation in builder.available_context[0].read_operations

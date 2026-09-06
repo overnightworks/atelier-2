@@ -203,7 +203,8 @@ def _read_one_sse_event(response: httpx.Response, deadline: float) -> dict[str, 
         if line == "":
             if not fields:
                 continue
-            assert "id" in fields and "data" in fields
+            assert "id" in fields
+            assert "data" in fields
             payload: dict[str, object] = json.loads(fields["data"])
             return {"id": fields["id"], "data": payload}
         name, value = line.split(": ", maxsplit=1)

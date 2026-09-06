@@ -619,4 +619,5 @@ def test_a_v3_start_binds_the_exact_run_configuration(
         )
 
     assert record["run_configuration_revision_hash"] == expected.revision_hash.value
-    assert stored is not None and bytes(stored) == expected.preimage
+    assert stored is not None
+    assert bytes(stored) == expected.preimage

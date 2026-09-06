@@ -833,7 +833,8 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
         )
     )
     assert isinstance(started, DurableRunCreated)
-    assert supported.opened is not None and supported.opened.requests == []
+    assert supported.opened is not None
+    assert supported.opened.requests == []
     seeded.close()
 
     headless_only = RecordingAgentExecutorFactoryV2(

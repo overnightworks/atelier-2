@@ -364,8 +364,10 @@ def test_a_run_proving_every_declared_sentence_passes_the_gate(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     counted = traced_counts(result.stdout)
-    assert counted.sentences > 0 and counted.claims > 0
-    assert counted.passing_proofs > 0 and counted.run_reports > 0
+    assert counted.sentences > 0
+    assert counted.claims > 0
+    assert counted.passing_proofs > 0
+    assert counted.run_reports > 0
 
 
 @pytest.mark.proves("acceptance-sentences-are-declared-in-the-repository")
