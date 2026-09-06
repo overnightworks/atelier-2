@@ -30,11 +30,10 @@ from atelier2.api.projection.runs import (
     run_list_row_resource,
 )
 from atelier2.api.references import (
-    DEFAULT_PAGE_LIMIT,
-    AgentAttemptIdPathParameter,
-    PageLimitParameter,
-    PublicRunReferencePathParameter,
-    PublicRunReferenceQueryParameter,
+    AgentAttemptIdPath,
+    PageLimit,
+    PublicRunReferencePath,
+    PublicRunReferenceQuery,
     encode_public_run_reference,
     parse_revision_hash,
 )
@@ -330,8 +329,8 @@ async def start_run_route(
 
 @router.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
 async def list_runs(
-    after: PublicRunReferenceQueryParameter | None = None,
-    limit: PageLimitParameter = DEFAULT_PAGE_LIMIT,
+    after: PublicRunReferenceQuery | None = None,
+    limit: PageLimit = 50,
     state: str | None = None,
     context: ApiContext = api_context_dependency,
 ) -> VersionedRunPageResource:
@@ -382,8 +381,7 @@ async def list_runs(
 
 @router.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResourceV3)
 async def get_run_route(
-    public_ref: PublicRunReferencePathParameter,
-    context: ApiContext = api_context_dependency,
+    public_ref: PublicRunReferencePath, context: ApiContext = api_context_dependency
 ) -> RunResourceV3:
     return await _run_resource_of(
         decode_public_reference(public_ref, context.limits), context
@@ -397,7 +395,7 @@ async def get_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def fork_run_route(
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     body: ForkRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -444,7 +442,7 @@ async def fork_run_route(
     response_model=NodeDetailResource,
 )
 async def get_node_detail_route(
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     node_id: str,
     context: ApiContext = api_context_dependency,
 ) -> NodeDetailResource:
@@ -488,8 +486,8 @@ async def get_node_detail_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_agent_attempt_route(
-    public_ref: PublicRunReferencePathParameter,
-    attempt_id: AgentAttemptIdPathParameter,
+    public_ref: PublicRunReferencePath,
+    attempt_id: AgentAttemptIdPath,
     body: CancelAgentAttemptRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -559,7 +557,7 @@ async def cancel_agent_attempt_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def answer_run_route(
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     body: AnswerWaitRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -622,7 +620,7 @@ async def answer_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def reconcile_run_route(
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     body: ReconcileRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -692,7 +690,7 @@ async def reconcile_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_run_route(
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     body: CancelRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),

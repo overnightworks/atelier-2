@@ -474,14 +474,6 @@ qualified_name = "atelier2.api.app.create_app"
 lines = 100
 
 [[function]]
-qualified_name = "atelier2.api.openapi._install_event_components"
-lines = 61
-
-[[function]]
-qualified_name = "atelier2.api.openapi._install_parameter_contracts"
-lines = 131
-
-[[function]]
 qualified_name = "atelier2.api.openapi._install_problem_components"
 lines = 97
 

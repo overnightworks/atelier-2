@@ -14,7 +14,7 @@ from atelier2.api._support import (
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import ARTIFACT_PATH, ARTIFACTS_PATH
 from atelier2.api.problems import ApiProblem, artifact_problem_code
-from atelier2.api.references import ArtifactHashPathParameter
+from atelier2.api.references import ArtifactHashPath
 from atelier2.api.wire.resources import ArtifactResource
 from atelier2.application.publish_artifact import (
     ArtifactPublicationCreated,
@@ -93,8 +93,7 @@ async def publish_artifact_route(
     },
 )
 async def read_artifact_route(
-    artifact_hash: ArtifactHashPathParameter,
-    context: ApiContext = api_context_dependency,
+    artifact_hash: ArtifactHashPath, context: ApiContext = api_context_dependency
 ) -> Response:
     """The exact bytes one address names, for a caller holding only the address.
 

@@ -535,15 +535,10 @@ def test_project_and_source_reference_routes_publish_the_pattern_at_the_paramete
     None
 ):
     """Each route that reads a public project or source reference declares its
-    own typed parameter (`references.py`'s `PublicProjectReferencePathParameter`
-    / `PublicSourceReferencePathParameter`), so the document inlines the
+    own typed parameter (`references.py`'s `PublicProjectReferencePath`
+    / `PublicSourceReferencePath`), so the document inlines the
     pattern and bound at the parameter instead of a `$ref` only a hand-kept
     table used to install.
-
-    `PROJECT_MODEL_DEFAULTS_PATH` and `PROJECT_MODEL_RESOLUTION_PATH` live in
-    `routes/models.py`, outside this parameter migration's file list, and
-    still declare a bare `public_project_reference: str`; they are not
-    asserted here.
     """
     schema = served_app().openapi()
     project_reference_schema = {
@@ -554,6 +549,9 @@ def test_project_and_source_reference_routes_publish_the_pattern_at_the_paramete
     }
     for path, method in (
         (PROJECT_PATH, "get"),
+        (PROJECT_MODEL_DEFAULTS_PATH, "get"),
+        (PROJECT_MODEL_DEFAULTS_PATH, "put"),
+        (PROJECT_MODEL_RESOLUTION_PATH, "post"),
         (PROJECT_SOURCE_CONNECTION_PATH, "get"),
         (PROJECT_SOURCES_PATH, "get"),
         (PROJECT_SOURCES_PATH, "post"),

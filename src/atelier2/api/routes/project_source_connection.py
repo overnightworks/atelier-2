@@ -22,8 +22,8 @@ from atelier2.api.projection.project_source_connection import (
     project_source_resource,
 )
 from atelier2.api.references import (
-    PublicProjectReferencePathParameter,
-    PublicSourceReferencePathParameter,
+    PublicProjectReferencePath,
+    PublicSourceReferencePath,
 )
 from atelier2.api.wire.requests import (
     ConnectProjectSourceRequestResource,
@@ -63,7 +63,7 @@ router = APIRouter()
     response_model=ProjectSourceConnectionRevisionResource,
 )
 async def get_project_source_connection_route(
-    public_project_reference: PublicProjectReferencePathParameter,
+    public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceConnectionRevisionResource:
     project_id = decode_public_project_reference_value(
@@ -112,7 +112,7 @@ def _source_problem(result: object) -> None:
 
 @router.get(PROJECT_SOURCES_PATH, response_model=ProjectSourceListResource)
 async def list_project_sources_route(
-    public_project_reference: PublicProjectReferencePathParameter,
+    public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceListResource:
     project_id = decode_public_project_reference_value(
@@ -139,7 +139,7 @@ async def list_project_sources_route(
 )
 async def connect_project_source_route(
     request: ConnectProjectSourceRequestResource,
-    public_project_reference: PublicProjectReferencePathParameter,
+    public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceResource:
     project_id = decode_public_project_reference_value(
@@ -164,8 +164,8 @@ async def connect_project_source_route(
 
 @router.delete(PROJECT_SOURCE_PATH, status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_project_source_route(
-    public_project_reference: PublicProjectReferencePathParameter,
-    public_source_reference: PublicSourceReferencePathParameter,
+    public_project_reference: PublicProjectReferencePath,
+    public_source_reference: PublicSourceReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> Response:
     project_id = decode_public_project_reference_value(
@@ -189,8 +189,8 @@ async def disconnect_project_source_route(
 @router.put(PROJECT_SOURCE_TOKEN_PATH, response_model=ProjectSourceResource)
 async def rotate_project_source_token_route(
     request: RotateProjectSourceTokenRequestResource,
-    public_project_reference: PublicProjectReferencePathParameter,
-    public_source_reference: PublicSourceReferencePathParameter,
+    public_project_reference: PublicProjectReferencePath,
+    public_source_reference: PublicSourceReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceResource:
     project_id = decode_public_project_reference_value(

@@ -45,17 +45,16 @@ MAXIMUM_RUN_ORDERS = 100
 # problem object decides the glance once.
 MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
-# The wire's own default: no durable owner picks how many items an unspecified
-# page holds, so the query parameter decides it, once, at the size every
-# listing already served before this bound was named.
-DEFAULT_PAGE_LIMIT = 50
-PageLimitParameter = Annotated[int, Query(ge=1, le=MAXIMUM_PAGE_ITEMS)]
+PageLimit = Annotated[int, Query(ge=1, le=MAXIMUM_PAGE_ITEMS)]
 """How many items a page-bounded listing may be asked to return.
 
-`MAXIMUM_PAGE_ITEMS` is `PageLimit`'s own upper bound (`contracts.pages`); a
-lower request is honoured as asked, and FastAPI refuses an out-of-range or
-non-integer value itself (`invalid-request`, the same code and status a
-route's own parsing used to raise for the identical refusal).
+`MAXIMUM_PAGE_ITEMS` is `PageLimit`'s own upper bound (`contracts.pages`);
+FastAPI cannot carry a default inside `Query` here (it refuses one on an
+`Annotated` field), so each route still writes `= 50`, exactly as it wrote
+`limit: str = "50"` before. A lower request is honoured as asked, and an
+out-of-range or non-integer value is refused by FastAPI itself
+(`invalid-request`, the same code and status a route's own parsing used to
+raise for the identical refusal).
 """
 
 
@@ -108,17 +107,17 @@ MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = base64_characters_for(
     MAXIMUM_RUN_TERMINAL_ANSWER_BYTES
 )
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
-ArtifactHashPathParameter = Annotated[
+ArtifactHashPath = Annotated[
     str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
 ]
-AgentAttemptIdPathParameter = Annotated[
+AgentAttemptIdPath = Annotated[
     str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
 ]
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
-RevisionHashPathParameter = Annotated[
+RevisionHashPath = Annotated[
     str, Path(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
 ]
-RevisionHashQueryParameter = Annotated[
+RevisionHashQuery = Annotated[
     str, Query(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
 ]
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
@@ -129,10 +128,10 @@ SOURCE_COMMIT_PATTERN = (
 )
 """A git object name as its durable owner bounds it: SHA-1 or SHA-256, lowercase."""
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
-PublicRunReferencePathParameter = Annotated[
+PublicRunReferencePath = Annotated[
     str, Path(json_schema_extra={"pattern": PUBLIC_RUN_REFERENCE_PATTERN})
 ]
-PublicRunReferenceQueryParameter = Annotated[
+PublicRunReferenceQuery = Annotated[
     str, Query(json_schema_extra={"pattern": PUBLIC_RUN_REFERENCE_PATTERN})
 ]
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
@@ -223,7 +222,7 @@ MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS = len(
         ProjectSourceId("ffffffff-ffff-ffff-ffff-ffffffffffff")
     )
 )
-PublicSourceReferencePathParameter = Annotated[
+PublicSourceReferencePath = Annotated[
     str,
     Path(
         json_schema_extra={
@@ -290,7 +289,7 @@ MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS = len(
         ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
     )
 )
-PublicProjectReferencePathParameter = Annotated[
+PublicProjectReferencePath = Annotated[
     str,
     Path(
         json_schema_extra={

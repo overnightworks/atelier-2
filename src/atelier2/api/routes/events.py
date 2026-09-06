@@ -18,7 +18,7 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
 from atelier2.api.references import (
     InvalidEventCursor,
-    PublicRunReferencePathParameter,
+    PublicRunReferencePath,
     parse_event_cursor,
 )
 from atelier2.api.stream import (
@@ -49,7 +49,7 @@ router = APIRouter()
 
 async def prepare_events(
     request: Request,
-    public_ref: PublicRunReferencePathParameter,
+    public_ref: PublicRunReferencePath,
     context: ApiContext = api_context_dependency,
 ) -> PreparedEventStream:
     require_sse_accept(request)

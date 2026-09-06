@@ -14222,6 +14222,8 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
               "title": "Public Project Reference",
               "type": "string"
             }
@@ -14311,6 +14313,8 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
               "title": "Public Project Reference",
               "type": "string"
             }
@@ -14464,6 +14468,8 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
               "title": "Public Project Reference",
               "type": "string"
             }

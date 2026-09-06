@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from http import HTTPStatus
 from typing import assert_never
 
@@ -38,11 +39,9 @@ from atelier2.api.projection.workflows import (
     workflow_revision_page_resource,
 )
 from atelier2.api.references import (
-    DEFAULT_PAGE_LIMIT,
-    InvalidRevisionHash,
-    PageLimitParameter,
-    RevisionHashPathParameter,
-    RevisionHashQueryParameter,
+    PageLimit,
+    RevisionHashPath,
+    RevisionHashQuery,
     parse_revision_hash,
 )
 from atelier2.api.wire.library import (
@@ -229,6 +228,13 @@ async def publish_schema_revision_route(
     )
 
 
+def _revision_hash_or_refuse[T](value: str, parse: Callable[[str], T]) -> T:
+    try:
+        return parse(value)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-revision-hash") from error
+
+
 @router.get(
     API_PREFIX + "/schema-revisions/{schema_revision_hash}",
     responses={
@@ -240,8 +246,7 @@ async def publish_schema_revision_route(
     },
 )
 async def get_schema_revision_route(
-    schema_revision_hash: RevisionHashPathParameter,
-    context: ApiContext = api_context_dependency,
+    schema_revision_hash: RevisionHashPath, context: ApiContext = api_context_dependency
 ) -> Response:
     """The exact bytes a `schema` reference pins, for a caller holding only the hash.
 
@@ -249,10 +254,7 @@ async def get_schema_revision_route(
     mirrors the byte-in door it answers: `application/json`, the same media
     type `POST /schema-revisions` accepted the document as, verbatim.
     """
-    try:
-        parsed = PublishedRevisionHash(schema_revision_hash)
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-revision-hash") from error
+    parsed = _revision_hash_or_refuse(schema_revision_hash, PublishedRevisionHash)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.get_schema_revision(parsed),
@@ -427,18 +429,15 @@ async def publish_agent_definition_revision_route(
     response_model=AgentDefinitionRevisionPageResource,
 )
 async def list_agent_definition_revisions_route(
-    after_revision_hash: RevisionHashQueryParameter | None = None,
-    limit: PageLimitParameter = DEFAULT_PAGE_LIMIT,
+    after_revision_hash: RevisionHashQuery | None = None,
+    limit: PageLimit = 50,
     context: ApiContext = api_context_dependency,
 ) -> AgentDefinitionRevisionPageResource:
     """List published agent definitions by the names their authors gave them."""
 
     after = None
     if after_revision_hash is not None:
-        try:
-            after = PublishedRevisionHash(after_revision_hash)
-        except ValueError as error:
-            raise ApiProblem("invalid-revision-hash") from error
+        after = _revision_hash_or_refuse(after_revision_hash, PublishedRevisionHash)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.list_agent_definition_revisions(after, limit),
@@ -474,7 +473,7 @@ def _agent_definition_list_item(
     response_model=AgentDefinitionRevisionDetailResource,
 )
 async def get_agent_definition_revision_route(
-    agent_definition_revision_hash: RevisionHashPathParameter,
+    agent_definition_revision_hash: RevisionHashPath,
     context: ApiContext = api_context_dependency,
 ) -> AgentDefinitionRevisionDetailResource:
     """The whole authored definition a caller holding its hash asked to read.
@@ -484,10 +483,9 @@ async def get_agent_definition_revision_route(
     the definition its author wrote, exactly as the publish door parsed it once
     already.
     """
-    try:
-        parsed = PublishedRevisionHash(agent_definition_revision_hash)
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-revision-hash") from error
+    parsed = _revision_hash_or_refuse(
+        agent_definition_revision_hash, PublishedRevisionHash
+    )
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.get_agent_definition_revision(parsed),
@@ -719,8 +717,8 @@ async def publish_revision(
     response_model=AnyWorkflowRevisionPageResource,
 )
 async def list_revisions(
-    after_revision_hash: RevisionHashQueryParameter | None = None,
-    limit: PageLimitParameter = DEFAULT_PAGE_LIMIT,
+    after_revision_hash: RevisionHashQuery | None = None,
+    limit: PageLimit = 50,
     view: str = RevisionListingView.SUMMARY.value,
     context: ApiContext = api_context_dependency,
 ) -> AnyWorkflowRevisionPageResource:
@@ -733,10 +731,7 @@ async def list_revisions(
 
     after = None
     if after_revision_hash is not None:
-        try:
-            after = parse_revision_hash(after_revision_hash)
-        except InvalidRevisionHash as error:
-            raise ApiProblem("invalid-revision-hash") from error
+        after = _revision_hash_or_refuse(after_revision_hash, parse_revision_hash)
     if parse_revision_view(view) is RevisionListingView.SUMMARY:
         return await _summary_page(context, after, limit)
     return await _described_page(context, after, limit)
@@ -1019,13 +1014,10 @@ async def get_revision_by_name(
     response_model=WorkflowRevisionDetailResource,
 )
 async def get_revision(
-    workflow_revision_hash: RevisionHashPathParameter,
+    workflow_revision_hash: RevisionHashPath,
     context: ApiContext = api_context_dependency,
 ) -> WorkflowRevisionDetailResource:
-    try:
-        parsed = parse_revision_hash(workflow_revision_hash)
-    except InvalidRevisionHash as error:
-        raise ApiProblem("invalid-revision-hash") from error
+    parsed = _revision_hash_or_refuse(workflow_revision_hash, parse_revision_hash)
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.get_workflow_revision(parsed),
