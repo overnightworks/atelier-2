@@ -37,6 +37,11 @@ from atelier2.adapters.dbos.schema import (
     run_inputs_v3,
     runs,
 )
+from atelier2.adapters.dbos.work_item_intents import (
+    head_branch_for_work_item,
+    issue_work_item_order,
+    open_pr_work_item_reference,
+)
 from atelier2.adapters.yaml_workflows import WorkflowFormatNotExecutable
 from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationAccepted,
@@ -50,7 +55,6 @@ from atelier2.contracts.effect_requests import (
     PushAtelierCommitReceipt,
     ReviewedDocumentationPullRequest,
     ReviewedDocumentReplacement,
-    head_branch_for_queue_item,
     head_branch_for_unbound_request,
     reviewed_documentation_candidate_digest,
 )
@@ -70,7 +74,6 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.queue_projection import WorkItemReference
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import (
     RunId,
@@ -78,11 +81,7 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
-from atelier2.contracts.work_items import (
-    WORK_ITEM_ORDER_SCHEMA_REVISION,
-    WorkItemKind,
-    read_work_item_order_document,
-)
+from atelier2.contracts.work_items import WorkItemOrderDocument
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import producing_round
 from atelier2.contracts.workflows_v3 import (
@@ -157,6 +156,7 @@ def graph_action_intent(
     effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)
     request = CanonicalRequest(payload)
     if operation.operation is AdapterOperationName.OPEN_PR:
+        work_item = None
         if project_id is not None:
             head_branch = _confirmed_push_branch(
                 session,
@@ -166,13 +166,10 @@ def graph_action_intent(
                 producing,
                 project_id,
             )
+            work_item = issue_work_item_order(session, run_id)
         else:
             head_branch = head_branch_for_unbound_request(payload)
-        try:
-            body = payload.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise RunEffectConflict("open-pr Action output is not UTF-8") from error
-        request = CanonicalRequest(OpenPullRequest(body, head_branch).canonical_bytes())
+        request = _open_pr_request(payload, head_branch, work_item, "Action")
     binding = EffectBinding(
         logical_effect_key_for_node(
             run_id, revision_hash, action.id, run.current_round_ordinal
@@ -547,18 +544,14 @@ def graph_agent_open_pr_intent(
         AdapterOperationName.OPEN_PR,
     )
     payload = _agent_output(session, execution_id)
-    head_branch = (
-        _head_branch(session, run_id, project_id)
-        if project_id is not None
-        else head_branch_for_unbound_request(payload)
-    )
-    try:
-        body = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RunEffectConflict("open-pr Agent output is not UTF-8") from error
+    if project_id is None:
+        work_item = None
+        head_branch = head_branch_for_unbound_request(payload)
+    else:
+        work_item = issue_work_item_order(session, run_id)
+        head_branch = head_branch_for_work_item(work_item, project_id)
     return EffectIntent(
-        binding,
-        CanonicalRequest(OpenPullRequest(body, head_branch).canonical_bytes()),
+        binding, _open_pr_request(payload, head_branch, work_item, "Agent")
     )
 
 
@@ -786,27 +779,27 @@ def _binding_for(
     return matching[0]
 
 
-def _head_branch(session: Any, run_id: RunId, project_id: ProjectId):
-    rows = session.execute(
-        sa.select(
-            run_inputs_v3.c.schema_revision_hash,
-            run_inputs_v3.c.value,
-            run_inputs_v3.c.value_hash,
-        ).where(run_inputs_v3.c.run_id == run_id.value)
-    ).all()
-    orders = []
-    for schema_revision, value, value_hash in rows:
-        raw = bytes(value)
-        if Sha256Hash.of(raw).value != str(value_hash):
-            raise RunEffectConflict("run input bytes differ from their durable hash")
-        if str(schema_revision) != WORK_ITEM_ORDER_SCHEMA_REVISION.value:
-            continue
-        order = read_work_item_order_document(raw)
-        if order is None or order.kind is not WorkItemKind.ISSUE:
-            raise RunEffectConflict("push requires one valid issue work-item order")
-        orders.append(order)
-    if len(orders) != 1:
-        raise RunEffectConflict("push requires exactly one issue work-item order")
-    return head_branch_for_queue_item(
-        WorkItemReference(project_id, orders[0].reference).item_id
+def _head_branch(session: Any, run_id: RunId, project_id: ProjectId) -> HeadBranch:
+    return head_branch_for_work_item(issue_work_item_order(session, run_id), project_id)
+
+
+def _open_pr_request(
+    payload: bytes,
+    head_branch: HeadBranch,
+    work_item: WorkItemOrderDocument | None,
+    owner: str,
+) -> CanonicalRequest:
+    """The canonical open-pr request this node's decoded output and head carry.
+
+    Shared by the Action- and Agent-shaped open-pr builders, which differ only
+    in whose output they decode and how they name it in the UTF-8 conflict.
+    """
+    try:
+        body = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunEffectConflict(f"open-pr {owner} output is not UTF-8") from error
+    return CanonicalRequest(
+        OpenPullRequest(
+            body, head_branch, open_pr_work_item_reference(work_item)
+        ).canonical_bytes()
     )

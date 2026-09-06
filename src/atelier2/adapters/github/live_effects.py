@@ -59,12 +59,13 @@ from atelier2.adapters.github.effects import (
     ReviewedDocumentationPublisherFactory,
     open_pull_request,
 )
-from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
-from atelier2.contracts.effect_markers import (
-    EFFECT_REQUEST_MARKER_KEY,
-    body_carries_request_hash,
-    marker_line,
+from atelier2.adapters.github.pull_request_prose import (
+    ACCEPTANCE_LINE_PREFIX,
+    neutralized_candidate_prose,
 )
+from atelier2.adapters.github.tracker_reference import github_issue_number
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
 from atelier2.contracts.effect_requests import (
     HeadBranch,
     OpenPullRequest,
@@ -136,28 +137,6 @@ _SENTENCE_TERMINATOR = re.compile(r"[.!?](?:\s|$)")
 # leaving ample room below GitHub's own much larger limit.
 _MAXIMUM_RENDERED_BODY_CHARACTERS = 4000
 _RENDERED_BODY_TRUNCATION_NOTE = "\n\n[truncated at 4000 characters]"
-
-_ACCEPTANCE_LINE_PREFIX = "Literal acceptance sentence(s)"
-
-# The repository's acceptance gate (`scripts/check_acceptance.py`'s
-# `LANDING_FIELD`) and this adapter's own trailer readback
-# (`contracts.effect_markers.body_carries_request_hash`) both recognise a
-# reserved line by how it starts, wherever it sits in the body. A candidate's
-# summary or changed paths are provider text, never trusted to hold one: a
-# line that would otherwise read as either marker is quoted with a leading
-# "> " before it reaches the rendered body, so the acceptance line and the
-# trailer this module appends afterward stay the only unframed reserved lines.
-_RESERVED_LINE_PATTERN = re.compile(
-    r"^[ \t]*[-*]?[ \t]*"
-    rf"({re.escape(_ACCEPTANCE_LINE_PREFIX)}|{re.escape(EFFECT_REQUEST_MARKER_KEY)})"
-)
-
-
-def _escape_reserved_lines(text: str) -> str:
-    return "\n".join(
-        f"> {line}" if _RESERVED_LINE_PATTERN.match(line) else line
-        for line in text.splitlines()
-    )
 
 
 class GitHubCredentialUnresolvable(RuntimeError):
@@ -426,7 +405,7 @@ def _acceptance_line(head_branch: HeadBranch) -> str:
     # item with `proves(...)` sentences supplies the real identifiers; the
     # branch name is the one work-item identity already carried this far.
     return (
-        f"{_ACCEPTANCE_LINE_PREFIX}: none: opened by the Atelier "
+        f"{ACCEPTANCE_LINE_PREFIX}: none: opened by the Atelier "
         f"from work item {head_branch.value}"
     )
 
@@ -452,14 +431,17 @@ def _rendered_open_pull_request(
         sections.append(
             "Changed paths:\n" + "\n".join(f"- {path}" for path in changed_paths)
         )
-    prose = _escape_reserved_lines("\n\n".join(sections))
-    # The acceptance line and the trailer are the two trusted, unframed
-    # reserved lines this body may carry (ADR-owned by the acceptance gate
-    # and by `contracts.effect_markers`); bounding them together with the
-    # provider prose is what keeps the *complete* body, not just the prose,
-    # inside the 4000-character ceiling.
+    prose = neutralized_candidate_prose("\n\n".join(sections))
+    classification = ""
+    if request.work_item_reference is not None:
+        issue_number = github_issue_number(request.work_item_reference)
+        classification = f"\n\nWork-Item: #{issue_number}\n\nCloses #{issue_number}"
+    # The classification lines live in the untruncatable tail, alongside the
+    # acceptance line and marker: truncating a long candidate summary must
+    # never also drop the lines a queue landing classifies this pull request by.
     tail = (
-        f"\n\n{_acceptance_line(request.head_branch)}\n\n{marker_line(request_hash)}\n"
+        f"{classification}\n\n{_acceptance_line(request.head_branch)}"
+        f"\n\n{marker_line(request_hash)}\n"
     )
     return _RenderedOpenPullRequest(
         _rendered_title(summary), _bounded_prose(prose, tail)
