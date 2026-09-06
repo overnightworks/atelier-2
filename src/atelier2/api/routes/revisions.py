@@ -404,10 +404,7 @@ async def publish_agent_definition_revision_route(
     )
 
 
-@router.get(
-    API_PREFIX + "/agent-definition-revisions",
-    response_model=AgentDefinitionRevisionPageResource,
-)
+@router.get(API_PREFIX + "/agent-definition-revisions")
 async def list_agent_definition_revisions_route(
     after_revision_hash: RevisionHashQuery | None = None,
     limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
@@ -448,10 +445,7 @@ def _agent_definition_list_item(
     )
 
 
-@router.get(
-    API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
-    response_model=AgentDefinitionRevisionDetailResource,
-)
+@router.get(API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}")
 async def get_agent_definition_revision_route(
     agent_definition_revision_hash: RevisionHashPath,
     context: ApiContext = api_context_dependency,
@@ -689,10 +683,7 @@ async def publish_revision(
     return resource_response(workflow_revision_detail_resource(read), status)
 
 
-@router.get(
-    API_PREFIX + "/workflow-revisions",
-    response_model=AnyWorkflowRevisionPageResource,
-)
+@router.get(API_PREFIX + "/workflow-revisions")
 async def list_revisions(
     after_revision_hash: RevisionHashQuery | None = None,
     limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
@@ -771,7 +762,6 @@ def _asked_position(position: str) -> object:
 
 @router.post(
     CATALOG_LINEAGES_PATH,
-    response_model=CatalogAdmissionResource,
     status_code=201,
 )
 async def found_catalog_lineage_route(
@@ -804,10 +794,7 @@ async def found_catalog_lineage_route(
     return catalog_admission_resource(result)
 
 
-@router.get(
-    CATALOG_REVISION_BY_NAME_PATH,
-    response_model=CatalogNameResolutionResource,
-)
+@router.get(CATALOG_REVISION_BY_NAME_PATH)
 async def get_revision_by_name(
     kind: RevisionKind,
     name: str,
@@ -857,10 +844,7 @@ async def get_revision_by_name(
             assert_never(unreachable)
 
 
-@router.get(
-    API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
-    response_model=WorkflowRevisionDetailResource,
-)
+@router.get(API_PREFIX + "/workflow-revisions/{workflow_revision_hash}")
 async def get_revision(
     workflow_revision_hash: RevisionHashPath,
     context: ApiContext = api_context_dependency,

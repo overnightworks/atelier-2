@@ -15,7 +15,7 @@ router = APIRouter()
 REDEPLOY_STATUS_UNREADABLE_REASON = "auto-redeploy's own status file is unreadable"
 
 
-@router.get(API_PREFIX + "/health", response_model=HealthResource)
+@router.get(API_PREFIX + "/health")
 async def health(context: ApiContext = api_context_dependency) -> HealthResource:
     return HealthResource(
         status="serving",

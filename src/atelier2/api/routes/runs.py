@@ -327,7 +327,7 @@ async def start_run_route(
     return resource_response(await _run_resource_of(run_id, context), status)
 
 
-@router.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
+@router.get(API_PREFIX + "/runs")
 async def list_runs(
     after: PublicRunReferenceQuery | None = None,
     limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
@@ -379,7 +379,7 @@ async def list_runs(
             assert_never(unreachable)
 
 
-@router.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResourceV3)
+@router.get(API_PREFIX + "/runs/{public_ref}")
 async def get_run_route(
     public_ref: PublicRunReferencePath, context: ApiContext = api_context_dependency
 ) -> RunResourceV3:
@@ -437,10 +437,7 @@ async def fork_run_route(
     return resource_response(await _run_resource_of(run.run_id, context), status)
 
 
-@router.get(
-    API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
-    response_model=NodeDetailResource,
-)
+@router.get(API_PREFIX + "/runs/{public_ref}/nodes/{node_id}")
 async def get_node_detail_route(
     public_ref: PublicRunReferencePath,
     node_id: str,

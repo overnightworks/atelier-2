@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import assert_never
+from typing import Annotated, assert_never
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -70,7 +70,7 @@ router = APIRouter()
 async def publish_auth_profile_revision_route(
     body: PublishAuthProfileRevisionRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
@@ -100,7 +100,6 @@ async def publish_auth_profile_revision_route(
 
 @router.get(
     API_PREFIX + "/auth-profile-revisions",
-    response_model=AuthProfileRevisionPageResource,
 )
 async def list_auth_profile_revisions_route(
     after_revision_hash: RevisionHashQuery | None = None,
@@ -144,7 +143,7 @@ async def list_auth_profile_revisions_route(
 async def publish_agent_configuration_revision_route(
     body: PublishAgentConfigurationRevisionRequestResource,
     context: ApiContext = api_context_dependency,
-    _media: None = Depends(require_json_media_dependency),
+    _media: Annotated[None, Depends(require_json_media_dependency)] = None,
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
@@ -181,7 +180,6 @@ async def publish_agent_configuration_revision_route(
 
 @router.get(
     API_PREFIX + "/agent-configuration-revisions",
-    response_model=AgentConfigurationRevisionPageResource,
 )
 async def list_agent_configuration_revisions_route(
     after_revision_hash: RevisionHashQuery | None = None,
