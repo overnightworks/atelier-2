@@ -1561,7 +1561,7 @@ describe("the project source collection Settings writes", () => {
     ).rejects.toThrow("durable wire contract");
   });
 
-  it("parses a well-formed list of two source resources", async () => {
+  it("refuses a source list carrying more connections than a project may hold", async () => {
     const second = {
       ...source,
       public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
@@ -1569,9 +1569,9 @@ describe("the project source collection Settings writes", () => {
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk({ items: [source, second] }));
 
-    const read = await createCockpitApi(fetcher).listProjectSources(projectReference);
-
-    expect(read.items).toEqual([source, second]);
+    await expect(
+      createCockpitApi(fetcher).listProjectSources(projectReference)
+    ).rejects.toThrow("durable wire contract");
   });
 });
 
