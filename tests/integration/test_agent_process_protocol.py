@@ -441,9 +441,14 @@ def test_provider_stream_error_deregisters_the_descriptor(
     Left registered, a descriptor that keeps reporting a read error stays
     selector-ready forever, so every following tick would service it again
     for free -- the same failure, at no cost in wall time, spinning the loop.
+    Closing the live fd out from under the selector cannot simulate this
+    deterministically -- a closed descriptor can drop out of the selector
+    silently instead of ever reporting an error -- so the provider's own read
+    is made to fail instead, on a descriptor the kernel genuinely has data for.
     """
 
-    spy = _SpySelector()
+    stepper = _SteppedSelects()
+    spy = _SpySelector(before_select=stepper)
     monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
     endpoint = tmp_path / "control.sock"
     cgroup = tmp_path / "cgroup"
@@ -456,7 +461,11 @@ def test_provider_stream_error_deregisters_the_descriptor(
     try:
         invocation = process_invocation(
             AgentAttemptId.of(b"watchdog-descriptor-error-test"),
-            (sys.executable, "-c", "import time; time.sleep(60)"),
+            (
+                sys.executable,
+                "-c",
+                "import sys,time; sys.stdout.write('x'); sys.stdout.flush(); time.sleep(60)",
+            ),
             tmp_path / "workspace",
         )
         launch_frame = encode_control_frame(process_module._launch_request(invocation))
@@ -468,9 +477,32 @@ def test_provider_stream_error_deregisters_the_descriptor(
         stdout_fd = process.stdout.fileno()
         assert stdout_fd in spy.registered_events
 
-        os.close(stdout_fd)
-        _wait_until(lambda: stdout_fd not in spy.registered_events)
+        real_read = os.read
+
+        def fail_stdout_read(descriptor: int, size: int) -> bytes:
+            if descriptor == stdout_fd:
+                raise OSError("provider stream is broken")
+            return real_read(descriptor, size)
+
+        monkeypatch.setattr(os, "read", fail_stdout_read)
+        stepper.arm()
+
+        for _ in range(20):
+            if stdout_fd not in spy.registered_events:
+                break
+            recorded = spy.select_calls
+            stepper.release()
+            _wait_until(lambda recorded=recorded: spy.select_calls > recorded)
+        else:
+            raise AssertionError(
+                "the failing read never deregistered the descriptor"
+                " within 20 stepped ticks"
+            )
+
+        assert watchdog._termination_owner == "SUPERVISION"
     finally:
+        stepper.disarm()
+        stepper.release()
         if watchdog._process is not None and watchdog._process.poll() is None:
             os.killpg(watchdog._process.pid, signal.SIGKILL)
             watchdog._process.wait(timeout=5)
