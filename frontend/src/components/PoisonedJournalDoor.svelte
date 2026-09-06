@@ -4,7 +4,7 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import { journalPoisonedCopy } from "../lib/journalPoisonedCopy";
-  import type { MutationJournal } from "../lib/mutationJournal";
+  import { JournalUnreadableError, type MutationJournal } from "../lib/mutationJournal";
   import { exactLocal } from "../lib/when";
   import PoisonedJournalDiscardSheet from "./PoisonedJournalDiscardSheet.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
@@ -58,7 +58,8 @@
   async function checkJournalHealth(): Promise<void> {
     try {
       await mutationJournal.entries();
-    } catch {
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
       poisoned = true;
     }
   }
