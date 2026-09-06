@@ -6,7 +6,7 @@
 export function decodeUtf8Base64(base64: string): string | null {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(
-      Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+      Uint8Array.from(atob(base64), (character) => character.codePointAt(0)!)
     );
   } catch {
     return null;

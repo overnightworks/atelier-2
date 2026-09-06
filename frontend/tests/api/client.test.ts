@@ -5,11 +5,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assistantTurnEventSchema,
   createCockpitApi,
+  decodeCanonicalBase64,
+  decodePublicRunReference,
   decodeProblem,
   decodeStreamFrame,
+  encodePublicRunReference,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
   nodeRailEntrySchema,
+  parseEventCursor,
   projectSourceConnectionRevisionSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
@@ -1217,6 +1221,20 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
       next_after: null
     });
   });
+
+  it("refuses an observation stamp that is not the canonical zero-padded UTC form", async () => {
+    const unpaddedStampItem = { ...observedItem, title_observed_at: "2026-9-01T14:00:00Z" };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ items: [unpaddedStampItem], next_after: null }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listObservedQueueItems()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
+  });
 });
 
 describe("the published agent definitions the catalog reads", () => {
@@ -2117,5 +2135,48 @@ describe("a run's node rail", () => {
       }).success
     ).toBe(false);
     expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...completeEvidence }).success).toBe(true);
+  });
+});
+
+describe("the canonical base64 and public run reference codecs", () => {
+  it("round-trips every byte value through canonical base64", () => {
+    const bytes = Uint8Array.from({ length: 256 }, (_, index) => index);
+    const encoded = btoa(String.fromCodePoint(...bytes));
+
+    expect(decodeCanonicalBase64(encoded)).toEqual(bytes);
+  });
+
+  it("refuses base64 that is not the canonical standard alphabet and padding", () => {
+    expect(decodeCanonicalBase64("not base64!!")).toBeNull();
+  });
+
+  it.each([
+    ["run", "run1.cnVu"],
+    ["runs", "run1.cnVucw"],
+    ["run-1", "run1.cnVuLTE"]
+  ])("round-trips a run id needing every base64 padding length (%s)", (runId, reference) => {
+    expect(encodePublicRunReference(runId)).toBe(reference);
+    expect(decodePublicRunReference(reference)).toBe(runId);
+  });
+
+  it("refuses a public run reference whose body is not canonical unpadded base64url", () => {
+    expect(decodePublicRunReference("run1.cnVu==")).toBeNull();
+  });
+});
+
+describe("event cursor parsing", () => {
+  it("parses a canonical run reference and positive sequence", () => {
+    expect(parseEventCursor("event1.cnVu.12")).toEqual({
+      publicRunReference: "run1.cnVu",
+      sequence: 12
+    });
+  });
+
+  it("refuses a sequence with a leading zero", () => {
+    expect(parseEventCursor("event1.cnVu.012")).toBeNull();
+  });
+
+  it("refuses a sequence that is not all digits", () => {
+    expect(parseEventCursor("event1.cnVu.1x")).toBeNull();
   });
 });
