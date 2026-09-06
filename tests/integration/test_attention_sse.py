@@ -221,6 +221,8 @@ def _hold_until_event(
     request_headers = {"Accept": "text/event-stream"}
     if headers:
         request_headers.update(headers)
+    status_code: int | None = None
+    error_body: bytes | None = None
     try:
         with httpx.stream(
             "GET",
@@ -228,12 +230,19 @@ def _hold_until_event(
             headers=request_headers,
             timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
         ) as response:
-            assert response.status_code == 200, response.read()
-            connected.set()
-            received.append(_read_one_sse_event(response, time.monotonic() + 12))
+            status_code = response.status_code
+            if status_code != 200:
+                error_body = response.read()
+            else:
+                connected.set()
+                received.append(_read_one_sse_event(response, time.monotonic() + 12))
+                return
     except (AssertionError, httpx.HTTPError, json.JSONDecodeError, ValueError) as error:
         errors.append(error)
         connected.set()
+        return
+    connected.set()
+    assert status_code == 200, error_body
 
 
 def _waiting_input_from(
