@@ -444,7 +444,8 @@ def test_a_moved_ref_changes_the_commit_the_command_reports(
 
     moved = capsys.readouterr().out
     assert first != second
-    assert first in standing and second in moved
+    assert first in standing
+    assert second in moved
 
 
 def test_the_command_refuses_to_register_a_location_that_is_no_repository(
@@ -882,7 +883,8 @@ def test_an_intake_refuses_a_commit_the_ref_has_moved_away_from(
     assert intake(database, source_id, scanned) == 1
 
     refused = capsys.readouterr().err
-    assert scanned in refused and moved in refused
+    assert scanned in refused
+    assert moved in refused
     assert logical_dump(database) == settled
 
 

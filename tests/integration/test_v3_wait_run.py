@@ -422,7 +422,8 @@ def what_the_answer_workflow_recorded(
             )
         )
     status = DBOS.get_workflow_status(workflow_id)
-    assert status is not None and status.name == ANSWER_WORKFLOW_NAME
+    assert status is not None
+    assert status.name == ANSWER_WORKFLOW_NAME
     return (
         str(DBOS.retrieve_workflow(workflow_id).get_result()),
         tuple(

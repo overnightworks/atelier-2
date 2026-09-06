@@ -56,7 +56,8 @@ def test_declared_kind_is_stored_and_read_back(runtime: DbosRuntime) -> None:
     read = durable_api_client(runtime).get(
         f"{LIBRARY_ADDITIONS_PATH}/{added.json()['intake_id']}"
     )
-    assert read.status_code == 200 and read.json() == added.json()
+    assert read.status_code == 200
+    assert read.json() == added.json()
 
 
 @pytest.mark.proves("a-catalog-intake-keeps-the-kind-it-was-handed-in")
@@ -92,7 +93,8 @@ def test_agent_looking_content_declared_as_skill_stays_skill(
 ) -> None:
     document = b"---\nname: looks-like-an-agent\ndescription: declared otherwise\n---\nPrompt\n"
     added = add(durable_api_client(runtime), document, "skill")
-    assert added.status_code == 201 and added.json()["kind"] == "skill"
+    assert added.status_code == 201
+    assert added.json()["kind"] == "skill"
 
 
 def test_catalog_intakes_are_immutable(runtime: DbosRuntime) -> None:
