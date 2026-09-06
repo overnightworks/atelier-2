@@ -225,6 +225,58 @@ class RunEventCancellationBinding:
 type RunEventAttemptBinding = RunEventAgentAttemptBinding | RunEventCancellationBinding
 
 
+_NO_ATTEMPT_HASH_FIELDS: tuple[bytes, bytes, bytes, bytes, bytes, bytes] = (
+    b"",
+    b"",
+    b"",
+    b"",
+    b"",
+    b"",
+)
+
+
+def _agent_attempt_binding_hash_fields(
+    binding: RunEventAgentAttemptBinding,
+) -> tuple[bytes, bytes, bytes, bytes, bytes, bytes]:
+    """An agent-attempt binding's own event-hash dimensions; it has no
+    cancellation fields to carry."""
+
+    return (
+        binding.attempt_id.value.encode("ascii"),
+        str(binding.attempt_ordinal).encode("ascii"),  # persisted event-hash family
+        b"",
+        b"",
+        b"",
+        b"",
+    )
+
+
+def _cancellation_binding_hash_fields(
+    binding: RunEventCancellationBinding,
+) -> tuple[bytes, bytes, bytes, bytes, bytes, bytes]:
+    """A cancellation binding's event-hash dimensions, disposition and
+    replacement attempt included where the cancellation has settled them."""
+
+    disposition_field = (
+        b""
+        if binding.disposition is None
+        else binding.disposition.value.encode("ascii")
+    )
+    replacement_attempt_id_field = (
+        b""
+        if binding.replacement_attempt_id is None
+        else binding.replacement_attempt_id.value.encode("ascii")
+    )
+    return (
+        binding.attempt_id.value.encode("ascii"),
+        str(binding.attempt_ordinal).encode("ascii"),  # persisted event-hash family
+        binding.command_id.encode("utf-8"),
+        binding.replacement.value.encode("ascii"),
+        disposition_field,
+        replacement_attempt_id_field,
+    )
+
+
 def _attempt_hash_fields(
     attempt_binding: RunEventAttemptBinding | None,
     *,
@@ -236,52 +288,18 @@ def _attempt_hash_fields(
 
     The family stays nested: v3 carries v2's attempt dimensions unchanged, so
     a completion that binds its receipt does not silently drop the attempt
-    binding an ordinal-2 completion already has.
+    binding an ordinal-2 completion already has. Which fields those are
+    depends only on the binding's own case, so each case owns its fixed
+    six-field shape and this only selects between them.
     """
 
-    fields: list[bytes] = []
-    if use_v2_hash or agent_receipt_bound:
-        cancellation_binding = (
-            attempt_binding
-            if isinstance(attempt_binding, RunEventCancellationBinding)
-            else None
-        )
-        attempt_id_field = (
-            b""
-            if attempt_binding is None
-            else attempt_binding.attempt_id.value.encode("ascii")
-        )
-        attempt_ordinal_field = str(
-            "" if attempt_binding is None else attempt_binding.attempt_ordinal
-        ).encode("ascii")  # persisted event-hash family
-        command_id_field = (
-            "" if cancellation_binding is None else cancellation_binding.command_id
-        ).encode("utf-8")
-        replacement_field = (
-            ""
-            if cancellation_binding is None
-            else cancellation_binding.replacement.value
-        ).encode("ascii")
-        disposition_field = (
-            ""
-            if cancellation_binding is None or cancellation_binding.disposition is None
-            else cancellation_binding.disposition.value
-        ).encode("ascii")
-        replacement_attempt_id_field = (
-            ""
-            if cancellation_binding is None
-            or cancellation_binding.replacement_attempt_id is None
-            else cancellation_binding.replacement_attempt_id.value
-        ).encode("ascii")
-        fields = [
-            attempt_id_field,
-            attempt_ordinal_field,
-            command_id_field,
-            replacement_field,
-            disposition_field,
-            replacement_attempt_id_field,
-        ]
-    return tuple(fields)
+    if not (use_v2_hash or agent_receipt_bound):
+        return ()
+    if isinstance(attempt_binding, RunEventCancellationBinding):
+        return _cancellation_binding_hash_fields(attempt_binding)
+    if isinstance(attempt_binding, RunEventAgentAttemptBinding):
+        return _agent_attempt_binding_hash_fields(attempt_binding)
+    return _NO_ATTEMPT_HASH_FIELDS
 
 
 @dataclass(frozen=True)
