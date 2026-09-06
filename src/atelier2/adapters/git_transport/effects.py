@@ -718,7 +718,8 @@ class GitTransportEffectAdapter:
             "printf 'username=x-access-token\\npassword='; "
             f"/bin/cat {path}; printf '\\n'; }}; f"
         )
-        return ("-c", f"credential.helper={helper}")
+        arguments = ["-c", f"credential.helper={helper}"]
+        return tuple(arguments)
 
     def _remote_git(
         self, arguments: tuple[str, ...], *, in_store: bool = False

@@ -205,13 +205,14 @@ def _snapshot_from_record(
             WorkflowRevisionHash(str(binding_record["workflow_revision_hash"])),
         )
     )
-    blockers = _blockers_for(
+    blocker = _blocker_for(
         connection,
         item_reference,
         state,
         proposal,
         launch_binding,
     )
+    blockers = () if blocker is None else (blocker,)
     observed_title = record["observed_title"]
     title_observed_at = record["title_observed_at"]
     if (observed_title is None) != (title_observed_at is None):
@@ -237,28 +238,32 @@ def _snapshot_from_record(
     )
 
 
-def _blockers_for(
+def _blocker_for(
     connection: Connection,
     item_reference: WorkItemReference,
     state: QueueItemState,
     proposal: QueueProposal | None,
     launch_binding: QueueLaunchBinding | None,
-) -> tuple[QueueBlockerKind, ...]:
+) -> QueueBlockerKind | None:
+    """The one thing holding this item back, or nothing where nothing does.
+
+    A queue item carries at most one blocker at a time: the projection reads
+    it as a single reason, never a set of concurrent ones.
+    """
+
     if state is QueueItemState.OBSERVED:
-        return (QueueBlockerKind.PRIORITY_UNSET,)
+        return QueueBlockerKind.PRIORITY_UNSET
     if proposal is None:
         if state is QueueItemState.ADMITTED:
-            return (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
+            return QueueBlockerKind.LEGACY_REVIEW_REQUIRED
         raise ValueError("a Phase-D queue state must carry its proposal")
     if state is QueueItemState.PROPOSED:
-        return (
-            (QueueBlockerKind.HUMAN_REQUIRED,)
-            if proposal.automation_disposition
-            is QueueAutomationDisposition.HUMAN_REQUIRED
-            else ()
+        human_required = (
+            proposal.automation_disposition is QueueAutomationDisposition.HUMAN_REQUIRED
         )
+        return QueueBlockerKind.HUMAN_REQUIRED if human_required else None
     if launch_binding is not None:
-        return ()
+        return None
     dependency_states = connection.execute(
         sa.select(runs.c.state)
         .select_from(
@@ -286,10 +291,10 @@ def _blockers_for(
         elif prerequisite_state is not RunState.COMPLETED:
             open_prerequisite = True
     if failed_prerequisite:
-        return (QueueBlockerKind.PREREQUISITE_FAILED,)
+        return QueueBlockerKind.PREREQUISITE_FAILED
     if open_prerequisite:
-        return (QueueBlockerKind.PREREQUISITE_OPEN,)
-    return ()
+        return QueueBlockerKind.PREREQUISITE_OPEN
+    return None
 
 
 def proposal_revision_for(connection: Connection, item_id: QueueItemId) -> int:

@@ -250,18 +250,13 @@ def _candidate_choices(
             for candidate in registered
             if candidate.model_id == declaration.model
         )
-        return _RoleChoices(
-            pinned if len(pinned) == 1 else (),
-            (
-                None
-                if len(pinned) == 1
-                else (
-                    ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
-                    if not pinned
-                    else ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS
-                )
-            ),
-        )
+        if len(pinned) == 1:
+            uncast_reason = None
+        elif not pinned:
+            uncast_reason = ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
+        else:
+            uncast_reason = ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS
+        return _RoleChoices(pinned if len(pinned) == 1 else (), uncast_reason)
     choices: list[_ModelCandidate] = []
     if defaults is not None:
         by_difficulty: dict[RoleDifficulty, ProjectModelDefault] = {

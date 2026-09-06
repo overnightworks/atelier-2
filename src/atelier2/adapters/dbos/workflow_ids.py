@@ -138,10 +138,12 @@ def driving_workflow_ids(attempt: AgentAttempt) -> tuple[str, ...]:
     whether anything is still driving an attempt at all.
     """
 
+    workflow_ids: list[str] = []
     if attempt.cancellation is not None:
-        return (cancellation_workflow_id_for(stop_command_for(attempt)),)
-    if attempt.runner_manifest_id is not None:
-        return ()
-    if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-        return (replacement_workflow_id_for(attempt.attempt_id),)
-    return (node_workflow_id_for(attempt.node_execution_id),)
+        workflow_ids.append(cancellation_workflow_id_for(stop_command_for(attempt)))
+    elif attempt.runner_manifest_id is None:
+        if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
+            workflow_ids.append(replacement_workflow_id_for(attempt.attempt_id))
+        else:
+            workflow_ids.append(node_workflow_id_for(attempt.node_execution_id))
+    return tuple(workflow_ids)

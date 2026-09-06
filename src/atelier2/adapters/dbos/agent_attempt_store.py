@@ -227,6 +227,12 @@ class DurableStateCorrupt(RuntimeError):
 _OR_IGNORE = "OR IGNORE"
 
 
+def _cancellation_disposition(
+    value: object,
+) -> AgentAttemptCancellationDisposition | None:
+    return None if value is None else AgentAttemptCancellationDisposition(str(value))
+
+
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
     """Rebuild the typed attempt one `agent_attempts` row records.
 
@@ -246,6 +252,7 @@ def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
         runner_invocation = record["runner_invocation_id"]
         runner_evidence_hash = record["runner_terminal_evidence_hash"]
         transcript = record["transcript_artifact_hash"]
+        disposition_value = _cancellation_disposition(disposition)
         cancellation = (
             None
             if command_id is None
@@ -254,11 +261,7 @@ def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
                 int(record["cancellation_expected_state_version"]),
                 AgentAttemptReplacement(str(record["replacement"])),
                 AgentAttemptRedriveState(str(record["redrive_state"])),
-                (
-                    None
-                    if disposition is None
-                    else AgentAttemptCancellationDisposition(str(disposition))
-                ),
+                disposition_value,
             )
         )
         return AgentAttempt(

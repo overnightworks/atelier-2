@@ -225,6 +225,62 @@ class RunEventCancellationBinding:
 type RunEventAttemptBinding = RunEventAgentAttemptBinding | RunEventCancellationBinding
 
 
+def _attempt_hash_fields(
+    attempt_binding: RunEventAttemptBinding | None,
+    *,
+    use_v2_hash: bool,
+    agent_receipt_bound: bool,
+) -> tuple[bytes, ...]:
+    """The event-hash family's attempt dimensions, present only where a v2+
+    hash carries them.
+
+    The family stays nested: v3 carries v2's attempt dimensions unchanged, so
+    a completion that binds its receipt does not silently drop the attempt
+    binding an ordinal-2 completion already has.
+    """
+
+    if not (use_v2_hash or agent_receipt_bound):
+        return ()
+    cancellation_binding = (
+        attempt_binding
+        if isinstance(attempt_binding, RunEventCancellationBinding)
+        else None
+    )
+    attempt_id_field = (
+        b""
+        if attempt_binding is None
+        else attempt_binding.attempt_id.value.encode("ascii")
+    )
+    attempt_ordinal_field = str(
+        "" if attempt_binding is None else attempt_binding.attempt_ordinal
+    ).encode("ascii")  # persisted event-hash family
+    command_id_field = (
+        "" if cancellation_binding is None else cancellation_binding.command_id
+    ).encode("utf-8")
+    replacement_field = (
+        "" if cancellation_binding is None else cancellation_binding.replacement.value
+    ).encode("ascii")
+    disposition_field = (
+        ""
+        if cancellation_binding is None or cancellation_binding.disposition is None
+        else cancellation_binding.disposition.value
+    ).encode("ascii")
+    replacement_attempt_id_field = (
+        ""
+        if cancellation_binding is None
+        or cancellation_binding.replacement_attempt_id is None
+        else cancellation_binding.replacement_attempt_id.value
+    ).encode("ascii")
+    return (
+        attempt_id_field,
+        attempt_ordinal_field,
+        command_id_field,
+        replacement_field,
+        disposition_field,
+        replacement_attempt_id_field,
+    )
+
+
 @dataclass(frozen=True)
 class RunEvent:
     run_id: RunId
@@ -345,44 +401,10 @@ class RunEvent:
             hash_domain = "node-event-hash/v2"
         else:
             hash_domain = "node-event-hash/v1"
-        # The family stays nested: v3 carries v2's attempt dimensions unchanged,
-        # so a completion that binds its receipt does not silently drop the
-        # attempt binding an ordinal-2 completion already has.
-        attempt_fields = (
-            (
-                (
-                    b""
-                    if attempt_binding is None
-                    else attempt_binding.attempt_id.value.encode("ascii")
-                ),
-                str(
-                    "" if attempt_binding is None else attempt_binding.attempt_ordinal
-                ).encode("ascii"),  # persisted event-hash family
-                (
-                    ""
-                    if not isinstance(attempt_binding, RunEventCancellationBinding)
-                    else attempt_binding.command_id
-                ).encode("utf-8"),
-                (
-                    ""
-                    if not isinstance(attempt_binding, RunEventCancellationBinding)
-                    else attempt_binding.replacement.value
-                ).encode("ascii"),
-                (
-                    ""
-                    if not isinstance(attempt_binding, RunEventCancellationBinding)
-                    or attempt_binding.disposition is None
-                    else attempt_binding.disposition.value
-                ).encode("ascii"),
-                (
-                    ""
-                    if not isinstance(attempt_binding, RunEventCancellationBinding)
-                    or attempt_binding.replacement_attempt_id is None
-                    else attempt_binding.replacement_attempt_id.value
-                ).encode("ascii"),
-            )
-            if use_v2_hash or agent_receipt_bound
-            else ()
+        attempt_fields = _attempt_hash_fields(
+            attempt_binding,
+            use_v2_hash=use_v2_hash,
+            agent_receipt_bound=agent_receipt_bound,
         )
         receipt_fields = (
             ()
