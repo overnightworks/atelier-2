@@ -4,14 +4,14 @@
 symbol only its own test reaches is not a symbol the product uses, and letting
 the suite vouch for source is how a codebase keeps machinery it retired.
 
-Three files carry the names that survive a finding, and each says something
-different about the name. Every entry in every list names its symbol as
-`module/path.py:symbol`, relative to `src/atelier2`, exactly as vulture reports
-it: qualifying by module, not by bare name, is what stops excusing one
-vocabulary word in one module from silently vouching for a dead namesake with
-the same name in another.
+Three files under `scripts/baselines/` carry the names that survive a finding,
+and each says something different about the name. Every entry in every list
+names its symbol as `module/path.py:symbol`, relative to `src/atelier2`, exactly
+as vulture reports it: qualifying by module, not by bare name, is what stops
+excusing one vocabulary word in one module from silently vouching for a dead
+namesake with the same name in another.
 
-* `.vulture_allowlist.py` -- a production site does reach the name, and vulture
+* `vulture_allowlist.py` -- a production site does reach the name, and vulture
   cannot see that site: a program built as text, a vocabulary the wire selects
   by value, a generated `__eq__`, a framework attribute. Permanent; every entry
   names the site.
@@ -55,9 +55,10 @@ FRAMEWORK_REGISTRATION_DECORATORS = (
 # appear: pydantic's `model_config`, DBOS's `add_workflow`, and the
 # `proves_absence` marker every acceptance report carries.
 FRAMEWORK_RESERVED_NAMES = ("proves_absence", "model_config", "add_workflow")
-ALLOWLIST_FILE = Path(".vulture_allowlist.py")
-PENDING_FILE = Path("vulture_pending.py")
-FROZEN_FILE = Path("vulture_frozen.py")
+BASELINES_DIRECTORY = Path("scripts") / "baselines"
+ALLOWLIST_FILE = BASELINES_DIRECTORY / "vulture_allowlist.py"
+PENDING_FILE = BASELINES_DIRECTORY / "vulture_pending.py"
+FROZEN_FILE = BASELINES_DIRECTORY / "vulture_frozen.py"
 # What a caller can fill by keyword: a field, never a function, a class, or a
 # parameter. vulture reports a parameter as a variable it is certain about,
 # which is how the two are told apart.

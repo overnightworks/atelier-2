@@ -107,6 +107,7 @@ _catalog_name_resolution = TypeAdapter(CatalogNameResolutionResource)
 _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 _artifact_resource = TypeAdapter(ArtifactResource)
 _start_run_order = TypeAdapter(ArtifactOrderResource | WorkItemOrderResource)
+_RUN_OWNER = "a run"
 
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -353,7 +354,7 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
                     orders,
                 ),
             ),
-            "a run",
+            _RUN_OWNER,
         )
     return started.model_dump(mode="json")
 
@@ -364,7 +365,7 @@ def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]
         ended = decoded(
             _run_resource,
             _get(api, f"{RUN_PATH}/{quote(reference, safe='')}"),
-            "a run",
+            _RUN_OWNER,
         )
     resource = ended.model_dump(mode="json")
     resource["answerable_wait"] = _answerable_wait(ended)
@@ -411,7 +412,7 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
                     }
                 ).encode(),
             ),
-            "a run",
+            _RUN_OWNER,
         )
     return answered.model_dump(mode="json")
 

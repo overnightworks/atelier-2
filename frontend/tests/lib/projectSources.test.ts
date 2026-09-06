@@ -154,6 +154,16 @@ describe("disconnect confirmation facts", () => {
     });
     expect(facts.stays).toBe(`atelier ${settingsPageCopy.and} ${settingsPageCopy.theModels}`);
   });
+
+  it("keeps only the project when no other source and no models remain", () => {
+    const facts = disconnectFacts({
+      address: "FlexOr2/atelier-2",
+      projectName: "atelier",
+      remainingSources: [],
+      modelsExist: false
+    });
+    expect(facts.stays).toBe("atelier");
+  });
 });
 
 describe("source write failures", () => {

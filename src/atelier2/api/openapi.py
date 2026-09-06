@@ -52,6 +52,10 @@ from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 
 API_PREFIX = "/atelier/api/v1"
 _COMPONENT_REFERENCE = "#/components/schemas/{model}"
+_COMPONENT_SCHEMA_PREFIX = "#/components/schemas/"
+_EVENT_CURSOR_COMPONENT_REF = "#/components/schemas/EventCursor"
+_JSON_SCHEMA_DEFS_KEY = "$defs"
+_APPLICATION_JSON = "application/json"
 WORKFLOW_DOCUMENT_COMPONENT = "WorkflowDocument"
 WORKFLOW_DOCUMENT_GRAMMAR_SCOPE = (
     "The shape one published workflow document must have, derived from the models "
@@ -63,6 +67,9 @@ WORKFLOW_DOCUMENT_GRAMMAR_SCOPE = (
     "this build executes the result. Each of those is refused by its own name when "
     "the document is published."
 )
+AGENT_DEFINITION_REVISIONS_PATH = API_PREFIX + "/agent-definition-revisions"
+WORKFLOW_REVISIONS_PATH = API_PREFIX + "/workflow-revisions"
+RUNS_PATH = API_PREFIX + "/runs"
 ARTIFACTS_PATH = API_PREFIX + "/artifacts"
 ARTIFACT_PATH = ARTIFACTS_PATH + "/{artifact_hash}"
 EVENT_PATH = API_PREFIX + "/runs/{public_ref}/events"
@@ -196,7 +203,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/agent-definition-revisions", "post"): (
+    (AGENT_DEFINITION_REVISIONS_PATH, "post"): (
         *AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
         "agent-definition-revision-collision",
         "unsupported-media-type",
@@ -204,7 +211,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/agent-definition-revisions", "get"): (
+    (AGENT_DEFINITION_REVISIONS_PATH, "get"): (
         "invalid-revision-hash",
         "invalid-request",
         "temporarily-unavailable",
@@ -241,7 +248,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-revisions", "post"): (
+    (WORKFLOW_REVISIONS_PATH, "post"): (
         "invalid-workflow-document",
         "revision-collision",
         "unsupported-media-type",
@@ -249,7 +256,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/workflow-revisions", "get"): (
+    (WORKFLOW_REVISIONS_PATH, "get"): (
         "invalid-revision-hash",
         "invalid-request",
         "durable-projection-unrepresentable",
@@ -425,7 +432,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/runs", "post"): (
+    (RUNS_PATH, "post"): (
         "invalid-revision-hash",
         "invalid-request",
         "unsupported-media-type",
@@ -448,7 +455,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (API_PREFIX + "/runs", "get"): (
+    (RUNS_PATH, "get"): (
         "invalid-public-run-reference",
         "invalid-request",
         "durable-projection-unrepresentable",
@@ -663,7 +670,7 @@ def _install_workflow_document_grammar(schema: dict[str, Any]) -> None:
         generated = document_format.model.model_json_schema(
             ref_template=_COMPONENT_REFERENCE
         )
-        for name, definition in generated.pop("$defs", {}).items():
+        for name, definition in generated.pop(_JSON_SCHEMA_DEFS_KEY, {}).items():
             _install_component(components, name, definition)
         _install_component(components, document_format.model.__name__, generated)
         variants.append(
@@ -688,7 +695,7 @@ def _install_component(
 
 
 def _install_publication_request_body(schema: dict[str, Any]) -> None:
-    schema["paths"][API_PREFIX + "/workflow-revisions"]["post"]["requestBody"] = {
+    schema["paths"][WORKFLOW_REVISIONS_PATH]["post"]["requestBody"] = {
         "required": True,
         "content": {
             "application/yaml": {
@@ -703,13 +710,13 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
     schema["paths"][API_PREFIX + "/schema-revisions"]["post"]["requestBody"] = {
         "required": True,
         "content": {
-            "application/json": {"schema": {"type": "string", "format": "binary"}}
+            _APPLICATION_JSON: {"schema": {"type": "string", "format": "binary"}}
         },
     }
     schema["paths"][API_PREFIX + "/tool-grant-revisions"]["post"]["requestBody"] = {
         "required": True,
         "content": {
-            "application/json": {"schema": {"type": "string", "format": "binary"}}
+            _APPLICATION_JSON: {"schema": {"type": "string", "format": "binary"}}
         },
     }
     schema["paths"][API_PREFIX + "/adapter-operation-revisions"]["post"][
@@ -717,12 +724,10 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
     ] = {
         "required": True,
         "content": {
-            "application/json": {"schema": {"type": "string", "format": "binary"}}
+            _APPLICATION_JSON: {"schema": {"type": "string", "format": "binary"}}
         },
     }
-    schema["paths"][API_PREFIX + "/agent-definition-revisions"]["post"][
-        "requestBody"
-    ] = {
+    schema["paths"][AGENT_DEFINITION_REVISIONS_PATH]["post"]["requestBody"] = {
         "required": True,
         "content": {
             "text/markdown": {"schema": {"type": "string", "format": "binary"}}
@@ -898,7 +903,7 @@ def _install_problem_responses(schema: dict[str, Any]) -> None:
                         "schema": {
                             "oneOf": [
                                 {
-                                    "$ref": "#/components/schemas/"
+                                    "$ref": _COMPONENT_SCHEMA_PREFIX
                                     + _problem_component_name(code)
                                 }
                                 for code in status_codes
@@ -917,12 +922,12 @@ def _stream_failure_component() -> dict[str, Any]:
     """
 
     generated = StreamFailureResource.model_json_schema(
-        mode="serialization", ref_template="#/components/schemas/{model}"
+        mode="serialization", ref_template=_COMPONENT_REFERENCE
     )
-    generated.pop("$defs", None)
+    generated.pop(_JSON_SCHEMA_DEFS_KEY, None)
     generated["properties"]["problem"] = {
         "oneOf": [
-            {"$ref": "#/components/schemas/" + _problem_component_name(code)}
+            {"$ref": _COMPONENT_SCHEMA_PREFIX + _problem_component_name(code)}
             for code in STREAM_FAILURE_CODES
         ]
     }
@@ -937,11 +942,11 @@ def _run_projection_corrupt_component() -> dict[str, Any]:
     """
 
     generated = RunProjectionCorruptResource.model_json_schema(
-        mode="serialization", ref_template="#/components/schemas/{model}"
+        mode="serialization", ref_template=_COMPONENT_REFERENCE
     )
-    generated.pop("$defs", None)
+    generated.pop(_JSON_SCHEMA_DEFS_KEY, None)
     generated["properties"]["problem"] = {
-        "$ref": "#/components/schemas/"
+        "$ref": _COMPONENT_SCHEMA_PREFIX
         + _problem_component_name("durable-state-corrupt")
     }
     return generated
@@ -951,9 +956,9 @@ def _install_event_components(schema: dict[str, Any]) -> None:
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     for model in EVENT_MODELS_V3:
         generated = model.model_json_schema(
-            mode="serialization", ref_template="#/components/schemas/{model}"
+            mode="serialization", ref_template=_COMPONENT_REFERENCE
         )
-        definitions = generated.pop("$defs", {})
+        definitions = generated.pop(_JSON_SCHEMA_DEFS_KEY, {})
         components.update(definitions)
         components[model.__name__] = generated
     components["RunEventResourceV3"] = {
@@ -1005,8 +1010,8 @@ def _install_closed_start_union(schema: dict[str, Any]) -> None:
     door does not work that way, so the published document says `oneOf`.
     """
 
-    body = schema["paths"][API_PREFIX + "/runs"]["post"]["requestBody"]["content"][
-        "application/json"
+    body = schema["paths"][RUNS_PATH]["post"]["requestBody"]["content"][
+        _APPLICATION_JSON
     ]["schema"]
     variants = body.pop("anyOf", None)
     if not isinstance(variants, list):
@@ -1017,7 +1022,7 @@ def _install_closed_start_union(schema: dict[str, Any]) -> None:
 def _durable_and_failure_frames() -> dict[str, Any]:
     return {
         "durable_event": {
-            "id": {"$ref": "#/components/schemas/EventCursor"},
+            "id": {"$ref": _EVENT_CURSOR_COMPONENT_REF},
             "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
         },
         "terminal_failure": {
@@ -1030,7 +1035,7 @@ def _install_sse_contract(schema: dict[str, Any]) -> None:
     _install_sse_path(schema, EVENT_PATH, _durable_and_failure_frames())
     attention_frames = _durable_and_failure_frames()
     attention_frames["run_projection_corrupt"] = {
-        "id": {"$ref": "#/components/schemas/EventCursor"},
+        "id": {"$ref": _EVENT_CURSOR_COMPONENT_REF},
         "data": {"$ref": "#/components/schemas/RunProjectionCorruptResource"},
     }
     _install_sse_path(schema, ATTENTION_EVENT_PATH, attention_frames)
@@ -1045,7 +1050,7 @@ def _install_sse_path(
             "name": "Last-Event-ID",
             "in": "header",
             "required": False,
-            "schema": {"$ref": "#/components/schemas/EventCursor"},
+            "schema": {"$ref": _EVENT_CURSOR_COMPONENT_REF},
             "description": "Cursor of the last event fully processed by the client.",
         }
     )

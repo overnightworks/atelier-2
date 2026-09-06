@@ -334,6 +334,9 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-groups
 
+      - name: Check the repository root layout
+        run: uv run --locked python scripts/check_root_layout.py
+
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
 

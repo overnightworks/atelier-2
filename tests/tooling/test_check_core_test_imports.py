@@ -17,7 +17,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_core_test_imports.py"
-BASELINE = Path("core_test_import_baseline.toml")
+BASELINE = Path("scripts") / "baselines" / "core_test_import_baseline.toml"
 CORE_TEST_DIRECTORIES = ("tests/domain", "tests/application", "tests/api")
 
 ADAPTER_IMPORTING_MODULE = (
@@ -51,6 +51,7 @@ def scratch_project(tmp_path: Path, modules: dict[str, str], baseline: str) -> P
         (project / directory).mkdir(parents=True)
     for relative_path, source in modules.items():
         (project / relative_path).write_text(source, encoding="utf-8")
+    (project / BASELINE).parent.mkdir()
     (project / BASELINE).write_text(baseline, encoding="utf-8")
     return project
 

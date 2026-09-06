@@ -10,15 +10,8 @@ import {
   RUN_NOT_CANCELLABLE_REASONS,
   RUN_STATES_V3,
   problemDefinitions,
-  agentConfigurationRevisionListItemObjectSchema,
-  agentConfigurationRevisionPageSchema,
-  agentDefinitionRevisionDetailSchema,
-  agentDefinitionRevisionListItemSchema,
-  agentDefinitionRevisionPageSchema,
   attemptTranscriptSchema,
   assistantTurnEventSchema,
-  authProfileRevisionPageSchema,
-  queueItemSchema,
   nodeDetailSchema,
   nodeRailEntrySchema,
   providerTerminalRefusalEventSchema,
@@ -28,7 +21,6 @@ import {
   unrecognisedProviderOutputEventSchema,
   usageEventSchema,
   runV3Schema,
-  observedQueueItemSchema,
   decodeStreamFrame
 } from "../../src/api/client";
 
@@ -64,23 +56,6 @@ const servedDocument = JSON.parse(
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
 describe("the served vocabulary", () => {
-  it("decodes exactly the queue-item fields the document serves", () => {
-    const served = servedDocument.components.schemas.QueueItemResource;
-
-    expect(Object.keys(queueItemSchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-    expect(Object.keys(observedQueueItemSchema.shape).sort()).toEqual([
-      "item_id",
-      "project_id",
-      "retired_at",
-      "revision",
-      "title",
-      "title_observed_at",
-      "tracker_item_reference"
-    ]);
-  });
-
   it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
     expect([...NODE_STATES]).toEqual(
       servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum
@@ -214,136 +189,6 @@ describe("the served vocabulary", () => {
     expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
       servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
         ?.anyOf?.[0]?.enum
-    );
-  });
-
-  it("decodes exactly the fields the agent-configuration listing serves", () => {
-    const served = servedDocument.components.schemas.AgentConfigurationRevisionPageResource;
-
-    expect(Object.keys(agentConfigurationRevisionPageSchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-    expect(
-      Object.keys(agentConfigurationRevisionListItemObjectSchema.shape).sort()
-    ).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.AgentConfigurationRevisionListItemResource
-          ?.properties ?? {}
-      ).sort()
-    );
-  });
-
-  it("decodes only the closed startability pair on a listed configuration", () => {
-    const sample = {
-      model: "sonnet",
-      auth_profile_revision_hash: "a".repeat(64),
-      executor_revision: "claude-subscription/v1",
-      provider_id: "anthropic",
-      auth_mode: "subscription" as const,
-      requested_capability: "headless" as const,
-      agent_configuration_revision_hash: "b".repeat(64),
-      startable: false,
-      structurally_startable: false,
-      not_startable_reason: "agent-executor-binding-unavailable" as const,
-      provider_probe_problem_code: null,
-      provider_probe_observed_at: null
-    };
-
-    expect(
-      agentConfigurationRevisionPageSchema.parse({
-        items: [sample],
-        next_after_revision_hash: null
-      }).items
-    ).toEqual([sample]);
-    expect(() =>
-      agentConfigurationRevisionPageSchema.parse({
-        items: [{ ...sample, startable: true }],
-        next_after_revision_hash: null
-      })
-    ).toThrow();
-  });
-
-  it("decodes exactly the fields the agent-definition listing serves", () => {
-    expect(Object.keys(agentDefinitionRevisionPageSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.AgentDefinitionRevisionPageResource
-          ?.properties ?? {}
-      ).sort()
-    );
-    expect(Object.keys(agentDefinitionRevisionListItemSchema.shape).sort()).toEqual(
-      Object.keys(
-        servedDocument.components.schemas.AgentDefinitionRevisionListItemResource
-          ?.properties ?? {}
-      ).sort()
-    );
-  });
-
-  it("decodes the agent-definition detail up to the lengths the document serves", () => {
-    const served = servedDocument.components.schemas.AgentDefinitionRevisionDetailResource;
-    const systemPromptCharacters = (
-      served?.properties?.system_prompt as { maxLength?: number } | undefined
-    )?.maxLength;
-    const declaredTools = (
-      served?.properties?.tools?.anyOf as
-        | Array<{ maxItems?: number; items?: { maxLength?: number } }>
-        | undefined
-    )?.find((option) => option.maxItems !== undefined);
-    const toolCharacters = declaredTools?.items?.maxLength;
-    const longestTool = "t".repeat(toolCharacters ?? 0);
-    const detail = {
-      agent_definition_revision_hash: "a".repeat(64),
-      name: "scribe",
-      description: "Writes what the stage needs.",
-      model: null,
-      system_prompt: "p".repeat(systemPromptCharacters ?? 0),
-      tools: Array.from({ length: declaredTools?.maxItems ?? 0 }, () => longestTool)
-    };
-
-    expect(Object.keys(agentDefinitionRevisionDetailSchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
-    );
-    expect(systemPromptCharacters).toBe(16_384);
-    expect(toolCharacters).toBe(16_384);
-    expect(declaredTools?.maxItems).toBe(128);
-    expect(agentDefinitionRevisionDetailSchema.parse(detail)).toEqual(detail);
-    expect(() =>
-      agentDefinitionRevisionDetailSchema.parse({
-        ...detail,
-        system_prompt: `${detail.system_prompt}p`
-      })
-    ).toThrow();
-    expect(() =>
-      agentDefinitionRevisionDetailSchema.parse({
-        ...detail,
-        tools: [...detail.tools, longestTool]
-      })
-    ).toThrow();
-    expect(() =>
-      agentDefinitionRevisionDetailSchema.parse({
-        ...detail,
-        tools: [`${longestTool}t`]
-      })
-    ).toThrow();
-  });
-
-  it("refuses a listed agent carrying a field the row has no reader for", () => {
-    const listed = {
-      agent_definition_revision_hash: "a".repeat(64),
-      name: "scribe",
-      description: "Writes what the stage needs."
-    };
-
-    expect(agentDefinitionRevisionListItemSchema.parse(listed)).toEqual(listed);
-    expect(() =>
-      agentDefinitionRevisionListItemSchema.parse({ ...listed, model: "sonnet" })
-    ).toThrow();
-  });
-
-  it("decodes exactly the fields the auth-profile listing serves", () => {
-    const served = servedDocument.components.schemas.AuthProfileRevisionPageResource;
-
-    expect(Object.keys(authProfileRevisionPageSchema.shape).sort()).toEqual(
-      Object.keys(served?.properties ?? {}).sort()
     );
   });
 

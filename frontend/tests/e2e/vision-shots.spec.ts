@@ -9,7 +9,9 @@ import { standingWords } from "../../src/lib/runState";
 import { stateLabels } from "../../src/lib/stateMarkCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
-/**
+const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
+
+/*
  * The mockup-comparison screenshots of every surface, at both widths and in
  * both themes.
  *
@@ -18,8 +20,6 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  * which sets ATELIER2_SHOT_DIR and uploads the result as a build artifact;
  * locally it is skipped unless that variable names where the images go.
  */
-const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
-
 test.skip(shotDir === "", "no shot directory named");
 
 // Not a gate but a sitting: two themes, two widths, every surface, and two
@@ -35,11 +35,12 @@ const widths = [
 const themes = ["light", "dark"] as const;
 
 async function shoot(page: Page, name: string): Promise<void> {
+  const workshop = page.locator(".workshop");
   for (const theme of themes) {
     await page.emulateMedia({ colorScheme: theme });
     for (const viewport of widths) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.waitForTimeout(250);
+      await expect(workshop).toHaveJSProperty("offsetWidth", viewport.width);
       await page.screenshot({
         path: `${shotDir}/${theme}/${name}-${viewport.name}.png`,
         fullPage: true
