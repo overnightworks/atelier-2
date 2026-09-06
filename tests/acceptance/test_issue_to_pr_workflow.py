@@ -102,7 +102,7 @@ from tests.scenarios.runs import submit_wait_answer
 WORKFLOW_PATH = Path("workflows/issue-to-pr.yaml")
 BUDGET_PATH = Path("workflows/budgets/push-implement.json")
 PROJECT = ProjectId("issue-to-pr-workflow")
-ITEM = TrackerItemReference("gh:1123")
+ITEM = TrackerItemReference("gh:1232")
 RUN = RunId("v3/issue-to-pr")
 ORDER_NAME = "context"
 BUILD_NODE = "build"
@@ -382,7 +382,7 @@ def _start(
         ITEM,
         WorkItemKind.ISSUE,
         b"Write the line this run is for.",
-        WorkItemChangeMarker("issue-1123-v1"),
+        WorkItemChangeMarker("issue-1232-v1"),
         RecordedAt("2026-09-04T12:00:00Z"),
     )
     client = durable_api_client(
@@ -572,6 +572,7 @@ def test_issue_to_pr_builds_reviews_waits_then_opens_the_pull_request(
         )
         opened = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
         assert opened.head_branch.value == push_receipt.branch
+        assert opened.work_item_reference == ITEM
 
         (recorded,) = github.recorded_pull_requests()
         assert recorded.branch == push_receipt.branch

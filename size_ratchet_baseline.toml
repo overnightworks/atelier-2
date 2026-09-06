@@ -82,10 +82,6 @@ path = "src/atelier2/adapters/dbos/workflow.py"
 lines = 1341
 
 [[file]]
-path = "src/atelier2/adapters/github/live_effects.py"
-lines = 802
-
-[[file]]
 path = "src/atelier2/adapters/grok_subscription.py"
 lines = 1783
 

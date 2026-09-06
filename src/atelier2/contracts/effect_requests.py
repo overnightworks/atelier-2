@@ -8,9 +8,12 @@ import re
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from atelier2.contracts.effect_markers import commit_message
+
+if TYPE_CHECKING:
+    from atelier2.contracts.queue_projection import TrackerItemReference
 
 _SAFE_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
 _UNSAFE_BRANCH_FRAGMENTS = ("..", "@{", "//")
@@ -33,6 +36,16 @@ def _object(value: bytes, owner: str) -> dict[str, Any]:
 def _fields(value: dict[str, Any], expected: frozenset[str], owner: str) -> None:
     if frozenset(value) != expected:
         raise ValueError(f"{owner} carries exactly {', '.join(sorted(expected))}")
+
+
+def _tracker_item_reference_type() -> type[TrackerItemReference]:
+    from atelier2.contracts.queue_projection import TrackerItemReference
+
+    return TrackerItemReference
+
+
+def _tracker_item_reference(value: str) -> TrackerItemReference:
+    return _tracker_item_reference_type()(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,21 +118,44 @@ def head_branch_for_unbound_request(payload: bytes) -> HeadBranch:
 class OpenPullRequest:
     body: str
     head_branch: HeadBranch
+    work_item_reference: TrackerItemReference | None = None
+
+    def __post_init__(self) -> None:
+        if self.work_item_reference is not None and not isinstance(
+            self.work_item_reference, _tracker_item_reference_type()
+        ):
+            raise TypeError("an open-pr work item reference uses the tracker contract")
 
     def canonical_bytes(self) -> bytes:
-        return _canonical_json(
-            {"body": self.body, "head_branch": self.head_branch.value}
-        )
+        # An absent reference's canonical bytes and hash are durable identity:
+        # in-flight intents opened before #1290 are reconciled by this exact
+        # form, so the key is omitted rather than carried as a `null`.
+        value: dict[str, str] = {
+            "body": self.body,
+            "head_branch": self.head_branch.value,
+        }
+        if self.work_item_reference is not None:
+            value["work_item_reference"] = self.work_item_reference.value
+        return _canonical_json(value)
 
     @classmethod
     def from_canonical_bytes(cls, request: bytes) -> Self:
         value = _object(request, "open-pr request")
-        _fields(value, frozenset(("body", "head_branch")), "open-pr request")
+        fields = frozenset(value)
+        legacy_fields = frozenset(("body", "head_branch"))
+        current_fields = legacy_fields | {"work_item_reference"}
+        if fields not in (legacy_fields, current_fields):
+            raise ValueError("open-pr request carries its declared fields")
         body = value["body"]
         branch = value["head_branch"]
         if not isinstance(body, str) or not isinstance(branch, str):
             raise TypeError("open-pr body and head_branch are text")
-        return cls(body, HeadBranch(branch))
+        if fields == legacy_fields:
+            return cls(body, HeadBranch(branch))
+        reference = value["work_item_reference"]
+        if not isinstance(reference, str):
+            raise TypeError("open-pr work_item_reference is text")
+        return cls(body, HeadBranch(branch), _tracker_item_reference(reference))
 
 
 @dataclass(frozen=True, slots=True)
