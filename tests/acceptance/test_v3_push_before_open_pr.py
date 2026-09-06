@@ -414,9 +414,14 @@ nodes:
 
 
 def _public_runtime(
-    tmp_path: Path, project: Path, remote: Path
+    tmp_path: Path, project: Path, remote: Path, *, claims: bool = True
 ) -> tuple[DbosRuntime, GitHubEffectAdapterFactory]:
-    """The served instance this proof drives: both effects, and its claim ledger."""
+    """The served instance this proof drives: both effects, and its claim ledger.
+
+    `claims` says whether this instance was given a claim command at all --
+    an operator who serves the project without one is what the unconfigured
+    refusal is about.
+    """
 
     github = GitHubEffectAdapterFactory(
         tmp_path / "github.sqlite",
@@ -456,7 +461,9 @@ def _public_runtime(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
-            agent_claim_executable=fake_agent_claim_executable(tmp_path),
+            agent_claim_executable=(
+                fake_agent_claim_executable(tmp_path) if claims else None
+            ),
         ),
         registry,
         (executor,),
@@ -504,21 +511,39 @@ def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
     )
 
 
-def test_an_item_naming_no_scope_ends_the_node_before_any_work(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("body", "claims", "refusal"),
+    (
+        pytest.param(
+            b"Implement P3.",
+            True,
+            AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE,
+            id="the-item-names-no-scope",
+        ),
+        pytest.param(
+            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
+            False,
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED,
+            id="this-instance-holds-no-claim-command",
+        ),
+    ),
+)
+def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
+    tmp_path: Path, body: bytes, claims: bool, refusal: AgentExecutionRefusal
 ) -> None:
     """A claim nobody could take ends the run where it stands, and nothing ran.
 
-    The scope is the item's own `## Dateien`; an item without one names no
-    claim, and a wide claim is not this runtime's to invent. So the node ends
-    under its own word before an attempt of it exists -- which is what proves
-    no workspace was leased, no provider started and nothing was pushed.
+    The scope is the item's own `## Dateien`, and a wide claim is not this
+    runtime's to invent; an instance serving without a claim command holds no
+    lane at all. Either way the node ends under its own word before an attempt
+    of it exists -- which is what proves no workspace was leased, no provider
+    started and nothing was pushed.
     """
 
     project, remote, _base = _repositories(tmp_path)
-    runtime, github = _public_runtime(tmp_path, project, remote)
+    runtime, github = _public_runtime(tmp_path, project, remote, claims=claims)
     try:
-        assert _start_public_run(runtime, b"Implement P3.").status_code == 201
+        assert _start_public_run(runtime, body).status_code == 201
         runtime.launch()
         wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
 
@@ -534,9 +559,7 @@ def test_an_item_naming_no_scope_ends_the_node_before_any_work(
             intents = connection.execute(
                 sa.select(sa.func.count()).select_from(effect_intents)
             ).scalar()
-        assert failures == [
-            (AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE.value.encode("ascii"), None)
-        ]
+        assert failures == [(refusal.value.encode("ascii"), None)]
         assert (attempts, intents) == (0, 0)
         assert github.recorded_pull_requests() == ()
         assert _git(remote, "branch", "--list", "atelier2/*") == ""
