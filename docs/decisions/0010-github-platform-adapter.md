@@ -297,9 +297,8 @@ That is the tradeoff the operator is choosing, stated where they can see it.
   those identities and never the credential, and it is a local subset of what the
   App's key reaches, never the inventory of it (decision 3). It is the same shape as ADR
   0009 §4's runner enrolment, and deliberately not a second ceremony. An unconnected project
-  performs no operation and yields no observation
-  (`platform-connection-unknown`); a revoked connection likewise
-  (`platform-connection-revoked`).
+  — no record, or its latest revision disconnected — performs no operation
+  and yields no observation (`project-source-not-connected`).
 - **Scope is requested per named operation**, least privilege in both methods: read
   access for the objects observation names, write access only for the objects a
   published Action operation revision creates or updates. A permission with no
@@ -856,8 +855,7 @@ DBOS and SQLAlchemy.
 
 | Name | Raised when | Boundary |
 | --- | --- | --- |
-| `platform-connection-unknown` | an operation or observation names a project with no connection record | adapter composition |
-| `platform-connection-revoked` | the connection record was removed | adapter composition |
+| `project-source-not-connected` | an operation or observation names a project with no connection record, or whose latest connection revision is disconnected | adapter composition |
 | `platform-credential-unresolvable` | the bound credential reference does not resolve on the adapter's host | run start |
 | `platform-object-out-of-scope` | an operation addresses an object outside the connected repository scope | operation binding |
 | `platform-marker-slot-unavailable` | an operation revision declares a marker slot the object kind it writes does not have | operation binding |

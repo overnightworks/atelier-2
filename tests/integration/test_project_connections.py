@@ -2,7 +2,7 @@
 
 The third family on the host configuration channel (#567, ADR 0010 decision 2):
 an explicit connect appends one immutable revision, an unconnected project
-answers `platform-connection-unknown`, and no flow ever moves a credential
+answers `project-source-not-connected`, and no flow ever moves a credential
 value — proven by a canary token that must not surface anywhere.
 """
 
