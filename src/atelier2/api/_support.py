@@ -27,7 +27,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.stream import BoundedQueryRunner, QueryAdmissionTimeout
 from atelier2.api.wire.requests import RevisionListingView
-from atelier2.api.wire.resources import InvalidFieldResource, RunResourceV3
+from atelier2.api.wire.resources import RunResourceV3
 from atelier2.application.read_runs import (
     GetRunResult,
     RunNotFound,
@@ -39,7 +39,6 @@ from atelier2.application.refusals import (
     ReadUnavailable,
 )
 from atelier2.contracts.host_configuration import ProjectId, ProjectSourceId
-from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
@@ -186,31 +185,6 @@ def require_new_run_identity(run_id: RunId, limits: ApiLimits) -> None:
         limits.require_event_cursor(run_id, MAX_SIGNED_INT64)
     except ValueError as error:
         raise ApiProblem("invalid-request") from error
-
-
-def parse_limit(value: str) -> int:
-    if not value.isdigit() or (len(value) > 1 and value.startswith("0")):
-        raise ApiProblem(
-            "invalid-request",
-            invalid_fields=(
-                InvalidFieldResource(
-                    path="query/limit",
-                    reason="not a page size this list accepts",
-                ),
-            ),
-        )
-    try:
-        return PageLimit(int(value)).value
-    except ValueError:
-        raise ApiProblem(
-            "invalid-request",
-            invalid_fields=(
-                InvalidFieldResource(
-                    path="query/limit",
-                    reason="not a page size this list accepts",
-                ),
-            ),
-        ) from None
 
 
 def parse_revision_view(value: str) -> RevisionListingView:

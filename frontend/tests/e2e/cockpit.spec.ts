@@ -24,6 +24,7 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 import { healthyRunListItems } from "../support/runListRows";
+import { WORK_ITEM_SCHEMA_DOCUMENT } from "./workItemSchema";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -1016,7 +1017,7 @@ test("Catalog start sheet names current startability for checked configurations"
 });
 test("Catalog work-item start sheet sends a missing source to Settings", async ({ page }) => {
   const name = "no-source-settings";
-  const workItem = await publishSchema(page, '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}');
+  const workItem = await publishSchema(page, WORK_ITEM_SCHEMA_DOCUMENT);
   const output = await anyJsonSchema(page);
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "graph_inputs:", "  - name: work_item", "    schema:", "      ref: work-item", `      revision: ${workItem}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Use the selected work item.", "    inputs:", "      - name: work_item", "        from:", "          graph_input: work_item", ...declaredOutput(output), ""].join("\n") });
   expect(workflow.status()).toBe(201);

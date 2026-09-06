@@ -1048,10 +1048,11 @@ live list of what actually runs.
 Machine-checkable rules are gates there. Running today: the architecture check
 (`scripts/check_architecture.py`, package boundaries), the duplicate ratchet
 above, the size and complexity ratchet above, the dead-code gates above, the
-frozen OpenAPI document check below, and `ruff check --select ANN401` over
-`contracts`, `ports`, `application` and `api` (#1196, landed #1197). The
-narrative check is ruled but unbuilt, and the core-test-import ratchet starts
-only once the first adapter-bound test module has moved.
+frozen OpenAPI document check below, `ruff check --select ANN401` over
+`contracts`, `ports`, `application` and `api` (#1196, landed #1197), and the
+changed-narrative check over added Python comments and docstrings. The
+core-test-import ratchet starts only once the first adapter-bound test module
+has moved.
 
 Rules about the shape of a change — slice size, context-file length, the
 adapter-import share in core tests — stay reported metrics and never become

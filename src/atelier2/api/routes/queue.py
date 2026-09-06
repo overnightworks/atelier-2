@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
     decode_public_project_reference_value,
-    parse_limit,
     require_json_media_dependency,
     resource_response,
     run_control_query,
@@ -24,6 +23,11 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.problems import ApiProblem
+from atelier2.api.references import (
+    PageLimitQuery,
+    PublicProjectReferencePath,
+    QueueItemIdQuery,
+)
 from atelier2.api.wire.queue import (
     QueueAdmissionDecisionResource,
     QueueAdmissionResource,
@@ -62,6 +66,7 @@ from atelier2.application.refusals import (
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
     PlanQueueItem,
@@ -101,7 +106,7 @@ router = APIRouter()
     responses={HTTPStatus.OK: {"model": QueueProjectPolicyResource}},
 )
 async def put_queue_project_policy_route(
-    public_project_reference: str,
+    public_project_reference: PublicProjectReferencePath,
     body: PutQueueProjectPolicyRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -252,14 +257,14 @@ async def confirm_queue_proposal_route(
 
 @router.get(QUEUE_ITEMS_PATH, response_model=QueueItemPageResource)
 async def list_queue_items_route(
-    after: str | None = None,
-    limit: str = "50",
+    after: QueueItemIdQuery | None = None,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     context: ApiContext = api_context_dependency,
 ) -> QueueItemPageResource:
     result = await run_control_query(
         context.control_runner,
         lambda: context.use_cases.list_queue_items(
-            None if after is None else _parse_after(after), parse_limit(limit)
+            None if after is None else _parse_after(after), limit
         ),
     )
     match result:

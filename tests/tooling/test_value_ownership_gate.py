@@ -207,6 +207,11 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "GitHub's own maximum per_page for its issue listing: a protocol fact "
         "of the platform the adapter speaks, not an operator choice",
     ),
+    "adapters/agent_claim_cli.py::AGENT_CLAIM_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: a bound against a hung agent-claim process, "
+        "not an operator's patience -- the CLI answers within seconds (#1299)",
+    ),
 }
 """Every bare literal the operator families still contain, each with its owner.
 

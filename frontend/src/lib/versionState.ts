@@ -57,15 +57,3 @@ export function noteObservedVersion(version: ServeVersion): void {
     newVersionAvailableStore.set(true);
   }
 }
-
-/**
- * Clears both stores back to their start-of-session shape.
- *
- * The stores above are module-level, so a test file that renders `App` more
- * than once needs this between cases -- a real page load already starts
- * from these same defaults, so production code never calls it.
- */
-export function resetVersionState(): void {
-  loadedVersionStore.set(null);
-  newVersionAvailableStore.set(false);
-}

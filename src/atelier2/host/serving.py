@@ -274,6 +274,7 @@ class HostSettings:
     agent_scratch_root: Path | None = None
     project_id: ProjectId | None = None
     project_root: Path | None = None
+    agent_claim_executable: Path | None = None
     claude_subscription: ClaudeSubscriptionSettings | None = None
     claude_workspace_tools: bool = False
     """Whether the Claude deployment also serves its tool-bearing executor.

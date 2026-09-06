@@ -339,6 +339,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             agent_scratch_root=_attested_agent_scratch_root(parser, parsed),
             project_id=_declared_project_id(parser, parsed),
             project_root=_declared_project_root(parser, parsed),
+            agent_claim_executable=parsed.agent_claim_executable,
             claude_subscription=claude.settings,
             claude_workspace_tools=parsed.claude_workspace_tools,
             claude_atelier_doors=parsed.claude_atelier_doors,
@@ -921,6 +922,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--agent-scratch-root", type=Path)
     serve_parser.add_argument("--project-id")
     serve_parser.add_argument("--project-root", type=Path)
+    serve_parser.add_argument("--agent-claim-executable", type=Path)
     serve_parser.add_argument("--claude-executable", type=Path)
     serve_parser.add_argument("--claude-credential-directory", type=Path)
     serve_parser.add_argument(

@@ -368,10 +368,6 @@
         "title": "AdmitCatalogMemberRequestResource",
         "type": "object"
       },
-      "AgentAttemptId": {
-        "pattern": "^[0-9a-f]{64}$",
-        "type": "string"
-      },
       "AgentBindingResourceV2": {
         "additionalProperties": false,
         "properties": {
@@ -1701,10 +1697,6 @@
         "title": "AnswerWaitRequestResource",
         "type": "object"
       },
-      "ArtifactHash": {
-        "pattern": "^[0-9a-f]{64}$",
-        "type": "string"
-      },
       "ArtifactOrderResource": {
         "additionalProperties": false,
         "description": "One order whose value is an artifact already published: a name and its address.\n\nIt is a second shape rather than a second optional field, so a start cannot\nsay both and cannot say neither, and so a reader never has to guess whether\na string is a value or an address. The address is spelled the way the\npublication answered it, so a caller writes back the field it just read.",
@@ -2074,10 +2066,6 @@
           "workflow"
         ],
         "title": "CatalogIntakeKind",
-        "type": "string"
-      },
-      "CatalogLineageId": {
-        "pattern": "^[0-9a-f]{64}$",
         "type": "string"
       },
       "CatalogNameResolutionResource": {
@@ -7965,10 +7953,6 @@
         "pattern": "^project1\\.[A-Za-z0-9_-]+$",
         "type": "string"
       },
-      "PublicRunReference": {
-        "pattern": "^run1\\.[A-Za-z0-9_-]+$",
-        "type": "string"
-      },
       "PublicSourceReference": {
         "maxLength": 56,
         "pattern": "^source1\\.[A-Za-z0-9_-]+$",
@@ -9008,10 +8992,6 @@
         ],
         "title": "RetireCatalogLineageRequestResource",
         "type": "object"
-      },
-      "RevisionHash": {
-        "pattern": "^[0-9a-f]{64}$",
-        "type": "string"
       },
       "RevisionKind": {
         "description": "The closed registry a versioned reference of a V3 document lands in.\n\nADR 0006 owns the first thirteen kinds a workflow document may reference.\nADR 0007 adds `scorecard_policy`, `selection_policy`, `admission_policy`, and\n`agent_definition` as catalog-published kinds that a workflow does not reference.\nTogether they form the one closed published-kind owner.",
@@ -11587,6 +11567,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -11601,9 +11582,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -11819,6 +11802,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -11833,9 +11817,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -12072,7 +12058,9 @@
             "name": "agent_definition_revision_hash",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/RevisionHash"
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Agent Definition Revision Hash",
+              "type": "string"
             }
           }
         ],
@@ -12251,7 +12239,9 @@
             "name": "artifact_hash",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/ArtifactHash"
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Artifact Hash",
+              "type": "string"
             }
           }
         ],
@@ -12327,6 +12317,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -12341,9 +12332,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -14141,7 +14134,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14228,7 +14224,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14316,7 +14315,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14468,7 +14470,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14613,6 +14618,8 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
               "title": "Public Project Reference",
               "type": "string"
             }
@@ -14749,7 +14756,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14850,7 +14860,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -14935,7 +14948,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           }
         ],
@@ -15080,7 +15096,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           },
           {
@@ -15088,7 +15107,10 @@
             "name": "public_source_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicSourceReference"
+              "maxLength": 56,
+              "pattern": "^source1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Source Reference",
+              "type": "string"
             }
           }
         ],
@@ -15174,7 +15196,10 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicProjectReference"
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
             }
           },
           {
@@ -15182,7 +15207,10 @@
             "name": "public_source_reference",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicSourceReference"
+              "maxLength": 56,
+              "pattern": "^source1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Source Reference",
+              "type": "string"
             }
           }
         ],
@@ -15455,6 +15483,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -15469,9 +15498,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -15661,7 +15692,16 @@
             "name": "after",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "anyOf": [
+                {
+                  "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {
@@ -15672,6 +15712,7 @@
               "default": 50,
               "maximum": 100,
               "minimum": 1,
+              "title": "Limit",
               "type": "integer"
             }
           },
@@ -15970,7 +16011,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           }
         ],
@@ -16060,7 +16103,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           },
           {
@@ -16068,7 +16113,9 @@
             "name": "attempt_id",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/AgentAttemptId"
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Attempt Id",
+              "type": "string"
             }
           }
         ],
@@ -16238,7 +16285,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           }
         ],
@@ -16406,7 +16455,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           }
         ],
@@ -16564,7 +16615,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           },
           {
@@ -16712,6 +16765,7 @@
             "name": "public_ref",
             "required": true,
             "schema": {
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
               "title": "Public Ref",
               "type": "string"
             }
@@ -16881,7 +16935,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           },
           {
@@ -16983,7 +17039,9 @@
             "name": "public_ref",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/PublicRunReference"
+              "pattern": "^run1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Ref",
+              "type": "string"
             }
           }
         ],
@@ -17302,7 +17360,9 @@
             "name": "schema_revision_hash",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/RevisionHash"
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Schema Revision Hash",
+              "type": "string"
             }
           }
         ],
@@ -17501,7 +17561,16 @@
             "name": "after_revision_hash",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/RevisionHash"
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Revision Hash"
             }
           },
           {
@@ -17512,6 +17581,7 @@
               "default": 50,
               "maximum": 100,
               "minimum": 1,
+              "title": "Limit",
               "type": "integer"
             }
           },
@@ -17729,7 +17799,9 @@
             "name": "workflow_revision_hash",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/RevisionHash"
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Workflow Revision Hash",
+              "type": "string"
             }
           }
         ],

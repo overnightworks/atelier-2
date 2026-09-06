@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
+    AgentAttemptId,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
@@ -199,6 +200,324 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
         watchdog._selector.close()
         os.close(owner_pipe)
         os.close(owner_writer)
+
+
+class _SpySelector:
+    """A real selector, plus what `serve()` handed it: the one seam a test
+    can fail or read without calling anything of Watchdog's own.
+    """
+
+    def __init__(
+        self,
+        before_select: Callable[[int], None] | None = None,
+        after_select: Callable[[list[Any]], None] | None = None,
+    ) -> None:
+        self._real: selectors.BaseSelector = selectors.DefaultSelector()
+        self._before_select = before_select
+        self._after_select = after_select
+        self.registered_events: dict[int, int] = {}
+        self.select_calls = 0
+
+    def register(self, fileobj: Any, events: int, data: object = None) -> Any:
+        key = self._real.register(fileobj, events, data)
+        self.registered_events[key.fd] = events
+        return key
+
+    def unregister(self, fileobj: Any) -> Any:
+        key = self._real.unregister(fileobj)
+        self.registered_events.pop(key.fd, None)
+        return key
+
+    def select(self, timeout: float | None = None) -> list[Any]:
+        self.select_calls += 1
+        if self._before_select is not None:
+            self._before_select(self.select_calls)
+        events = self._real.select(timeout)
+        if self._after_select is not None:
+            self._after_select(events)
+        return events
+
+    def close(self) -> None:
+        self._real.close()
+
+
+class _FailNextSelects:
+    """A `before_select` hook that fails a fixed run of calls once armed."""
+
+    def __init__(self) -> None:
+        self.remaining = 0
+
+    def arm(self, failures: int) -> None:
+        self.remaining = failures
+
+    def __call__(self, _call_number: int) -> None:
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise OSError("selector is broken")
+
+
+class _SteppedSelects:
+    """A `before_select` hook that, once armed, blocks each call for release.
+
+    A test drives exactly one `select()` at a time this way, so a fixed
+    number of ticks is a fact rather than a race against a background loop.
+    """
+
+    def __init__(self) -> None:
+        self._armed = False
+        self._release = threading.Event()
+
+    def arm(self) -> None:
+        self._armed = True
+
+    def disarm(self) -> None:
+        self._armed = False
+
+    def release(self) -> None:
+        self._release.set()
+
+    def __call__(self, _call_number: int) -> None:
+        if not self._armed:
+            return
+        assert self._release.wait(timeout=5)
+        self._release.clear()
+
+
+def test_serve_reaches_finalizing_when_select_keeps_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selector that never stops erroring must not spin `serve()` forever.
+
+    The bound is asserted from inside the fake `select()` itself: past it, the
+    fake raises `AssertionError` instead of `OSError`, so a coordinator that
+    never reaches `FINALIZING` fails this test promptly instead of hanging it.
+    """
+
+    maximum_tolerated_selects = 10
+
+    def fail_every_select(call_number: int) -> None:
+        if call_number > maximum_tolerated_selects:
+            raise AssertionError(
+                "serve() kept selecting past the bound without reaching FINALIZING"
+            )
+        raise OSError("selector is broken")
+
+    spy = _SpySelector(fail_every_select)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
+    try:
+        watchdog.serve(lambda: None)
+    finally:
+        os.close(owner_writer)
+
+    assert watchdog._state is watchdog_module._CoordinatorState.FINALIZING
+    assert spy.select_calls <= maximum_tolerated_selects
+
+
+def test_a_wait_past_end_of_file_does_not_spin_the_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WAIT already at end of file must not keep firing the selector readable.
+
+    Left registered for read, an end of file the kernel keeps reporting
+    readable would put the fd in every `select()` result forever. Every
+    `select()` is stepped one at a time from the start, so a setup call that
+    read the request cannot be mistaken for one of the five checked after it,
+    and each one's own result set is checked directly rather than racing a
+    clock against a loop that might be spinning.
+    """
+
+    stepper = _SteppedSelects()
+    result_sets: list[list[Any]] = []
+    spy = _SpySelector(before_select=stepper, after_select=result_sets.append)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    errors: list[Exception] = []
+    stepper.arm()
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    waiting: socket.socket | None = None
+
+    def release_one_tick() -> None:
+        recorded = len(result_sets)
+        stepper.release()
+        _wait_until(lambda recorded=recorded: len(result_sets) > recorded)
+
+    try:
+        waiting = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        )
+        for _ in range(20):
+            if "WAIT" in watchdog._slots:
+                break
+            release_one_tick()
+        else:
+            raise AssertionError("WAIT was never classified within 20 stepped ticks")
+        fd = watchdog._slots["WAIT"]
+        assert fd not in spy.registered_events
+
+        result_sets.clear()
+        for _ in range(5):
+            release_one_tick()
+
+        assert len(result_sets) == 5
+        for events in result_sets:
+            assert all(key.fd != fd for key, _mask in events)
+    finally:
+        stepper.disarm()
+        stepper.release()
+        if waiting is not None:
+            waiting.close()
+        os.close(owner_writer)
+        thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_recovery_handoff_is_fully_written_before_the_socket_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FINALIZING` waits for the handoff to reach its connection.
+
+    Publishing only queues the bytes; a third failure that finalized before
+    they were ever written would hand the next owner nothing, on a connection
+    its own `finally` had by then closed.
+    """
+
+    fault = _FailNextSelects()
+    spy = _SpySelector(fault)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
+    provider_ready = tmp_path / "provider-ready"
+    provider = subprocess.Popen(
+        (
+            sys.executable,
+            "-c",
+            "import signal,sys; from pathlib import Path; signal.signal(signal.SIGTERM, lambda *_: None); Path(sys.argv[1]).touch()\nwhile True:\n signal.pause()",
+            str(provider_ready),
+        ),
+        start_new_session=True,
+    )
+    _wait_until(provider_ready.exists)
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 0.1)
+    watchdog._process = provider
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    waiting: socket.socket | None = None
+    try:
+        waiting = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        )
+        _wait_until(lambda: "WAIT" in watchdog._slots)
+
+        fault.arm(3)
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert _receive_control(waiting) == {"type": "RECOVERY_HANDOFF"}
+    finally:
+        if waiting is not None:
+            waiting.close()
+        os.close(owner_writer)
+        if provider.poll() is None:
+            os.killpg(provider.pid, signal.SIGKILL)
+        provider.wait(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert errors == []
+
+
+def test_provider_stream_error_deregisters_the_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider descriptor that errors is stopped watching, not left to refire.
+
+    Left registered, a descriptor that keeps reporting a read error stays
+    selector-ready forever, so every following tick would service it again
+    for free -- the same failure, at no cost in wall time, spinning the loop.
+    Closing the live fd out from under the selector cannot simulate this
+    deterministically -- a closed descriptor can drop out of the selector
+    silently instead of ever reporting an error -- so the provider's own read
+    is made to fail instead, on a descriptor the kernel genuinely has data for.
+    """
+
+    stepper = _SteppedSelects()
+    spy = _SpySelector(before_select=stepper)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 1\n", encoding="ascii")
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 5.0)
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    try:
+        invocation = process_invocation(
+            AgentAttemptId.of(b"watchdog-descriptor-error-test"),
+            (
+                sys.executable,
+                "-c",
+                "import sys,time; sys.stdout.write('x'); sys.stdout.flush(); time.sleep(60)",
+            ),
+            tmp_path / "workspace",
+        )
+        launch_frame = encode_control_frame(process_module._launch_request(invocation))
+        assert _request_control_bytes(endpoint, launch_frame) == encode_control_frame(
+            {"type": "STARTED"}
+        )
+        process = watchdog._process
+        assert process is not None
+        assert process.stdout is not None
+        stdout_fd = process.stdout.fileno()
+        assert stdout_fd in spy.registered_events
+
+        real_read = os.read
+
+        def fail_stdout_read(descriptor: int, size: int) -> bytes:
+            if descriptor == stdout_fd:
+                raise OSError("provider stream is broken")
+            return real_read(descriptor, size)
+
+        monkeypatch.setattr(os, "read", fail_stdout_read)
+        stepper.arm()
+
+        for _ in range(20):
+            if stdout_fd not in spy.registered_events:
+                break
+            recorded = spy.select_calls
+            stepper.release()
+            _wait_until(lambda recorded=recorded: spy.select_calls > recorded)
+        else:
+            raise AssertionError(
+                "the failing read never deregistered the descriptor"
+                " within 20 stepped ticks"
+            )
+
+        assert watchdog._termination_owner == "SUPERVISION"
+    finally:
+        stepper.disarm()
+        stepper.release()
+        if watchdog._process is not None:
+            if watchdog._process.poll() is None:
+                os.killpg(watchdog._process.pid, signal.SIGKILL)
+            watchdog._process.wait(timeout=5)
+        # A live cgroup reports empty only once every member process has
+        # actually exited; this fake one holds "populated 1" until told
+        # otherwise, so left untouched it would hide the reaped child from
+        # _advance_process and strand serve() escalating its grace forever.
+        (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
+        os.close(owner_writer)
+        _wait_until(lambda: not thread.is_alive())
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
 
 
 def test_running_watchdog_bounds_four_control_roles_independently(

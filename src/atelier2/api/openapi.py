@@ -20,17 +20,13 @@ from atelier2.api.problems import (
     TOOL_GRANT_DOCUMENT_PROBLEM_CODES,
 )
 from atelier2.api.references import (
-    CATALOG_LINEAGE_ID_PATTERN,
     EVENT_CURSOR_PATTERN,
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
-    PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
-    REVISION_HASH_PATTERN,
-    SHA256_HASH_PATTERN,
 )
 from atelier2.api.stream import STREAM_FAILURE_CODES
 from atelier2.api.wire.events import (
@@ -639,7 +635,6 @@ def install_custom_openapi(app: FastAPI, limits: ApiLimits) -> None:
         _install_publication_request_body(schema)
         _install_opaque_document_limits(schema, limits)
         _install_event_components(schema)
-        _install_parameter_contracts(schema)
         _install_closed_start_union(schema)
         _install_sse_contract(schema)
         OpenAPI.model_validate(schema)
@@ -981,169 +976,22 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         "type": "string",
         "pattern": EVENT_CURSOR_PATTERN,
     }
-    components["PublicRunReference"] = {
-        "type": "string",
-        "pattern": PUBLIC_RUN_REFERENCE_PATTERN,
-    }
     components["PublicProjectReference"] = {
         "type": "string",
         "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
         "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     }
+    schema["components"]["schemas"]["ProjectResource"]["properties"][
+        "public_project_reference"
+    ] = {"$ref": "#/components/schemas/PublicProjectReference"}
     components["PublicSourceReference"] = {
         "type": "string",
         "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
         "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     }
-    components["CatalogLineageId"] = {
-        "type": "string",
-        "pattern": CATALOG_LINEAGE_ID_PATTERN,
-    }
-    components["RevisionHash"] = {
-        "type": "string",
-        "pattern": REVISION_HASH_PATTERN,
-    }
-    components["ArtifactHash"] = {
-        "type": "string",
-        "pattern": SHA256_HASH_PATTERN,
-    }
-    components["AgentAttemptId"] = {
-        "type": "string",
-        "pattern": SHA256_HASH_PATTERN,
-    }
-
-
-def _install_parameter_contracts(schema: dict[str, Any]) -> None:
-    references = {
-        "PublicProjectReference": (
-            (PROJECT_PATH, "get", "public_project_reference", "path"),
-            (
-                PROJECT_MODEL_DEFAULTS_PATH,
-                "put",
-                "public_project_reference",
-                "path",
-            ),
-            (
-                PROJECT_MODEL_DEFAULTS_PATH,
-                "get",
-                "public_project_reference",
-                "path",
-            ),
-            (
-                PROJECT_MODEL_RESOLUTION_PATH,
-                "post",
-                "public_project_reference",
-                "path",
-            ),
-            (
-                PROJECT_SOURCE_CONNECTION_PATH,
-                "get",
-                "public_project_reference",
-                "path",
-            ),
-            (PROJECT_SOURCES_PATH, "get", "public_project_reference", "path"),
-            (PROJECT_SOURCES_PATH, "post", "public_project_reference", "path"),
-            (PROJECT_SOURCE_PATH, "delete", "public_project_reference", "path"),
-            (
-                PROJECT_SOURCE_TOKEN_PATH,
-                "put",
-                "public_project_reference",
-                "path",
-            ),
-        ),
-        "PublicSourceReference": (
-            (PROJECT_SOURCE_PATH, "delete", "public_source_reference", "path"),
-            (
-                PROJECT_SOURCE_TOKEN_PATH,
-                "put",
-                "public_source_reference",
-                "path",
-            ),
-        ),
-        "PublicRunReference": (
-            (API_PREFIX + "/runs", "get", "after", "query"),
-            (API_PREFIX + "/runs/{public_ref}", "get", "public_ref", "path"),
-            (
-                API_PREFIX + "/runs/{public_ref}/nodes/{node_id}",
-                "get",
-                "public_ref",
-                "path",
-            ),
-            (CANCELLATION_PATH, "post", "public_ref", "path"),
-            (RUN_CANCELLATION_PATH, "post", "public_ref", "path"),
-            (
-                API_PREFIX + "/runs/{public_ref}/answers",
-                "post",
-                "public_ref",
-                "path",
-            ),
-            (
-                API_PREFIX + "/runs/{public_ref}/reconciliations",
-                "post",
-                "public_ref",
-                "path",
-            ),
-            (EVENT_PATH, "get", "public_ref", "path"),
-        ),
-        "ArtifactHash": ((ARTIFACT_PATH, "get", "artifact_hash", "path"),),
-        "RevisionHash": (
-            (
-                API_PREFIX + "/workflow-revisions",
-                "get",
-                "after_revision_hash",
-                "query",
-            ),
-            (
-                API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
-                "get",
-                "workflow_revision_hash",
-                "path",
-            ),
-            (
-                API_PREFIX + "/schema-revisions/{schema_revision_hash}",
-                "get",
-                "schema_revision_hash",
-                "path",
-            ),
-            (
-                API_PREFIX
-                + "/agent-definition-revisions/{agent_definition_revision_hash}",
-                "get",
-                "agent_definition_revision_hash",
-                "path",
-            ),
-        ),
-    }
-    for component, parameters in references.items():
-        for path, method, name, location in parameters:
-            _replace_parameter_schema(
-                schema["paths"][path][method],
-                name,
-                location,
-                {"$ref": f"#/components/schemas/{component}"},
-            )
-    schema["components"]["schemas"]["ProjectResource"]["properties"][
-        "public_project_reference"
-    ] = {"$ref": "#/components/schemas/PublicProjectReference"}
     schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
         "public_source_reference"
     ] = {"$ref": "#/components/schemas/PublicSourceReference"}
-    _replace_parameter_schema(
-        schema["paths"][CANCELLATION_PATH]["post"],
-        "attempt_id",
-        "path",
-        {"$ref": "#/components/schemas/AgentAttemptId"},
-    )
-    limit_schema = {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 100,
-        "default": 50,
-    }
-    for path in (API_PREFIX + "/workflow-revisions", API_PREFIX + "/runs"):
-        _replace_parameter_schema(
-            schema["paths"][path]["get"], "limit", "query", limit_schema
-        )
 
 
 def _install_closed_start_union(schema: dict[str, Any]) -> None:
@@ -1162,19 +1010,6 @@ def _install_closed_start_union(schema: dict[str, Any]) -> None:
     if not isinstance(variants, list):
         raise TypeError("generated OpenAPI omitted the start union")
     body["oneOf"] = variants
-
-
-def _replace_parameter_schema(
-    operation: dict[str, Any],
-    name: str,
-    location: str,
-    parameter_schema: dict[str, Any],
-) -> None:
-    for parameter in operation.get("parameters", []):
-        if parameter.get("name") == name and parameter.get("in") == location:
-            parameter["schema"] = parameter_schema
-            return
-    raise RuntimeError(f"generated OpenAPI omitted {location} parameter {name}")
 
 
 def _durable_and_failure_frames() -> dict[str, Any]:

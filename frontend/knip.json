@@ -1,4 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "project": ["src/**/*.{ts,svelte}"]
+  "entry": ["src/main.ts!"],
+  "project": ["src/**/*.{ts,svelte}!"],
+  "ignoreExportsUsedInFile": true
 }

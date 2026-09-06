@@ -1,38 +1,60 @@
-import { cleanup, render, screen } from "@testing-library/svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as SvelteTestingLibrary from "@testing-library/svelte";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import App from "../../src/App.svelte";
 import type { CockpitApi } from "../../src/api/client";
-import { reportConnectionLost, reportConnectionRestored } from "../../src/lib/connectionState";
 import { exactLocal } from "../../src/lib/when";
 import { railCopy } from "../../src/lib/railCopy";
-import { reloadPage } from "../../src/lib/pageReload";
-import { resetVersionState } from "../../src/lib/versionState";
-import { MutationJournal } from "../../src/lib/mutationJournal";
-import { cockpitApiStub, healthResource } from "../support/cockpitApi";
+import { healthResource } from "../support/cockpitApi";
 
 vi.mock("../../src/lib/pageReload", () => ({ reloadPage: vi.fn() }));
 
+let testingLibrary: typeof SvelteTestingLibrary;
+let openWorkshop: (health: CockpitApi["health"]) => ReturnType<(typeof SvelteTestingLibrary)["render"]>;
+let reportConnectionLost: () => void;
+let reportConnectionRestored: () => void;
+let reloadPage: () => void;
+
+/**
+ * `App` closes over `versionState.ts` and `connectionState.ts`'s
+ * module-level stores, so a fresh render needs a fresh module graph rather
+ * than a manual reset -- `vi.resetModules()` plus a fresh dynamic import of
+ * testing-library alongside the app keeps every piece bound to the same
+ * reloaded Svelte runtime; mixing a freshly reset component with a stale
+ * `render` from a different runtime instance fails.
+ */
+beforeEach(async () => {
+  vi.resetModules();
+  const library = await import("@testing-library/svelte");
+  const { default: App } = await import("../../src/App.svelte");
+  const { MutationJournal } = await import("../../src/lib/mutationJournal");
+  const { cockpitApiStub } = await import("../support/cockpitApi");
+  const connection = await import("../../src/lib/connectionState");
+  const pageReload = await import("../../src/lib/pageReload");
+
+  testingLibrary = library;
+  openWorkshop = (health) => {
+    window.history.replaceState(null, "", "/atelier");
+    return library.render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({ health }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+  };
+  reportConnectionLost = connection.reportConnectionLost;
+  reportConnectionRestored = connection.reportConnectionRestored;
+  reloadPage = pageReload.reloadPage;
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
-  cleanup();
-  reportConnectionRestored();
-  resetVersionState();
+  testingLibrary.cleanup();
   window.history.replaceState(null, "", "/atelier");
 });
 
-function openWorkshop(health: CockpitApi["health"]) {
-  window.history.replaceState(null, "", "/atelier");
-  return render(App, {
-    props: {
-      cockpitApi: cockpitApiStub({ health }),
-      mutationJournal: new MutationJournal(sessionStorage)
-    }
-  });
-}
-
 describe("the workshop shell's footer names the running serve (#1100)", () => {
   it("shows the short commit, its full hash on request, and the deploy time it loaded with", async () => {
+    const { screen } = testingLibrary;
     const commit = "1234567890abcdef1234567890abcdef12345678";
     const health = vi.fn().mockResolvedValue(
       healthResource({ source_commit: commit, serve_started_at: "2026-08-31T08:00:00Z" })
@@ -52,6 +74,7 @@ describe("the workshop shell's footer names the running serve (#1100)", () => {
   });
 
   it("records the baseline once recovery's health succeeds after the mount read failed", async () => {
+    const { screen } = testingLibrary;
     const commit = "d".repeat(40);
     const health = vi
       .fn()
@@ -67,6 +90,7 @@ describe("the workshop shell's footer names the running serve (#1100)", () => {
   });
 
   it("announces a new version once a reconnect's health answers a different commit, without reloading on its own", async () => {
+    const { screen } = testingLibrary;
     const health = vi
       .fn()
       .mockResolvedValueOnce(healthResource({ source_commit: "a".repeat(40) }))
@@ -87,6 +111,7 @@ describe("the workshop shell's footer names the running serve (#1100)", () => {
   });
 
   it("keeps naming the loaded commit across a reconnect that answers the same commit", async () => {
+    const { screen } = testingLibrary;
     const sameCommit = "c".repeat(40);
     const health = vi.fn().mockResolvedValue(healthResource({ source_commit: sameCommit }));
     openWorkshop(health);
