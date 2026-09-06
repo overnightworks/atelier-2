@@ -50,9 +50,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -69,7 +67,6 @@ from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
 )
-from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionListItemResource,
@@ -102,7 +99,13 @@ from atelier2.contracts.provider_probe_receipts import (
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
-from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
+from atelier2.host.address import ADDRESSABLE_SCHEMES
+from atelier2.host.atelier_api_client import (
+    MAXIMUM_FAILURE_BODY_BYTES,
+    AtelierApi,
+    AtelierApiTransportFailure,
+    opened_api,
+)
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     JSON_MEDIA_TYPE,
@@ -144,8 +147,6 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
 PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS = 60.0
 PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 1.0
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
-
-_MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
 
 _health_resource = TypeAdapter(HealthResource)
 _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResource)
@@ -339,19 +340,19 @@ class _CanaryVector:
     workflow_name: str
 
 
-class UrllibProviderCanaryHttp:
-    """The narrow HTTP boundary used by the live command."""
+class AtelierApiProviderCanaryHttp:
+    """The narrow HTTP boundary used by the live command.
 
-    def __init__(
-        self,
-        service_url: str = DEFAULT_SERVICE_URL,
-    ) -> None:
-        self._api_url = service_url.rstrip("/") + API_PREFIX
+    Wraps a client the caller already opened and still owns: this never
+    builds or closes one of its own.
+    """
+
+    def __init__(self, api: AtelierApi) -> None:
+        self._api = api
 
     def get(self, path: str, *, timeout_seconds: float) -> bytes:
-        return self._request(
-            Request(self._api_url + path, method="GET"),
-            timeout_seconds=timeout_seconds,
+        return self._called(
+            timeout_seconds, lambda timeout: self._api.get(path, timeout=timeout)
         )
 
     def post(
@@ -362,31 +363,25 @@ class UrllibProviderCanaryHttp:
         timeout_seconds: float,
         media_type: str = JSON_MEDIA_TYPE,
     ) -> bytes:
-        return self._request(
-            Request(
-                self._api_url + path,
-                data=body,
-                method="POST",
-                headers={"content-type": media_type, "accept": JSON_MEDIA_TYPE},
+        return self._called(
+            timeout_seconds,
+            lambda timeout: self._api.post(
+                path, body, media_type=media_type, timeout=timeout
             ),
-            timeout_seconds=timeout_seconds,
         )
 
-    def _request(self, request: Request, *, timeout_seconds: float) -> bytes:
+    def _called(
+        self, timeout_seconds: float, request: Callable[[float], bytes]
+    ) -> bytes:
         if timeout_seconds <= 0:
             raise ValueError("provider canary HTTP timeout must be positive")
         try:
-            with urlopen(
-                request,
-                timeout=min(PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS, timeout_seconds),
-            ) as response:
-                return response.read()
-        except HTTPError as refused:
-            document = refused.read(_MAXIMUM_PROBLEM_RESPONSE_BYTES + 1)
-            problem_code, detail = _problem_answer(document, str(refused))
-            raise ProviderCanaryHttpRefused(problem_code, detail) from refused
-        except (URLError, TimeoutError, OSError) as unavailable:
-            raise ProviderCanaryServerUnavailable(str(unavailable)) from unavailable
+            return request(min(PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS, timeout_seconds))
+        except AtelierApiTransportFailure as failure:
+            if failure.status is None:
+                raise ProviderCanaryServerUnavailable(failure.reason) from failure
+            problem_code, detail = _problem_answer(failure.body, str(failure))
+            raise ProviderCanaryHttpRefused(problem_code, detail) from failure
 
 
 def default_provider_canary_state_directory(
@@ -545,7 +540,20 @@ def execute_provider_canaries(
     caller can journal it at that moment rather than waiting for every vector
     to finish (#1124)."""
 
-    client = http or UrllibProviderCanaryHttp(settings.service_url)
+    if http is not None:
+        return _run_provider_canaries(settings, http, clock, on_provider_layer_status)
+    with opened_api(settings.service_url) as api:
+        return _run_provider_canaries(
+            settings, AtelierApiProviderCanaryHttp(api), clock, on_provider_layer_status
+        )
+
+
+def _run_provider_canaries(
+    settings: ProviderCanarySettings,
+    client: ProviderCanaryHttp,
+    clock: ProviderCanaryClock | None,
+    on_provider_layer_status: Callable[[ProviderLayerReceiptStatus], None] | None,
+) -> ProviderCanaryReport:
     canary_clock = clock or SystemProviderCanaryClock()
     started_at = canary_clock.monotonic()
     process_deadline = started_at + settings.process_timeout_seconds
@@ -575,10 +583,7 @@ def execute_provider_canaries(
                 "the service listed no startable provider vectors"
             )
         admitted_workflows = _resolve_admitted_workflows(
-            vectors,
-            client,
-            clock=canary_clock,
-            deadline=discovery_deadline,
+            vectors, client, clock=canary_clock, deadline=discovery_deadline
         )
         _raise_if_deadline_reached(canary_clock, discovery_deadline, _discovery_timeout)
     except ProviderCanaryDiscoveryFailed:
@@ -599,13 +604,6 @@ def execute_provider_canaries(
         on_provider_layer_status(provider_layer_status)
     _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
 
-    # No more than `PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS` live billed
-    # runs are ever in flight together, but each vector still gets its own
-    # receipt the instant its own outcome is known: a run-timeout vector
-    # (#1124, grok tools) bounds only its own receipt, never delaying or
-    # starving the vectors beside it. Each `_execute_vector` call writes its
-    # receipt itself, so a receipt lands as soon as its vector finishes
-    # regardless of how long a sibling vector keeps running.
     def run_one(vector: _CanaryVector) -> ProviderCanaryFailure | None:
         return _execute_vector(
             settings,
@@ -1135,7 +1133,7 @@ def _decoded[AnswerT](
 
 
 def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
-    if len(document) > _MAXIMUM_PROBLEM_RESPONSE_BYTES:
+    if len(document) > MAXIMUM_FAILURE_BODY_BYTES:
         return "http-refused", fallback
     try:
         decoded = json.loads(document)

@@ -88,14 +88,23 @@ describe("classifying a schema for the start sheet", () => {
         title: "work item",
         type: "object",
         additionalProperties: false,
-        required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+        required: [
+          "body",
+          "change_marker",
+          "digest",
+          "kind",
+          "observed_at",
+          "reference",
+          "scope"
+        ],
         properties: {
           body: { type: "string" },
           change_marker: { type: "string" },
           digest: { type: "string" },
           kind: { type: "string" },
           observed_at: { type: "string" },
-          reference: { type: "string" }
+          reference: { type: "string" },
+          scope: { type: "array" }
         }
       }, WORK_ITEM_ORDER_SCHEMA_REVISION)
     ).toEqual({ kind: "work_item" });
@@ -114,14 +123,23 @@ describe("classifying a schema for the start sheet", () => {
         title: "work item",
         type: "object",
         additionalProperties: false,
-        required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+        required: [
+          "body",
+          "change_marker",
+          "digest",
+          "kind",
+          "observed_at",
+          "reference",
+          "scope"
+        ],
         properties: {
           body: { type: "string" },
           change_marker: { type: "string" },
           digest: { type: "string" },
           kind: { type: "string" },
           observed_at: { type: "string" },
-          reference: { type: "string" }
+          reference: { type: "string" },
+          scope: { type: "array" }
         }
       }, "f".repeat(64))
     ).toMatchObject({ kind: "unsupported" });

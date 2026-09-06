@@ -4,8 +4,8 @@
 # list shrinks with the copies it records and never grows quietly.
 #
 # Every entry below is a copy waiting for an owner (#1195 names the follow-up
-# slices): one HTTP client for the host commands, one subscription core for the
-# executor adapters, one result payload for the GitHub effects.
+# slices): one subscription core for the executor adapters, one result payload
+# for the GitHub effects.
 
 [[pair]]
 left = "atelier2.adapters.claude_subscription._content_blocks"
@@ -43,10 +43,3 @@ right = "atelier2.contracts.workflow_projections.EnrichedPageBudget.__post_init_
 left = "atelier2.contracts.node_records_v3.MaterializedOrderMember.__post_init__"
 right = "atelier2.contracts.node_records_v3.ReceiptOutput.__post_init__"
 
-[[pair]]
-left = "atelier2.host.mcp_command._api_url"
-right = "atelier2.host.run_command._api_url"
-
-[[pair]]
-left = "atelier2.host.mcp_command._decoded"
-right = "atelier2.host.run_command._decoded"

@@ -33,6 +33,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.work_item_intents import issue_work_item_order
 from atelier2.adapters.dbos.workflow import bootstrap_run_binding
 from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -43,17 +44,33 @@ from atelier2.application.publish_workflow_revision import (
     publish_workflow_revision,
 )
 from atelier2.application.start_published_run import (
+    AuthoredOrder,
+    RunCreated,
     RunIdentityConflict,
+    RunInputRefused,
     UncastAgentRoles,
     start_published_run,
 )
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.orders import ObservedWorkItemOrderValue
+from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+    WorkItemScope,
+)
 from atelier2.ports.durable_runs import (
     DurableRunFormatNotExecutable,
     StartPublishedRunRequestV2,
+    V3InputRefusal,
 )
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.api import permissive_projection_limit
@@ -72,6 +89,7 @@ from tests.scenarios.workflows import (
     V3_EFFECT_LINE_AGENT_NODE_ID,
     V3_EFFECT_LINE_DOCUMENT,
     V3_EFFECT_LINE_WAIT_NODE_ID,
+    graph_input_wait_line,
 )
 
 WORKFLOW_DOCUMENT = V3_EFFECT_LINE_DOCUMENT
@@ -184,6 +202,84 @@ def test_start_commits_the_run_and_its_enqueue_atomically(
         assert connection.execute(
             sa.text("SELECT workflow_uuid, application_version FROM workflow_status")
         ).all() == [(bootstrap_workflow_id_for(RunId("run-1")), "executor-A")]
+
+
+def test_a_started_run_s_work_item_order_reads_back_its_declared_scope(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    """`issue_work_item_order` (`advancer.py`'s one door onto a bound work item)
+    answers from the same starter and schema pin `workflows/issue-to-pr.yaml`
+    declares, so this proves the scope a real start persisted reads back
+    through it -- not through a fake port or a hand-called document reader.
+    """
+
+    runtime, starter = storage
+    document = graph_input_wait_line(WORK_ITEM_ORDER_SCHEMA_REVISION.value)
+    publish_pinned_revisions(
+        runtime.engine,
+        ANY_JSON_SCHEMA,
+        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
+    )
+    publish_revision(runtime.engine, revision(document))
+    observed = ObservedWorkItemRevision(
+        TrackerItemReference("gh:9001"),
+        WorkItemKind.ISSUE,
+        b"## Dateien\n`src/atelier2/contracts/work_items.py`.",
+        WorkItemChangeMarker('W/"scope-1"'),
+        RecordedAt("2026-09-06T09:00:00Z"),
+    )
+
+    result = start_published_run(
+        RunId("run-with-scope"),
+        revision(document).revision_hash,
+        (),
+        starter,
+        orders=(AuthoredOrder("context", ObservedWorkItemOrderValue(observed)),),
+    )
+
+    assert isinstance(result, RunCreated)
+    with Session(runtime.engine) as session:
+        order = issue_work_item_order(session, result.run.run_id)
+    assert order.scope == WorkItemScope(("src/atelier2/contracts/work_items.py",))
+
+
+def test_a_malformed_declared_scope_refuses_the_start_by_name_not_as_corruption(
+    storage: tuple[DbosRuntime, DbosDurableRunStarter],
+) -> None:
+    """A tracker item's own bad `## Dateien` token is the author's mistake, not a
+    lie the store told: it must refuse the order by name, never surface as the
+    generic `DurableStateCorrupt` a real storage defect would.
+    """
+
+    runtime, starter = storage
+    document = graph_input_wait_line(WORK_ITEM_ORDER_SCHEMA_REVISION.value)
+    publish_pinned_revisions(
+        runtime.engine,
+        ANY_JSON_SCHEMA,
+        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
+    )
+    publish_revision(runtime.engine, revision(document))
+    observed = ObservedWorkItemRevision(
+        TrackerItemReference("gh:9002"),
+        WorkItemKind.ISSUE,
+        b"## Dateien\n`../etc/passwd`.",
+        WorkItemChangeMarker('W/"scope-2"'),
+        RecordedAt("2026-09-06T09:00:00Z"),
+    )
+
+    result = start_published_run(
+        RunId("run-with-malformed-scope"),
+        revision(document).revision_hash,
+        (),
+        starter,
+        orders=(AuthoredOrder("context", ObservedWorkItemOrderValue(observed)),),
+    )
+
+    assert isinstance(result, RunInputRefused)
+    assert result.name == "context"
+    assert result.refusal is V3InputRefusal.VALUE_REFUSED
+    assert result.detail is not None
+    assert "../etc/passwd" in result.detail
 
 
 def test_raise_after_real_enqueue_rolls_back_the_run_and_its_workflow(
