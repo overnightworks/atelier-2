@@ -343,6 +343,11 @@ jobs:
       - name: Check for dead production code
         run: uv run --locked python scripts/check_dead_code.py
 
+      - name: Check changed Python narrative
+        env:
+          CORRIDOR_BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}
+        run: uv run --locked python scripts/check_changed_narrative.py --base "${CORRIDOR_BASE_SHA}"
+
       - name: Check the frozen OpenAPI document is current
         run: uv run --locked python scripts/write_openapi_frozen.py --check
 

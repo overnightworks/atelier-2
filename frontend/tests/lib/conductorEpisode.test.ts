@@ -5,7 +5,7 @@ import {
   emptyConductorTranscript,
   reduceConductorEvent
 } from "../../src/lib/conductorConversation";
-import { newestConductorConversation } from "../../src/lib/conductorEpisode";
+import { orderedConductorCandidates } from "../../src/lib/conductorEpisode";
 
 const conductorRevision = "c".repeat(64);
 
@@ -57,31 +57,25 @@ function failedAnswer(cursor: string): RunEvent {
   } as RunEvent;
 }
 
-describe("the active conductor conversation", () => {
+describe("ordering conductor run candidates", () => {
   it("chooses the newest stamped non-terminal conductor run", () => {
-    const selected = newestConductorConversation(
-      [
-        conductorRun("run1.older", "2026-09-01T10:00:00Z"),
-        conductorRun("run1.newer", "2026-09-01T10:01:00Z"),
-        conductorRun("run1.finished", "2026-09-01T10:02:00Z", "COMPLETED")
-      ],
-      conductorRevision
-    );
+    const [selected] = orderedConductorCandidates([
+      conductorRun("run1.older", "2026-09-01T10:00:00Z"),
+      conductorRun("run1.newer", "2026-09-01T10:01:00Z"),
+      conductorRun("run1.finished", "2026-09-01T10:02:00Z", "COMPLETED")
+    ]);
 
     expect(selected?.public_run_reference).toBe("run1.newer");
   });
 
   it("returns no candidate when no conductor run remains live", () => {
     expect(
-      newestConductorConversation(
-        [conductorRun("run1.finished", "2026-09-01T10:00:00Z", "COMPLETED")],
-        conductorRevision
-      )
-    ).toBeNull();
+      orderedConductorCandidates([conductorRun("run1.finished", "2026-09-01T10:00:00Z", "COMPLETED")])
+    ).toEqual([]);
   });
 
   it("refuses an unstamped run rather than guessing its age", () => {
-    expect(newestConductorConversation([conductorRun("run1.unknown", undefined)], conductorRevision)).toBeNull();
+    expect(orderedConductorCandidates([conductorRun("run1.unknown", undefined)])).toEqual([]);
   });
 });
 

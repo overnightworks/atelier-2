@@ -8,7 +8,7 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
-    "check:dead": "knip",
+    "check:dead": "knip --production",
     "test": "vitest run",
     "e2e": "playwright test",
     "e2e:reversed": "E2E_ORDER=reversed playwright test"

@@ -1,6 +1,3 @@
-import { retryLabel } from "./readStateCopy";
-import { workbenchPageCopy } from "./workbenchPageCopy";
-
 /**
  * Inventory of interactive Workbench controls: each rendered control has an
  * entry, and each entry is shaped as a question. This is the Workbench map
@@ -50,46 +47,4 @@ export const workbenchQuestions = {
   }
 } as const;
 
-export type WorkbenchQuestion = (typeof workbenchQuestions)[keyof typeof workbenchQuestions];
-
 export const workbenchQuestionAttribute = "data-workbench-question";
-
-/**
- * `WorkbenchControlFacts` and its two readers have no production caller --
- * they are tooling for the e2e gate that proves every rendered Workbench
- * control is inventoried. They stay beside the production half rather than
- * move to test support.
- */
-export type WorkbenchControlFacts = {
-  questionId: string | null;
-  href: string | null;
-  ariaLabel: string | null;
-  tag: string;
-};
-
-export function describeWorkbenchControlFacts(facts: WorkbenchControlFacts): string {
-  const name = facts.ariaLabel ?? facts.questionId ?? "";
-  return `${facts.tag}${facts.href === null ? "" : `[href="${facts.href}"]`} ${name}`.trim();
-}
-
-export function questionForWorkbenchControlFacts(
-  facts: WorkbenchControlFacts
-): WorkbenchQuestion | null {
-  if (facts.questionId !== null) {
-    return questionById(facts.questionId);
-  }
-  if (facts.tag === "a" && facts.href !== null && facts.href.startsWith("/atelier/runs/")) {
-    return workbenchQuestions.openRun;
-  }
-  if (
-    facts.tag === "button" &&
-    facts.ariaLabel === retryLabel(workbenchPageCopy.runsLabel)
-  ) {
-    return workbenchQuestions.reloadWorkbenchRuns;
-  }
-  return null;
-}
-
-function questionById(id: string): WorkbenchQuestion | null {
-  return Object.values(workbenchQuestions).find((entry) => entry.id === id) ?? null;
-}

@@ -6,15 +6,14 @@ import {
   assistantTurnEventSchema,
   createCockpitApi,
   decodeProblem,
-  decodeRunEvent,
   decodeStreamFrame,
-  decodeWorkflowRevisionDetail,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
   projectSourceConnectionRevisionSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
   problemDefinitions,
+  workflowRevisionDetailSchema,
   type Problem,
   type RunProjectionCorrupt
 } from "../../src/api/client";
@@ -175,14 +174,14 @@ const v2Attempt = { attempt_id: digest, attempt_ordinal: 1 };
 
 describe("closed API decoders", () => {
   it("decodes a published revision and refuses an unknown field on it", () => {
-    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithLoop());
+    const decoded = workflowRevisionDetailSchema.parse(v3RevisionWithLoop());
 
     expect(decoded.graph.workflow_format_version).toBe(3);
-    expect(() => decodeWorkflowRevisionDetail({ ...decoded, invented: true })).toThrow();
+    expect(() => workflowRevisionDetailSchema.parse({ ...decoded, invented: true })).toThrow();
   });
 
   it("decodes a declared loop's body, bound, and verdict exit", () => {
-    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithLoop());
+    const decoded = workflowRevisionDetailSchema.parse(v3RevisionWithLoop());
 
     if (decoded.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
     expect(decoded.graph.loops).toEqual([
@@ -196,7 +195,7 @@ describe("closed API decoders", () => {
   });
 
   it("decodes a graph that declares no loop as an empty loop list", () => {
-    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithoutLoop());
+    const decoded = workflowRevisionDetailSchema.parse(v3RevisionWithoutLoop());
 
     if (decoded.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
     expect(decoded.graph.loops).toEqual([]);
@@ -209,7 +208,7 @@ describe("closed API decoders", () => {
     if (loop === undefined) throw new Error("the loop fixture changed");
 
     expect(() =>
-      decodeWorkflowRevisionDetail({
+      workflowRevisionDetailSchema.parse({
         ...revision,
         graph: {
           ...revision.graph,
@@ -223,7 +222,7 @@ describe("closed API decoders", () => {
     "refuses a noncanonical document base64 value: %s",
     (document_base64) => {
       expect(() =>
-        decodeWorkflowRevisionDetail({
+        workflowRevisionDetailSchema.parse({
           ...v3RevisionWithoutLoop(),
           document_base64
         })
@@ -236,18 +235,18 @@ describe("closed API decoders", () => {
     v3Event("ACTION_RECONCILIATION_RESOLVED", { receipt: receipt() }),
     v3Event("ACTION_COMPLETED", { receipt: receipt() })
   ])("decodes the V3 Action event family: $event", (value) => {
-    expect(decodeRunEvent(value).event).toBe(value.event);
+    expect(decodeStreamFrame(value).event).toBe(value.event);
   });
 
   it("refuses an unknown durable event kind instead of dropping it", () => {
-    expect(() => decodeRunEvent(v3Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
+    expect(() => decodeStreamFrame(v3Event("NODE_PROGRESS", { percent: 50 }))).toThrow();
   });
 
   it.each(["PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"])(
     "decodes the runner failure the served event family names: %s",
     (failureCode) => {
       expect(
-        decodeRunEvent(
+        decodeStreamFrame(
           v3Event("AGENT_FAILED", {
             ...v2Attempt,
             failure_code: failureCode,
@@ -260,7 +259,7 @@ describe("closed API decoders", () => {
 
   it("refuses a failure code outside the published vocabulary", () => {
     expect(() =>
-      decodeRunEvent(
+      decodeStreamFrame(
         v3Event("AGENT_FAILED", { ...v2Attempt, failure_code: "RUNNER_BROKE", reason: null })
       )
     ).toThrow();
@@ -269,8 +268,8 @@ describe("closed API decoders", () => {
   it("decodes the attempt-less executor refusal and refuses a forged attempt", () => {
     const refusal = { reason: "agent-executor-binding-unavailable" as const };
 
-    expect(decodeRunEvent(v3Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
-    expect(() => decodeRunEvent(v3Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
+    expect(decodeStreamFrame(v3Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
+    expect(() => decodeStreamFrame(v3Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
   });
 
   it("decodes the attention feed's per-run corruption frame", () => {
@@ -306,7 +305,7 @@ describe("closed API decoders", () => {
     "refuses noncanonical standard base64 in nested request/results: %s",
     (encoded) => {
       expect(() =>
-        decodeRunEvent(
+        decodeStreamFrame(
           v3Event("ACTION_RECONCILIATION_REQUIRED", {
             request_base64: encoded,
             request_hash: digest
@@ -314,7 +313,7 @@ describe("closed API decoders", () => {
         )
       ).toThrow();
       expect(() =>
-        decodeRunEvent(
+        decodeStreamFrame(
           v3Event("ACTION_COMPLETED", {
             receipt: { ...receipt(), result_base64: encoded }
           })
@@ -325,10 +324,10 @@ describe("closed API decoders", () => {
 
   it("refuses a cursor whose run or sequence disagrees with the event", () => {
     expect(() =>
-      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor: "event1.b3RoZXI.1" })
+      decodeStreamFrame({ ...v3Event("WAITING_INPUT"), cursor: "event1.b3RoZXI.1" })
     ).toThrow();
     expect(() =>
-      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor: "event1.cnVuLTE.2" })
+      decodeStreamFrame({ ...v3Event("WAITING_INPUT"), cursor: "event1.cnVuLTE.2" })
     ).toThrow();
   });
 
@@ -342,7 +341,7 @@ describe("closed API decoders", () => {
     "event1..1"
   ])("refuses a malformed or noncanonical event cursor: %s", (cursor) => {
     expect(() =>
-      decodeRunEvent({ ...v3Event("WAITING_INPUT"), cursor })
+      decodeStreamFrame({ ...v3Event("WAITING_INPUT"), cursor })
     ).toThrow();
   });
 
