@@ -29,6 +29,7 @@ class NodeReceiptIdentityField(StrEnum):
 
 
 _STORED_REASON_FIELD = "reason"
+_UNREADABLE_NODE_RECEIPT_V3_PAYLOAD = "a node-receipt/v3 payload is unreadable"
 
 
 def node_receipt_reason_names_a_schema_judgment(reason: str) -> bool:
@@ -85,17 +86,17 @@ def read_stored_node_receipt_reason(
     try:
         payload = json.loads(stored)
     except json.JSONDecodeError as error:
-        raise ValueError("a node-receipt/v3 payload is unreadable") from error
+        raise ValueError(_UNREADABLE_NODE_RECEIPT_V3_PAYLOAD) from error
     expected = {
         _STORED_REASON_FIELD,
         NodeReceiptIdentityField.SCHEMA_REVISION.value,
         NodeReceiptIdentityField.VALUE_HASH.value,
     }
     if not isinstance(payload, dict) or set(payload) != expected:
-        raise ValueError("a node-receipt/v3 payload is unreadable")
+        raise ValueError(_UNREADABLE_NODE_RECEIPT_V3_PAYLOAD)
     reason = payload[_STORED_REASON_FIELD]
     if not isinstance(reason, str) or reason == "":
-        raise ValueError("a node-receipt/v3 payload is unreadable")
+        raise ValueError(_UNREADABLE_NODE_RECEIPT_V3_PAYLOAD)
     try:
         return (
             reason,
