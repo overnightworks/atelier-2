@@ -100,7 +100,8 @@ def test_c2_crash_after_github_create_before_adapter_return_recovers_one_pr(
     assert first[0][1] == 1
     with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
         receipts = connection.execute("SELECT COUNT(*) FROM effect_receipts").fetchone()
-        assert receipts is not None and receipts[0] == 0
+        assert receipts is not None
+        assert receipts[0] == 0
 
     child(tmp_path, "execute", run_id, "NONE", "NONE", "before-record", "8")
 
@@ -155,7 +156,8 @@ def test_crash_after_agent_completion_before_redeem_recovers_one_pr(
     assert len(first) == 1
     with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
         receipts = connection.execute("SELECT COUNT(*) FROM effect_receipts").fetchone()
-        assert receipts is not None and receipts[0] == 0
+        assert receipts is not None
+        assert receipts[0] == 0
 
     child(tmp_path, "execute", run_id, "NONE", "NONE", "before-record", "8")
 
