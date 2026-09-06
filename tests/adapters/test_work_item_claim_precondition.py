@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import pytest
+import sqlalchemy as sa
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
+from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
+from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    effect_receipts,
+    run_events,
+    runs,
+)
 from atelier2.adapters.dbos.work_item_claims import (
     ConfirmedWorkItemClaim,
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
     hold_prepared_claim,
+    hold_work_item_claim,
 )
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
     ClaimWorkItem,
@@ -32,14 +45,23 @@ from atelier2.contracts.effects import (
     EffectIntent,
     LogicalEffectKey,
 )
-from atelier2.contracts.executions import AgentExecutionRefusal
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
     ClaimReceipt,
     ClaimRefusal,
     ClaimRefusalReason,
     ClaimTouch,
+)
+from tests.acceptance.test_v3_push_before_open_pr import (
+    _SCOPED_ITEM,
+    PROJECT,
+    RUN,
+    _public_runtime,
+    _repositories,
+    _start_public_run,
 )
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
@@ -277,3 +299,169 @@ def test_a_ledger_holding_nothing_yet_is_claimed_once(tmp_path: Path) -> None:
     assert claimed_ledger(executable)[0].scope == tuple(
         PurePosixPath(path) for path in SCOPE
     )
+
+
+@dataclass
+class _RecordedSteps:
+    """The step record a recovered workflow answers from, in place of DBOS's own.
+
+    A step already recorded answers from its record and does not run again; one
+    not yet recorded runs against the real store and is recorded. Two passes over
+    one record are what a node's first drive and its recovery are.
+    """
+
+    run: Callable[..., object]
+    recorded: dict[str, object] = field(default_factory=dict)
+
+    def run_tx_step(
+        self, options: Mapping[str, object], step: Callable[[], object]
+    ) -> object:
+        name = str(options["name"])
+        if name not in self.recorded:
+            self.recorded[name] = self.run(options, step)
+        return self.recorded[name]
+
+
+@dataclass(frozen=True)
+class _StartedBuilderNode:
+    """The shipped line's builder node, started on a scoped item and not yet driven."""
+
+    runtime: DbosRuntime
+    revision_hash: WorkflowRevisionHash
+    binding: AgentNodeBindingV2
+
+    def hold(self, ledger: WorkItemClaimLedger) -> str | None:
+        return hold_work_item_claim(
+            self.runtime.datasource,
+            ledger,
+            PROJECT,
+            self.binding,
+            RUN,
+            self.revision_hash,
+            "implement",
+        )
+
+    def standing(self) -> tuple[str, int, int, int]:
+        """The run's state, and how many receipts, refusals and attempts stand."""
+
+        with self.runtime.engine.connect() as connection:
+            state = connection.execute(
+                sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+            ).scalar_one()
+            receipts = connection.execute(
+                sa.select(sa.func.count()).select_from(effect_receipts)
+            ).scalar_one()
+            refusals = connection.execute(
+                sa.select(sa.func.count())
+                .select_from(run_events)
+                .where(run_events.c.event_kind == RunEventKind.AGENT_FAILED.value)
+            ).scalar_one()
+            attempts = connection.execute(
+                sa.select(sa.func.count()).select_from(agent_attempts)
+            ).scalar_one()
+        return (str(state), int(receipts), int(refusals), int(attempts))
+
+
+@pytest.fixture
+def started_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[_StartedBuilderNode]:
+    """One builder node whose durable steps are recorded and replayed in-process."""
+
+    project, remote, _base = _repositories(tmp_path)
+    runtime, _github = _public_runtime(tmp_path, project, remote)
+    try:
+        yield _started_node(runtime, monkeypatch)
+    finally:
+        runtime.close()
+
+
+def _started_node(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> _StartedBuilderNode:
+    assert _start_public_run(runtime, _SCOPED_ITEM).status_code == 201
+    with runtime.engine.connect() as connection:
+        revision_hash = WorkflowRevisionHash(
+            connection.execute(
+                sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
+            ).scalar_one()
+        )
+    binding = decode_node_binding(
+        dict(
+            _node_binding(
+                runtime.datasource,
+                RUN,
+                revision_hash,
+                "implement",
+                runtime.declared_project,
+            )
+        )
+    )
+    assert isinstance(binding, AgentNodeBindingV2)
+    monkeypatch.setattr(
+        runtime.datasource,
+        "run_tx_step",
+        _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+    )
+    return _StartedBuilderNode(runtime, revision_hash, binding)
+
+
+def _refusing_everything() -> FakeWorkItemClaims:
+    """A ledger that became unreadable and refuses every claim: the worst later answer."""
+
+    return FakeWorkItemClaims(
+        claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY),
+        read_back_answer=ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE),
+    )
+
+
+def test_a_recovery_replays_the_held_claim_without_asking_the_ledger_again(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """The claim decision is taken once: a replay holds what the first drive held.
+
+    The ledger now refuses everything, as one that became unreadable or gained
+    a foreign lane on these paths would -- and the replay never asks it, so
+    the run stays STARTED with its one receipt while the attempt is in flight.
+    """
+
+    executable = fake_agent_claim_executable(tmp_path)
+    first_drive = WorkItemClaimLedger(
+        AgentClaimCli(executable, tmp_path), LEDGER_BINDING
+    )
+    assert started_node.hold(first_drive) is None
+    assert len(claimed_ledger(executable)) == 1
+    held = started_node.standing()
+
+    replay = _refusing_everything()
+    assert started_node.hold(WorkItemClaimLedger(replay, LEDGER_BINDING)) is None
+
+    assert (replay.read_back_requests, replay.claim_requests) == ([], [])
+    assert held == (RunState.STARTED.value, 1, 0, 0)
+    assert started_node.standing() == held
+
+
+def test_a_recovery_after_a_refusal_refuses_once_and_builds_on_no_later_grant(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """A node that ended on a refusal ends there again, whatever the ledger says now.
+
+    The replay's ledger would grant the claim; it is never asked, no claim is
+    posted, no receipt is written, the one refusal stands, and the answer is the
+    same terminal word -- so no attempt is started on a run already FAILED.
+    """
+
+    first_drive = WorkItemClaimLedger(
+        FakeWorkItemClaims(claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY)),
+        LEDGER_BINDING,
+    )
+    assert started_node.hold(first_drive) == RunState.FAILED.value
+    refused = started_node.standing()
+
+    executable = fake_agent_claim_executable(tmp_path)
+    replay = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    assert started_node.hold(replay) == RunState.FAILED.value
+
+    assert claimed_ledger(executable) == ()
+    assert refused == (RunState.FAILED.value, 0, 1, 0)
+    assert started_node.standing() == refused

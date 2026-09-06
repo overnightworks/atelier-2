@@ -36,7 +36,7 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.names import (
     WORK_ITEM_CLAIM_CONFIRM_STEP_NAME,
-    WORK_ITEM_CLAIM_INTENT_STEP_NAME,
+    WORK_ITEM_CLAIM_HOLD_STEP_NAME,
     WORK_ITEM_CLAIM_PREPARE_STEP_NAME,
     WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
 )
@@ -157,11 +157,6 @@ def prepare_work_item_claim(
     answers the claim already receipted for this execution, the prepared
     intent's logical key, or the refusal word this node ends on -- a runtime
     that cannot claim never quietly builds unclaimed.
-
-    The receipt is what makes the decision once: a node execution whose claim
-    is already confirmed answers `HELD_FIELD` here and never asks the ledger
-    again, so a recovery that runs while the attempt is in flight cannot turn
-    a later ledger answer into a refusal of work already under way.
     """
 
     node = load_graph(session, revision_hash).node(node_id)
@@ -343,10 +338,11 @@ def hold_work_item_claim(
 
     Runs before the attempt is executed, so a node that may not claim never
     leases a workspace, never starts a provider and never pushes. The intent is
-    written durably before the ledger is asked, and the claim it confirms is
-    recorded before the builder is allowed to begin. A claim this execution
-    already has a receipt for is held without asking the ledger again, so a
-    recovery cannot refuse work already under way on a newer answer.
+    written durably before the ledger is asked, the ledger's answer is taken in
+    one durable step, and the claim it confirms is recorded before the builder
+    is allowed to begin. A recovery replays the answer that step recorded and
+    never asks the ledger again, so it cannot refuse work already under way on
+    a newer answer, nor build on a grant the node already ended on.
 
     Answers `None` where the node may work, and the run's own terminal state
     where it may not.
@@ -373,9 +369,7 @@ def hold_work_item_claim(
             "a prepared work-item claim requires the ledger that bound it"
         )
     logical_key = prepared[LOGICAL_KEY_FIELD]
-    outcome = hold_prepared_claim(
-        _prepared_intent(datasource, logical_key, revision_hash), ledger
-    )
+    outcome = _held_claim(datasource, ledger, logical_key, revision_hash)
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
     if isinstance(outcome, WorkItemClaimHeld):
         return None
@@ -412,19 +406,28 @@ def _prepared_claim(
     )
 
 
-def _prepared_intent(
+def _held_claim(
     datasource: SQLAlchemyDatasource,
+    ledger: WorkItemClaimLedger,
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
-) -> EffectIntent:
-    """The exact claim intent this node prepared, read back from the store."""
+) -> WorkItemClaimOutcome:
+    """Ask the ledger once, inside the one durable step that records its answer.
+
+    The outcome is what the step memoizes, so a recovery replays the decision
+    this drive took instead of asking the ledger again: a claim that was held
+    stays held while the attempt runs, and a refusal stays the one refusal the
+    node ended on. Only a drive that dies before the step is recorded asks
+    again, and then it reads its own claim back rather than taking a second.
+    """
 
     return cast(
-        EffectIntent,
+        WorkItemClaimOutcome,
         datasource.run_tx_step(
-            {"name": WORK_ITEM_CLAIM_INTENT_STEP_NAME},
-            lambda: load_intent(
-                datasource.sql_session(), logical_key, revision_hash.value
+            {"name": WORK_ITEM_CLAIM_HOLD_STEP_NAME},
+            lambda: hold_prepared_claim(
+                load_intent(datasource.sql_session(), logical_key, revision_hash.value),
+                ledger,
             ),
         ),
     )

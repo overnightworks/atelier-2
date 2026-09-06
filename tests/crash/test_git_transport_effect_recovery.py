@@ -35,6 +35,7 @@ from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
+    EffectIntent,
     EffectIntentStateVersion,
     EffectReceipt,
     EffectUnknownOutcome,
@@ -354,17 +355,22 @@ def _child(root: Path, command: str, *, expected: int = 0) -> None:
 
 
 def _crash_before_the_claim_receipt() -> None:
-    """Die where the claim is posted and its receipt is not yet written.
+    """Die the moment the ledger has answered the claim and nothing records it.
 
-    The step boundary DBOS records is exactly here: the intent stands
-    PREPARED, the ledger already holds the claim, and nothing durable says
-    so yet.
+    The one durable step that asks the ledger is still open here: the intent
+    stands PREPARED, the ledger already holds the claim, and nothing durable
+    says so yet -- neither the step's own record nor the receipt.
     """
 
-    def die(*_arguments: object, **_keywords: object) -> None:
+    hold = claim_module.hold_prepared_claim
+
+    def hold_then_die(
+        intent: EffectIntent, ledger: claim_module.WorkItemClaimLedger
+    ) -> claim_module.WorkItemClaimOutcome:
+        hold(intent, ledger)
         os._exit(CRASHED)
 
-    claim_module.confirm_work_item_claim = die
+    claim_module.hold_prepared_claim = hold_then_die
 
 
 def _launch_child(command: str, root: Path) -> None:
