@@ -1358,6 +1358,7 @@ def compose_application(
                     / MANAGED_PROJECT_SOURCE_CREDENTIALS_DIRECTORY
                 ),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
+                request_queue_sweep=runtime.request_queue_sweep,
                 tracker_item_source=tracker_item_source,
                 model_registry_inspector=HostProviderModelInspector(
                     runtime.agent_executor_registry,

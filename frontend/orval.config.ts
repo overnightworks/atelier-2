@@ -14,7 +14,7 @@ import {
  */
 interface OperationRoot {
   readonly path: string;
-  readonly method: "get" | "post";
+  readonly method: "get" | "post" | "put";
   readonly keptStatuses: readonly string[];
 }
 
@@ -48,6 +48,60 @@ const WORKFLOW_AND_CATALOG_ROOTS: readonly OperationRoot[] = [
   {
     path: "/atelier/api/v1/catalog-revisions/by-name/{kind}/{name}",
     method: "get",
+    keptStatuses: ["200"],
+  },
+];
+
+const PROJECTS_SOURCES_AND_MODELS_ROOTS: readonly OperationRoot[] = [
+  { path: "/atelier/api/v1/projects", method: "get", keptStatuses: ["200"] },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/source-connection",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/sources",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/sources",
+    method: "post",
+    keptStatuses: ["201"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/sources/{public_source_reference}/token",
+    method: "put",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/model-registries/{provider_id}",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/model-registries/{provider_id}",
+    method: "put",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/model-registries/{provider_id}/validations",
+    method: "post",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/model-defaults",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/model-defaults",
+    method: "put",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/projects/{public_project_reference}/model-resolution",
+    method: "post",
     keptStatuses: ["200"],
   },
 ];
@@ -173,6 +227,20 @@ export default defineConfig({
     },
     output: {
       target: "./src/api/generated/workflowAndCatalog.zod.ts",
+      mode: "single",
+      client: "zod",
+      override: ZOD_SCHEMAS_ONLY,
+    },
+  },
+  projectsSourcesAndModels: {
+    input: {
+      target: "../tests/api/openapi_frozen.json",
+      override: {
+        transformer: restrictToOperations(PROJECTS_SOURCES_AND_MODELS_ROOTS),
+      },
+    },
+    output: {
+      target: "./src/api/generated/projectsSourcesAndModels.zod.ts",
       mode: "single",
       client: "zod",
       override: ZOD_SCHEMAS_ONLY,

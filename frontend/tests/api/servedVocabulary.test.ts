@@ -18,13 +18,6 @@ import {
   attemptTranscriptSchema,
   assistantTurnEventSchema,
   authProfileRevisionPageSchema,
-  modelRegistryRevisionSchema,
-  projectModelDefaultsRevisionSchema,
-  projectModelResolutionSchema,
-  projectListSchema,
-  projectResourceSchema,
-  projectSourceListSchema,
-  projectSourceResourceSchema,
   queueItemSchema,
   nodeDetailSchema,
   nodeRailEntrySchema,
@@ -222,114 +215,6 @@ describe("the served vocabulary", () => {
       servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
         ?.anyOf?.[0]?.enum
     );
-  });
-
-  it("decodes exactly the zero-or-one project collection the server serves", () => {
-    const resource = servedDocument.components.schemas.ProjectResource;
-    const collection = servedDocument.components.schemas.ProjectListResource as {
-      properties?: { items?: { maxItems?: number } };
-    };
-    const publicReference = servedDocument.components.schemas.PublicProjectReference as {
-      maxLength: number;
-      pattern: string;
-    };
-    const longestReference = `project1.${"A".repeat(
-      publicReference.maxLength - "project1.".length
-    )}`;
-
-    expect(Object.keys(projectResourceSchema.shape).sort()).toEqual(
-      Object.keys(resource?.properties ?? {}).sort()
-    );
-    expect(Object.keys(projectListSchema.shape).sort()).toEqual(
-      Object.keys(collection.properties ?? {}).sort()
-    );
-    expect(collection.properties?.items?.maxItems).toBe(1);
-    expect(new RegExp(publicReference.pattern).test(longestReference)).toBe(true);
-    expect(
-      projectResourceSchema.safeParse({ public_project_reference: longestReference }).success
-    ).toBe(true);
-    expect(
-      projectResourceSchema.safeParse({ public_project_reference: `${longestReference}A` })
-        .success
-    ).toBe(false);
-    expect(
-      projectResourceSchema.safeParse({ public_project_reference: "project1.@@" }).success
-    ).toBe(false);
-    expect(
-      projectListSchema.parse({
-        items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }]
-      })
-    ).toEqual({ items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }] });
-  });
-
-  it("decodes exactly the project-source collection the server serves", () => {
-    const resource = servedDocument.components.schemas.ProjectSourceResource;
-    const collection = servedDocument.components.schemas.ProjectSourceListResource as {
-      properties?: { items?: { maxItems?: number } };
-    };
-    const publicReference = servedDocument.components.schemas.PublicSourceReference as {
-      maxLength: number;
-      pattern: string;
-    };
-    const longestReference = `source1.${"A".repeat(
-      publicReference.maxLength - "source1.".length
-    )}`;
-    const sample = {
-      public_source_reference: "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj",
-      kind: "github",
-      address: "FlexOr2/atelier-2",
-      revision: 2,
-      auth_method: "personal-access-token"
-    };
-
-    expect(Object.keys(projectSourceResourceSchema.shape).sort()).toEqual(
-      Object.keys(resource?.properties ?? {}).sort()
-    );
-    expect(Object.keys(projectSourceListSchema.shape).sort()).toEqual(
-      Object.keys(collection.properties ?? {}).sort()
-    );
-    expect(collection.properties?.items?.maxItems).toBe(1);
-    expect(new RegExp(publicReference.pattern).test(longestReference)).toBe(true);
-    expect(
-      projectSourceResourceSchema.safeParse({
-        ...sample,
-        public_source_reference: longestReference,
-        connected_at: null
-      }).success
-    ).toBe(true);
-    expect(
-      projectSourceResourceSchema.safeParse({
-        ...sample,
-        public_source_reference: `${longestReference}A`
-      }).success
-    ).toBe(false);
-    expect(projectSourceResourceSchema.parse(sample)).toEqual({
-      ...sample,
-      scope: "issues",
-      connected_at: null
-    });
-    expect(
-      projectSourceListSchema.parse({ items: [{ ...sample, scope: "issues", connected_at: null }] })
-    ).toEqual({ items: [{ ...sample, scope: "issues", connected_at: null }] });
-    expect(
-      projectSourceListSchema.safeParse({ items: [sample, sample] }).success
-    ).toBe(true);
-    expect(
-      projectSourceResourceSchema.safeParse({ ...sample, extra: true }).success
-    ).toBe(false);
-  });
-
-  it("decodes exactly the model configuration resources the server serves", () => {
-    for (const [schema, resourceName] of [
-      [modelRegistryRevisionSchema, "ModelRegistryRevisionResource"],
-      [projectModelDefaultsRevisionSchema, "ProjectModelDefaultsRevisionResource"],
-      [projectModelResolutionSchema, "ProjectModelResolutionResource"]
-    ] as const) {
-      const resource = servedDocument.components.schemas[resourceName];
-      expect(Object.keys(schema.shape).sort()).toEqual(
-        Object.keys(resource?.properties ?? {}).sort()
-      );
-    }
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

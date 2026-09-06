@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, assert_never
 
@@ -28,6 +29,7 @@ from atelier2.adapters.dbos.host_configuration import (
 )
 from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
+from atelier2.adapters.dbos.queue_sweep import QueueSweepTicker
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_configuration_revisions,
@@ -352,6 +354,7 @@ class _BoundRuntime:
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
+    queue_sweep: QueueSweepTicker | None = None
 
 
 def _declared_project_for(
@@ -976,7 +979,7 @@ class _DbosProcessOwner:
             if bound.leases > 0:
                 return
             try:
-                errors: list[BaseException] = []
+                errors: list[BaseException] = self._stopped_queue_sweep(bound)
                 try:
                     DBOS.destroy(
                         destroy_registry=True,
@@ -1020,6 +1023,24 @@ class _DbosProcessOwner:
             if errors:
                 raise BaseExceptionGroup("runtime close failed", errors)
 
+    @staticmethod
+    def _stopped_queue_sweep(bound: _BoundRuntime) -> list[BaseException]:
+        """Stop the sweep's clock before the binding it sweeps through goes.
+
+        Answers with what failed rather than raising it: a close collects
+        every independently failing step and reports them together.
+        """
+
+        ticker = bound.queue_sweep
+        if ticker is None:
+            return []
+        bound.queue_sweep = None
+        try:
+            ticker.stop()
+        except BaseException as error:
+            return [error]
+        return []
+
     def launch(self, bound: _BoundRuntime) -> None:
         with self._lock:
             if bound.launched:
@@ -1030,6 +1051,7 @@ class _DbosProcessOwner:
             self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
             self._advance_queue(bound)
+            self._start_queue_sweep(bound)
 
     @staticmethod
     @staticmethod
@@ -1120,6 +1142,38 @@ class _DbosProcessOwner:
             served_project=project,
             tracker=tracker,
         )
+
+    def _start_queue_sweep(self, bound: _BoundRuntime) -> None:
+        """Give the sweep its clock, now that one sweep has already run.
+
+        The tick is what starts an item admitted after this launch: without it
+        the queue would stand still until the next deploy, however long that
+        is. An admission does not wait for the next tick either -- the door
+        asks the same ticker for a sweep at once.
+        """
+
+        ticker = QueueSweepTicker(partial(self._swept_queue, bound))
+        bound.queue_sweep = ticker
+        ticker.start()
+
+    @staticmethod
+    def _swept_queue(bound: _BoundRuntime) -> None:
+        """One tick's sweep, whose failure ends that turn and not the tick.
+
+        An unreadable queue and an unavailable write are exactly what the next
+        tick asks about again; a tick that died here would leave the queue
+        silent until the next deploy, which is the state the tick exists to
+        end. The launch's own sweep still raises, because a process that
+        cannot sweep at all should not come up quietly.
+        """
+
+        try:
+            _DbosProcessOwner._advance_queue(bound)
+        except Exception:
+            _LOG.exception(
+                "The queue sweep failed; the next tick asks again.",
+                extra={"event": "queue_sweep_failed"},
+            )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
         with self._lock:
@@ -1336,6 +1390,17 @@ class DbosRuntime:
 
     def launch(self) -> None:
         _PROCESS_OWNER.launch(self._held())
+
+    def request_queue_sweep(self) -> None:
+        """Sweep the queue now rather than at the next tick.
+
+        Silent once this lease is closed: a sweep needs the process the lease
+        held, and whatever admission asked for one is already durable.
+        """
+
+        bound = self._bound
+        if bound is not None and bound.queue_sweep is not None:
+            bound.queue_sweep.sweep_now()
 
     def initialize_storage(self) -> None:
         _PROCESS_OWNER.initialize_storage(self._held())
