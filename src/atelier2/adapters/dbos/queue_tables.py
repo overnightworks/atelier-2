@@ -28,6 +28,11 @@ from atelier2.contracts.queue_projection import (
     QueueProposalSource,
 )
 
+_QUEUE_PROPOSAL_REVISIONS_ITEM_ID = "queue_proposal_revisions.item_id"
+_QUEUE_PROPOSAL_REVISIONS_PROPOSAL_REVISION = (
+    "queue_proposal_revisions.proposal_revision"
+)
+
 queue_items = sa.Table(
     "queue_items",
     metadata,
@@ -62,8 +67,8 @@ queue_items = sa.Table(
     sa.ForeignKeyConstraint(
         ("item_id", "current_proposal_revision"),
         (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
+            _QUEUE_PROPOSAL_REVISIONS_ITEM_ID,
+            _QUEUE_PROPOSAL_REVISIONS_PROPOSAL_REVISION,
         ),
     ),
     sa.CheckConstraint("length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'"),
@@ -207,8 +212,8 @@ queue_dependency_edges = sa.Table(
     sa.ForeignKeyConstraint(
         ("item_id", "proposal_revision", "project_id"),
         (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
+            _QUEUE_PROPOSAL_REVISIONS_ITEM_ID,
+            _QUEUE_PROPOSAL_REVISIONS_PROPOSAL_REVISION,
             "queue_proposal_revisions.project_id",
         ),
     ),
@@ -229,8 +234,8 @@ queue_launch_bindings = sa.Table(
     sa.ForeignKeyConstraint(
         ("item_id", "proposal_revision", "project_id"),
         (
-            "queue_proposal_revisions.item_id",
-            "queue_proposal_revisions.proposal_revision",
+            _QUEUE_PROPOSAL_REVISIONS_ITEM_ID,
+            _QUEUE_PROPOSAL_REVISIONS_PROPOSAL_REVISION,
             "queue_proposal_revisions.project_id",
         ),
     ),

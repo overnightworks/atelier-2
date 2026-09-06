@@ -1005,6 +1005,112 @@ describe("the published agent-configuration listing", () => {
       "response did not match the durable wire contract"
     );
   });
+
+  const baseListedItem = {
+    model: "sonnet",
+    auth_profile_revision_hash: digest,
+    executor_revision: "claude-subscription/v1",
+    provider_id: "anthropic",
+    auth_mode: "subscription",
+    requested_capability: "headless",
+    agent_configuration_revision_hash: digest
+  };
+
+  it("accepts a structurally unavailable item that names its own binding reason", async () => {
+    const item = {
+      ...baseListedItem,
+      startable: false,
+      structurally_startable: false,
+      not_startable_reason: "agent-executor-binding-unavailable",
+      provider_probe_problem_code: null,
+      provider_probe_observed_at: null
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after_revision_hash: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listAgentConfigurationRevisions();
+
+    expect(page.items).toEqual([item]);
+  });
+
+  it("refuses a structurally unavailable item whose reason is not the binding reason", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              ...baseListedItem,
+              startable: false,
+              structurally_startable: false,
+              not_startable_reason: "model-not-registered",
+              provider_probe_problem_code: null,
+              provider_probe_observed_at: null
+            }
+          ],
+          next_after_revision_hash: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listAgentConfigurationRevisions()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
+  });
+
+  it("refuses a structurally startable item that still carries the binding-unavailable reason", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              ...baseListedItem,
+              startable: false,
+              structurally_startable: true,
+              not_startable_reason: "agent-executor-binding-unavailable",
+              provider_probe_problem_code: null,
+              provider_probe_observed_at: null
+            }
+          ],
+          next_after_revision_hash: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listAgentConfigurationRevisions()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
+  });
+
+  it("refuses a provider-probe-failed reason that names none of its own evidence", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              ...baseListedItem,
+              startable: false,
+              structurally_startable: true,
+              not_startable_reason: "provider-probe-failed",
+              provider_probe_problem_code: null,
+              provider_probe_observed_at: null
+            }
+          ],
+          next_after_revision_hash: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listAgentConfigurationRevisions()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
+  });
 });
 
 describe("the observed queue a start-sheet work-item picker reads", () => {
@@ -1561,7 +1667,7 @@ describe("the project source collection Settings writes", () => {
     ).rejects.toThrow("durable wire contract");
   });
 
-  it("parses a well-formed list of two source resources", async () => {
+  it("refuses a source list carrying more connections than a project may hold", async () => {
     const second = {
       ...source,
       public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
@@ -1569,9 +1675,9 @@ describe("the project source collection Settings writes", () => {
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk({ items: [source, second] }));
 
-    const read = await createCockpitApi(fetcher).listProjectSources(projectReference);
-
-    expect(read.items).toEqual([source, second]);
+    await expect(
+      createCockpitApi(fetcher).listProjectSources(projectReference)
+    ).rejects.toThrow("durable wire contract");
   });
 });
 

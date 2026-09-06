@@ -11,6 +11,33 @@ import {
   WorkflowRevisionSummaryResourceV2,
 } from "./generated/workflowAndCatalog.zod";
 import {
+  ModelRegistryRevisionResource,
+  ProjectListResource,
+  ProjectModelDefaultsRevisionResource,
+  ProjectModelResolutionResource,
+  ProjectSourceConnectionRevisionResource,
+  projectSourceListResourceItemsMax,
+  ProjectSourceResource as ProjectSourceResourceGenerated,
+  PublicProjectReference,
+} from "./generated/projectsSourcesAndModels.zod";
+import {
+  AgentConfigurationRevisionListItemResource,
+  AgentConfigurationRevisionPageResource,
+  AgentConfigurationRevisionResource,
+  AgentDefinitionRevisionDetailResource,
+  AgentDefinitionRevisionListItemResource,
+  AgentDefinitionRevisionPageResource,
+  AgentDefinitionRevisionResource,
+  AuthProfileRevisionPageResource,
+  AuthProfileRevisionResource,
+  QueueAdmissionResource,
+  QueueItemPageResource,
+  QueueItemResource,
+  QueueLaunchBindingResource,
+  QueuePriorityRankResource,
+  QueueProposalResource,
+} from "./generated/authAgentAndQueue.zod";
+import {
   reportConnectionLost,
   reportConnectionRestored,
 } from "../lib/connectionState";
@@ -37,12 +64,6 @@ const publicRunReference = z
     (value) => decodePublicRunReference(value) !== null,
     "public run reference must contain canonical unpadded base64url UTF-8",
   );
-// The browser validates the public wire identity but never decodes it into the
-// internal ProjectId. servedVocabulary pins this bound and shape to OpenAPI.
-const publicProjectReference = z
-  .string()
-  .regex(/^project1\.[A-Za-z0-9_-]+$/)
-  .max(5_471);
 const eventCursor = z
   .string()
   .refine(
@@ -98,45 +119,23 @@ export const workflowRevisionDetailSchema = WorkflowRevisionDetailResource.exten
   graph: workflowGraphV3Schema,
 });
 
-export const projectResourceSchema = z
-  .object({ public_project_reference: publicProjectReference })
-  .strict();
+export const projectSourceConnectionRevisionSchema = ProjectSourceConnectionRevisionResource.extend({
+  revision_number: positiveSafeInteger,
+});
 
-export const projectListSchema = z
-  .object({ items: z.array(projectResourceSchema).max(1) })
-  .strict();
+/**
+ * `connected_at` is optional in the served shape with no declared default;
+ * absence on the wire means "never connected", so this overlay is the one
+ * place that turns that absence into an explicit `null` for every caller.
+ */
+export const projectSourceResourceSchema = ProjectSourceResourceGenerated.extend({
+  connected_at: z.union([recordedAtStamp, z.null()]).default(null),
+  revision: positiveSafeInteger,
+});
 
-export const projectSourceConnectionRevisionSchema = z
-  .object({
-    public_project_reference: publicProjectReference,
-    revision_number: positiveSafeInteger,
-    source_kind: z.string().min(1).max(64),
-    source_address: z.string().min(1).max(1_024),
-    auth_method: z.literal("personal-access-token"),
-    project_source_connection_revision_hash: sha256,
-  })
-  .strict();
-
-const publicSourceReference = z
-  .string()
-  .regex(/^source1\.[A-Za-z0-9_-]+$/)
-  .max(56);
-
-export const projectSourceResourceSchema = z
-  .object({
-    public_source_reference: publicSourceReference,
-    kind: z.string().min(1).max(64),
-    address: z.string().min(1).max(1_024),
-    scope: z.literal("issues").default("issues"),
-    connected_at: z.union([recordedAtStamp, z.null()]).default(null),
-    revision: positiveSafeInteger,
-    auth_method: z.literal("personal-access-token"),
-  })
-  .strict();
-
-export const projectSourceListSchema = z
-  .object({ items: z.array(projectSourceResourceSchema) })
-  .strict();
+export const projectSourceListSchema = z.object({
+  items: z.array(projectSourceResourceSchema).max(projectSourceListResourceItemsMax),
+}).strict();
 
 export type { HealthResource };
 
@@ -145,82 +144,16 @@ const providerIdSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9._-]*$/);
-const exactModelIdSchema = z.string().min(1).max(1_024).regex(/^\S+$/u);
 
-const modelRegistryEntrySchema = z
-  .object({
-    model_id: exactModelIdSchema,
-    agent_configuration_revision_hash: sha256,
-    source: z.enum(["discovered", "operator"]),
-    provider_check: z.enum(["not-checked", "checked", "unknown-at-provider"]),
-  })
-  .strict();
+const modelRegistryRevisionSchema = ModelRegistryRevisionResource.extend({
+  revision_number: positiveSafeInteger,
+});
 
-export const modelRegistryRevisionSchema = z
-  .object({
-    provider_id: providerIdSchema,
-    revision_number: positiveSafeInteger,
-    model_registry_revision_hash: sha256,
-    entries: z.array(modelRegistryEntrySchema).max(100),
-  })
-  .strict();
+const projectModelDefaultsRevisionSchema = ProjectModelDefaultsRevisionResource.extend({
+  revision_number: positiveSafeInteger,
+});
 
-const projectModelDefaultSchema = z
-  .object({
-    difficulty: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-    model_registry_revision_hash: sha256,
-    provider_id: providerIdSchema,
-    model_id: exactModelIdSchema,
-    agent_configuration_revision_hash: sha256,
-  })
-  .strict();
-
-export const projectModelDefaultsRevisionSchema = z
-  .object({
-    project_id: z.string().min(1).max(1_024),
-    public_project_reference: publicProjectReference,
-    revision_number: positiveSafeInteger,
-    project_model_defaults_revision_hash: sha256,
-    defaults: z.array(projectModelDefaultSchema).max(3),
-  })
-  .strict();
-
-const roleModelResolutionSchema = z
-  .object({
-    role: z.string().min(1).max(1_024),
-    agent_configuration_revision_hash: sha256.nullable(),
-    source: z.enum([
-      "chosen-now",
-      "pinned-in-workflow",
-      "from-project",
-      "uncast",
-    ]),
-    model_id: exactModelIdSchema.nullable(),
-    declared_difficulty: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-    default_difficulty: z
-      .union([z.literal(1), z.literal(2), z.literal(3)])
-      .nullable(),
-    uncast_reason: z
-      .enum([
-        "override-not-registered",
-        "workflow-model-not-registered",
-        "workflow-model-ambiguous",
-        "no-project-default",
-        "family-difference-unavailable",
-      ])
-      .nullable(),
-    family_differs_from: z.string().min(1).max(1_024).nullable(),
-  })
-  .strict();
-
-export const projectModelResolutionSchema = z
-  .object({
-    project_id: z.string().min(1).max(1_024),
-    public_project_reference: publicProjectReference,
-    workflow_revision_hash: sha256,
-    resolutions: z.array(roleModelResolutionSchema).max(100),
-  })
-  .strict();
+const projectModelResolutionSchema = ProjectModelResolutionResource;
 
 const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
   z.object({
@@ -294,9 +227,9 @@ const authProfileInputSchema = z
   })
   .strict();
 
-const authProfileRevisionSchema = authProfileInputSchema
-  .extend({ auth_profile_revision_hash: sha256 })
-  .strict();
+const authProfileRevisionSchema = AuthProfileRevisionResource.extend({
+  revision_number: positiveSafeInteger,
+});
 
 const agentConfigurationInputSchema = z
   .object({
@@ -309,36 +242,10 @@ const agentConfigurationInputSchema = z
   })
   .strict();
 
-const agentConfigurationRevisionSchema = agentConfigurationInputSchema
-  .extend({
-    provider_id: z.string().min(1).max(64),
-    auth_mode: z.enum(["subscription", "api_key"]),
-    requested_capability: z.enum([
-      "headless",
-      "headless_with_tools",
-      "interactive",
-    ]),
-    agent_configuration_revision_hash: sha256,
-  })
-  .strict();
+const agentConfigurationRevisionSchema = AgentConfigurationRevisionResource;
 
 export const agentConfigurationRevisionListItemObjectSchema =
-  agentConfigurationRevisionSchema
-    .extend({
-      startable: z.boolean(),
-      structurally_startable: z.boolean(),
-      not_startable_reason: z
-        .enum([
-          "agent-executor-binding-unavailable",
-          "model-not-registered",
-          "provider-probe-receipt-missing",
-          "provider-probe-failed",
-        ])
-        .nullable(),
-      provider_probe_problem_code: z.string().min(1).nullable(),
-      provider_probe_observed_at: recordedAtStamp.nullable(),
-    })
-    .strict();
+  AgentConfigurationRevisionListItemResource;
 
 const agentConfigurationRevisionListItemSchema =
   agentConfigurationRevisionListItemObjectSchema.superRefine(
@@ -403,12 +310,10 @@ const agentConfigurationRevisionListItemSchema =
  * remains its immutable resource, so the browser never mistakes a host fact
  * for revision identity.
  */
-export const agentConfigurationRevisionPageSchema = z
-  .object({
+export const agentConfigurationRevisionPageSchema =
+  AgentConfigurationRevisionPageResource.extend({
     items: z.array(agentConfigurationRevisionListItemSchema),
-    next_after_revision_hash: sha256.nullable(),
-  })
-  .strict();
+  });
 
 /** An item a connected tracker has observed for the served project. */
 const queueObservationFields = {
@@ -427,106 +332,47 @@ export const observedQueueItemSchema = z
   })
   .strict();
 
-const queueProposalSchema = z
-  .object({
-    revision: positiveSafeInteger,
-    priority: z.object({ rank: positiveSafeInteger }).strict(),
-    workflow_lineage_id: sha256,
-    prerequisite_item_ids: z.array(sha256),
-    automation_disposition: z.enum(["HUMAN_REQUIRED", "AUTOMATION_AUTHORIZED"]),
-    policy_revision: positiveSafeInteger.nullable(),
-    source: z.enum(["OPERATOR", "POLICY_DEFAULT"])
-  })
-  .strict();
+const queuePriorityRankSchema = QueuePriorityRankResource.extend({
+  rank: positiveSafeInteger,
+});
 
-const queueAdmissionSchema = z
-  .object({
-    proposal_revision: positiveSafeInteger.nullable(),
-    authority: z.enum(["OPERATOR", "AUTOMATION_RULE"]).nullable(),
-    rationale: z.string().min(1)
-  })
-  .strict();
+const queueProposalSchema = QueueProposalResource.extend({
+  revision: positiveSafeInteger,
+  policy_revision: positiveSafeInteger.nullable().optional(),
+  priority: queuePriorityRankSchema,
+});
 
-const queueLaunchBindingSchema = z
-  .object({
-    proposal_revision: positiveSafeInteger,
-    run_id: z.string().min(1),
-    workflow_revision_hash: sha256
-  })
-  .strict();
+const queueAdmissionSchema = QueueAdmissionResource.extend({
+  proposal_revision: positiveSafeInteger.nullable().optional(),
+});
 
-export const queueItemSchema = z
-  .object({
-    project_id: z.string().min(1),
-    tracker_item_reference: z.string().min(1),
-    item_id: sha256,
-    state: z.enum(["OBSERVED", "PROPOSED", "ADMITTED"]),
-    revision: nonnegativeSafeInteger,
-    proposal: queueProposalSchema.nullable(),
-    admission: queueAdmissionSchema.nullable(),
-    launch_binding: queueLaunchBindingSchema.nullable(),
-    blockers: z.array(
-      z.enum([
-        "PRIORITY_UNSET",
-        "HUMAN_REQUIRED",
-        "PREREQUISITE_OPEN",
-        "PREREQUISITE_FAILED",
-        "CAP_REACHED",
-        "BINDING_UNRESOLVED",
-        "REQUIRED_ORDER_UNAVAILABLE",
-        "START_REFUSED",
-        "LEGACY_REVIEW_REQUIRED"
-      ])
-    ),
-    tracker_enrichment: z.literal("ENRICHMENT_UNAVAILABLE"),
-    ...queueObservationFields
-  })
-  .strict();
+const queueLaunchBindingSchema = QueueLaunchBindingResource.extend({
+  proposal_revision: positiveSafeInteger,
+});
 
-const queueItemPageSchema = z
-  .object({ items: z.array(queueItemSchema), next_after: sha256.nullable() })
-  .strict();
+export const queueItemSchema = QueueItemResource.extend({
+  revision: nonnegativeSafeInteger,
+  proposal: queueProposalSchema.nullable(),
+  admission: queueAdmissionSchema.nullable(),
+  launch_binding: queueLaunchBindingSchema.nullable(),
+});
 
-/**
- * One published agent definition as its author named it, and no more.
- *
- * An imported agent is provider-bound and passed through whole, so the rest of
- * the file belongs to that provider's runtime rather than to a catalog row.
- */
-export const agentDefinitionRevisionListItemSchema = z
-  .object({
-    agent_definition_revision_hash: sha256,
-    name: z.string().min(1),
-    description: z.string().min(1),
-  })
-  .strict();
+const queueItemPageSchema = QueueItemPageResource.extend({
+  items: z.array(queueItemSchema),
+});
 
-export const agentDefinitionRevisionPageSchema = z
-  .object({
+export const agentDefinitionRevisionListItemSchema =
+  AgentDefinitionRevisionListItemResource;
+
+export const agentDefinitionRevisionPageSchema =
+  AgentDefinitionRevisionPageResource.extend({
     items: z.array(agentDefinitionRevisionListItemSchema),
-    next_after_revision_hash: sha256.nullable(),
-  })
-  .strict();
+  });
 
-/**
- * One published agent definition read back by its hash, which is where the
- * cockpit learns the name its frontmatter authored: publication answers the
- * hash alone, and the catalog lineage is founded under the authored name.
- */
-export const agentDefinitionRevisionDetailSchema = z
-  .object({
-    agent_definition_revision_hash: sha256,
-    name: z.string().min(1),
-    description: z.string().min(1),
-    model: z.string().min(1).nullable().optional(),
-    system_prompt: z.string().min(1).max(16_384),
-    tools: z.array(z.string().min(1).max(16_384)).max(128).nullable().optional(),
-  })
-  .strict();
+export const agentDefinitionRevisionDetailSchema =
+  AgentDefinitionRevisionDetailResource;
 
-const agentDefinitionRevisionSchema = z
-  .object({ agent_definition_revision_hash: sha256 })
-  .strict();
+const agentDefinitionRevisionSchema = AgentDefinitionRevisionResource;
 
 /**
  * `contracts/artifacts.py::MAXIMUM_ARTIFACT_BYTES`, mirrored here as a plain
@@ -541,16 +387,9 @@ export const MAXIMUM_ARTIFACT_BYTES = 1_048_576;
 const artifactResourceSchema = z.object({ artifact_hash: sha256 }).strict();
 type ArtifactResource = z.infer<typeof artifactResourceSchema>;
 
-/**
- * The listing of published auth profiles, in the item form publication already
- * answers with. Held to the frozen document by servedVocabulary.
- */
-export const authProfileRevisionPageSchema = z
-  .object({
-    items: z.array(authProfileRevisionSchema),
-    next_after_revision_hash: sha256.nullable(),
-  })
-  .strict();
+export const authProfileRevisionPageSchema = AuthProfileRevisionPageResource.extend({
+  items: z.array(authProfileRevisionSchema),
+});
 
 const agentBindingV2Schema = z
   .object({
@@ -2290,7 +2129,7 @@ type CatalogAdmission = CatalogAdmissionResource;
 export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
 export type CatalogIntakeKind = z.infer<typeof catalogIntakeKindSchema>;
 type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
-type ProjectList = z.infer<typeof projectListSchema>;
+type ProjectList = ProjectListResource;
 type ProjectSourceConnectionRevision = z.infer<
   typeof projectSourceConnectionRevisionSchema
 >;
@@ -2554,7 +2393,7 @@ export function createCockpitApi(
         "/atelier/api/v1/projects",
         {},
         [200],
-        projectListSchema,
+        ProjectListResource,
       ),
     getProjectSourceConnection: async (publicProjectReference) => {
       const connection = await requestJson(
@@ -2738,7 +2577,7 @@ export function createCockpitApi(
       overrides,
     ) => {
       const exactProjectReference =
-        publicProjectReference.parse(projectReference);
+        PublicProjectReference.parse(projectReference);
       const exactWorkflowRevisionHash = sha256.parse(workflowRevisionHash);
       const resolution = await requestJson(
         fetcher,

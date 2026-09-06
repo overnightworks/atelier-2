@@ -114,6 +114,8 @@ ARTIFACT_PATH_FIELD = "path"
 ARTIFACT_HASH_FIELD = "artifact_hash"
 """The address field, spelled exactly as the published artifact resource does."""
 
+_JSON_SCHEMA_DEFS_KEY = "$defs"
+
 
 McpHttpDoor = tuple[str, str]
 
@@ -300,11 +302,8 @@ def _published_artifact_hash_schema() -> dict[str, Any]:
 def _start_run_input_schema() -> dict[str, Any]:
     """Name plus the MCP subset of the start body POST /runs already owns."""
 
-    published_orders = _START_RUN_ORDER.json_schema()
-    order_defs = published_orders.get("$defs", {})
-    order_schema = {
-        key: value for key, value in published_orders.items() if key != "$defs"
-    }
+    order_schema = dict(_START_RUN_ORDER.json_schema())
+    order_defs = order_schema.pop(_JSON_SCHEMA_DEFS_KEY, {})
     schema = _object_schema(
         {
             "name": {
@@ -353,7 +352,7 @@ def _start_run_input_schema() -> dict[str, Any]:
         required=("name", "run_id"),
     )
     if order_defs:
-        schema["$defs"] = order_defs
+        schema[_JSON_SCHEMA_DEFS_KEY] = order_defs
     return schema
 
 
@@ -369,8 +368,8 @@ def _answer_wait_input_schema() -> dict[str, Any]:
     }
     required = ("public_run_reference", *answered.get("required", ()))
     schema = _object_schema(properties, required=tuple(required))
-    if "$defs" in answered:
-        schema["$defs"] = answered["$defs"]
+    if _JSON_SCHEMA_DEFS_KEY in answered:
+        schema[_JSON_SCHEMA_DEFS_KEY] = answered[_JSON_SCHEMA_DEFS_KEY]
     return schema
 
 

@@ -315,9 +315,12 @@ between sweeps. Nothing renders that answer to the operator yet. An admitted
 item naming a project other than the one this process serves -- reachable
 through `PUT /queue-proposals`, or left behind by a changed served project --
 is never this instance's item either: the sweep leaves it untouched and moves
-on, rather than treating it as corrupt state. The sweep still fires only at
-process launch (`DbosRuntime.launch()`); a live trigger beyond that boot-time
-sweep, and rendering a refused start at its item, are the next #79 slice.
+on, rather than treating it as corrupt state. The sweep fires at process
+launch (`DbosRuntime.launch()`), then on the runtime's own tick every
+`QUEUE_SWEEP_INTERVAL_SECONDS`, and again the moment an admission commits. An
+item whose run ended stays bound to that run: releasing that binding after a
+failed or cancelled run, and rendering a refused start at its item, are open
+#79 work.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

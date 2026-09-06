@@ -133,6 +133,7 @@ def scratch_project(
     (project / SOURCE_PACKAGE).mkdir(parents=True)
     for module, source in modules.items():
         (project / SOURCE_PACKAGE / f"{module}.py").write_text(source, encoding="utf-8")
+    (project / DUPLICATE_BASELINE.parent).mkdir(parents=True)
     (project / DUPLICATE_BASELINE).write_text(baseline, encoding="utf-8")
     return project
 

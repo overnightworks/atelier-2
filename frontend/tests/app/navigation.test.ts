@@ -49,7 +49,7 @@ describe("cockpit navigation", () => {
 
     expect((await screen.findByRole("heading", { name: "Workbench" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
-    expect(window.history.length).toBe(historyLength);
+    expect(window.history).toHaveLength(historyLength);
   });
 
   it("returns to the previously shown page when the operator presses Back", async () => {

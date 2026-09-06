@@ -166,6 +166,7 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
 
+_APPLICATION_JSON = "application/json"
 router = APIRouter()
 
 
@@ -178,7 +179,7 @@ router = APIRouter()
 async def publish_schema_revision_route(
     request: Request, context: ApiContext = api_context_dependency
 ) -> JSONResponse:
-    require_media_type(request, "application/json")
+    require_media_type(request, _APPLICATION_JSON)
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
@@ -219,7 +220,7 @@ def _revision_hash_or_refuse[T](value: str, parse: Callable[[str], T]) -> T:
     responses={
         HTTPStatus.OK: {
             "content": {
-                "application/json": {"schema": {"type": "string", "format": "binary"}}
+                _APPLICATION_JSON: {"schema": {"type": "string", "format": "binary"}}
             }
         }
     },
@@ -240,7 +241,7 @@ async def get_schema_revision_route(
     )
     match result:
         case SchemaRevisionRead(revision):
-            return Response(revision.document, media_type="application/json")
+            return Response(revision.document, media_type=_APPLICATION_JSON)
         case SchemaRevisionNotFound():
             raise ApiProblem("schema-revision-not-found")
         case _ as unreachable:
@@ -256,7 +257,7 @@ async def get_schema_revision_route(
 async def publish_budget_revision_route(
     request: Request, context: ApiContext = api_context_dependency
 ) -> JSONResponse:
-    require_media_type(request, "application/json")
+    require_media_type(request, _APPLICATION_JSON)
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
@@ -292,7 +293,7 @@ async def publish_budget_revision_route(
 async def publish_tool_grant_revision_route(
     request: Request, context: ApiContext = api_context_dependency
 ) -> JSONResponse:
-    require_media_type(request, "application/json")
+    require_media_type(request, _APPLICATION_JSON)
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
@@ -332,7 +333,7 @@ async def publish_tool_grant_revision_route(
 async def publish_adapter_operation_revision_route(
     request: Request, context: ApiContext = api_context_dependency
 ) -> JSONResponse:
-    require_media_type(request, "application/json")
+    require_media_type(request, _APPLICATION_JSON)
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
@@ -563,10 +564,7 @@ def _recognition_resource(result: ClassifyDefinitionDocumentResult) -> BaseModel
                 ),
             )
         case DocumentAmbiguous(kinds):
-            raise ApiProblem(
-                "library-document-ambiguous",
-                _ambiguous_detail(kinds),
-            )
+            raise ApiProblem("library-document-ambiguous", _ambiguous_detail(kinds))
         case _ as unreachable:
             assert_never(unreachable)
 

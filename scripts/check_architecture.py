@@ -16,7 +16,7 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_COUNT = 257
+EXPECTED_SOURCE_MODULE_COUNT = 258
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -623,7 +623,7 @@ def route_port_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
-DUPLICATE_BASELINE_FILE = "duplicate_baseline.toml"
+DUPLICATE_BASELINE_FILE = "scripts/baselines/duplicate_baseline.toml"
 DUPLICATE_BASELINE_TABLE = "pair"
 # Five consecutive tokens: long enough that a shared idiom does not match on its
 # own, short enough that one edited statement still leaves the rest overlapping.

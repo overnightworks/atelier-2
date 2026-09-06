@@ -384,12 +384,12 @@ def test_an_operator_home_path_in_the_composed_reason_is_scrubbed() -> None:
             ProviderTerminalRefusal(
                 "api_error",
                 "",
-                "reading /home/felix-hummert/git/atelier-2/AGENTS.md failed",
+                "reading /home/operator/git/atelier-2/AGENTS.md failed",
             )
         ]
     )
 
     reason = process_exit_verdict(exit_signature, transcript)
 
-    assert "felix-hummert" not in reason
+    assert "operator" not in reason
     assert reason == f"provider-reported: api_error: reading {REDACTION_MARKER} failed"

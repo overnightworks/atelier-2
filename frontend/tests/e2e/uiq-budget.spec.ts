@@ -486,7 +486,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     for (const glance of sendGlances) {
       await expect(glance, `send-a-message glance at ${viewport.width}`).toBeInViewport();
     }
-    expect(sendGlances.length).toBe(SEND_A_MESSAGE_GLANCES);
+    expect(sendGlances).toHaveLength(SEND_A_MESSAGE_GLANCES);
     const send = clickBudget();
     const spoken = `budget probe ${viewport.width}`;
     await composer.fill(spoken);
@@ -503,7 +503,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     for (const glance of runningGlances) {
       await expect(glance, `find-the-running-run glance at ${viewport.width}`).toBeInViewport();
     }
-    expect(runningGlances.length).toBe(FIND_THE_RUNNING_RUN_GLANCES);
+    expect(runningGlances).toHaveLength(FIND_THE_RUNNING_RUN_GLANCES);
     expect(findRunning.count, `find-the-running-run clicks at ${viewport.width}`).toBeLessThanOrEqual(
       FIND_THE_RUNNING_RUN_CLICKS
     );
@@ -516,7 +516,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     for (const glance of decisionGlances) {
       await expect(glance, `answer-a-decision glance at ${viewport.width}`).toBeInViewport();
     }
-    expect(decisionGlances.length).toBe(ANSWER_A_DECISION_GLANCES);
+    expect(decisionGlances).toHaveLength(ANSWER_A_DECISION_GLANCES);
     const answer = clickBudget();
     await answer.click(yes);
     await expect(yes).toHaveCount(0, { timeout: 20_000 });
@@ -626,7 +626,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     for (const glance of findGlances) {
       await expect(glance, `find-by-search glance at ${viewport.width}`).toBeInViewport();
     }
-    expect(findGlances.length).toBe(FIND_BY_SEARCH_GLANCES);
+    expect(findGlances).toHaveLength(FIND_BY_SEARCH_GLANCES);
     expect(findPath.count, `find-by-search clicks at ${viewport.width}`).toBeLessThanOrEqual(
       FIND_BY_SEARCH_CLICKS
     );
@@ -655,7 +655,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     for (const glance of startGlances) {
       await expect(glance, `reach-Start glance at ${viewport.width}`).toBeInViewport();
     }
-    expect(startGlances.length).toBe(REACH_START_GLANCES);
+    expect(startGlances).toHaveLength(REACH_START_GLANCES);
     expect(openPath.count, `reach-Start clicks at ${viewport.width}`).toBeLessThanOrEqual(
       REACH_START_CLICKS
     );
