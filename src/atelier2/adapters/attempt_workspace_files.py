@@ -532,16 +532,16 @@ def _create_staged_sibling(parent_fd: int, final_name: str) -> tuple[str, int]:
     though this call had made it.
     """
 
-    attempts = 0
+    attempt_index = 0
     while True:
-        attempts += 1
+        attempt_index += 1
         staged_name = f"{final_name}.{secrets.token_hex(_STAGED_WRITE_NAME_BYTES)}"
         try:
             descriptor = os.open(
                 staged_name, _STAGED_WRITE_FLAGS, _STAGED_WRITE_MODE, dir_fd=parent_fd
             )
         except FileExistsError:
-            if attempts >= _STAGED_WRITE_NAME_ATTEMPTS:
+            if attempt_index >= _STAGED_WRITE_NAME_ATTEMPTS:
                 raise
             continue
         return staged_name, descriptor
