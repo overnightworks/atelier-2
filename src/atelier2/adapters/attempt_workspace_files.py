@@ -4,32 +4,47 @@
 beside the lease rather than on it: `AgentAttemptWorkspaceLease` is identity,
 never a place that opens its own files. The fence is descriptor-anchored, not
 path-anchored -- `entered_leased_directory` (`adapters.leased_directory`) holds
-the leased directory open by its checked device and inode, and every further
-step walks one relative component at a time with `os.open(..., dir_fd=...,
-O_NOFOLLOW)`, closing the previous step's descriptor once the next one is
-open. Nothing here calls `realpath`: resolving the leased name a second time
-is exactly the race `entered_leased_directory` exists to close, and resolving
-a requested path the same way would reopen it one level down.
+the leased directory open by its checked device and inode, and the requested
+path is resolved relative to that one held descriptor in a single kernel call.
+Nothing here calls `realpath`: resolving the leased name a second time is
+exactly the race `entered_leased_directory` exists to close.
 
-`O_NOFOLLOW` alone stops a symlink, not a mount or a hard link: a bind mount
-grafted under the leased tree would still be reached by a descriptor whose
-`st_dev` differs from the lease's own, and a hard link planted inside the
-workspace names a file outside it without ever being a symlink. Both are
-checked by identity on every opened descriptor, never by path.
+A userspace walk that opens one component at a time (`O_NOFOLLOW`, checking
+`st_dev` after every step) cannot see a same-filesystem bind mount, and leaves
+a window between its own steps for a component to be swapped. `openat2(2)`
+(Linux 5.6+) resolves the whole relative path in the kernel in one syscall,
+fenced by its own `resolve` mask: `RESOLVE_BENEATH` refuses `..`/absolute
+escapes, `RESOLVE_NO_SYMLINKS` refuses every symlink component,
+`RESOLVE_NO_XDEV` refuses crossing any mount -- including a bind mount on the
+same filesystem, which a `st_dev` comparison on our own descriptors could
+never see (`man 2 openat2`) -- and `RESOLVE_NO_MAGICLINKS` refuses procfs-style
+magic links. No wrapper for it exists in the standard library, so it is called
+through `ctypes`, the same way `adapters.runner_child` calls Landlock.
+
+The resolved descriptor is opened `O_PATH`: no device's own open routine runs,
+so a FIFO or a device node can neither block this call nor misbehave before
+its type is known. Its `fstat` decides everything before any data is ever
+touched -- not a regular file, or hard-linked (`st_nlink > 1`, which no
+`RESOLVE_*` flag addresses since a hard link is neither a symlink nor a mount)
+is refused right there. Only a confirmed regular, singly-linked file is
+promoted to a readable descriptor, and only through `/proc/self/fd/<n>` -- the
+documented way to obtain data access to an already-resolved `O_PATH`
+descriptor's own inode without any further name lookup.
 
 A request is refused, never raised past `answer`: every reachable failure --
-an escaping path, a symlink or a mount boundary or a hard link anywhere in it,
-the leased directory having changed identity underneath this call, a file
-that is not a regular file or wider than the injected ceiling, an
-unclassified I/O fault, or a write, which this slice grants nobody -- is a
-typed member of `AttemptWorkspaceFileRefusal`, carried on the outcome
-`describe` returns.
+an escape, a symlink, a mount boundary, a hard link, a non-regular file, a
+lease or a resolved file changing identity underneath this call, a file wider
+than the injected ceiling, an unclassified I/O fault, or a write, which this
+slice grants nobody -- is a typed member of `AttemptWorkspaceFileRefusal`,
+carried on the outcome `describe` returns.
 """
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
+import platform
 import stat
 from dataclasses import dataclass
 from enum import StrEnum
@@ -49,17 +64,70 @@ from atelier2.ports.provider_conversations import (
     ProviderFilesystemRequestId,
 )
 
-_INTERMEDIATE_DIRECTORY_FLAGS = (
-    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-)
-# `O_NONBLOCK` on the final entry is what keeps a FIFO from hanging this call
-# before its type is even known: a regular file ignores the flag, and every
-# other type is refused by the `S_ISREG` check right after the open.
-_FINAL_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 _FORBIDDEN_COMPONENTS = ("", ".", "..")
-# A path this deep is not a workspace file a provider legitimately names; the
-# bound also keeps one request from holding open descriptors without limit.
-_MAXIMUM_WORKSPACE_PATH_COMPONENTS = 64
+
+# `struct open_how` (Linux `<linux/openat2.h>`): the ABI is exactly these three
+# `u64` fields, in this order, with no padding.
+_RESOLVE_NO_XDEV = 0x01
+_RESOLVE_NO_MAGICLINKS = 0x02
+_RESOLVE_NO_SYMLINKS = 0x04
+_RESOLVE_BENEATH = 0x08
+_FENCED_RESOLUTION = (
+    _RESOLVE_BENEATH | _RESOLVE_NO_SYMLINKS | _RESOLVE_NO_XDEV | _RESOLVE_NO_MAGICLINKS
+)
+# The syscall number is an ABI fact of the architecture, not of the kernel
+# version: naming it wrong would invoke a different syscall outright, so an
+# architecture this has not been checked against fails loudly instead of
+# guessing.
+_SYS_OPENAT2_BY_MACHINE = {"x86_64": 437}
+
+
+class _OpenHow(ctypes.Structure):
+    _fields_ = (
+        ("flags", ctypes.c_uint64),
+        ("mode", ctypes.c_uint64),
+        ("resolve", ctypes.c_uint64),
+    )
+
+
+def _openat2_syscall_number() -> int:
+    machine = platform.machine()
+    try:
+        return _SYS_OPENAT2_BY_MACHINE[machine]
+    except KeyError:
+        raise RuntimeError(
+            f"the openat2 syscall number is not known for {machine}; add it "
+            "before serving the workspace file fence on this architecture"
+        ) from None
+
+
+_SYS_OPENAT2 = _openat2_syscall_number()
+_LIBC = ctypes.CDLL(None, use_errno=True)
+
+
+def _openat2_path_descriptor(dir_fd: int, relative_path: str) -> int:
+    """Resolve `relative_path` beneath `dir_fd`, fenced by the kernel itself.
+
+    Opened `O_PATH | O_CLOEXEC`: this is a probe, not a data open, so no
+    device's own open routine ever runs. One call resolves every component,
+    so there is no window between separate opens for a component to be
+    swapped -- the fence `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+    RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS` is enforced by the kernel across
+    the whole path, not reconstructed here one step at a time.
+    """
+
+    how = _OpenHow(os.O_PATH | os.O_CLOEXEC, 0, _FENCED_RESOLUTION)
+    descriptor = _LIBC.syscall(
+        _SYS_OPENAT2,
+        dir_fd,
+        os.fsencode(relative_path),
+        ctypes.byref(how),
+        ctypes.sizeof(how),
+    )
+    if descriptor == -1:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+    return descriptor
 
 
 class AttemptWorkspaceFileRefusal(StrEnum):
@@ -71,9 +139,26 @@ class AttemptWorkspaceFileRefusal(StrEnum):
     FILE_IS_HARD_LINKED = "file-is-hard-linked"
     NOT_A_REGULAR_FILE = "not-a-regular-file"
     LEASED_DIRECTORY_CHANGED = "leased-directory-changed"
+    RESOLVED_FILE_CHANGED_IDENTITY = "resolved-file-changed-identity"
     FILE_EXCEEDS_THE_CEILING = "file-exceeds-the-ceiling"
     WRITE_NOT_GRANTED = "write-not-granted"
     WORKSPACE_IO_FAILED = "workspace-io-failed"
+
+
+# `openat2`'s own errno already names most refusals; `ENOSYS`/`EINVAL` (no
+# kernel support) and anything else unclassified are left to the outer I/O
+# boundary in `describe` rather than guessed at here. `RESOLVE_BENEATH` and
+# `RESOLVE_NO_XDEV` both report `EXDEV`; the pre-open lexical fence already
+# refuses every `..` and every foreign absolute address before this call is
+# ever made, so an `EXDEV` reaching here is a mount crossing. `EACCES` is the
+# errno `RESOLVE_BENEATH` reports for the cases `EXDEV` does not cover.
+_OPENAT2_ERRNO_REFUSALS: dict[int, AttemptWorkspaceFileRefusal] = {
+    errno.ELOOP: AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
+    errno.EXDEV: AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT,
+    errno.EACCES: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+    errno.ENOENT: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+    errno.ENOTDIR: AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,57 +258,49 @@ class AttemptWorkspaceFileAccess:
         root_fd: int,
         parts: tuple[str, ...],
     ) -> AttemptWorkspaceFileOutcome:
-        owned_fd: int | None = None
-        parent_fd = root_fd
         try:
-            last_index = len(parts) - 1
-            for index, part in enumerate(parts):
-                flags = (
-                    _FINAL_FILE_FLAGS
-                    if index == last_index
-                    else _INTERMEDIATE_DIRECTORY_FLAGS
+            path_fd = _openat2_path_descriptor(root_fd, "/".join(parts))
+        except OSError as error:
+            refusal = (
+                _OPENAT2_ERRNO_REFUSALS.get(error.errno)
+                if error.errno is not None
+                else None
+            )
+            if refusal is None:
+                raise
+            return _refused(request_id, refusal)
+        try:
+            probed = os.fstat(path_fd)
+            if not stat.S_ISREG(probed.st_mode):
+                return _refused(
+                    request_id, AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE
                 )
-                try:
-                    opened = os.open(part, flags, dir_fd=parent_fd)
-                except OSError as error:
-                    return _refused(
-                        request_id, _refusal_for_open_failure(part, parent_fd, error)
-                    )
-                if owned_fd is not None:
-                    os.close(owned_fd)
-                owned_fd = opened
-                parent_fd = opened
-                status = os.fstat(owned_fd)
-                if status.st_dev != self._lease.device:
-                    return _refused(
-                        request_id, AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
-                    )
-                if index == last_index:
-                    return self._answered_from(request_id, owned_fd, status)
-            raise AssertionError(
-                "a nonempty path always answers from its own final component"
+            if probed.st_nlink > 1:
+                return _refused(
+                    request_id, AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED
+                )
+            data_fd = os.open(f"/proc/self/fd/{path_fd}", os.O_RDONLY | os.O_CLOEXEC)
+        finally:
+            os.close(path_fd)
+        try:
+            resolved = os.fstat(data_fd)
+            if (resolved.st_dev, resolved.st_ino) != (probed.st_dev, probed.st_ino):
+                return _refused(
+                    request_id,
+                    AttemptWorkspaceFileRefusal.RESOLVED_FILE_CHANGED_IDENTITY,
+                )
+            content = _bounded_read(data_fd, self._maximum_read_bytes)
+            if content is None:
+                return _refused(
+                    request_id, AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+                )
+            return AttemptWorkspaceFileOutcome(
+                ProviderFilesystemReply(
+                    request_id, ProviderFilesystemAnswer.ANSWERED, content
+                )
             )
         finally:
-            if owned_fd is not None:
-                os.close(owned_fd)
-
-    def _answered_from(
-        self, request_id: ProviderFilesystemRequestId, fd: int, status: os.stat_result
-    ) -> AttemptWorkspaceFileOutcome:
-        if not stat.S_ISREG(status.st_mode):
-            return _refused(request_id, AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE)
-        if status.st_nlink > 1:
-            return _refused(request_id, AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED)
-        content = _bounded_read(fd, self._maximum_read_bytes)
-        if content is None:
-            return _refused(
-                request_id, AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
-            )
-        return AttemptWorkspaceFileOutcome(
-            ProviderFilesystemReply(
-                request_id, ProviderFilesystemAnswer.ANSWERED, content
-            )
-        )
+            os.close(data_fd)
 
 
 def _bounded_read(descriptor: int, ceiling: int) -> bytes | None:
@@ -248,29 +325,6 @@ def _bounded_read(descriptor: int, ceiling: int) -> bytes | None:
             return None
 
 
-def _refusal_for_open_failure(
-    part: str, parent_fd: int, error: OSError
-) -> AttemptWorkspaceFileRefusal:
-    """Why one component's `openat` failed, told apart by asking what it is.
-
-    `O_NOFOLLOW` reports a symlink as `ELOOP` on the final component but as
-    `ENOTDIR` on an intermediate one -- the same errno a plain file used where
-    a directory was expected would raise. So the failing name is read back
-    with `lstat`, which never follows it either, rather than trusted to guess
-    from errno alone.
-    """
-
-    if error.errno == errno.ELOOP:
-        return AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
-    try:
-        component = os.lstat(part, dir_fd=parent_fd)
-    except OSError:
-        return AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
-    if stat.S_ISLNK(component.st_mode):
-        return AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
-    return AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
-
-
 def _errno_name(error: OSError) -> str:
     if error.errno is None:
         return type(error).__name__
@@ -292,7 +346,8 @@ def _leased_relative_parts(
     parse time and regardless of how the `Path` was built -- there is no
     request this port can carry from which one could survive to be read back
     here. `..` and an embedded NUL are not collapsed, so they are refused
-    explicitly.
+    explicitly; `openat2`'s own `RESOLVE_BENEATH` refuses a `..` escape again
+    beneath this one, as defense in depth rather than as the primary fence.
     """
 
     parts = requested.parts
@@ -301,11 +356,7 @@ def _leased_relative_parts(
         if parts[: len(anchor)] != anchor:
             return None
         parts = parts[len(anchor) :]
-    if (
-        not parts
-        or len(parts) > _MAXIMUM_WORKSPACE_PATH_COMPONENTS
-        or any(_is_forbidden_component(part) for part in parts)
-    ):
+    if not parts or any(_is_forbidden_component(part) for part in parts):
         return None
     return parts
 

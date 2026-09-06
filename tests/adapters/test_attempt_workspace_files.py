@@ -1,14 +1,13 @@
 """What `AttemptWorkspaceFileAccess` grants inside one attempt's real lease,
 and what it refuses before ever reaching outside it.
 
-Every scenario runs against a real temporary directory tree: the fence is a
-descriptor discipline over actual `openat` calls, so a filesystem fake could
-only assert that the adapter believes its own abstraction, never that a
-symlink, a mount boundary, a hard link, a swapped directory, or an escaping
-path is truly refused. A few scenarios this host cannot construct for real
-without privileges -- a second mounted filesystem -- fake the kernel's own
-report for exactly the one descriptor the scenario is about, real open calls
-and real bytes everywhere else.
+Every scenario runs against a real temporary directory tree and the real
+`openat2` syscall: the fence is the kernel's own path resolution, so a
+filesystem fake could only assert that the adapter believes its own
+abstraction, never that a symlink, a mount boundary, a hard link, a swapped
+directory, or an escaping path is truly refused. One scenario this host
+cannot construct without privileges -- a real mount -- is noted where it
+appears rather than faked as a real kernel behaviour.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -180,6 +178,11 @@ def _a_hard_link_reaching_outside_the_lease(tmp_path: Path, workspace: Path) -> 
     return Path("linked.txt")
 
 
+def _an_unreadable_intermediate_directory(_tmp_path: Path, workspace: Path) -> Path:
+    (workspace / "locked").mkdir(mode=0o000)
+    return Path("locked/never.txt")
+
+
 _REFUSAL_SCENARIOS = (
     _RefusalScenario(
         "parent directory escape",
@@ -204,6 +207,11 @@ _REFUSAL_SCENARIOS = (
     _RefusalScenario(
         "missing file",
         _a_missing_file,
+        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+    ),
+    _RefusalScenario(
+        "an unreadable intermediate directory",
+        _an_unreadable_intermediate_directory,
         AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
     ),
     _RefusalScenario(
@@ -241,12 +249,35 @@ def test_a_request_unreachable_inside_the_lease_is_refused(
     workspace.mkdir()
     requested = scenario.build(tmp_path, workspace)
 
-    outcome = _access(workspace).describe(_read(requested))
+    try:
+        outcome = _access(workspace).describe(_read(requested))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is scenario.refusal
+        assert outcome.reply == ProviderFilesystemReply(
+            REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+        )
+        assert outcome.refusal is scenario.refusal
+    finally:
+        if scenario.name == "an unreadable intermediate directory":
+            (workspace / "locked").chmod(0o755)
+
+
+def test_a_fifo_probe_never_performs_a_data_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FIFO with no writer would block a data-open forever; the `O_PATH`
+    probe never performs one, so the refusal is prompt and `os.open` (the
+    only call this adapter ever uses for a data descriptor) is never
+    reached at all."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    os.mkfifo(workspace / "pipe")
+    opened_names = _spying_open(monkeypatch)
+
+    outcome = _access(workspace).describe(_read(Path("pipe")))
+
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE
+    assert opened_names == []
 
 
 def test_a_lease_whose_directory_changed_identity_is_refused(tmp_path: Path) -> None:
@@ -275,14 +306,16 @@ def test_a_lease_whose_directory_changed_identity_is_refused(tmp_path: Path) -> 
     assert outcome.refusal is AttemptWorkspaceFileRefusal.LEASED_DIRECTORY_CHANGED
 
 
-def test_a_path_component_swapped_for_a_symlink_between_walk_steps(
+def test_a_component_swapped_immediately_before_the_kernel_resolves_it_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The swap happens after the adapter has already opened `sub` and before
-    it opens `file.txt` relative to it -- the real race window a
-    descriptor-by-descriptor walk is exposed to, not a directory replaced
-    before the call even starts. Once `sub` is open, its own descriptor is
-    unaffected by the swap; only the still-unopened next name is."""
+    """A single `openat2` call resolves the whole path atomically inside the
+    kernel, so there is no longer a userspace-visible window between steps
+    for a test to land a swap "during" the resolution -- that race is exactly
+    what moving the walk into one kernel call closes. The strongest race this
+    suite can still construct is placing the swap as late as userspace can
+    arrange: immediately before control passes to the real syscall. Even
+    there, the kernel's own `RESOLVE_NO_SYMLINKS` still catches it."""
 
     workspace = tmp_path / "workspace"
     (workspace / "sub").mkdir(parents=True)
@@ -293,22 +326,16 @@ def test_a_path_component_swapped_for_a_symlink_between_walk_steps(
     sentinel.mkdir()
     (sentinel / "file.txt").write_bytes(b"sentinel secret")
 
-    real_open = os.open
+    real_openat2 = attempt_workspace_files._openat2_path_descriptor
 
-    def swap_after_sub_opens(
-        path: str | os.PathLike[str],
-        flags: int,
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> int:
-        opened = real_open(path, flags, mode, dir_fd=dir_fd)
-        if path == "sub":
-            (workspace / "sub" / "file.txt").unlink()
-            (workspace / "sub" / "file.txt").symlink_to(sentinel / "file.txt")
-        return opened
+    def swap_then_resolve(dir_fd: int, relative_path: str) -> int:
+        (workspace / "sub" / "file.txt").unlink()
+        (workspace / "sub" / "file.txt").symlink_to(sentinel / "file.txt")
+        return real_openat2(dir_fd, relative_path)
 
-    monkeypatch.setattr(attempt_workspace_files.os, "open", swap_after_sub_opens)
+    monkeypatch.setattr(
+        attempt_workspace_files, "_openat2_path_descriptor", swap_then_resolve
+    )
 
     outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
         _read(Path("sub/file.txt"))
@@ -321,23 +348,72 @@ def test_a_path_component_swapped_for_a_symlink_between_walk_steps(
     assert (sentinel / "file.txt").read_bytes() == b"sentinel secret"
 
 
-def test_an_intermediate_directory_on_a_different_device_is_refused(
+def test_a_mount_crossing_reported_by_the_kernel_is_mapped_to_its_own_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`O_NOFOLLOW` does not stop a bind mount grafted under the leased tree:
-    it is not a symlink, so the fence checks device identity on every opened
-    descriptor instead. Building a real second filesystem needs privileges
-    this suite does not have, so the kernel's own report is faked for exactly
-    the one descriptor this scenario is about; every other call is real."""
+    """`openat2`'s `RESOLVE_NO_XDEV` is documented to refuse crossing any
+    mount point during resolution, including a same-filesystem bind mount
+    (`man 2 openat2`: "detection of mount point crossings, including bind
+    mounts... during path resolution"), which a `st_dev` check on our own
+    descriptors could never see. Building a real mount needs privileges this
+    suite does not have -- a named gap, carried in the PR body -- so only the
+    errno-to-refusal mapping is under test here: the kernel is trusted for
+    the enforcement itself, cited above rather than exercised."""
 
     workspace = tmp_path / "workspace"
-    (workspace / "sub").mkdir(parents=True)
-    (workspace / "sub" / "file.txt").write_bytes(b"content")
-    lease = _lease(workspace)
+    workspace.mkdir()
 
+    def raising_openat2(dir_fd: int, relative_path: str) -> int:
+        raise OSError(errno.EXDEV, "simulated mount crossing")
+
+    monkeypatch.setattr(
+        attempt_workspace_files, "_openat2_path_descriptor", raising_openat2
+    )
+
+    outcome = _access(workspace).describe(_read(Path("sub/file.txt")))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+
+
+def test_a_kernel_without_openat2_support_is_refused_as_workspace_io_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def raising_openat2(dir_fd: int, relative_path: str) -> int:
+        raise OSError(errno.ENOSYS, "simulated missing openat2 support")
+
+    monkeypatch.setattr(
+        attempt_workspace_files, "_openat2_path_descriptor", raising_openat2
+    )
+
+    outcome = _access(workspace).describe(_read(Path("notes.md")))
+
+    assert outcome.reply == ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
+    )
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
+    assert outcome.detail == "ENOSYS"
+
+
+def test_a_resolved_file_that_changed_identity_before_the_data_reopen_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Targets the exact `/proc/self/fd/<n>` reopen descriptor by number,
+    rather than by call order: an unrelated `fstat` call elsewhere in the
+    process (Python's own buffered I/O calls it too) must not be able to
+    perturb which call this test spoofs."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"hello")
     real_open = os.open
     real_fstat = os.fstat
-    foreign_descriptors: set[int] = set()
+    data_descriptors: list[int] = []
 
     def marking_open(
         path: str | os.PathLike[str],
@@ -347,31 +423,28 @@ def test_an_intermediate_directory_on_a_different_device_is_refused(
         dir_fd: int | None = None,
     ) -> int:
         opened = real_open(path, flags, mode, dir_fd=dir_fd)
-        if path == "sub":
-            foreign_descriptors.add(opened)
+        if isinstance(path, str) and path.startswith("/proc/self/fd/"):
+            data_descriptors.append(opened)
         return opened
 
-    def spoofing_fstat(descriptor: int) -> os.stat_result | SimpleNamespace:
-        status = real_fstat(descriptor)
-        if descriptor in foreign_descriptors:
-            return SimpleNamespace(
-                st_dev=status.st_dev + 1,
-                st_mode=status.st_mode,
-                st_nlink=status.st_nlink,
-            )
-        return status
+    def spoofing_fstat(descriptor: int) -> os.stat_result:
+        if descriptor in data_descriptors:
+            elsewhere = real_open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                return real_fstat(elsewhere)
+            finally:
+                os.close(elsewhere)
+        return real_fstat(descriptor)
 
     monkeypatch.setattr(attempt_workspace_files.os, "open", marking_open)
     monkeypatch.setattr(attempt_workspace_files.os, "fstat", spoofing_fstat)
 
-    outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
-        _read(Path("sub/file.txt"))
-    )
+    outcome = _access(workspace).describe(_read(Path("notes.md")))
 
     assert outcome.reply == ProviderFilesystemReply(
         REQUEST_ID, ProviderFilesystemAnswer.REFUSED
     )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+    assert outcome.refusal is AttemptWorkspaceFileRefusal.RESOLVED_FILE_CHANGED_IDENTITY
 
 
 def test_a_file_wider_than_the_injected_ceiling_is_refused(tmp_path: Path) -> None:
@@ -438,31 +511,14 @@ def test_a_write_request_is_refused_as_not_yet_granted(tmp_path: Path) -> None:
     assert list(workspace.iterdir()) == []
 
 
-def test_an_unexpected_os_error_is_refused_as_workspace_io_failed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "notes.md").write_bytes(b"hello")
-
-    def failing_fstat(descriptor: int) -> os.stat_result:
-        raise OSError(errno.EIO, "simulated I/O fault")
-
-    monkeypatch.setattr(attempt_workspace_files.os, "fstat", failing_fstat)
-
-    outcome = _access(workspace).describe(_read(Path("notes.md")))
-
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
-    assert outcome.detail == "EIO"
-
-
 def _spying_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[str]:
-    """Record every real name `os.open` is asked to open, still opening it."""
+    """Record every real name `os.open` is asked to open, still opening it.
+
+    `openat2` runs through the raw `ctypes` syscall boundary, never through
+    `os.open`, so any name recorded here is a data descriptor this adapter
+    actually opened after a successful, already-fenced resolution."""
 
     opened_names: list[str] = []
     real_open = os.open
@@ -482,7 +538,7 @@ def _spying_open(
     return opened_names
 
 
-def test_a_pure_escape_opens_nothing_at_all(
+def test_a_pure_escape_calls_openat2_never_at_all(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -490,41 +546,32 @@ def test_a_pure_escape_opens_nothing_at_all(
     sentinel = tmp_path / "sentinel"
     sentinel.mkdir()
     (sentinel / "secret.txt").write_bytes(b"do not read me")
-    opened_names = _spying_open(monkeypatch)
+    calls: list[tuple[int, str]] = []
+
+    def never_called(dir_fd: int, relative_path: str) -> int:
+        calls.append((dir_fd, relative_path))
+        raise AssertionError("openat2 should never be called for a pure escape")
+
+    monkeypatch.setattr(
+        attempt_workspace_files, "_openat2_path_descriptor", never_called
+    )
 
     outcome = _access(workspace).describe(_read(Path("../sentinel/secret.txt")))
 
     assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
-    assert opened_names == []
+    assert calls == []
 
 
-def test_a_path_deeper_than_the_component_bound_opens_nothing_at_all(
+def test_a_symlink_escape_calls_openat2_exactly_once_against_the_lease_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    opened_names = _spying_open(monkeypatch)
-    too_deep = Path(*(f"level{n}" for n in range(65)))
-
-    outcome = _access(workspace).describe(_read(too_deep))
-
-    assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
-    assert opened_names == []
-
-
-def _identity(path: Path) -> tuple[int, int]:
-    status = os.stat(path, follow_symlinks=False)
-    return status.st_dev, status.st_ino
-
-
-def test_a_symlink_escape_never_reaches_a_descriptor_inside_the_sentinel(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Not merely "never named `secret.txt`": every relative `open` this call
-    makes is checked, by `fstat` identity, never to be resolved against a
-    directory descriptor that is the sentinel itself -- and no call names an
-    absolute path mentioning it either."""
+    """Containment now rests on the kernel's own fenced resolution rather
+    than on bookkeeping in this adapter, so what this adapter's own code must
+    get right is narrower: call `openat2` exactly once, anchored at the held
+    lease descriptor, naming a relative path that never mentions the
+    sentinel and is never absolute. The kernel is what actually refuses the
+    symlink, proven separately by the real, unmocked scenario in the
+    refusal table."""
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -532,32 +579,30 @@ def test_a_symlink_escape_never_reaches_a_descriptor_inside_the_sentinel(
     sentinel.mkdir()
     (sentinel / "secret.txt").write_bytes(b"do not read me")
     (workspace / "escape").symlink_to(sentinel)
-    sentinel_identity = _identity(sentinel)
+    lease_root_identity = (os.stat(workspace).st_dev, os.stat(workspace).st_ino)
+    real_openat2 = attempt_workspace_files._openat2_path_descriptor
+    calls: list[tuple[tuple[int, int], str]] = []
 
-    real_open = os.open
+    def recording_openat2(dir_fd: int, relative_path: str) -> int:
+        # The identity is read here, while `dir_fd` is still open: by the
+        # time `describe` returns, `entered_leased_directory` has already
+        # closed it.
+        status = os.fstat(dir_fd)
+        calls.append(((status.st_dev, status.st_ino), relative_path))
+        return real_openat2(dir_fd, relative_path)
 
-    def guarded_open(
-        path: str | os.PathLike[str],
-        flags: int,
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> int:
-        if dir_fd is not None:
-            parent_status = os.fstat(dir_fd)
-            assert (parent_status.st_dev, parent_status.st_ino) != sentinel_identity, (
-                "opened a name relative to a descriptor inside the sentinel"
-            )
-        if isinstance(path, str):
-            assert "sentinel" not in path
-        return real_open(path, flags, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(attempt_workspace_files.os, "open", guarded_open)
+    monkeypatch.setattr(
+        attempt_workspace_files, "_openat2_path_descriptor", recording_openat2
+    )
 
     outcome = _access(workspace).describe(_read(Path("escape/secret.txt")))
 
-    assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
     assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
+    assert len(calls) == 1
+    called_dir_identity, called_path = calls[0]
+    assert called_dir_identity == lease_root_identity
+    assert not os.path.isabs(called_path)
+    assert "sentinel" not in called_path
 
 
 def test_the_constructor_rejects_a_ceiling_above_the_artifact_bound(
@@ -596,3 +641,48 @@ def test_only_a_workspace_io_failure_may_name_an_errno() -> None:
             AttemptWorkspaceFileRefusal.WRITE_NOT_GRANTED,
             "EIO",
         )
+
+
+def test_openat2_path_descriptor_reads_a_real_file_through_the_raw_syscall(
+    tmp_path: Path,
+) -> None:
+    """A direct proof of the `ctypes` boundary itself, beneath the adapter:
+    the syscall returns a usable, readable descriptor for an ordinary file."""
+
+    (tmp_path / "notes.md").write_bytes(b"hello workspace")
+    root_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        path_fd = attempt_workspace_files._openat2_path_descriptor(root_fd, "notes.md")
+    finally:
+        os.close(root_fd)
+    try:
+        data_fd = os.open(f"/proc/self/fd/{path_fd}", os.O_RDONLY)
+        try:
+            assert os.read(data_fd, 64) == b"hello workspace"
+        finally:
+            os.close(data_fd)
+    finally:
+        os.close(path_fd)
+
+
+def test_openat2_path_descriptor_raises_os_error_with_errno_set(
+    tmp_path: Path,
+) -> None:
+    root_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            attempt_workspace_files._openat2_path_descriptor(root_fd, "does-not-exist")
+        assert raised.value.errno == errno.ENOENT
+    finally:
+        os.close(root_fd)
+
+
+def test_the_openat2_syscall_number_is_known_only_for_checked_architectures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        attempt_workspace_files.platform, "machine", lambda: "unchecked-architecture"
+    )
+
+    with pytest.raises(RuntimeError, match="openat2 syscall number"):
+        attempt_workspace_files._openat2_syscall_number()
