@@ -258,6 +258,40 @@ def seat_settings(
     )
 
 
+def composed_seat(
+    declaration: SeatDeclaration | None,
+    *,
+    project_id: ProjectId | None,
+    project_root: Path | None,
+    database_path: Path,
+    service_url: str,
+) -> ServedSeat | None:
+    """A deployment's seat, composed but not yet opened.
+
+    Its own lifespan opens it, because creating a session and starting a
+    terminal server are the serving process's side effects, not the
+    composition's -- a test that only builds an app starts no processes.
+    """
+
+    if declaration is None:
+        return None
+    if project_id is None or project_root is None:
+        raise ValueError("a terminal seat needs the project it belongs to")
+    return ServedSeat(
+        TerminalSeat(
+            seat_settings(
+                declaration,
+                project_id=project_id,
+                project_root=project_root,
+                database_path=database_path,
+                service_url=service_url,
+            ),
+            LocalSeatMachine(),
+        ),
+        project_id,
+    )
+
+
 def seat_lifespan(
     seat: ServedSeat, inner: Lifespan[FastAPI] | None
 ) -> Lifespan[FastAPI]:

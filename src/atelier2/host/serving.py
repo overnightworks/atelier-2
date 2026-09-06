@@ -136,14 +136,12 @@ from atelier2.host.provider_canary import (
 )
 from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
 from atelier2.host.served_seat import (
-    LocalSeatMachine,
     SeatDeclaration,
     ServedSeat,
+    composed_seat,
     refuse_unservable_seat,
     seat_lifespan,
-    seat_settings,
 )
-from atelier2.host.terminal_seat import TerminalSeat
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentAttemptWorkspaceLease,
@@ -1231,31 +1229,15 @@ def _close_runtime_at_shutdown(
     return lifespan
 
 
-def _declared_seat(settings: HostSettings) -> ServedSeat | None:
-    """This deployment's seat, composed but not yet opened.
+def _seat_of(settings: HostSettings) -> ServedSeat | None:
+    """This deployment's seat, read out of the settings that declare it."""
 
-    Its own lifespan opens it, because creating a session and starting a
-    terminal server are the serving process's side effects, not the
-    composition's -- a test that only builds an app starts no processes.
-    """
-
-    declaration = settings.terminal_seat
-    if declaration is None:
-        return None
-    if settings.project_id is None or settings.project_root is None:
-        raise ValueError("a terminal seat needs the project it belongs to")
-    return ServedSeat(
-        TerminalSeat(
-            seat_settings(
-                declaration,
-                project_id=settings.project_id,
-                project_root=settings.project_root,
-                database_path=settings.database_path,
-                service_url=_own_service_url(settings),
-            ),
-            LocalSeatMachine(),
-        ),
-        settings.project_id,
+    return composed_seat(
+        settings.terminal_seat,
+        project_id=settings.project_id,
+        project_root=settings.project_root,
+        database_path=settings.database_path,
+        service_url=_own_service_url(settings),
     )
 
 
@@ -1311,7 +1293,7 @@ def compose_application(
         # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
-        seat = _declared_seat(settings)
+        seat = _seat_of(settings)
         lifespan = _serve_lifespan(runtime, seat, close_runtime_at_shutdown)
         artifact_store = DbosArtifactStore(runtime.engine)
         app = create_app(
