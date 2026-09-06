@@ -284,6 +284,21 @@ const journalEntryShapeSchema = z.discriminatedUnion("kind", [
 
 export type JournalEntry = z.infer<typeof journalEntryShapeSchema>;
 
+/**
+ * `entries()` throws exactly this for every reason it refuses to read the
+ * stored journal -- corrupt JSON, a value that is not a list, an entry with
+ * unknown or missing fields, byte/hash corruption inside one entry, or a
+ * duplicate mutation identity. A caller narrows on this type instead of
+ * matching a message string to tell "the journal itself is unreadable" apart
+ * from any other failure.
+ */
+export class JournalUnreadableError extends Error {
+  constructor(reason: string, options?: { cause?: unknown }) {
+    super(reason, options);
+    this.name = "JournalUnreadableError";
+  }
+}
+
 interface RequestBoundEvidence {
   status: number;
   target: string;
@@ -371,16 +386,22 @@ export class MutationJournal {
     try {
       value = JSON.parse(stored);
     } catch (error) {
-      throw new Error("mutation journal is not valid JSON", { cause: error });
+      throw new JournalUnreadableError("mutation journal is not valid JSON", { cause: error });
     }
     if (!Array.isArray(value)) {
-      throw new Error("mutation journal must contain a list");
+      throw new JournalUnreadableError("mutation journal must contain a list");
     }
-    const entries = await Promise.all(value.map(requireJournalEntry));
+    let entries: JournalEntry[];
+    try {
+      entries = await Promise.all(value.map(requireJournalEntry));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "mutation journal entry is unreadable";
+      throw new JournalUnreadableError(reason, { cause: error });
+    }
     const identities = new Set<string>();
     for (const entry of entries) {
       if (identities.has(entry.mutation_id)) {
-        throw new Error("mutation journal contains a duplicate mutation identity");
+        throw new JournalUnreadableError("mutation journal contains a duplicate mutation identity");
       }
       identities.add(entry.mutation_id);
     }
