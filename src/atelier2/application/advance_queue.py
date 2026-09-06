@@ -98,6 +98,7 @@ from atelier2.ports.queue_projection import (
     QueueLaunchReleased,
     QueueLaunchReleaseRefused,
     QueueLaunchReserved,
+    QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
     QueueLaunchRuns,
@@ -461,6 +462,7 @@ def _release_ended_launch(
     if ended is None or ended.state not in UNSUCCESSFUL_TERMINAL_RUN_STATES:
         return None
     item_id = binding.item_id
+    # The release holds the cap itself; this answer only spares the transaction.
     if ended.restarts_spent >= MAXIMUM_QUEUE_LAUNCH_RESTARTS:
         return QueueItemRestartsExhausted(
             item_id, binding, ended.state, ended.restarts_spent
@@ -470,6 +472,8 @@ def _release_ended_launch(
             return QueueItemRestarting(
                 item_id, binding, ended.state, ended.restarts_spent + 1
             )
+        case QueueLaunchRestartsExhausted(restarts_spent=spent):
+            return QueueItemRestartsExhausted(item_id, binding, ended.state, spent)
         case QueueLaunchReleaseRefused():
             return None
         case DurableWriteUnavailable():

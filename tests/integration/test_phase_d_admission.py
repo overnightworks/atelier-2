@@ -77,6 +77,7 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
+    MAXIMUM_QUEUE_LAUNCH_RESTARTS,
     ConfirmQueueProposal,
     PlanQueueItem,
     QueueAdmissionAlreadyCurrent,
@@ -138,6 +139,7 @@ from atelier2.ports.queue_projection import (
     QueueLaunchReleased,
     QueueLaunchReleaseRefused,
     QueueLaunchReserved,
+    QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
     QueueProjectPolicyAbsent,
@@ -2747,3 +2749,51 @@ def test_a_store_that_refuses_the_items_advance_releases_nothing(
             )
             == 1
         )
+
+
+def test_the_release_itself_refuses_a_restart_past_the_cap(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """No writer of the port can buy a paid run the cap forbids.
+
+    The sweep's own early answer is not in the loop here: the store is asked to
+    release directly, once per allowed restart and once more, and the last ask
+    leaves every row exactly as the previous release left it.
+    """
+
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    for restart in range(MAXIMUM_QUEUE_LAUNCH_RESTARTS):
+        binding = _bound_and_ended(
+            queue,
+            engine,
+            reference,
+            revision_hash,
+            RunId(f"failed-run-{restart}"),
+            RunState.FAILED,
+            proposal_revision=restart + 1,
+        )
+        released = queue.release_launch(ReleaseQueueLaunch(binding, RunState.FAILED))
+        assert isinstance(released, QueueLaunchReleased)
+    last = _bound_and_ended(
+        queue,
+        engine,
+        reference,
+        revision_hash,
+        RunId("failed-run-last"),
+        RunState.FAILED,
+        proposal_revision=MAXIMUM_QUEUE_LAUNCH_RESTARTS + 1,
+    )
+    before = _stored_bindings(engine)
+
+    refused = queue.release_launch(ReleaseQueueLaunch(last, RunState.FAILED))
+
+    assert refused == QueueLaunchRestartsExhausted(MAXIMUM_QUEUE_LAUNCH_RESTARTS)
+    assert _stored_bindings(engine) == before
+    assert before[-1] == ("failed-run-last", None, MAXIMUM_QUEUE_LAUNCH_RESTARTS)
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    (item,) = page.items
+    assert item.launch_binding == last

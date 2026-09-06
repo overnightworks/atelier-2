@@ -127,9 +127,21 @@ class QueueLaunchReleaseRefused:
     """
 
 
+@dataclass(frozen=True)
+class QueueLaunchRestartsExhausted:
+    """The item has spent every restart it may have, so its binding stays.
+
+    The release holds this line itself rather than trusting each caller to:
+    a restart is paid for, and no writer of this port may buy one past the cap.
+    """
+
+    restarts_spent: int
+
+
 type ReleaseQueueLaunchResult = (
     QueueLaunchReleased
     | QueueLaunchReleaseRefused
+    | QueueLaunchRestartsExhausted
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )

@@ -641,8 +641,11 @@ same proposal one revision on, and the next tick starts the item under a
 differently identified run -- at most twice. Past that the item keeps its last
 ending and is not started again, so a work item that keeps failing stops
 spending money instead of looping. A `COMPLETED` run is the item's answer and
-binds it for good. Nothing here is an operator's handgrip either: to try a
-stopped item again, publish a new proposal for it.
+binds it for good. Nothing here is an operator's handgrip either: an item at
+the cap stays admitted and bound to its last ending, `GET /queue-items` shows
+that binding, and nothing in this build frees it -- an admitted item takes no
+new proposal, so the only way to run that work again today is a fresh tracker
+item.
 
 ### A red project verification's own output (#1137)
 

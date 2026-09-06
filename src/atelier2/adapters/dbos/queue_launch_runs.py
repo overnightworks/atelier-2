@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_LAUNCH_RESTARTS,
     QueueItemId,
     QueueItemState,
     QueueLaunchBinding,
@@ -39,6 +40,7 @@ from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavail
 from atelier2.ports.queue_projection import (
     QueueLaunchReleased,
     QueueLaunchReleaseRefused,
+    QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
     QueueReadUnavailable,
@@ -158,16 +160,22 @@ def release_ended_launch(
 ) -> ReleaseQueueLaunchResult:
     """Give one item back to the sweep, or leave every durable row untouched.
 
-    The binding's own ending is the compare-and-set: only the sweep whose
-    update finds it still held writes one, and a second sweep deciding against
-    the same rows a moment earlier changes nothing. Everything the release
-    writes afterwards -- the proposal carried forward, the prerequisites it
-    named, the item's advance -- stands or falls with that one transaction, so
-    a store that refuses any of it leaves the item exactly as it was.
+    The cap is decided here, under the same write lock, from the endings the
+    item already recorded: a caller that lost count cannot buy a restart the
+    cap forbids. The binding's own ending is the compare-and-set: only the
+    sweep whose update finds it still held writes one, and a second sweep
+    deciding against the same rows a moment earlier changes nothing.
+    Everything the release writes afterwards -- the proposal carried forward,
+    the prerequisites it named, the item's advance -- stands or falls with that
+    one transaction, so a store that refuses any of it leaves the item exactly
+    as it was.
     """
 
     try:
         with canonical_write_transaction(engine) as connection:
+            spent = restarts_spent(connection, command.binding.item_id)
+            if spent >= MAXIMUM_QUEUE_LAUNCH_RESTARTS:
+                return QueueLaunchRestartsExhausted(spent)
             if _ended(connection, command) != 1:
                 return QueueLaunchReleaseRefused()
             _carried_forward(connection, command.binding)
