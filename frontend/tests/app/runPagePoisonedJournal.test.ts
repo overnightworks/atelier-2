@@ -274,25 +274,26 @@ describe("a poisoned mutation journal on the run page (#914, second half of #113
 /**
  * The three write paths that read the journal before they write it --
  * `discard()` on both cards and `deliverWaitAnswer`'s own re-read on retry --
- * are blocked by the identical poisoned journal a read site already refuses
- * (#914's remaining slice). Each proves the one shared reaction
- * (`onJournalPoisoned`) for every one of `entries()`'s own rejection reasons,
- * never an unhandled rejection.
+ * are blocked by the identical poisoned journal a read site already refuses.
+ * Each proves the room's own visible reaction (the one sentence and door) for
+ * every one of `entries()`'s own rejection reasons, never an unhandled
+ * rejection -- the run page, not a bare callback count, is what an operator
+ * actually sees.
  */
 describe("a mutation journal turning poisoned between a write path's own load and its own write", () => {
   it.each(POISONED_JOURNAL_FIXTURES)(
-    "RunCancelCard.discardCancel reports it through onJournalPoisoned, for $name",
+    "RunCancelCard.discardCancel shows the same sentence and door a read site would, for $name",
     async ({ stored }) => {
       const journal = new MutationJournal(sessionStorage);
       const run = startedRun();
       await prepareCancel(journal, run.public_run_reference, "d".repeat(64));
-      let reported = 0;
-      render(RunCancelCard, {
+      render(App, {
         props: {
-          run,
-          cockpitApi: cockpitApiStub(),
-          mutationJournal: journal,
-          onJournalPoisoned: () => { reported += 1; }
+          cockpitApi: cockpitApiStub({
+            getRun: async () => run,
+            getWorkflowRevision: async () => workflowRevision()
+          }),
+          mutationJournal: journal
         }
       });
       const discardButton = await screen.findByRole("button", { name: runPageCopy.cancel.discard });
@@ -300,14 +301,16 @@ describe("a mutation journal turning poisoned between a write path's own load an
       sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
       await fireEvent.click(discardButton);
 
-      await waitFor(() => expect(reported).toBe(1));
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.cancel.discard })).toBeNull();
+
       await flushUnhandledRejectionQueue();
       expect(unhandledRejections).toEqual([]);
     }
   );
 
   it.each(POISONED_JOURNAL_FIXTURES)(
-    "V3RunView.discardWait reports it through onJournalPoisoned, for $name",
+    "V3RunView.discardWait shows the same sentence and door a read site would, for $name",
     async ({ stored }) => {
       const journal = new MutationJournal(sessionStorage);
       const run = waitingInputRun();
@@ -320,13 +323,13 @@ describe("a mutation journal turning poisoned between a write path's own load an
         "an earlier answer",
         false
       );
-      let reported = 0;
-      render(V3RunView, {
+      render(App, {
         props: {
-          run,
-          cockpitApi: cockpitApiStub({ getWorkflowRevision: async () => workflowRevision() }),
-          mutationJournal: journal,
-          onJournalPoisoned: () => { reported += 1; }
+          cockpitApi: cockpitApiStub({
+            getRun: async () => run,
+            getWorkflowRevision: async () => workflowRevision()
+          }),
+          mutationJournal: journal
         }
       });
       const discardButton = await screen.findByRole("button", { name: runPageCopy.discard });
@@ -334,14 +337,16 @@ describe("a mutation journal turning poisoned between a write path's own load an
       sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
       await fireEvent.click(discardButton);
 
-      await waitFor(() => expect(reported).toBe(1));
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.discard })).toBeNull();
+
       await flushUnhandledRejectionQueue();
       expect(unhandledRejections).toEqual([]);
     }
   );
 
   it.each(POISONED_JOURNAL_FIXTURES)(
-    "V3RunView.retryWait reports it through onJournalPoisoned, for $name",
+    "V3RunView.retryWait shows the same sentence and door a read site would, for $name",
     async ({ stored }) => {
       const journal = new MutationJournal(sessionStorage);
       const run = waitingInputRun();
@@ -354,16 +359,14 @@ describe("a mutation journal turning poisoned between a write path's own load an
         "an earlier answer",
         false
       );
-      let reported = 0;
-      render(V3RunView, {
+      render(App, {
         props: {
-          run,
           cockpitApi: cockpitApiStub({
+            getRun: async () => run,
             getWorkflowRevision: async () => workflowRevision(),
             answer: async () => ({ status: 200, value: waitingInputRun() })
           }),
-          mutationJournal: journal,
-          onJournalPoisoned: () => { reported += 1; }
+          mutationJournal: journal
         }
       });
       const retryButton = await screen.findByRole("button", { name: runPageCopy.retry });
@@ -371,33 +374,34 @@ describe("a mutation journal turning poisoned between a write path's own load an
       sessionStorage.setItem(MUTATION_JOURNAL_STORAGE_KEY, stored());
       await fireEvent.click(retryButton);
 
-      await waitFor(() => expect(reported).toBe(1));
+      expect(await screen.findByText(journalPoisonedCopy.sentence)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
+
       await flushUnhandledRejectionQueue();
       expect(unhandledRejections).toEqual([]);
     }
   );
 
-  it("does not swallow a failure that is not the journal itself: discardCancel rethrows it rather than reporting onJournalPoisoned", async () => {
+  it("does not swallow a failure that is not the journal itself: discardCancel rethrows it and shows no poisoned-journal door", async () => {
     const journal = new MutationJournal(sessionStorage);
     const run = startedRun();
     await prepareCancel(journal, run.public_run_reference, "d".repeat(64));
     const notAJournalFailure = new Error("the browser's storage quota is exceeded");
     vi.spyOn(journal, "discard").mockRejectedValueOnce(notAJournalFailure);
-    let reported = 0;
-    render(RunCancelCard, {
+    render(App, {
       props: {
-        run,
-        cockpitApi: cockpitApiStub(),
-        mutationJournal: journal,
-        onJournalPoisoned: () => { reported += 1; }
+        cockpitApi: cockpitApiStub({
+          getRun: async () => run,
+          getWorkflowRevision: async () => workflowRevision()
+        }),
+        mutationJournal: journal
       }
     });
     const discardButton = await screen.findByRole("button", { name: runPageCopy.cancel.discard });
 
     await fireEvent.click(discardButton);
 
-    await flushUnhandledRejectionQueue();
-    expect(unhandledRejections).toEqual([notAJournalFailure]);
-    expect(reported).toBe(0);
+    await waitFor(() => expect(unhandledRejections).toEqual([notAJournalFailure]));
+    expect(screen.queryByText(journalPoisonedCopy.sentence)).toBeNull();
   });
 });
