@@ -96,12 +96,16 @@
     | { kind: "unreachable" };
 
   /**
-   * The width a terminal is still readable at: about eighty columns of the
-   * cockpit's own monospace face plus the room's gutters. Below it the seat
-   * shows its refusal instead of a terminal nobody can work in, and never a
-   * second, narrower picture of one (#1099, operator ruling 05.09.).
+   * A phone is a place the operator works from, so the terminal opens there
+   * too (operator ruling 06.09.: "Terminal geht nicht auf dem Phone? Das muss
+   * gehen"). What changes at that width is the type size, not whether there
+   * is a terminal: ttyd's own client reads its options from the address's
+   * query (`parseOptsFromUrlQuery`, measured against ttyd 1.7.7), and twelve
+   * pixels give a 390px screen about fifty columns where the default fifteen
+   * give forty. tmux reflows to whatever columns that leaves.
    */
-  const READABLE_TERMINAL_WIDTH = "(min-width: 40rem)";
+  const PHONE_WIDTH = "(max-width: 48rem)";
+  const PHONE_TERMINAL_FONT_SIZE = 12;
 
   let live: RetainedRead<WorkbenchRuns, ReadFailure> = retainedRead<WorkbenchRuns, ReadFailure>();
   let hold: AttentionHold = startAttentionHold();
@@ -130,12 +134,12 @@
   let expandedPinReference: string | null = null;
   let seat: SeatLink = { kind: "reading" };
   /**
-   * Whether this window is wide enough to read a terminal in at all. Below
-   * that width the seat carries the same refusal an unreachable one does
-   * (#1099): a terminal squeezed under its readable width is not a smaller
-   * terminal, it is an unusable one.
+   * Whether this is a phone-sized window, read once when the room opens: the
+   * type size the terminal is asked for travels in its address, and asking
+   * for another one mid-session would reload the frame and re-attach for a
+   * resize nobody made.
    */
-  let readableWidth = true;
+  let phoneWidth = false;
 
   /**
    * Whether this browser's own memory of pending sendings can be read at all
@@ -153,7 +157,7 @@
     requestLoad(true);
     holdAttention();
     void readSeat();
-    const stopWatchingWidth = watchReadableWidth();
+    phoneWidth = typeof globalThis.matchMedia === "function" && globalThis.matchMedia(PHONE_WIDTH).matches;
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
     // way out (#700). The described catalog and the seat's own address return
@@ -167,7 +171,6 @@
       disposed = true;
       stream?.close();
       stream = null;
-      stopWatchingWidth();
       unsubscribeConnection();
     };
   });
@@ -189,18 +192,6 @@
     return read.state === "ALIVE" && read.url !== null
       ? { kind: "alive", url: read.url, projectId: read.project_id }
       : { kind: "unreachable" };
-  }
-
-  /** Follow the window's width, so a resize answers without a reload. */
-  function watchReadableWidth(): () => void {
-    if (typeof globalThis.matchMedia !== "function") return () => {};
-    const readable = globalThis.matchMedia(READABLE_TERMINAL_WIDTH);
-    readableWidth = readable.matches;
-    const follow = (): void => {
-      readableWidth = readable.matches;
-    };
-    readable.addEventListener("change", follow);
-    return () => readable.removeEventListener("change", follow);
   }
 
   /**
@@ -391,6 +382,14 @@
   // rather than leaving the frame nameless.
   $: seatProject =
     seat.kind === "alive" && seat.projectId !== null ? seat.projectId : THE_ONE_PROJECT;
+  // The address the frame is given: the seat's own, and on a phone the type
+  // size that fits it, which ttyd's client reads from the query.
+  $: seatSource =
+    seat.kind !== "alive"
+      ? null
+      : phoneWidth
+        ? `${seat.url}?fontSize=${PHONE_TERMINAL_FONT_SIZE}`
+        : seat.url;
   $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
     expandedPinReference = pins[0]?.run.public_run_reference ?? null;
   }
@@ -539,13 +538,8 @@
     </p>
     {#if seat.kind === "reading"}
       <p class="seat-connecting" role="status">{wrapDisplayCopy(seatCopy.connecting)}</p>
-    {:else if seat.kind === "alive" && readableWidth}
-      <iframe class="seat-terminal" title={wrapDisplayCopy(seatCopy.terminalTitle)} src={seat.url}></iframe>
-    {:else if seat.kind === "alive"}
-      <ProblemNotice
-        title={wrapDisplayCopy(seatCopy.narrowTitle)}
-        message={wrapDisplayCopy(seatCopy.narrowDetail)}
-      />
+    {:else if seatSource !== null}
+      <iframe class="seat-terminal" title={wrapDisplayCopy(seatCopy.terminalTitle)} src={seatSource}></iframe>
     {:else}
       <ProblemNotice
         title={wrapDisplayCopy(seatCopy.unreachableTitle)}
@@ -705,5 +699,18 @@
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
+  }
+
+  /* On a phone the terminal takes the whole room: it reaches into the stage's
+     own gutter for the columns, and stands short enough that the on-screen
+     keyboard leaves its prompt visible. */
+  @media (max-width: 48rem) {
+    .seat-terminal {
+      width: calc(100% + var(--stage-gutter) * 2);
+      height: var(--seat-height-narrow);
+      margin-inline: calc(var(--stage-gutter) * -1);
+      border-inline: none;
+      border-radius: 0;
+    }
   }
 </style>

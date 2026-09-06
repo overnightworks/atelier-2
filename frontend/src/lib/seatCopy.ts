@@ -21,13 +21,6 @@ export const seatCopy = {
   unreachableTitle: "The terminal is not answering",
   unreachableDetail:
     "Talk to the agent CLI in a terminal of your own, or drive the workshop through its HTTP API, until it answers here again.",
-  /**
-   * Below the readable width a terminal is unusable rather than merely small,
-   * so the same refusal stands instead of a shrunken screen nobody can read.
-   */
-  narrowTitle: "This window is too narrow for a terminal",
-  narrowDetail:
-    "Open the Workbench on a wider screen, or talk to the agent CLI in a terminal of your own.",
   trustBoundary:
     "A terminal is a shell: the same trust boundary as this local serve — one user, no login."
 } as const;

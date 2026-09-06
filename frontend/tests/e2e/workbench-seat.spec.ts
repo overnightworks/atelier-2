@@ -110,23 +110,37 @@ test("a run started while the seat is on screen appears as an ordinary run row (
   await expect(page.locator(".seat-terminal")).toHaveCount(1);
 });
 
-test("at 390 the seat refuses in one sentence with the way out, and the stage stays usable (#1099 lines 9, 10, 11 and the 390-px ruling)", async ({
-  page
-}) => {
-  await page.setViewportSize(NARROW);
-  await openWorkbench(page);
+test.describe("on a phone", () => {
+  // A phone is a place the operator works from, so the terminal opens there
+  // too (operator ruling 06.09.: "Terminal geht nicht auf dem Phone? Das muss
+  // gehen"). Touch is on, because reaching the terminal with a finger is the
+  // first half of that.
+  test.use({ viewport: NARROW, hasTouch: true });
 
-  const seat = page.getByRole("region", { name: seatCopy.regionLabel });
-  await expect(seat.getByText(seatCopy.narrowTitle)).toBeVisible();
-  await expect(seat.getByText(seatCopy.narrowDetail)).toBeVisible();
-  await expect(page.locator(".seat-terminal")).toHaveCount(0);
-  // The refusal takes nothing else down with it: the stage above it answers.
-  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
-  await photographSeat(page, "workbench-seat-390");
+  test("the terminal takes the phone's whole width, and a tap types into it (#1099 lines 2, 5, 13, 21 and the 06.09. ruling)", async ({
+    page
+  }) => {
+    await openWorkbench(page);
 
-  // Widening the window is the way back, with no reload.
-  await page.setViewportSize(WIDE);
-  await expect(page.locator(".seat-terminal")).toHaveCount(1);
+    const terminal = page.locator(".seat-terminal");
+    await expect(terminal).toHaveCount(1);
+    // The type size a phone can read, asked of ttyd's own client through the
+    // address it reads its options from.
+    expect(await terminal.getAttribute("src")).toContain("fontSize=12");
+    const frame = await terminal.boundingBox();
+    expect(frame?.width).toBe(NARROW.width);
+
+    await seatSessionLine(page);
+    const prompt = page.frameLocator(".seat-terminal").locator("#prompt");
+    await prompt.tap();
+    await prompt.fill("list_workflows");
+    await prompt.press("Enter");
+
+    await expect(page.frameLocator(".seat-terminal").locator("#terminal")).toContainText(
+      "> list_workflows"
+    );
+    await photographSeat(page, "workbench-seat-390");
+  });
 });
 
 test("proves(a-decision-opens-on-the-workbench-while-you-watch): a decision that opens while you watch appears at 1280 and 390 without a reload", async ({

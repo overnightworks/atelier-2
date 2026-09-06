@@ -875,15 +875,31 @@ def _published_schema_hash(result: object) -> str:
 
 
 def _fixture_terminal_page(session: str) -> bytes:
-    """The harness's stand-in terminal: a running CLI line and a session mark."""
+    """The harness's stand-in terminal: a running CLI line, a session mark, and
+    a prompt that echoes what is typed.
+
+    It echoes because the room's own phone path is what this proves: a finger
+    reaching the terminal, a keyboard typing into it, and the answer appearing
+    where the operator is looking. What the characters mean is the real agent
+    CLI's business, and it is not here.
+    """
 
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         "<title>fixture terminal</title></head>"
-        '<body style="background:#111;color:#eee;font-family:monospace">'
-        '<pre id="terminal">$ claude\n'
+        '<body style="background:#111;color:#eee;font-family:monospace;margin:0">'
+        '<pre id="terminal" style="margin:0;padding:8px">$ claude\n'
         "Atelier MCP connected - list_workflows, start_run, run_status\n"
-        f"seat session {session}</pre></body></html>"
+        f"seat session {session}</pre>"
+        '<input id="prompt" aria-label="terminal input" autocomplete="off" '
+        'style="width:100%;background:#111;color:#eee;font-family:monospace;'
+        'border:0;padding:8px">'
+        "<script>const typed=document.getElementById('prompt');"
+        "const screen=document.getElementById('terminal');"
+        "typed.addEventListener('keydown',(event)=>{"
+        "if(event.key!=='Enter')return;"
+        "screen.textContent+='\\n> '+typed.value;typed.value='';});</script>"
+        "</body></html>"
     ).encode()
 
 
