@@ -119,11 +119,11 @@ lines = 1197
 
 [[file]]
 path = "src/atelier2/host/provider_canary.py"
-lines = 1186
+lines = 1203
 
 [[file]]
 path = "src/atelier2/host/run_command.py"
-lines = 922
+lines = 933
 
 [[file]]
 path = "src/atelier2/host/serving.py"
@@ -667,7 +667,7 @@ lines = 118
 
 [[function]]
 qualified_name = "atelier2.host.provider_canary.execute_provider_canaries"
-lines = 94
+lines = 109
 
 [[function]]
 qualified_name = "atelier2.host.serving.HostProviderModelInspector.validate_model"

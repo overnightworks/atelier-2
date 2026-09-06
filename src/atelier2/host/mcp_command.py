@@ -86,7 +86,6 @@ from atelier2.host.run_command import (
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
     AgentRoleBinding,
-    NameOrder,
     ServiceRefused,
     ServiceUnreachable,
     SuppliedArtifactOrder,
@@ -94,11 +93,11 @@ from atelier2.host.run_command import (
     SuppliedWorkItemOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
-    _refused,
     catalog_name_path,
     decoded,
-    resolve_published_name,
+    resolved_name,
     service_api,
+    service_refusal,
     start_request_body,
 )
 
@@ -287,30 +286,30 @@ def _tool_handlers() -> dict[McpToolName, ToolHandler]:
 
 def list_workflows(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     del arguments
-    api = service_api(service_url)
     items: list[CatalogNameResolutionResource] = []
     seen: set[str] = set()
     after: str | None = None
-    while True:
-        query = {"view": RevisionListingView.DESCRIBED.value}
-        if after is not None:
-            query["after_revision_hash"] = after
-        page = decoded(
-            _described_page,
-            _get(api, f"{WORKFLOW_REVISION_PATH}?{urlencode(query)}"),
-            "a described revision page",
-        )
-        for revision in page.items:
-            name = revision.name
-            if name is None or name in seen:
-                continue
-            seen.add(name)
-            resolved = _resolve_listed_name(api, name)
-            if resolved is not None:
-                items.append(resolved)
-        if page.next_after_revision_hash is None:
-            break
-        after = page.next_after_revision_hash
+    with service_api(service_url) as api:
+        while True:
+            query = {"view": RevisionListingView.DESCRIBED.value}
+            if after is not None:
+                query["after_revision_hash"] = after
+            page = decoded(
+                _described_page,
+                _get(api, f"{WORKFLOW_REVISION_PATH}?{urlencode(query)}"),
+                "a described revision page",
+            )
+            for revision in page.items:
+                name = revision.name
+                if name is None or name in seen:
+                    continue
+                seen.add(name)
+                resolved = _resolve_listed_name(api, name)
+                if resolved is not None:
+                    items.append(resolved)
+            if page.next_after_revision_hash is None:
+                break
+            after = page.next_after_revision_hash
     return catalog_listing_resource(tuple(items))
 
 
@@ -322,36 +321,38 @@ def start_run(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         raise UnusableRunOrder("position must be a nonempty string")
     bindings = _bindings(arguments.get("agent_bindings"))
     orders = _orders(arguments.get("orders"))
-    resolution = resolve_published_name(NameOrder(service_url, name, position))
-    started = decoded(
-        _run_resource,
-        _post(
-            service_api(service_url),
-            RUN_PATH,
-            start_request_body(
-                run_id,
-                resolution.revision_hash,
-                tuple(
-                    AgentRoleBinding(
-                        binding.role, binding.agent_configuration_revision_hash
-                    )
-                    for binding in bindings
+    with service_api(service_url) as api:
+        resolution = resolved_name(api, name, position)
+        started = decoded(
+            _run_resource,
+            _post(
+                api,
+                RUN_PATH,
+                start_request_body(
+                    run_id,
+                    resolution.revision_hash,
+                    tuple(
+                        AgentRoleBinding(
+                            binding.role, binding.agent_configuration_revision_hash
+                        )
+                        for binding in bindings
+                    ),
+                    orders,
                 ),
-                orders,
             ),
-        ),
-        "a run",
-    )
+            "a run",
+        )
     return started.model_dump(mode="json")
 
 
 def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     reference = _required_text(arguments, "public_run_reference")
-    ended = decoded(
-        _run_resource,
-        _get(service_api(service_url), f"{RUN_PATH}/{quote(reference, safe='')}"),
-        "a run",
-    )
+    with service_api(service_url) as api:
+        ended = decoded(
+            _run_resource,
+            _get(api, f"{RUN_PATH}/{quote(reference, safe='')}"),
+            "a run",
+        )
     resource = ended.model_dump(mode="json")
     resource["answerable_wait"] = _answerable_wait(ended)
     return resource
@@ -381,48 +382,46 @@ def answer_wait(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any
     expected_node_execution_id = _required_text(arguments, "expected_node_execution_id")
     actor = _required_text(arguments, "actor")
     answer_base64 = _required_text(arguments, "answer_base64")
-    answered = decoded(
-        _run_resource,
-        _post(
-            service_api(service_url),
-            f"{RUN_PATH}/{quote(reference, safe='')}/answers",
-            json.dumps(
-                {
-                    "workflow_revision_hash": workflow_revision_hash,
-                    "node_id": node_id,
-                    "expected_node_execution_id": expected_node_execution_id,
-                    "actor": actor,
-                    "answer_base64": answer_base64,
-                }
-            ).encode(),
-        ),
-        "a run",
-    )
+    with service_api(service_url) as api:
+        answered = decoded(
+            _run_resource,
+            _post(
+                api,
+                f"{RUN_PATH}/{quote(reference, safe='')}/answers",
+                json.dumps(
+                    {
+                        "workflow_revision_hash": workflow_revision_hash,
+                        "node_id": node_id,
+                        "expected_node_execution_id": expected_node_execution_id,
+                        "actor": actor,
+                        "answer_base64": answer_base64,
+                    }
+                ).encode(),
+            ),
+            "a run",
+        )
     return answered.model_dump(mode="json")
 
 
 def publish_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     content = _artifact_content(arguments)
-    published = decoded(
-        _artifact_resource,
-        _post(
-            service_api(service_url),
-            ARTIFACT_PATH,
-            content,
-            media_type=OCTET_STREAM_MEDIA_TYPE,
-        ),
-        "an artifact",
-    )
+    with service_api(service_url) as api:
+        published = decoded(
+            _artifact_resource,
+            _post(api, ARTIFACT_PATH, content, media_type=OCTET_STREAM_MEDIA_TYPE),
+            "an artifact",
+        )
     return published.model_dump(mode="json")
 
 
 def read_artifact(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
     asked = _required_text(arguments, ARTIFACT_HASH_FIELD)
-    content = _get(
-        service_api(service_url),
-        f"{ARTIFACT_PATH}/{quote(asked, safe='')}",
-        accept=OCTET_STREAM_MEDIA_TYPE,
-    )
+    with service_api(service_url) as api:
+        content = _get(
+            api,
+            f"{ARTIFACT_PATH}/{quote(asked, safe='')}",
+            accept=OCTET_STREAM_MEDIA_TYPE,
+        )
     if ArtifactHash.of(content).value != asked:
         raise McpLocalRefusal(
             McpRefusal.ARTIFACT_ANSWER_NOT_ITS_ADDRESS,
@@ -625,14 +624,14 @@ def _post(
             path, payload, media_type=media_type, timeout=REQUEST_TIMEOUT_SECONDS
         )
     except AtelierApiTransportFailure as failure:
-        raise _refused(failure) from failure
+        raise service_refusal(failure) from failure
 
 
 def _get(api: AtelierApi, path: str, *, accept: str = JSON_MEDIA_TYPE) -> bytes:
     try:
         return api.get(path, accept=accept, timeout=REQUEST_TIMEOUT_SECONDS)
     except AtelierApiTransportFailure as failure:
-        raise _refused(failure) from failure
+        raise service_refusal(failure) from failure
 
 
 def _result(message_id: object, result: Mapping[str, Any]) -> dict[str, Any]:

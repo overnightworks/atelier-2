@@ -334,10 +334,23 @@ def resolve_published_name(order: NameOrder) -> NameResolution:
     of its own -- it asks, and hands the service's own words on.
     """
 
-    api = service_api(order.service_url)
-    asked = catalog_name_path(RevisionKind.WORKFLOW, order.name)
-    if order.position != DEFAULT_CATALOG_POSITION:
-        asked = f"{asked}?position={quote(order.position, safe='')}"
+    with service_api(order.service_url) as api:
+        return resolved_name(api, order.name, order.position)
+
+
+def resolved_name(
+    api: AtelierApi, name: str, position: str = DEFAULT_CATALOG_POSITION
+) -> NameResolution:
+    """Ask an already-reached service which revision one catalog name holds.
+
+    The single owner `resolve_published_name` and a run started by name share:
+    a caller already holding a client asks through this, rather than opening a
+    second one for the same question.
+    """
+
+    asked = catalog_name_path(RevisionKind.WORKFLOW, name)
+    if position != DEFAULT_CATALOG_POSITION:
+        asked = f"{asked}?position={quote(position, safe='')}"
     resolved = decoded(
         _catalog_name_resolution_resource, _get(api, asked), "a catalog name"
     )
@@ -374,18 +387,18 @@ def catalog_activated_at(now: datetime | None = None) -> str:
 def execute_run(order: RunOrder) -> RunReport:
     """Publish what the run binds, name a V3 revision, start it, and report it."""
 
-    api = service_api(order.service_url)
-    bindings = tuple(_published_binding(api, source) for source in order.bindings)
-    activated_at = order.catalog_activated_at or catalog_activated_at()
-    revision_hash = _published_workflow_revision(
-        api,
-        order.workflow_document,
-        actor=order.catalog_actor,
-        activated_at=activated_at,
-    )
-    return _run_published_revision(
-        api, revision_hash, bindings, order.run_id, order.orders
-    )
+    with service_api(order.service_url) as api:
+        bindings = tuple(_published_binding(api, source) for source in order.bindings)
+        activated_at = order.catalog_activated_at or catalog_activated_at()
+        revision_hash = _published_workflow_revision(
+            api,
+            order.workflow_document,
+            actor=order.catalog_actor,
+            activated_at=activated_at,
+        )
+        return _run_published_revision(
+            api, revision_hash, bindings, order.run_id, order.orders
+        )
 
 
 def execute_named_run(order: NamedRunOrder) -> RunReport:
@@ -398,15 +411,13 @@ def execute_named_run(order: NamedRunOrder) -> RunReport:
     republishing it would mint a second identity for the same bytes.
     """
 
-    api = service_api(order.service_url)
-    resolution = resolve_published_name(
-        NameOrder(order.service_url, order.name, order.position)
-    )
-    bindings = tuple(_published_binding(api, source) for source in order.bindings)
-    report = _run_published_revision(
-        api, resolution.revision_hash, bindings, order.run_id, order.orders
-    )
-    return replace(report, resolved_name=resolution)
+    with service_api(order.service_url) as api:
+        resolution = resolved_name(api, order.name, order.position)
+        bindings = tuple(_published_binding(api, source) for source in order.bindings)
+        report = _run_published_revision(
+            api, resolution.revision_hash, bindings, order.run_id, order.orders
+        )
+        return replace(report, resolved_name=resolution)
 
 
 def _run_published_revision(
@@ -773,7 +784,7 @@ def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
                         "command makes none"
                     )
     except AtelierApiTransportFailure as failure:
-        raise _refused(failure) from failure
+        raise service_refusal(failure) from failure
     return RunHistory(tuple(outputs), last_cursor)
 
 
@@ -875,17 +886,17 @@ def _post(
             path, payload, media_type=media_type, timeout=REQUEST_TIMEOUT_SECONDS
         )
     except AtelierApiTransportFailure as failure:
-        raise _refused(failure) from failure
+        raise service_refusal(failure) from failure
 
 
 def _get(api: AtelierApi, path: str) -> bytes:
     try:
         return api.get(path, timeout=REQUEST_TIMEOUT_SECONDS)
     except AtelierApiTransportFailure as failure:
-        raise _refused(failure) from failure
+        raise service_refusal(failure) from failure
 
 
-def _refused(failure: AtelierApiTransportFailure) -> RunCommandRefusal:
+def service_refusal(failure: AtelierApiTransportFailure) -> RunCommandRefusal:
     """Hand the service's own typed refusal on, without inventing prose for it."""
 
     if failure.status is None:

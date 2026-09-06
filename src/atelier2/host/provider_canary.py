@@ -101,6 +101,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
 from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
 from atelier2.host.atelier_api_client import (
+    MAXIMUM_FAILURE_BODY_BYTES,
     AtelierApi,
     AtelierApiTransport,
     AtelierApiTransportFailure,
@@ -146,8 +147,6 @@ PROVIDER_CANARY_PROCESS_TIMEOUT_SECONDS = (
 PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS = 60.0
 PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS = 1.0
 PROVIDER_CANARY_STATE_RELATIVE_PATH = Path("atelier2/provider-probes/live")
-
-_MAXIMUM_PROBLEM_RESPONSE_BYTES = 4_096
 
 _health_resource = TypeAdapter(HealthResource)
 _configuration_page_resource = TypeAdapter(AgentConfigurationRevisionPageResource)
@@ -356,6 +355,9 @@ class AtelierApiProviderCanaryHttp:
     ) -> None:
         self._api = AtelierApi(service_url, transport=transport)
 
+    def close(self) -> None:
+        self._api.close()
+
     def get(self, path: str, *, timeout_seconds: float) -> bytes:
         return self._called(
             timeout_seconds, lambda timeout: self._api.get(path, timeout=timeout)
@@ -546,85 +548,100 @@ def execute_provider_canaries(
     caller can journal it at that moment rather than waiting for every vector
     to finish (#1124)."""
 
-    client = http or AtelierApiProviderCanaryHttp(settings.service_url)
-    canary_clock = clock or SystemProviderCanaryClock()
-    started_at = canary_clock.monotonic()
-    process_deadline = started_at + settings.process_timeout_seconds
-    discovery_deadline = min(
-        process_deadline, started_at + PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
-    )
-    health_wait_deadline = min(
-        discovery_deadline, started_at + PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS
-    )
+    owned_client: AtelierApiProviderCanaryHttp | None = None
+    client: ProviderCanaryHttp
+    if http is not None:
+        client = http
+    else:
+        owned_client = AtelierApiProviderCanaryHttp(settings.service_url)
+        client = owned_client
     try:
-        health = _wait_for_serving_health(
-            client,
-            clock=canary_clock,
-            deadline=health_wait_deadline,
-            poll_interval_seconds=PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
+        canary_clock = clock or SystemProviderCanaryClock()
+        started_at = canary_clock.monotonic()
+        process_deadline = started_at + settings.process_timeout_seconds
+        discovery_deadline = min(
+            process_deadline, started_at + PROVIDER_CANARY_DISCOVERY_TIMEOUT_SECONDS
         )
-        if PROVIDER_PROBE_SOURCE_COMMIT_FORMAT.fullmatch(health.source_commit) is None:
-            raise ProviderCanaryAnswerUnreadable(
-                "the service health source commit cannot identify receipt provenance"
+        health_wait_deadline = min(
+            discovery_deadline, started_at + PROVIDER_CANARY_HEALTH_WAIT_TIMEOUT_SECONDS
+        )
+        try:
+            health = _wait_for_serving_health(
+                client,
+                clock=canary_clock,
+                deadline=health_wait_deadline,
+                poll_interval_seconds=PROVIDER_CANARY_HEALTH_WAIT_POLL_INTERVAL_SECONDS,
             )
-        vectors = _configured_vectors(
-            client, clock=canary_clock, deadline=discovery_deadline
-        )
-        if not vectors:
+            if (
+                PROVIDER_PROBE_SOURCE_COMMIT_FORMAT.fullmatch(health.source_commit)
+                is None
+            ):
+                raise ProviderCanaryAnswerUnreadable(
+                    "the service health source commit cannot identify receipt provenance"
+                )
+            vectors = _configured_vectors(
+                client, clock=canary_clock, deadline=discovery_deadline
+            )
+            if not vectors:
+                raise ProviderCanaryDiscoveryFailed(
+                    "no-startable-provider-vectors: "
+                    "the service listed no startable provider vectors"
+                )
+            admitted_workflows = _resolve_admitted_workflows(
+                vectors,
+                client,
+                clock=canary_clock,
+                deadline=discovery_deadline,
+            )
+            _raise_if_deadline_reached(
+                canary_clock, discovery_deadline, _discovery_timeout
+            )
+        except ProviderCanaryDiscoveryFailed:
+            raise
+        except (
+            ProviderCanaryServerUnavailable,
+            ProviderCanaryHttpRefused,
+            ProviderCanaryAnswerUnreadable,
+        ) as failure:
             raise ProviderCanaryDiscoveryFailed(
-                "no-startable-provider-vectors: "
-                "the service listed no startable provider vectors"
+                _discovery_problem_text(failure)
+            ) from failure
+        running_digest = provider_layer_digest()
+        provider_layer_status = _provider_layer_status(
+            settings.state_directory, running_digest
+        )
+        if on_provider_layer_status is not None:
+            on_provider_layer_status(provider_layer_status)
+        _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
+
+        # No more than `PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS` live billed
+        # runs are ever in flight together, but each vector still gets its own
+        # receipt the instant its own outcome is known: a run-timeout vector
+        # bounds only its own receipt, never delaying or starving the vectors
+        # beside it. Each `_execute_vector` call writes its receipt itself, so
+        # a receipt lands as soon as its vector finishes regardless of how
+        # long a sibling vector keeps running.
+        def run_one(vector: _CanaryVector) -> ProviderCanaryFailure | None:
+            return _execute_vector(
+                settings,
+                vector,
+                admitted_workflows[vector.workflow_name],
+                health,
+                running_digest,
+                client,
+                canary_clock,
+                process_deadline,
             )
-        admitted_workflows = _resolve_admitted_workflows(
-            vectors,
-            client,
-            clock=canary_clock,
-            deadline=discovery_deadline,
-        )
-        _raise_if_deadline_reached(canary_clock, discovery_deadline, _discovery_timeout)
-    except ProviderCanaryDiscoveryFailed:
-        raise
-    except (
-        ProviderCanaryServerUnavailable,
-        ProviderCanaryHttpRefused,
-        ProviderCanaryAnswerUnreadable,
-    ) as failure:
-        raise ProviderCanaryDiscoveryFailed(
-            _discovery_problem_text(failure)
-        ) from failure
-    running_digest = provider_layer_digest()
-    provider_layer_status = _provider_layer_status(
-        settings.state_directory, running_digest
-    )
-    if on_provider_layer_status is not None:
-        on_provider_layer_status(provider_layer_status)
-    _raise_if_deadline_reached(canary_clock, process_deadline, _process_timeout)
 
-    # No more than `PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS` live billed
-    # runs are ever in flight together, but each vector still gets its own
-    # receipt the instant its own outcome is known: a run-timeout vector
-    # (#1124, grok tools) bounds only its own receipt, never delaying or
-    # starving the vectors beside it. Each `_execute_vector` call writes its
-    # receipt itself, so a receipt lands as soon as its vector finishes
-    # regardless of how long a sibling vector keeps running.
-    def run_one(vector: _CanaryVector) -> ProviderCanaryFailure | None:
-        return _execute_vector(
-            settings,
-            vector,
-            admitted_workflows[vector.workflow_name],
-            health,
-            running_digest,
-            client,
-            canary_clock,
-            process_deadline,
-        )
-
-    pool_workers = min(len(vectors), PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS)
-    with ThreadPoolExecutor(max_workers=pool_workers) as pool:
-        failures = tuple(
-            failure for failure in pool.map(run_one, vectors) if failure is not None
-        )
-    return ProviderCanaryReport(len(vectors), failures, provider_layer_status)
+        pool_workers = min(len(vectors), PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS)
+        with ThreadPoolExecutor(max_workers=pool_workers) as pool:
+            failures = tuple(
+                failure for failure in pool.map(run_one, vectors) if failure is not None
+            )
+        return ProviderCanaryReport(len(vectors), failures, provider_layer_status)
+    finally:
+        if owned_client is not None:
+            owned_client.close()
 
 
 def _provider_layer_status(
@@ -1136,7 +1153,7 @@ def _decoded[AnswerT](
 
 
 def _problem_answer(document: bytes, fallback: str) -> tuple[str, str]:
-    if len(document) > _MAXIMUM_PROBLEM_RESPONSE_BYTES:
+    if len(document) > MAXIMUM_FAILURE_BODY_BYTES:
         return "http-refused", fallback
     try:
         decoded = json.loads(document)
