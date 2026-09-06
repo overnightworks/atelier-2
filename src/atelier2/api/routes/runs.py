@@ -61,7 +61,6 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerActorMismatch,
     AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
@@ -585,16 +584,6 @@ async def answer_run_route(
             status = HTTPStatus.ACCEPTED
         case AnswerExistingApplied():
             status = HTTPStatus.OK
-        case AnswerActorMismatch(expected_actor):
-            raise ApiProblem(
-                "invalid-request",
-                invalid_fields=(
-                    InvalidFieldResource(
-                        path="body/actor",
-                        reason=f"waiting execution expects {expected_actor.value!r}",
-                    ),
-                ),
-            )
         case RunMissing():
             raise ApiProblem("run-not-found")
         case NodeMissing():

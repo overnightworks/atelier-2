@@ -46,6 +46,7 @@ from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerExistingApplied,
     AnswerExistingPending,
+    AnswerStateConflict,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -55,7 +56,6 @@ from atelier2.application.cancel_run import (
     CancelRunResult,
     cancel_run_result,
 )
-from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -883,24 +883,24 @@ def test_an_authored_string_answer_is_admitted_as_the_raw_text_typed(
 def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_idempotent(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    """The same actor and bytes for an applied execution report that answer."""
+    """The same bytes for an applied execution report that answer; different bytes
+    are a conflict that leaves the applied answer standing."""
     started, _ = runtime
     workflow = start_and_launch(started, WAIT_AS_THE_SINK)
     wait_for_state(started, RunState.WAITING_INPUT)
     assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
     wait_for_state(started, RunState.COMPLETED)
 
-    late = answer_wait_result(
-        RUN,
-        workflow.revision_hash,
-        WAIT_NODE,
-        NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
-        WaitAnswerActor.OPERATOR,
-        ANSWER,
-        DbosWaitAnswerer(started.engine, started.settings.application_version),
-    )
+    late = answer(started, workflow, ANSWER)
+    contradicting = answer(started, workflow, b'"rejected"')
 
     assert isinstance(late, AnswerExistingApplied), late
+    assert contradicting == AnswerStateConflict()
+    with started.engine.connect() as connection:
+        stored = connection.execute(
+            sa.select(wait_answers.c.state, wait_answers.c.answer_bytes)
+        ).all()
+    assert stored == [(WaitAnswerState.APPLIED.value, ANSWER)]
 
 
 @pytest.mark.parametrize(
@@ -944,13 +944,11 @@ def test_racing_answers_leave_one_durable_answer_and_one_heir(
             (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied),
         )
     ]
-    corruptions = [
-        result for result in results if isinstance(result, DurableStateCorrupt)
-    ]
+    refusals = [result for result in results if isinstance(result, AnswerStateConflict)]
     if answers[0] == answers[1]:
-        assert (len(snapshots), len(corruptions)) == (2, 0)
+        assert (len(snapshots), len(refusals)) == (2, 0)
     else:
-        assert (len(snapshots), len(corruptions)) == (1, 1)
+        assert (len(snapshots), len(refusals)) == (1, 1)
     accepted = {snapshot.answer.answer_bytes for snapshot in snapshots}
     assert len(accepted) == 1
     assert accepted.issubset(set(answers))
@@ -1090,7 +1088,7 @@ def test_a_pending_answer_reports_itself_again_and_refuses_different_bytes(
         assert isinstance(first, AnswerAcceptedPending), first
 
         assert submit(ANSWER) == AnswerExistingPending(first.snapshot)
-        assert submit(b'"rejected"') == DurableStateCorrupt()
+        assert submit(b'"rejected"') == AnswerStateConflict()
 
         with engine.connect() as connection:
             stored = connection.execute(
@@ -1160,7 +1158,7 @@ def test_a_duplicate_answer_in_the_committed_transition_window_is_that_answer(
         duplicate = submit(ANSWER)
         assert isinstance(duplicate, AnswerExistingApplied), duplicate
         assert duplicate.snapshot.answer.answer_bytes == ANSWER
-        assert submit(b'"rejected"') == DurableStateCorrupt()
+        assert submit(b'"rejected"') == AnswerStateConflict()
 
         with engine.connect() as connection:
             stored = connection.execute(

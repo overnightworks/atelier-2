@@ -859,12 +859,9 @@ test("a second, conflicting answer that names an already-claimed round is refuse
   const claimedExecutionId = await answerConductorRoundDirectly(page, run, "Round 2, the real answer.");
 
   // A second, differently-worded answer naming that same, already-claimed
-  // execution id -- the overlapping-retry shape #658 names ("ein
-  // wiederholter Runde-1-Retry" landing on the wrong round) -- is refused.
-  // Pinned exactly rather than "any refusal": #658 names this collision as
-  // deserving its own 409 conflict, not the generic corrupt-store refusal
-  // the store actually returns today, so a repair that narrows this to a
-  // real conflict code fails this assertion loudly instead of going unseen.
+  // execution id -- an overlapping retry landing on the wrong round -- is a
+  // conflict on a valid round, pinned exactly so it can never again be told
+  // as the corrupt-store refusal.
   const overlappingRetry = await page.request.post(`/atelier/api/v1/runs/${run.publicRunReference}/answers`, {
     headers: { "content-type": "application/json" },
     data: {
@@ -875,9 +872,9 @@ test("a second, conflicting answer that names an already-claimed round is refuse
       answer_base64: Buffer.from(JSON.stringify("Stale retry that must be refused.")).toString("base64")
     }
   });
-  expect(overlappingRetry.status()).toBe(500);
+  expect(overlappingRetry.status()).toBe(409);
   const overlappingProblem = (await overlappingRetry.json()) as { type: string; detail: string };
-  expect(overlappingProblem.type).toBe("urn:atelier2:problem:v1:durable-state-corrupt");
+  expect(overlappingProblem.type).toBe("urn:atelier2:problem:v1:answer-state-conflict");
 
   // The accepted round-2 answer stays exactly where it landed; the refused
   // retry never wrote itself into the conversation at all.
@@ -894,7 +891,7 @@ test("a second, conflicting answer that names an already-claimed round is refuse
   // (`humanProblemDetail`, `frontend/src/lib/humanRefusal.ts`) from the wire
   // problem just pinned above, never a copy of its English retyped here.
   const refusalSentence = humanProblemDetail({
-    type: "urn:atelier2:problem:v1:durable-state-corrupt",
+    type: "urn:atelier2:problem:v1:answer-state-conflict",
     detail: overlappingProblem.detail
   });
   const secondContext = await browser.newContext();
