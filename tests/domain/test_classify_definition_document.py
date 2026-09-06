@@ -36,11 +36,7 @@ V1_DOCUMENT = (
     b"  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
 )
 SKILL_DOCUMENT = (
-    b"---\n"
-    b"name: stage-name-witness\n"
-    b"allowed-tools: Read\n"
-    b"---\n"
-    b"Watch the stage.\n"
+    b"---\nname: stage-name-witness\nallowed-tools: Read\n---\nWatch the stage.\n"
 )
 """A closed frontmatter block missing the agent minimum's `description`.
 

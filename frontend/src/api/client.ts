@@ -1630,10 +1630,6 @@ export const problemDefinitions = {
     status: 422,
     title: "Invalid agent definition document",
   },
-  "agent-definition-field-unknown": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
   "agent-definition-field-missing": {
     status: 422,
     title: "Invalid agent definition document",
@@ -2138,10 +2134,6 @@ const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "agent-definition-frontmatter-not-a-mapping",
     problemDefinitions["agent-definition-frontmatter-not-a-mapping"],
-  ),
-  problemVariant(
-    "agent-definition-field-unknown",
-    problemDefinitions["agent-definition-field-unknown"],
   ),
   problemVariant(
     "agent-definition-field-missing",

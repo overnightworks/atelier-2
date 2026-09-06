@@ -21,7 +21,20 @@ AGENT_DOCUMENT = (
     b"---\n"
     b"You watch the stage and name what you see.\n"
 )
-SKILL_DOCUMENT = AGENT_DOCUMENT.replace(b"---\nYou", b"allowed-tools: Read\n---\nYou")
+SKILL_DOCUMENT = (
+    b"---\n"
+    b"name: stage-name-witness\n"
+    b"allowed-tools: Read\n"
+    b"---\n"
+    b"You watch the stage and name what you see.\n"
+)
+"""A closed frontmatter block missing the agent minimum's `description`.
+
+An unmodelled key like `allowed-tools` no longer refuses an agent reading on
+its own (agent-definitions carry it through opaquely), so this fixture leans
+on the still-required minimum to stay unambiguously a skill rather than an
+agent definition.
+"""
 MCP_DECLARATION = b'{"mcpServers": {"github": {"command": "gh-mcp"}}}'
 
 

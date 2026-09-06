@@ -162,14 +162,7 @@ def test_the_definition_door_accepts_a_provider_native_key_it_does_not_model(
     published identity is still the exact bytes handed in.
     """
 
-    document = (
-        b"---\n"
-        b"name: witness\n"
-        b"description: Watches.\n"
-        b"color: cyan\n"
-        b"---\n"
-        b"Body.\n"
-    )
+    document = b"---\nname: witness\ndescription: Watches.\ncolor: cyan\n---\nBody.\n"
 
     created = publish(durable_api_client(runtime), document)
 
