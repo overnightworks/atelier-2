@@ -17,7 +17,7 @@ from types import ModuleType
 
 PROJECT_ROOT = Path(__file__).parents[2]
 ARCHITECTURE_SCRIPT = Path("scripts") / "check_architecture.py"
-DUPLICATE_BASELINE = Path("duplicate_baseline.toml")
+DUPLICATE_BASELINE = Path("scripts") / "baselines" / "duplicate_baseline.toml"
 
 
 def load_architecture_script() -> ModuleType:
@@ -39,6 +39,7 @@ def copied_project(tmp_path: Path) -> Path:
     shutil.copytree(PROJECT_ROOT / "src", project / "src")
     (project / ARCHITECTURE_SCRIPT.parent).mkdir()
     shutil.copy2(PROJECT_ROOT / ARCHITECTURE_SCRIPT, project / ARCHITECTURE_SCRIPT)
+    (project / DUPLICATE_BASELINE.parent).mkdir()
     shutil.copy2(PROJECT_ROOT / DUPLICATE_BASELINE, project / DUPLICATE_BASELINE)
     return project
 

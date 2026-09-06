@@ -38,7 +38,7 @@ FUNCTION_LINE_THRESHOLD = 60
 # quality gate, so the ratchet only stops today's offenders from growing.
 COMPLEXITY_THRESHOLD = 15
 
-SIZE_RATCHET_BASELINE_FILE = "size_ratchet_baseline.toml"
+SIZE_RATCHET_BASELINE_FILE = "scripts/baselines/size_ratchet_baseline.toml"
 RUFF_COMPLEXITY_RULE = "C901"
 _COMPLEXITY_VALUE_PATTERN = re.compile(r"\((\d+) > \d+\)")
 

@@ -944,10 +944,10 @@ points, so an export only a cockpit test imports counts as reached. Making the
 cockpit gate ask what vulture asks turns roughly a dozen test-only exports red
 and is its own slice, owned by #1168 (finding 12).
 
-A vulture finding survives only by standing in one of three files, and which
-file it stands in is the whole justification:
+A vulture finding survives only by standing in one of three files under
+`scripts/baselines/`, and which file it stands in is the whole justification:
 
-- `.vulture_allowlist.py` -- a production site *does* reach the name and vulture
+- `vulture_allowlist.py` -- a production site *does* reach the name and vulture
   cannot see that site: a program built as text, a vocabulary the wire selects
   by value, a field read by a generated `__eq__` or by `asdict()`, a framework
   attribute. The entry names that site. If you cannot name one, the name does
@@ -976,7 +976,7 @@ types.
 code. It reads every function of `src/atelier2` long enough to be recognised
 again as five-token shingles, with its literals and its own names normalised,
 so a copy someone renamed and reflowed still matches; a pair whose shingles
-overlap by 95 per cent or more is the same code. `duplicate_baseline.toml`
+overlap by 95 per cent or more is the same code. `scripts/baselines/duplicate_baseline.toml`
 names the pairs this tree already carries. A pair that is not listed turns the
 gate red, and so does an entry whose pair is gone -- a list that only grows
 stops describing anything. Resolving a listed pair therefore means giving the
@@ -987,8 +987,8 @@ two one owner *and* deleting its entry.
 `uv run --locked python scripts/check_size_ratchet.py` holds three more debt
 shapes in `src/atelier2` from growing: files at 800 lines or more, functions
 and methods at 60 lines or more (measured with `ast`), and functions ruff's
-`C901` McCabe check reports over a complexity of 15. `size_ratchet_baseline.toml`
-names every path or qualified symbol this tree already carries at its current
+`C901` McCabe check reports over a complexity of 15.
+`scripts/baselines/size_ratchet_baseline.toml` names every path or qualified symbol this tree already carries at its current
 value. An offender missing from the baseline, or one that grew past its listed
 value, turns the gate red; a listed entry that no longer offends is an orphan
 and is red too. Shrinking a listed offender, or leaving it exactly at its
@@ -1000,8 +1000,8 @@ baseline value, is quiet and rewrites nothing. This runs as a step of the
 `uv run --locked python scripts/check_core_test_imports.py` holds
 `tests/domain`, `tests/application`, and `tests/api` to the count of test
 modules each already imports `atelier2.adapters` from (AGENTS.md "Tests": a
-core unit test imports no adapter). `core_test_import_baseline.toml` names
-each directory's count; a directory that grew past its listed count turns the
+core unit test imports no adapter). `scripts/baselines/core_test_import_baseline.toml`
+names each directory's count; a directory that grew past its listed count turns the
 gate red. A directory that shrank stays quiet -- lowering the recorded count
 happens only by running the script with `--write-baseline`, never by hand-
 editing the file. This runs as a step of the `quality` job.
