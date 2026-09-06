@@ -172,20 +172,6 @@ export function orderedConductorCandidates(runs: readonly RunV3[]): RunV3[] {
     });
 }
 
-/** The one live conductor conversation is the newest started, non-terminal run. */
-export function newestConductorConversation(
-  runs: readonly RunV3[],
-  workflowRevisionHashes: ReadonlySet<string> | string
-): RunV3 | null {
-  const belongsToConductor = (workflowRevisionHash: string): boolean =>
-    typeof workflowRevisionHashes === "string"
-      ? workflowRevisionHash === workflowRevisionHashes
-      : workflowRevisionHashes.has(workflowRevisionHash);
-  return (
-    orderedConductorCandidates(runs).find((run) => belongsToConductor(run.workflow_revision_hash)) ?? null
-  );
-}
-
 function hasStartedStamp(run: RunV3): run is RunV3 & { started_at: string } {
   return typeof run.started_at === "string" && Number.isFinite(Date.parse(run.started_at));
 }
