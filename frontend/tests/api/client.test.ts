@@ -1165,18 +1165,20 @@ describe("the published agent definitions the catalog reads", () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          type: "urn:atelier2:problem:v1:agent-definition-field-unknown",
+          type: "urn:atelier2:problem:v1:agent-definition-field-missing",
           title: "Invalid agent definition document",
           status: 422,
-          detail: "agent-definition-field-unknown: color"
+          detail: "agent-definition-field-missing: name"
         }),
         { status: 422, headers: { "content-type": "application/problem+json" } }
       )
     );
 
     await expect(
-      createCockpitApi(fetcher).publishAgentDefinition("---\ncolor: cyan\n---\nBody.\n")
-    ).rejects.toThrow("agent-definition-field-unknown: color");
+      createCockpitApi(fetcher).publishAgentDefinition(
+        "---\ndescription: A nameless agent.\n---\nBody.\n"
+      )
+    ).rejects.toThrow("agent-definition-field-missing: name");
   });
 });
 
