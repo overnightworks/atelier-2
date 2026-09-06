@@ -87,9 +87,8 @@ its current execution id from the run, revision, current node and round rather
 than borrowing a cancellation target. The durable store validates the current
 run head and any answer already bound to it under the write transaction before
 inserting anything. The request actor is a closed wire value; an unknown actor
-or malformed body is `422 invalid-request`, before the durable seam. The store
-reads the actor recorded on the exact `WAITING_INPUT` head and a mismatch takes
-that same named refusal. A proven prior waiting execution that was never
+or malformed body is `422 invalid-request`, before the durable seam. A proven
+prior waiting execution that was never
 answered remains the definitive `409 answer-execution-stale`. The same answer
 from the same actor is
 idempotent: PENDING returns `202`, while an already APPLIED answer returns `200`.

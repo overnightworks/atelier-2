@@ -7,7 +7,6 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import (
     SubmitWaitAnswerRequest,
-    WaitAnswerActor,
     WaitAnswerSnapshot,
 )
 from atelier2.contracts.host_configuration import UncastRole
@@ -271,11 +270,6 @@ class DurableAnswerExisting:
 
 
 @dataclass(frozen=True)
-class DurableAnswerActorMismatch:
-    expected_actor: WaitAnswerActor
-
-
-@dataclass(frozen=True)
 class DurableAnswerRunMissing:
     pass
 
@@ -327,7 +321,6 @@ class DurableAnswerNotAdmitted:
 type DurableAnswerResult = (
     DurableAnswerCreated
     | DurableAnswerExisting
-    | DurableAnswerActorMismatch
     | DurableAnswerRunMissing
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict

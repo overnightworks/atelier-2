@@ -74,7 +74,6 @@ from atelier2.contracts.workflow_projections import (
 )
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
-    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -762,14 +761,6 @@ PROBLEM_CASES = (
         DurableAnswerStale(),
         409,
         "answer-execution-stale",
-    ),
-    (
-        "wait-actor-mismatch",
-        "wait",
-        "answerer",
-        DurableAnswerActorMismatch(WaitAnswerActor.OPERATOR),
-        422,
-        "invalid-request",
     ),
     (
         "wait-unavailable",

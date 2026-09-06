@@ -11,7 +11,6 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
-    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -42,11 +41,6 @@ class AnswerExistingPending:
 @dataclass(frozen=True)
 class AnswerExistingApplied:
     snapshot: WaitAnswerSnapshot
-
-
-@dataclass(frozen=True)
-class AnswerActorMismatch:
-    expected_actor: WaitAnswerActor
 
 
 @dataclass(frozen=True)
@@ -85,7 +79,6 @@ type AnswerWaitResult = (
     | AnswerAcceptedPending
     | AnswerExistingPending
     | AnswerExistingApplied
-    | AnswerActorMismatch
     | RunMissing
     | NodeMissing
     | AnswerRevisionConflict
@@ -152,8 +145,6 @@ def answer_wait_result(
             if snapshot.state is WaitAnswerState.PENDING:
                 return AnswerExistingPending(snapshot)
             return AnswerExistingApplied(snapshot)
-        case DurableAnswerActorMismatch(expected_actor):
-            return AnswerActorMismatch(expected_actor)
         case DurableAnswerRunMissing():
             return RunMissing()
         case DurableAnswerNodeMissing():
