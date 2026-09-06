@@ -30,20 +30,17 @@ export function layerWorkflowGraph<T extends GraphLayerNode>(nodes: readonly T[]
     }
   }
 
-  const remaining = new Set(byId.keys());
+  const remaining = new Map(byId);
   const layers: T[][] = [];
   while (remaining.size > 0) {
-    const ready = [...remaining]
-      .filter((id) => {
-        const node = byId.get(id);
-        return node?.depends_on.every((dependency) => !remaining.has(dependency)) ?? false;
-      })
-      .sort(compareUtf8Identities);
+    const ready = [...remaining.values()]
+      .filter((node) => node.depends_on.every((dependency) => !remaining.has(dependency)))
+      .sort((left, right) => compareUtf8Identities(left.id, right.id));
     if (ready.length === 0) {
       return { ok: false, reason: "This graph could not be layered: a cycle remains." };
     }
-    layers.push(ready.map((id) => byId.get(id)).filter((node): node is T => node !== undefined));
-    for (const id of ready) remaining.delete(id);
+    layers.push(ready);
+    for (const node of ready) remaining.delete(node.id);
   }
   return { ok: true, layers };
 }

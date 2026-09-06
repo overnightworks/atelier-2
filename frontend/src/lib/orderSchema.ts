@@ -150,8 +150,8 @@ export function classifyStartOrderSchema(
   const fieldNames = [...new Set([...Object.keys(properties), ...required])];
   const supported = new Set(["boolean", "number", "integer", "string"]);
   const hasUnencodableField = fieldNames.some((name) => {
-    const types = declaredTypes(properties[name]);
-    return types?.length !== 1 || !supported.has(types[0] ?? "");
+    const types = declaredTypes(properties[name]) ?? [];
+    return types.length !== 1 || !types.every((type) => supported.has(type));
   });
   return { kind: hasUnencodableField ? "raw_object" : "inline_object" };
 }

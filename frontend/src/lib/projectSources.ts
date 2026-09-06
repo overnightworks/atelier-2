@@ -118,7 +118,7 @@ export function disconnectFacts(args: {
   remainingSources: readonly ProjectSourceResource[];
   modelsExist: boolean;
 }): DisconnectFacts {
-  const staysParts = [
+  const staysParts: [string, ...string[]] = [
     args.projectName,
     ...args.remainingSources.map((source) => sourceHeadline(source))
   ];
@@ -168,11 +168,9 @@ export function sourceWriteFailure(
   };
 }
 
-function joinWithAnd(items: readonly string[]): string {
-  const first = items[0];
-  if (items.length === 0 || first === undefined) return "";
-  if (items.length === 1) return first;
-  const last = items.at(-1) ?? "";
-  if (items.length === 2) return `${first} ${settingsPageCopy.and} ${last}`;
-  return `${items.slice(0, -1).join(", ")}, ${settingsPageCopy.and} ${last}`;
+function joinWithAnd([first, ...rest]: readonly [string, ...string[]]): string {
+  const last = rest.at(-1);
+  if (last === undefined) return first;
+  if (rest.length === 1) return `${first} ${settingsPageCopy.and} ${last}`;
+  return `${[first, ...rest.slice(0, -1)].join(", ")}, ${settingsPageCopy.and} ${last}`;
 }

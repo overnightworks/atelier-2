@@ -161,6 +161,15 @@ describe("classifying a schema for the start sheet", () => {
     ).toEqual({ kind: "raw_object" });
   });
 
+  it.each([{ mood: { enum: ["calm", "busy"] } }, { mood: { type: ["string", "null"] } }])(
+    "classifies an object whose field declares no single type as raw_object",
+    (properties) => {
+      expect(classifyStartOrderSchema({ type: "object", properties }, "schema-other")).toEqual({
+        kind: "raw_object"
+      });
+    }
+  );
+
   it("classifies the accepted_sentences-shaped schema (an array field) as raw_object", () => {
     expect(
       classifyStartOrderSchema(
