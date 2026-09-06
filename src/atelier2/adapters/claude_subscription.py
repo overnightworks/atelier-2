@@ -1214,7 +1214,42 @@ def _decoded_claude_answer(
 
 
 @dataclass(frozen=True)
-class ClaudeSubscriptionExecutor(PrintModeExecutor):
+class _ClaudeCredentialChannelExecutor:
+    """Owns the private `CLAUDE_CONFIG_DIR` lifecycle every sibling below shares.
+
+    Opening the channel differs per sibling -- each builds its own command --
+    but taking it back does not: read the binding out of the command's own
+    environment and hand it to the tracker `prepare_process` registered it
+    with (`release_credential_channel`), or tear down whatever is still
+    outstanding at shutdown (`close`).
+    """
+
+    _job_directories: _ClaudeJobDirectories = field(
+        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
+    )
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Take back the private config directory this invocation was handed.
+
+        The directory holds a private copy of the operator's own
+        `.credentials.json`, so it is taken back on every path rather than
+        with the attempt's workspace: the workspace keeps what a provider
+        left behind until the attempt is durably terminal, and a credential
+        must not wait that long.
+        """
+
+        environment = dict(command.environment)
+        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
+        if state_directory is None:
+            raise ValueError("Claude invocation state binding is missing")
+        self._job_directories.release(Path(state_directory))
+
+    def close(self) -> None:
+        self._job_directories.close()
+
+
+@dataclass(frozen=True)
+class ClaudeSubscriptionExecutor(_ClaudeCredentialChannelExecutor, PrintModeExecutor):
     """One bare headless `claude --print` invocation and its JSON envelope.
 
     The invocation is as close to text-in/text-out as subscription
@@ -1307,9 +1342,6 @@ class ClaudeSubscriptionExecutor(PrintModeExecutor):
     """
 
     settings: ClaudeSubscriptionSettings
-    _job_directories: _ClaudeJobDirectories = field(
-        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
-    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -1374,25 +1406,6 @@ class ClaudeSubscriptionExecutor(PrintModeExecutor):
 
         _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
-
-    def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Take back the private config directory this invocation was handed.
-
-        The directory holds a private copy of the operator's own
-        `.credentials.json`, so it is taken back on every path rather than
-        with the attempt's workspace: the workspace keeps what a provider
-        left behind until the attempt is durably terminal, and a credential
-        must not wait that long.
-        """
-
-        environment = dict(command.environment)
-        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
-        if state_directory is None:
-            raise ValueError("Claude invocation state binding is missing")
-        self._job_directories.release(Path(state_directory))
-
-    def close(self) -> None:
-        self._job_directories.close()
 
 
 @dataclass(frozen=True)
@@ -1658,7 +1671,7 @@ def attest_workspace_tool_invocation(
 
 
 @dataclass(frozen=True)
-class ClaudeWorkspaceToolExecutor(PrintModeExecutor):
+class ClaudeWorkspaceToolExecutor(_ClaudeCredentialChannelExecutor, PrintModeExecutor):
     """One headless `claude --print` call that may use tools where it stands.
 
     This is the tool-free executor's sibling and deliberately not its successor.
@@ -1708,9 +1721,6 @@ class ClaudeWorkspaceToolExecutor(PrintModeExecutor):
     """
 
     settings: ClaudeSubscriptionSettings
-    _job_directories: _ClaudeJobDirectories = field(
-        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
-    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -1766,25 +1776,6 @@ class ClaudeWorkspaceToolExecutor(PrintModeExecutor):
 
         _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
-
-    def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Take back the private config directory this invocation was handed.
-
-        The directory holds a private copy of the operator's own
-        `.credentials.json`, so it is taken back on every path rather than
-        with the attempt's workspace: the workspace keeps what a provider
-        left behind until the attempt is durably terminal, and a credential
-        must not wait that long.
-        """
-
-        environment = dict(command.environment)
-        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
-        if state_directory is None:
-            raise ValueError("Claude invocation state binding is missing")
-        self._job_directories.release(Path(state_directory))
-
-    def close(self) -> None:
-        self._job_directories.close()
 
 
 @dataclass(frozen=True)
@@ -1979,7 +1970,7 @@ def attest_atelier_doors_invocation(
 
 
 @dataclass(frozen=True)
-class ClaudeAtelierDoorsExecutor(PrintModeExecutor):
+class ClaudeAtelierDoorsExecutor(_ClaudeCredentialChannelExecutor, PrintModeExecutor):
     """One headless `claude --print` call that may operate the atelier's doors.
 
     The third sibling of this module, and the first executor in this repository
@@ -2058,9 +2049,6 @@ class ClaudeAtelierDoorsExecutor(PrintModeExecutor):
     """
 
     settings: ClaudeAtelierDoorsSettings
-    _job_directories: _ClaudeJobDirectories = field(
-        default_factory=_ClaudeJobDirectories, init=False, compare=False, repr=False
-    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -2112,25 +2100,6 @@ class ClaudeAtelierDoorsExecutor(PrintModeExecutor):
 
         _sweep_scrub_residue(invocation.lease)
         return _decoded_claude_answer(invocation, completion)
-
-    def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Take back the private config directory this invocation was handed.
-
-        The directory holds a private copy of the operator's own
-        `.credentials.json`, so it is taken back on every path rather than
-        with the attempt's workspace: the workspace keeps what a provider
-        left behind until the attempt is durably terminal, and a credential
-        must not wait that long.
-        """
-
-        environment = dict(command.environment)
-        state_directory = environment.get(_CREDENTIAL_DIRECTORY_VARIABLE)
-        if state_directory is None:
-            raise ValueError("Claude invocation state binding is missing")
-        self._job_directories.release(Path(state_directory))
-
-    def close(self) -> None:
-        self._job_directories.close()
 
 
 @dataclass(frozen=True)
