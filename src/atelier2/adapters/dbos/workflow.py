@@ -8,6 +8,7 @@ from typing import Any, assert_never, cast
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
+from atelier2.adapters.attempt_workspace_files import AttemptWorkspaceFileAccess
 from atelier2.adapters.dbos.advancer import (
     prepare_graph_action,
     prepare_graph_agent_open_pr,
@@ -615,6 +616,7 @@ def register_durable_run_workflow(
             pinned_project(binding, project),
             artifact_publisher,
             permissions=agent_permission_policy,
+            workspace_files=AttemptWorkspaceFileAccess,
         )
 
     def agent_node_attempt(

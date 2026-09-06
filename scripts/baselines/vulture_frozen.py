@@ -125,17 +125,6 @@ WAITING_FOR_A_CALLER = (
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
     },
     {
-        "names": ("adapters/attempt_workspace_files.py:AttemptWorkspaceFileAccess",),
-        "why": (
-            "The descriptor-fenced ProviderFilesystemAccess adapter for one "
-            "attempt's own workspace: it answers both READ and staged WRITE "
-            "inside the lease, but nothing binds it into "
-            "`ProviderConversationBinding.files` yet -- that overwrite is "
-            "`execute_agent_attempt`'s own job."
-        ),
-        "item": "#1177 Zeile 23 (2-C2c Receipts + Bindung im Dispatch)",
-    },
-    {
         "names": (
             "contracts/agent_permissions.py:COMMAND",
             "contracts/agent_permissions.py:NETWORK",

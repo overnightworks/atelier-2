@@ -131,6 +131,7 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     publish_checked_model_registry,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
@@ -2034,6 +2035,7 @@ def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
             runtime.agent_process_supervisor,
             workspaces,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
@@ -2201,6 +2203,7 @@ nodes:
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
     finally:
         runtime.close()
@@ -2240,6 +2243,7 @@ def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wro
             runtime.agent_process_supervisor,
             workspaces,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()

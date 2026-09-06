@@ -114,6 +114,7 @@ from tests.scenarios.agents import (
     claude_subscription_start,
     leased_directory_identity,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -1294,6 +1295,7 @@ def durably_attempted(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
@@ -2437,6 +2439,7 @@ def test_a_tool_bearing_attempt_writes_in_its_lease_and_answers_what_it_wrote(
             runtime.agent_process_supervisor,
             workspaces,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         with runtime.engine.connect() as connection:
             receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()

@@ -60,6 +60,7 @@ from tests.scenarios.agents import (
     answering,
     launching,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
 
@@ -196,6 +197,7 @@ def arranged_transcript_node(tmp_path: Path) -> Iterator[ArrangeTranscriptNode]:
             runtime_workspace_owner(runtime),
             clock=lambda: TRANSCRIPT_RECORDED_AT,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         if isinstance(verdict, AgentExecutionFailure):
             assert isinstance(outcome, AgentAttemptFailed), outcome

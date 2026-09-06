@@ -62,6 +62,7 @@ from tests.scenarios.agents import (
     launching,
     process_invocation,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 
 _PROVIDER_WRITES_EXACT_BYTES = """
@@ -989,6 +990,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
             runtime.agent_process_supervisor,
             workspaces,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         with pytest.raises(RuntimeError, match="did not return a process"):
             execute_agent_attempt(
@@ -998,6 +1000,7 @@ def test_supervision_holds_each_provider_to_its_own_declared_frame(
                 runtime.agent_process_supervisor,
                 workspaces,
                 permissions=GRANTS_NOTHING,
+                workspace_files=workspace_files_nobody_opens,
             )
 
         assert isinstance(accepted, AgentAttemptSucceeded)

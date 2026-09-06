@@ -83,8 +83,8 @@ from atelier2.ports.provider_conversations import (
     ProviderConversationClosing,
     ProviderConversationComplete,
     ProviderConversationEnding,
-    ProviderFilesystemAnswer,
     ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
     ProviderFilesystemReply,
     ProviderFilesystemRequest,
     ProviderFilesystemRequestId,
@@ -205,6 +205,7 @@ _CLIENT_HANDSHAKE: JsonObject = {
     },
 }
 _REFUSED_FILE_MESSAGE = "this client refused the file"
+
 _UNANSWERABLE_FILE_MESSAGE = "this client cannot answer the file as text"
 _OVERSIZE_FILE_MESSAGE = "this client cannot answer a file that wide"
 _UNKNOWN_METHOD_MESSAGE = "this client does not serve that method"
@@ -213,6 +214,18 @@ _UNREADABLE_PARAMS_MESSAGE = "this client could not read that request"
 _WRITE_ACKNOWLEDGED: JsonObject = {}
 PROTOCOL_FAULT_EVIDENCE = "acp protocol fault: "
 """How a broken promise is named in the one step that keeps it."""
+
+
+def _refused_file_message(refusal: ProviderFilesystemRefusal, detail: str) -> str:
+    """The refusal in the provider's own error frame, named but never located.
+
+    The agent is told why -- its path left the lease, the policy said no -- so
+    it can choose another path or stop asking, and an unclassified fault names
+    its errno beside the word. Neither says where the lease stands.
+    """
+
+    named = f"{_REFUSED_FILE_MESSAGE}: {refusal.value}"
+    return f"{named} ({detail})" if detail else named
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,8 +320,10 @@ class AgentClientProtocolConversation:
         self, reply: ProviderFilesystemReply
     ) -> ProviderStandardInput:
         pending = self._files.pop(reply.request_id)
-        if reply.answer is ProviderFilesystemAnswer.REFUSED:
-            return self._file_refused(pending.identifier, _REFUSED_FILE_MESSAGE)
+        if reply.refusal is not None:
+            return self._file_refused(
+                pending.identifier, _refused_file_message(reply.refusal, reply.detail)
+            )
         if pending.effect is ProviderFilesystemEffect.WRITE:
             return self._answering(pending.identifier, _WRITE_ACKNOWLEDGED)
         if len(reply.content) > self.bounds.maximum_reply_bytes:

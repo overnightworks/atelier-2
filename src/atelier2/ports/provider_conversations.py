@@ -142,17 +142,82 @@ class ProviderFilesystemAnswer(StrEnum):
     REFUSED = "refused"
 
 
+class ProviderFilesystemRefusal(StrEnum):
+    """Why one file request was not answered, in words a provider may be told.
+
+    Every member names a finding about the request, never a host path: the
+    provider learns that its path left the lease or named a symlink, not where
+    the lease stands. `PERMISSION_REFUSED` is the one refusal that is not the
+    fence's -- the path was the workspace, and the bound policy said no.
+    """
+
+    PATH_LEFT_THE_LEASE = "path-left-the-lease"
+    PATH_NOT_ENCODABLE = "path-not-encodable"
+    PATH_NAMED_A_SYMLINK = "path-named-a-symlink"
+    PATH_CROSSED_A_MOUNT = "path-crossed-a-mount"
+    FILE_NOT_FOUND = "file-not-found"
+    ACCESS_DENIED = "access-denied"
+    FILE_IS_HARD_LINKED = "file-is-hard-linked"
+    NOT_A_REGULAR_FILE = "not-a-regular-file"
+    LEASED_DIRECTORY_CHANGED = "leased-directory-changed"
+    RESOLVED_FILE_CHANGED_IDENTITY = "resolved-file-changed-identity"
+    FILE_EXCEEDS_THE_CEILING = "file-exceeds-the-ceiling"
+    PROTECTED_PATH = "protected-path"
+    PARENT_MISSING = "parent-missing"
+    TARGET_IS_SYMLINK = "target-is-symlink"
+    PERMISSION_REFUSED = "permission-refused"
+    WORKSPACE_IO_FAILED = "workspace-io-failed"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderFilesystemReply:
-    """What came back for exactly one file request."""
+    """What came back for exactly one file request.
+
+    A refusal names why, so the conversation can tell the provider in its own
+    error frame rather than leaving it to guess. `detail` exists for exactly
+    one refusal: an unclassified I/O fault names its errno there so the
+    failure stays diagnosable -- never the host path a provider must not learn.
+    """
 
     request_id: ProviderFilesystemRequestId
     answer: ProviderFilesystemAnswer
     content: bytes = b""
+    refusal: ProviderFilesystemRefusal | None = None
+    detail: str = ""
 
     def __post_init__(self) -> None:
-        if self.content and self.answer is not ProviderFilesystemAnswer.ANSWERED:
+        answered = self.answer is ProviderFilesystemAnswer.ANSWERED
+        if answered and self.refusal is not None:
+            raise ValueError("an answered file request carries no refusal")
+        if not answered and self.refusal is None:
+            raise ValueError("a refused file request names why")
+        if self.content and not answered:
             raise ValueError("a refused file request carries no content")
+        if self.detail and (
+            self.refusal is not ProviderFilesystemRefusal.WORKSPACE_IO_FAILED
+        ):
+            raise ValueError("only a workspace I/O failure names its errno")
+
+
+class ProviderFilesystemAuthority(Protocol):
+    """Who authorises one file request before its effect, and keeps that answer.
+
+    `PermissionDecider`'s sibling for files, asked from inside the fence rather
+    than from the relay: only the access that resolves a path knows whether the
+    path is the workspace at all. A path that is, is `decide`d -- the bound
+    policy answers and the answer is kept before a byte moves. A path that is
+    not, is `refuse`d -- kept as a refusal under the same revision without the
+    policy being asked, because a grant recorded for a path that was never the
+    workspace would be an authorisation for something the policy never named.
+    """
+
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        """Answer exactly this question, and keep the answer before giving it."""
+        ...
+
+    def refuse(self, request: PermissionRequest) -> PermissionDecision:
+        """Keep this question as refused without judging it."""
+        ...
 
 
 class ProviderFilesystemAccess(Protocol):

@@ -95,7 +95,6 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentSession,
     PermissionDecider,
-    PrintModeExecutor,
     ProviderConversationBinding,
 )
 from atelier2.ports.durable_runs import (
@@ -107,7 +106,19 @@ from atelier2.ports.host_configuration import (
     ModelRegistryRevisionCreated,
     ModelRegistryRevisionExisting,
 )
-from atelier2.ports.provider_conversations import ProviderCancellationCause
+from atelier2.ports.provider_conversations import (
+    ProviderCancellationCause,
+    ProviderConversationBounds,
+    ProviderConversationClosing,
+    ProviderConversationEnding,
+    ProviderFilesystemAccess,
+    ProviderFilesystemAuthority,
+    ProviderFilesystemReply,
+    ProviderFilesystemRequest,
+    ProviderStandardInput,
+    ProviderTerminalOutcome,
+    ProviderTerminalReason,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152
@@ -773,7 +784,93 @@ def answering(
 
 
 @dataclass
-class RecordingAgentExecutorV2(PrintModeExecutor):
+class FilesTheExecutorMayNotReach:
+    """The access an executor puts into the conversation it opens.
+
+    Never answered: the dispatch replaces it with the deployment's own, so a
+    scenario whose request lands here has proven the executor granted itself
+    the workspace.
+    """
+
+    def answer(self, request: ProviderFilesystemRequest) -> ProviderFilesystemReply:
+        raise AssertionError(
+            f"the executor's own file access was reached for {request.path}"
+        )
+
+
+@dataclass
+class ConversationNobodyDrives:
+    """A `ProviderConversation` for a scenario whose session is faked.
+
+    It declares bounds -- the dispatch reads its reply bound to size the file
+    access -- and says nothing, because `FakeAgentSession` never relays it.
+    """
+
+    bounds: ProviderConversationBounds = field(
+        default_factory=lambda: ProviderConversationBounds(
+            SCENARIO_PROVIDER_FRAME_BYTES, 4_096, 4_096, 4_096, 8_192
+        )
+    )
+    incomplete_frame_bytes: int = 0
+
+    def open(self) -> tuple[()]:
+        return ()
+
+    def receive_output(self, chunk: bytes) -> tuple[()]:
+        del chunk
+        return ()
+
+    def input_written(self, written_bytes: int) -> tuple[()]:
+        del written_bytes
+        return ()
+
+    def answer_permission(self, decision: PermissionDecision) -> ProviderStandardInput:
+        del decision
+        return ProviderStandardInput(b"")
+
+    def answer_filesystem(
+        self, reply: ProviderFilesystemReply
+    ) -> ProviderStandardInput:
+        del reply
+        return ProviderStandardInput(b"")
+
+    def finish(self, ending: ProviderConversationEnding) -> ProviderConversationClosing:
+        del ending
+        return ProviderConversationClosing(
+            ProviderTerminalOutcome(ProviderTerminalReason.ENDED)
+        )
+
+
+SCENARIO_CONVERSING_REVISION = AgentExecutorRevision("scenario-conversation/v1")
+
+
+def conversation_nobody_drives() -> ProviderConversationBinding:
+    """The binding a conversing scenario executor opens, files left to the dispatch."""
+
+    return ProviderConversationBinding(
+        SCENARIO_CONVERSING_REVISION,
+        ConversationNobodyDrives(),
+        FilesTheExecutorMayNotReach(),
+    )
+
+
+def workspace_files_nobody_opens(
+    lease: AgentAttemptWorkspaceLease,
+    maximum_read_bytes: int,
+    authority: ProviderFilesystemAuthority,
+) -> ProviderFilesystemAccess:
+    """The opener a print-mode scenario hands the dispatch: never called.
+
+    A print-mode executor opens no conversation, so the dispatch has no files
+    to bind; reaching this is the dispatch binding files nobody can ask for.
+    """
+
+    del maximum_read_bytes, authority
+    raise AssertionError(f"no conversation was opened, yet files were bound to {lease}")
+
+
+@dataclass
+class RecordingAgentExecutorV2:
     output: bytes = b""
     requests: list[AgentExecutionRequestV2] = field(default_factory=list)
     lifecycle: list[str] = field(default_factory=list)
@@ -789,6 +886,8 @@ class RecordingAgentExecutorV2(PrintModeExecutor):
         default_factory=list
     )
     released_commands: list[AgentProcessCommand] = field(default_factory=list)
+    conversation: ProviderConversationBinding | None = None
+    """What `open_conversation` answers; print mode, by default."""
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         self.requests.append(request)
@@ -796,6 +895,15 @@ class RecordingAgentExecutorV2(PrintModeExecutor):
         if e2e_log_tab_request(request):
             return e2e_log_tab_command(request)
         return (self.command or emitting(self.output))(request)
+
+    def open_conversation(
+        self,
+        request: AgentExecutionRequestV2,
+        command: AgentProcessCommand,
+        lease: AgentAttemptWorkspaceLease,
+    ) -> ProviderConversationBinding | None:
+        del request, command, lease
+        return self.conversation
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -918,6 +1026,12 @@ class FakeAgentSession(AgentSession):
     answers: list[PermissionDecision] = field(default_factory=list)
     """What it was told, so a scenario can read the decision the run produced."""
 
+    file_requests: tuple[ProviderFilesystemRequest, ...] = ()
+    """The files this provider asks for, in order, after its permission questions."""
+
+    file_replies: list[ProviderFilesystemReply] = field(default_factory=list)
+    """What the bound access answered each file request with."""
+
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         return prepared_agent_attempt(execution)
 
@@ -927,7 +1041,6 @@ class FakeAgentSession(AgentSession):
         invocation: AgentProcessInvocation,
         permissions: PermissionDecider,
     ) -> AgentProcessCompletion:
-        del invocation
         for call_ordinal, (effect, scope) in enumerate(
             self.asks, start=MINIMUM_PERMISSION_CALL_ORDINAL
         ):
@@ -942,6 +1055,12 @@ class FakeAgentSession(AgentSession):
                     )
                 )
             )
+        if self.file_requests:
+            assert invocation.conversation is not None, (
+                "a scenario asking for files needs an executor that opened a conversation"
+            )
+            for request in self.file_requests:
+                self.file_replies.append(invocation.conversation.files.answer(request))
         return self.completion
 
     def cancel(
