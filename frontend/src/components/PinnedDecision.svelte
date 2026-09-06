@@ -6,7 +6,12 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import { waitAnswerText, type MutationJournal, type WaitMutation } from "../lib/mutationJournal";
+  import {
+    JournalUnreadableError,
+    waitAnswerText,
+    type MutationJournal,
+    type WaitMutation
+  } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runPath } from "../lib/route";
   import { runHasEnded } from "../lib/runState";
@@ -184,12 +189,13 @@
         nodeId,
         nodeExecutionId
       );
-    } catch {
-      // The journal itself could not be read (#914). This card has no door
-      // of its own out of a poisoned journal -- that is the page's to show,
-      // as the Workbench already does by never mounting this component
-      // while its own journal check stays open -- so this reports upward
-      // instead of writing the sentence into its own failure slot.
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
+      // The journal itself could not be read. This card has no door of its
+      // own out of a poisoned journal -- that is the page's to show, as the
+      // Workbench already does by never mounting this component while its
+      // own journal check stays open -- so this reports upward instead of
+      // writing the sentence into its own failure slot.
       onJournalPoisoned();
       return;
     }

@@ -9,6 +9,7 @@ import {
   cancelMutation,
   cancelMutationId,
   createCancelIdempotencyKey,
+  JournalUnreadableError,
   MutationJournal,
   type CancelMutation,
   type MutationDelivery
@@ -115,6 +116,11 @@ export async function deliverCancel(
     }
     return { kind: "cancelled", run: result.value };
   } catch (error) {
+    // The journal itself, not this delivery, refused: settling the failure
+    // would read it again and refuse identically, so this propagates the one
+    // true reason instead of `settleCancelFailure` masking it with a second,
+    // unrelated-looking throw from its own read.
+    if (error instanceof JournalUnreadableError) throw error;
     return settleCancelFailure(mutationJournal, mutation, error, fallbackMessage);
   }
 }
