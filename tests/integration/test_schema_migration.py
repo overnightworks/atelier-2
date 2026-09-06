@@ -558,11 +558,15 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         _PRODUCT_SCHEMA_FINGERPRINT_SHA256[52]
         == "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 53
+    assert (
+        _PRODUCT_SCHEMA_FINGERPRINT_SHA256[53]
+        == "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 54
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[53]
-        == "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[54]
+        == "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4"
     )
 
 
@@ -655,6 +659,8 @@ def _schema_object_names(connection: sqlite3.Connection) -> frozenset[str]:
 
 _REPUBLISHED_BY_A_LATER_HOP = (
     "agent_attempts",
+    "effect_intents",
+    "effect_receipts",
     "queue_project_policy_revisions",
     "queue_proposal_revisions",
 )
@@ -662,9 +668,10 @@ _REPUBLISHED_BY_A_LATER_HOP = (
 
 A store migrated to today crosses every remaining hop, not only the one a test
 is about: V50 and V53 rebuild the attempt table to widen its failure-code
-vocabulary, and V52 gives the queue policy its proposal defaults and every
-proposal the source that wrote it. Their declarations are therefore expected to
-differ afterwards; every row in them, and every other statement, is not.
+vocabulary, V52 gives the queue policy its proposal defaults and every proposal
+the source that wrote it, and V54 widens the effect tables' operation
+vocabulary. Their declarations are therefore expected to differ afterwards;
+every row in them, and every other statement, is not.
 """
 
 

@@ -80,6 +80,10 @@ from atelier2.adapters.dbos.schema import (
     published_revisions,
     reconcile_commands,
 )
+from atelier2.adapters.dbos.work_item_claims import (
+    WorkItemClaimLedger,
+    hold_work_item_claim,
+)
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
@@ -581,6 +585,7 @@ def register_durable_run_workflow(
     adapter: OpenEffectAdapterRegistry,
     effect_binding: tuple[EffectAdapterBinding, ...],
     project_id: ProjectId | None = None,
+    work_item_claims: WorkItemClaimLedger | None = None,
 ) -> None:
     effect_bindings = effect_binding
 
@@ -648,6 +653,40 @@ def register_durable_run_workflow(
             binding,
             executor,
             carrier,
+        )
+
+    def drive_agent_node(
+        binding: AgentNodeBindingV2,
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+    ) -> str:
+        """One Agent node from its preconditions to wherever the run stands next.
+
+        The executor is asked for first: a node no bound executor can start
+        ends on that, and posting a claim for work this host cannot begin
+        would leave a lane held for nothing.
+        """
+
+        attempt = agent_node_attempt(
+            binding, run_id, revision_hash, node_id, AGENT_ATTEMPT_ORDINAL
+        )
+        if attempt.executor is None:
+            return refuse_unavailable_executor(attempt.execution.request)
+        unclaimed = hold_work_item_claim(
+            datasource,
+            work_item_claims,
+            project_id,
+            binding,
+            run_id,
+            revision_hash,
+            node_id,
+        )
+        if unclaimed is not None:
+            return unclaimed
+        outcome = execute_v2_attempt(attempt.execution, attempt.executor, binding)
+        return continue_run_after(
+            outcome, binding, run_id, revision_hash, node_id, binding.round_ordinal
         )
 
     def continue_run_after(
@@ -930,24 +969,7 @@ def register_durable_run_workflow(
             _node_binding(datasource, typed_run_id, typed_revision, node_id, project)
         )
         if isinstance(binding, AgentNodeBindingV2):
-            attempt = agent_node_attempt(
-                binding,
-                typed_run_id,
-                typed_revision,
-                node_id,
-                AGENT_ATTEMPT_ORDINAL,
-            )
-            if attempt.executor is None:
-                return refuse_unavailable_executor(attempt.execution.request)
-            outcome = execute_v2_attempt(attempt.execution, attempt.executor, binding)
-            return continue_run_after(
-                outcome,
-                binding,
-                typed_run_id,
-                typed_revision,
-                node_id,
-                binding.round_ordinal,
-            )
+            return drive_agent_node(binding, typed_run_id, typed_revision, node_id)
         if isinstance(binding, ActionNodeBinding):
             logical_key = str(
                 datasource.run_tx_step(

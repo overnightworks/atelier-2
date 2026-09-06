@@ -1394,6 +1394,42 @@ def _restore_v43(database_path: Path) -> None:
         connection.execute(
             f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}"
         )
+        # V54 widened the effect operation vocabulary; a V43 store predates it.
+        for table, parked, triggers in (
+            (
+                schema_module.effect_receipts,
+                "effect_receipts_v54",
+                ("effect_receipts_no_update", "effect_receipts_no_delete"),
+            ),
+            (
+                schema_module.effect_intents,
+                "effect_intents_v54",
+                (
+                    "effect_intents_binding_no_update",
+                    "effect_intents_no_delete",
+                    "effect_intents_abandonment",
+                    "effect_intents_no_abandoned_insert",
+                ),
+            ),
+        ):
+            schema_module._rebuild_product_table(
+                connection,
+                table,
+                parked,
+                triggers,
+                schema_module.SCHEMA_VERSION,
+                53,
+            )
+        # V53 widened the attempt failure vocabulary; a V43 store predates it.
+        schema_module._rebuild_product_table(
+            connection,
+            schema_module.agent_attempts,
+            "agent_attempts_v53",
+            schema_module._AGENT_ATTEMPTS_TRIGGERS,
+            53,
+            52,
+            trigger_source=schema_module._V52_AGENT_ATTEMPT_TRIGGERS,
+        )
         # V50 widened the attempt failure vocabulary; a V43 store predates it.
         schema_module._rebuild_product_table(
             connection,
@@ -1486,7 +1522,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 53
+    assert report.target_version == SCHEMA_VERSION == 54
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:

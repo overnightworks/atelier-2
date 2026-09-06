@@ -987,12 +987,13 @@ def _unavailable_executor_refusal(
     connection: Connection,
     execution_id: NodeExecutionId,
 ) -> str | None:
-    """Read the terminal pre-attempt refusal written for a declared binding.
+    """Read the terminal pre-attempt refusal this node execution ended on.
 
-    This durable terminal event deliberately has no node receipt or attempt:
-    the executor was known to be unavailable before a provider invocation could
-    begin. Its product reason is nevertheless part of the run's own record,
-    rather than a fresh current-host recomputation.
+    Such a durable terminal event deliberately has no node receipt or attempt:
+    the node was stopped -- by an unavailable executor, or by a claim it could
+    not hold -- before a provider invocation could begin. Its product reason is
+    nevertheless part of the run's own record, rather than a fresh current-host
+    recomputation.
     """
     event = connection.execute(
         sa.select(run_events.c.payload).where(
@@ -1004,11 +1005,25 @@ def _unavailable_executor_refusal(
     ).one_or_none()
     if event is None:
         return None
-    if event.payload != AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode(
-        "ascii"
-    ):
-        return None
-    return AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+    refusal = AgentExecutionRefusal.named_by(bytes(event.payload))
+    return None if refusal is None else refusal.value
+
+
+def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None:
+    """Why this failure event says its node ended: its own word, or a receipt's.
+
+    A pre-attempt refusal is the event's whole payload and carries no receipt;
+    every other failure names an attempt whose stored receipt holds the reason.
+    """
+
+    refusal = AgentExecutionRefusal.named_by(event.payload)
+    if refusal is not None:
+        return refusal.value
+    return _node_receipt_refusal(
+        connection,
+        event.node_execution_id,
+        None if event.attempt_binding is None else event.attempt_binding.attempt_id,
+    )
 
 
 def _node_job_and_refusal(
@@ -2842,27 +2857,13 @@ class DbosQueries:
             raise RunTransitionConflict("V1 run carries an agent failure event")
         if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
             *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
-            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
+            *(refusal.value.encode("ascii") for refusal in AgentExecutionRefusal),
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
-            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+            _agent_failure_reason(connection, event)
             if event.event_kind is RunEventKind.AGENT_FAILED
-            and event.payload
-            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
-            else (
-                _node_receipt_refusal(
-                    connection,
-                    event.node_execution_id,
-                    (
-                        None
-                        if event.attempt_binding is None
-                        else event.attempt_binding.attempt_id
-                    ),
-                )
-                if event.event_kind is RunEventKind.AGENT_FAILED
-                else None
-            )
+            else None
         )
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,
