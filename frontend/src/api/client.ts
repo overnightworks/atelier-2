@@ -42,7 +42,6 @@ import {
   DefectiveRunRowResource,
   NodeDetailResource,
   NodeRailResource,
-  nodeRefusalOutputResourceValueBase64Max,
   NodeRefusalOutputResource,
   RunCancellabilityResource,
   RunForkOriginResource,
@@ -506,8 +505,9 @@ const runForkSuccessorSchema = RunForkSuccessorResource.extend({
  * boundary test still builds an at-cap fixture against it, and the API
  * facade -- not `generated/**`, which stays internal -- is where that stays.
  */
-export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS =
-  nodeRefusalOutputResourceValueBase64Max;
+export {
+  nodeRefusalOutputResourceValueBase64Max as MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
+} from "./generated/runsRailAndNodes.zod";
 
 const nodeRefusalOutputSchema = NodeRefusalOutputResource;
 
