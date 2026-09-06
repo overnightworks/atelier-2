@@ -35,6 +35,7 @@ from atelier2.api.references import (
     SHA256_HASH_PATTERN,
     SOURCE_COMMIT_PATTERN,
 )
+from atelier2.api.seat import SeatState
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
@@ -117,6 +118,27 @@ class HealthResource(ApiModel):
         exclude_if=lambda value: value is None,
         description="Named only once the auto-redeploy watcher has failed "
         "three or more ticks in a row, or its own status file is unreadable.",
+    )
+
+
+class SeatResource(ApiModel):
+    """This serve's terminal seat: whether it answers, and where.
+
+    The address is drawn fresh for every serve and told to nobody else: a page
+    that was never handed it cannot reach the seat, which is what a loopback
+    shell without a login has instead of a password.
+    """
+
+    state: SeatState
+    url: str | None = Field(
+        default=None,
+        description="Where the browser on this machine reaches the terminal; "
+        "named only while the seat is ALIVE.",
+    )
+    project_id: str | None = Field(
+        default=None,
+        description="Whose seat this is, so the terminal is never read as "
+        "another project's.",
     )
 
 

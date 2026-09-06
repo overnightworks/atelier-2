@@ -104,6 +104,12 @@ from atelier2.host.run_command import (
     execute_run,
     resolve_published_name,
 )
+from atelier2.host.seat_command import (
+    add_seat_arguments,
+    add_seat_parser,
+    declared_seat,
+    execute_seat,
+)
 from atelier2.host.serving import (
     HostSettings,
     # `serving` owns how the doors vector is composed -- door tools, server
@@ -276,6 +282,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return execute_definition_source(parsed)
     if parsed.command == "mcp":
         return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
+    if parsed.command == "seat":
+        return execute_seat(parsed)
     if parsed.command == "provider-canary":
         return _provider_canary(parser, parsed)
     parser.error("a command is required")
@@ -351,6 +359,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             grok_workspace_tools_start_refusal=grok.workspace_tools_start_refusal,
             codex_subscription=codex.settings,
             codex_start_refusal=codex.start_refusal,
+            terminal_seat=declared_seat(parsed),
         )
         settings = _atelier_doors_attested(settings)
     except ValueError as refusal:
@@ -960,6 +969,7 @@ def _argument_parser() -> argparse.ArgumentParser:
             "headless_with_tools capability reaches it"
         ),
     )
+    add_seat_arguments(serve_parser, required=False)
     serve_parser.add_argument("--codex-executable", type=Path)
     serve_parser.add_argument("--codex-credential-directory", type=Path)
     serve_parser.add_argument(
@@ -1025,6 +1035,7 @@ def _argument_parser() -> argparse.ArgumentParser:
         ),
     )
     add_definition_source_parser(commands)
+    add_seat_parser(commands)
     resolve_parser = commands.add_parser(
         "resolve",
         help="ask a served Atelier which revision a workflow name holds",

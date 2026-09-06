@@ -103,6 +103,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHas
 from atelier2.contracts.when import RECORDED_AT_PATTERN, recorded_instant
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
+from atelier2.host.served_seat import SeatDeclaration
 from atelier2.host.serving import (
     SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS,
     HostSettings,
@@ -363,6 +364,7 @@ def served_settings(
     project_id: ProjectId | None = None,
     project_root: Path | None = None,
     provider_probe_receipt_directory: Path | None = None,
+    terminal_seat: SeatDeclaration | None = None,
     **tuning: int,
 ) -> HostSettings:
     frontend = tmp_path / "frontend"
@@ -403,6 +405,7 @@ def served_settings(
         sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
         project_id=project_id,
         project_root=project_root,
+        terminal_seat=terminal_seat,
     )
 
 

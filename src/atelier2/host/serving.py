@@ -8,7 +8,6 @@ import selectors
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -95,6 +94,7 @@ from atelier2.api.limits import (
     base64_characters_for,
     durable_projection_limit,
 )
+from atelier2.api.seat import no_seat_declared
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.project_connections import (
     PlatformConnectionUnknown,
@@ -129,11 +129,20 @@ from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_TOOLS,
 )
 from atelier2.host.logging import configure_process_logging
+from atelier2.host.mcp_command import stdio_door_command
 from atelier2.host.provider_canary import (
     default_provider_canary_state_directory,
     provider_layer_digest,
 )
 from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
+from atelier2.host.served_seat import (
+    LocalSeatMachine,
+    SeatDeclaration,
+    ServedSeat,
+    seat_lifespan,
+    seat_settings,
+)
+from atelier2.host.terminal_seat import TerminalSeat
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentAttemptWorkspaceLease,
@@ -319,6 +328,12 @@ class HostSettings:
     # Overriding it is for isolating a fixture's own receipts, never for
     # turning the gate off -- `source_commit` above always travels with it.
     provider_probe_receipt_directory: Path | None = None
+    terminal_seat: SeatDeclaration | None = None
+    """The terminal seat this serve holds open, or none.
+
+    Declared once, here, because a seat is a process tree this deployment owns:
+    the session outlives the serve, the terminal server does not.
+    """
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -421,6 +436,13 @@ class HostSettings:
             raise ValueError(
                 "serving the Grok workspace-tool executor needs the Grok "
                 "deployment it is a second executor of"
+            )
+        if self.terminal_seat is not None and (
+            self.project_id is None or self.project_root is None
+        ):
+            raise ValueError(
+                "a terminal seat is one project's seat, opened where that "
+                "project lies, so it needs --project-id and --project-root"
             )
         if self.agent_scratch_root is not None and not billed:
             raise ValueError(
@@ -595,14 +617,7 @@ def _atelier_doors_settings(
         claude_subscription,
         CONDUCTOR_DOOR_SERVER_NAME,
         tuple(tool.value for tool in CONDUCTOR_DOOR_TOOLS),
-        (
-            sys.executable,
-            "-m",
-            "atelier2",
-            "mcp",
-            "--service",
-            _own_service_url(settings),
-        ),
+        stdio_door_command(_own_service_url(settings)),
     )
 
 
@@ -1210,6 +1225,50 @@ def _close_runtime_at_shutdown(
     return lifespan
 
 
+def _declared_seat(settings: HostSettings) -> ServedSeat | None:
+    """This deployment's seat, composed but not yet opened.
+
+    Its own lifespan opens it, because creating a session and starting a
+    terminal server are the serving process's side effects, not the
+    composition's -- a test that only builds an app starts no processes.
+    """
+
+    declaration = settings.terminal_seat
+    if declaration is None:
+        return None
+    if settings.project_id is None or settings.project_root is None:
+        raise ValueError("a terminal seat needs the project it belongs to")
+    return ServedSeat(
+        TerminalSeat(
+            seat_settings(
+                declaration,
+                project_id=settings.project_id,
+                project_root=settings.project_root,
+                database_path=settings.database_path,
+                service_url=_own_service_url(settings),
+            ),
+            LocalSeatMachine(),
+        ),
+        settings.project_id,
+    )
+
+
+def _serve_lifespan(
+    runtime: DbosRuntime, seat: ServedSeat | None, close_runtime_at_shutdown: bool
+) -> Lifespan[FastAPI] | None:
+    """What this application opens and closes with itself: its seat, its lease.
+
+    The seat's terminal server is innermost, so it is started after and
+    stopped before the runtime this deployment leases -- a terminal answering
+    a store that is already closing would be the one order that lies.
+    """
+
+    lifespan = None if seat is None else seat_lifespan(seat, None)
+    if not close_runtime_at_shutdown:
+        return lifespan
+    return _close_runtime_at_shutdown(runtime, lifespan)
+
+
 def compose_application(
     settings: HostSettings, *, close_runtime_at_shutdown: bool = False
 ) -> tuple[FastAPI, DbosRuntime]:
@@ -1246,9 +1305,8 @@ def compose_application(
         # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
-        lifespan = None
-        if close_runtime_at_shutdown:
-            lifespan = _close_runtime_at_shutdown(runtime, lifespan)
+        seat = _declared_seat(settings)
+        lifespan = _serve_lifespan(runtime, seat, close_runtime_at_shutdown)
         artifact_store = DbosArtifactStore(runtime.engine)
         app = create_app(
             source_commit=settings.source_commit,
@@ -1316,6 +1374,7 @@ def compose_application(
             event_poll_backoff=settings.event_poll_backoff,
             frontend_dist=settings.frontend_dist,
             served_project_id=settings.project_id,
+            seat_reader=no_seat_declared if seat is None else seat.reading,
         )
         runtime.launch()
         return app, runtime

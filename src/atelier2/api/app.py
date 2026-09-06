@@ -33,7 +33,9 @@ from atelier2.api.routes import (
     queue,
     revisions,
     runs,
+    seat,
 )
+from atelier2.api.seat import SeatReader, no_seat_declared
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
@@ -490,6 +492,28 @@ def bound_use_cases(
     )
 
 
+# The order of these router includes is the order of the published document's
+# `paths` keys, which the frozen artefact pins byte for byte.
+SERVED_ROUTERS = (
+    health,
+    seat,
+    agents,
+    artifacts,
+    revisions,
+    projects,
+    models,
+    project_source_connection,
+    runs,
+    events,
+    queue,
+)
+
+
+def _install_routers(app: FastAPI) -> None:
+    for served in SERVED_ROUTERS:
+        app.include_router(served.router)
+
+
 def create_app(
     *,
     source_commit: str,
@@ -499,6 +523,7 @@ def create_app(
     event_poll_backoff: EventPollBackoff,
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
+    seat_reader: SeatReader = no_seat_declared,
     lifespan: Lifespan[FastAPI] | None = None,
     source_id_generator: Callable[[], ProjectSourceId] = new_project_source_id,
     connection_clock: Callable[[], RecordedAt] = recorded_instant,
@@ -536,6 +561,7 @@ def create_app(
             source_commit=source_commit,
             source_tree=source_tree,
             serve_started_at=serve_started_at,
+            seat=seat_reader,
             use_cases=bound_use_cases(
                 ports,
                 workflow_projection_limit,
@@ -575,18 +601,7 @@ def create_app(
         include_in_schema=False,
     )
 
-    # The order of these router includes is the order of the published
-    # document's `paths` keys, which the frozen artefact pins byte for byte.
-    app.include_router(health.router)
-    app.include_router(agents.router)
-    app.include_router(artifacts.router)
-    app.include_router(revisions.router)
-    app.include_router(projects.router)
-    app.include_router(models.router)
-    app.include_router(project_source_connection.router)
-    app.include_router(runs.router)
-    app.include_router(events.router)
-    app.include_router(queue.router)
+    _install_routers(app)
 
     install_custom_openapi(app, limits)
     return app

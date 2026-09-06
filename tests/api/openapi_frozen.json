@@ -9691,6 +9691,54 @@
         "title": "SchemaRevisionResource",
         "type": "object"
       },
+      "SeatResource": {
+        "additionalProperties": false,
+        "description": "This serve's terminal seat: whether it answers, and where.\n\nThe address is drawn fresh for every serve and told to nobody else: a page\nthat was never handed it cannot reach the seat, which is what a loopback\nshell without a login has instead of a password.",
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whose seat this is, so the terminal is never read as another project's.",
+            "title": "Project Id"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SeatState"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the browser on this machine reaches the terminal; named only while the seat is ALIVE.",
+            "title": "Url"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "SeatResource",
+        "type": "object"
+      },
+      "SeatState": {
+        "description": "Whether this serve's seat has a terminal to show right now.",
+        "enum": [
+          "ALIVE",
+          "MISSING",
+          "FAILED"
+        ],
+        "title": "SeatState",
+        "type": "string"
+      },
       "SourceConnectionAuthMethod": {
         "description": "The credential method the operator chose at connect time.\n\nADR 0010 decision 2 specifies two methods; the App method joins here when\nits composition is built — deferred by naming, not by a placeholder field.",
         "enum": [
@@ -17422,6 +17470,38 @@
           }
         },
         "summary": "Get Schema Revision Route"
+      }
+    },
+    "/atelier/api/v1/seat": {
+      "get": {
+        "operationId": "seat_atelier_api_v1_seat_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeatResource"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInternalError"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          }
+        },
+        "summary": "Seat"
       }
     },
     "/atelier/api/v1/tool-grant-revisions": {
