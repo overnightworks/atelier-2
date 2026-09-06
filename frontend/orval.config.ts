@@ -106,6 +106,49 @@ const PROJECTS_SOURCES_AND_MODELS_ROOTS: readonly OperationRoot[] = [
   },
 ];
 
+const AUTH_AGENT_AND_QUEUE_ROOTS: readonly OperationRoot[] = [
+  {
+    path: "/atelier/api/v1/auth-profile-revisions",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/auth-profile-revisions",
+    method: "post",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/agent-configuration-revisions",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/agent-configuration-revisions",
+    method: "post",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/agent-definition-revisions",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/agent-definition-revisions",
+    method: "post",
+    keptStatuses: ["200", "201"],
+  },
+  {
+    path: "/atelier/api/v1/agent-definition-revisions/{agent_definition_revision_hash}",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+  {
+    path: "/atelier/api/v1/queue-items",
+    method: "get",
+    keptStatuses: ["200"],
+  },
+];
+
 function findRefs(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(findRefs);
   if (value && typeof value === "object") {
@@ -241,6 +284,18 @@ export default defineConfig({
     },
     output: {
       target: "./src/api/generated/projectsSourcesAndModels.zod.ts",
+      mode: "single",
+      client: "zod",
+      override: ZOD_SCHEMAS_ONLY,
+    },
+  },
+  authAgentAndQueue: {
+    input: {
+      target: "../tests/api/openapi_frozen.json",
+      override: { transformer: restrictToOperations(AUTH_AGENT_AND_QUEUE_ROOTS) },
+    },
+    output: {
+      target: "./src/api/generated/authAgentAndQueue.zod.ts",
       mode: "single",
       client: "zod",
       override: ZOD_SCHEMAS_ONLY,
