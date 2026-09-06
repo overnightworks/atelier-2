@@ -239,46 +239,49 @@ def _attempt_hash_fields(
     binding an ordinal-2 completion already has.
     """
 
-    if not (use_v2_hash or agent_receipt_bound):
-        return ()
-    cancellation_binding = (
-        attempt_binding
-        if isinstance(attempt_binding, RunEventCancellationBinding)
-        else None
-    )
-    attempt_id_field = (
-        b""
-        if attempt_binding is None
-        else attempt_binding.attempt_id.value.encode("ascii")
-    )
-    attempt_ordinal_field = str(
-        "" if attempt_binding is None else attempt_binding.attempt_ordinal
-    ).encode("ascii")  # persisted event-hash family
-    command_id_field = (
-        "" if cancellation_binding is None else cancellation_binding.command_id
-    ).encode("utf-8")
-    replacement_field = (
-        "" if cancellation_binding is None else cancellation_binding.replacement.value
-    ).encode("ascii")
-    disposition_field = (
-        ""
-        if cancellation_binding is None or cancellation_binding.disposition is None
-        else cancellation_binding.disposition.value
-    ).encode("ascii")
-    replacement_attempt_id_field = (
-        ""
-        if cancellation_binding is None
-        or cancellation_binding.replacement_attempt_id is None
-        else cancellation_binding.replacement_attempt_id.value
-    ).encode("ascii")
-    return (
-        attempt_id_field,
-        attempt_ordinal_field,
-        command_id_field,
-        replacement_field,
-        disposition_field,
-        replacement_attempt_id_field,
-    )
+    fields: list[bytes] = []
+    if use_v2_hash or agent_receipt_bound:
+        cancellation_binding = (
+            attempt_binding
+            if isinstance(attempt_binding, RunEventCancellationBinding)
+            else None
+        )
+        attempt_id_field = (
+            b""
+            if attempt_binding is None
+            else attempt_binding.attempt_id.value.encode("ascii")
+        )
+        attempt_ordinal_field = str(
+            "" if attempt_binding is None else attempt_binding.attempt_ordinal
+        ).encode("ascii")  # persisted event-hash family
+        command_id_field = (
+            "" if cancellation_binding is None else cancellation_binding.command_id
+        ).encode("utf-8")
+        replacement_field = (
+            ""
+            if cancellation_binding is None
+            else cancellation_binding.replacement.value
+        ).encode("ascii")
+        disposition_field = (
+            ""
+            if cancellation_binding is None or cancellation_binding.disposition is None
+            else cancellation_binding.disposition.value
+        ).encode("ascii")
+        replacement_attempt_id_field = (
+            ""
+            if cancellation_binding is None
+            or cancellation_binding.replacement_attempt_id is None
+            else cancellation_binding.replacement_attempt_id.value
+        ).encode("ascii")
+        fields = [
+            attempt_id_field,
+            attempt_ordinal_field,
+            command_id_field,
+            replacement_field,
+            disposition_field,
+            replacement_attempt_id_field,
+        ]
+    return tuple(fields)
 
 
 @dataclass(frozen=True)

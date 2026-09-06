@@ -247,23 +247,27 @@ def _blocker_for(
 ) -> QueueBlockerKind | None:
     """The one thing holding this item back, or nothing where nothing does.
 
-    A queue item carries at most one blocker at a time: the projection reads
-    it as a single reason, never a set of concurrent ones.
+    A queue item carries at most one blocker at a time, never several.
     """
 
     if state is QueueItemState.OBSERVED:
         return QueueBlockerKind.PRIORITY_UNSET
-    if proposal is None:
-        if state is QueueItemState.ADMITTED:
-            return QueueBlockerKind.LEGACY_REVIEW_REQUIRED
+    if proposal is None and state is not QueueItemState.ADMITTED:
         raise ValueError("a Phase-D queue state must carry its proposal")
+    if proposal is None:
+        return QueueBlockerKind.LEGACY_REVIEW_REQUIRED
     if state is QueueItemState.PROPOSED:
-        human_required = (
-            proposal.automation_disposition is QueueAutomationDisposition.HUMAN_REQUIRED
-        )
-        return QueueBlockerKind.HUMAN_REQUIRED if human_required else None
+        if proposal.automation_disposition is QueueAutomationDisposition.HUMAN_REQUIRED:
+            return QueueBlockerKind.HUMAN_REQUIRED
+        return None
     if launch_binding is not None:
         return None
+    return _blocker_for_unlaunched_prerequisites(connection, item_reference)
+
+
+def _blocker_for_unlaunched_prerequisites(
+    connection: Connection, item_reference: WorkItemReference
+) -> QueueBlockerKind | None:
     dependency_states = connection.execute(
         sa.select(runs.c.state)
         .select_from(
