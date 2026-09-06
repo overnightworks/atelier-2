@@ -36,3 +36,18 @@ class PageLimit:
                 f"page limit must be an integer from {MINIMUM_PAGE_ITEMS} "
                 f"to {MAXIMUM_PAGE_ITEMS}"
             )
+
+
+def require_page_limit(limit: object, subject: str) -> int:
+    """The bound every durable page reader checks before it queries a store.
+
+    `subject` is the words the raised message names ("revision", "run",
+    "event", "queue item", ...), so each adapter keeps its own wording without
+    restating the bound itself.
+    """
+    if type(limit) is not int or not MINIMUM_PAGE_ITEMS <= limit <= MAXIMUM_PAGE_ITEMS:
+        raise ValueError(
+            f"{subject} page limit must be an integer from {MINIMUM_PAGE_ITEMS} "
+            f"to {MAXIMUM_PAGE_ITEMS}"
+        )
+    return limit

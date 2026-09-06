@@ -25,7 +25,7 @@ from atelier2.adapters.dbos.schema import catalog_lineages, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, MINIMUM_PAGE_ITEMS
+from atelier2.contracts.pages import require_page_limit
 from atelier2.contracts.queue_projection import (
     QUEUE_PROJECTION_REVISION_OBSERVED,
     ConfirmQueueProposal,
@@ -757,13 +757,7 @@ class DbosQueueProjectionStore:
         | QueueReadUnavailable
         | DurableStateCorrupt
     ):
-        if (
-            type(limit) is not int
-            or not MINIMUM_PAGE_ITEMS <= limit <= MAXIMUM_PAGE_ITEMS
-        ):
-            raise ValueError(
-                f"queue item page limit must be an integer from {MINIMUM_PAGE_ITEMS} to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "queue item")
         try:
             with self._engine.connect() as connection:
                 statement = sa.select(queue_items).select_from(_QUEUE_START_ORDER_JOIN)
