@@ -27,11 +27,23 @@
   }
 
   function keepKeyboardOnRetry(node: HTMLButtonElement): void {
-    const { activeElement, body } = node.ownerDocument;
+    const ownerDocument = node.ownerDocument;
+    // A backgrounded tab reports the same empty focus as a rebuild that just
+    // took this control away, so where the keyboard stands is unknowable
+    // until the document holds it again: leave both the focus and the memory
+    // of it untouched rather than guess.
+    if (!ownerDocument.hasFocus()) return;
+    const { activeElement, body } = ownerDocument;
     const keyboardIsNowhere = activeElement === null || activeElement === body;
     retryHoldsKeyboard = retryHoldsKeyboard && keyboardIsNowhere;
     if (retryHoldsKeyboard) node.focus();
   }
+
+  // Confirmed truth ends the episode: the control leaves for good and the
+  // keyboard lands on the document, so a later failure of this same
+  // long-lived read must find nothing armed and raise its control as the
+  // unprompted first failure it is.
+  $: if (read.request.state === "idle") retryHoldsKeyboard = false;
 </script>
 
 <!--
