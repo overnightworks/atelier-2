@@ -101,6 +101,9 @@
   --rail-width: 13.125rem;
   --stage-width: 70rem;
   --reading-width: 42rem;
+  /* The terminal seat's own height: a working screenful of terminal, held by
+     the skin so a re-skin can change how much terminal the room shows. */
+  --seat-height: 24rem;
   --dialog-width: 30rem;
   --popover-width: 20rem;
   --name-column: 16rem;

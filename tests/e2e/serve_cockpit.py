@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext, ApiPorts
 from atelier2.api.limits import ApiLimits
+from atelier2.api.openapi import SEAT_PATH
 from atelier2.api.references import decode_public_run_reference
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
@@ -245,6 +247,27 @@ GENERATION_DRAIN_SECONDS = 60.0
 # in-flight request gets before the restart drops the sockets anyway; uvicorn
 # reads it as whole seconds.
 RESTART_CONNECTION_GRACE_SECONDS = 1
+# The seat this harness serves, and why it is a fixture rather than a seat.
+#
+# A real seat is a tmux server, a ttyd child and a transient systemd user
+# scope. The pipeline's runner image (`ubuntu-latest`) carries none of the
+# three -- no `tmux`, no `ttyd`, and no systemd user instance -- so a harness
+# that opened a real seat would fail there for the machine's reasons rather
+# than the cockpit's. This harness therefore serves its own terminal page and
+# answers the seat door with its address, and says so at startup instead of
+# quietly standing in for a seat.
+#
+# What that proves is the room: the frame, whose seat it is, the address it
+# reattaches to across a reload, the refusal below the readable width, and the
+# stage beside it. The session's own lifecycle is proven against the real
+# binaries in `tests/integration/test_terminal_seat_live.py`.
+E2E_SEAT_PATH = "/__e2e/seat"
+E2E_SEAT_ANNOUNCEMENT = (
+    "e2e harness: serving a fixture terminal at "
+    f"{E2E_SEAT_PATH} -- no real seat binaries are driven here"
+)
+E2E_SEAT_PROJECT_ID = "e2e-workshop"
+
 # The fake conductor's fixed round report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
@@ -850,6 +873,19 @@ def _published_schema_hash(result: object) -> str:
             raise RuntimeError(f"schema publication failed: {refused!r}")
 
 
+def _fixture_terminal_page(session: str) -> bytes:
+    """The harness's stand-in terminal: a running CLI line and a session mark."""
+
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        "<title>fixture terminal</title></head>"
+        '<body style="background:#111;color:#eee;font-family:monospace">'
+        '<pre id="terminal">$ claude\n'
+        "Atelier MCP connected - list_workflows, start_run, run_status\n"
+        f"seat session {session}</pre></body></html>"
+    ).encode()
+
+
 class BrowserProofHarness:
     def __init__(
         self,
@@ -867,6 +903,16 @@ class BrowserProofHarness:
         self.reset_state = reset_state
         self.drain_inflight = drain_inflight or (lambda: None)
         self.generation = 1
+        # One session marker for this harness process: a reload reaches the
+        # same terminal, exactly as reattaching to a living session does.
+        self.terminal_page = _fixture_terminal_page(secrets.token_hex(4))
+        self.seat_answer = json.dumps(
+            {
+                "state": "ALIVE",
+                "url": f"{E2E_SEAT_PATH}/",
+                "project_id": E2E_SEAT_PROJECT_ID,
+            }
+        ).encode()
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.stream_counts: dict[str, int] = {}
 
@@ -926,6 +972,38 @@ class BrowserProofHarness:
                 }
             )
             await send({"type": "http.response.body", "body": b""})
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path
+            in (
+                E2E_SEAT_PATH,
+                f"{E2E_SEAT_PATH}/",
+            )
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                }
+            )
+            await send({"type": "http.response.body", "body": self.terminal_page})
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path == SEAT_PATH
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": self.seat_answer})
             return
         if (
             scope["type"] == "http"
@@ -1371,6 +1449,8 @@ def main() -> None:
     harness_source_commit = e2e_source_commit()
     application_version = "r3-phase5-e2e"
     seed_boot_baseline(database, effects, application_version)
+
+    print(E2E_SEAT_ANNOUNCEMENT, file=sys.stderr, flush=True)
 
     holds = FakeProviderHolds()
     dbos_workflow.execute_agent_attempt = track_execute_agent_attempt(

@@ -283,6 +283,21 @@ const healthResourceSchema = z
   .strict();
 export type HealthResource = z.infer<typeof healthResourceSchema>;
 
+/**
+ * The wire shape `GET /seat` answers: whether this serve holds a terminal
+ * seat, and where the browser on this machine reaches it. The address is
+ * drawn per serve and told to nobody else, so it is read fresh rather than
+ * remembered.
+ */
+export const seatResourceSchema = z
+  .object({
+    state: z.enum(["ALIVE", "MISSING", "FAILED"]),
+    url: z.string().min(1).nullable().default(null),
+    project_id: z.string().min(1).nullable().default(null),
+  })
+  .strict();
+export type SeatResource = z.infer<typeof seatResourceSchema>;
+
 const providerIdSchema = z
   .string()
   .min(1)
@@ -2547,6 +2562,8 @@ interface HttpResult<T> {
 export interface CockpitApi {
   /** The cheap read #700's bounded recovery probe reuses -- no purpose-built endpoint. */
   health(signal?: AbortSignal): Promise<HealthResource>;
+  /** Whether this serve holds a terminal seat, and where it answers. */
+  getSeat(): Promise<SeatResource>;
   listRuns(after?: string, state?: RunV3["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
   getProjectSourceConnection(
@@ -2717,6 +2734,8 @@ export function createCockpitApi(
         [200],
         healthResourceSchema,
       ),
+    getSeat: () =>
+      requestJson(fetcher, "/atelier/api/v1/seat", {}, [200], seatResourceSchema),
     listRuns: (after?: string, state?: RunV3["state"]) =>
       requestJson(
         fetcher,

@@ -66,13 +66,10 @@
 
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>{PRODUCT_NAME}</title></svelte:head>
 
-<!-- The Workbench already speaks its own connection state through its ear
-     (HEART): the ear always names its state in one sentence of its own. A
-     second banner above it would be the same fact said twice, so only every
-     other room, which holds no such ear, shows this line (#700). -->
-{#if route.page !== "workbench"}
-  <ConnectionNotice />
-{/if}
+<!-- One line above every room, the Workbench included: the room that used to
+     speak its own connection state did so through the ear it no longer has
+     (#1099), and a terminal says nothing about the workshop's reachability. -->
+<ConnectionNotice />
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "workbench"}
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />
