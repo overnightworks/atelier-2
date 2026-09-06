@@ -979,14 +979,7 @@ class _DbosProcessOwner:
             if bound.leases > 0:
                 return
             try:
-                errors: list[BaseException] = []
-                ticker = bound.queue_sweep
-                if ticker is not None:
-                    bound.queue_sweep = None
-                    try:
-                        ticker.stop()
-                    except BaseException as error:
-                        errors.append(error)
+                errors: list[BaseException] = self._stopped_queue_sweep(bound)
                 try:
                     DBOS.destroy(
                         destroy_registry=True,
@@ -1029,6 +1022,24 @@ class _DbosProcessOwner:
                 raise errors[0]
             if errors:
                 raise BaseExceptionGroup("runtime close failed", errors)
+
+    @staticmethod
+    def _stopped_queue_sweep(bound: _BoundRuntime) -> list[BaseException]:
+        """Stop the sweep's clock before the binding it sweeps through goes.
+
+        Answers with what failed rather than raising it: a close collects
+        every independently failing step and reports them together.
+        """
+
+        ticker = bound.queue_sweep
+        if ticker is None:
+            return []
+        bound.queue_sweep = None
+        try:
+            ticker.stop()
+        except BaseException as error:
+            return [error]
+        return []
 
     def launch(self, bound: _BoundRuntime) -> None:
         with self._lock:
