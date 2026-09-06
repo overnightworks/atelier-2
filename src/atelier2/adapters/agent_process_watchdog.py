@@ -28,7 +28,6 @@ from atelier2.ports.provider_conversations import ProviderCancellationCause
 # four characters per three bytes -- beside its argv, environment and working
 # directory. Twice the input bound is that expansion with the rest of the
 # envelope's room left over, so every input this product admits can be launched.
-# As a literal it silently fell below a raised input bound instead.
 MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 2 * MAXIMUM_AGENT_PROCESS_INPUT_BYTES
 MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
 CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
@@ -37,12 +36,8 @@ CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
 # reads, and no control frame ever holds more than one of them.
 MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES = 65_536
 EXCHANGE_HOLD_SECONDS = CONTROL_FRAME_TIMEOUT_SECONDS
-"""How long an exchange with nothing to say waits before answering empty.
-
-The control channel's own patience for a single frame, reused: holding for it
-keeps a silent conversation at one round trip a second instead of a poll, and
-the parent waits twice as long for the answer as this watchdog holds it.
-"""
+"""Reusing the control channel's patience keeps a silent conversation at one
+round trip a second; the parent waits twice as long as this watchdog holds."""
 
 
 def encode_control_frame(payload: dict[str, object]) -> bytes:
@@ -78,12 +73,8 @@ _SLOT_OF_OPERATION = {
 """Which single-holder slot each control operation occupies while it runs."""
 
 _EXCHANGE_ENDINGS = ("COMPLETED", *_FRAMELESS_WAIT_ARMS, *sorted(_CANCELLATION_CAUSES))
-"""What an exchange reports once the process has ended.
-
-The wait vocabulary, plus the cause a cancellation named: a signal cannot say
-afterwards why it was sent, so the word the canceller used is carried through
-rather than reconstructed.
-"""
+"""The wait vocabulary, plus a cancellation's own cause: a signal cannot say
+afterwards why it was sent, so the canceller's own word carries through."""
 
 MAXIMUM_AGENT_FRAMELESS_WAIT_RESPONSE_BYTES = max(
     len(encode_control_frame({"type": arm})) for arm in _FRAMELESS_WAIT_ARMS
@@ -123,11 +114,8 @@ MAXIMUM_AGENT_EXCHANGE_RESPONSE_BYTES = len(
         }
     )
 ) + _base64_characters(MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES)
-"""What one exchange response may reach: a pipe read inside its widest envelope.
-
-Measured rather than spelled, so a raised read size or a longer ending name
-moves this bound with it instead of silently outgrowing a literal.
-"""
+"""Measured, not spelled, so a raised read size or longer ending name grows
+this bound with it instead of silently outgrowing a literal."""
 
 
 class _CoordinatorState(StrEnum):
@@ -243,19 +231,38 @@ class Watchdog:
         if self._termination_owner is None:
             self._begin_termination("SUPERVISION", now)
         elif not self._publish_recovery_handoff(now):
+            self._drain_recovery_handoff()
             self._state = _CoordinatorState.FINALIZING
+
+    def _drain_recovery_handoff(self) -> None:
+        """A tick dying in supervision never reaches a select worth calling,
+        so this asks the selector directly, bounded by each connection's own
+        existing deadline rather than a new one."""
+
+        while self._handoff_pending():
+            now = time.monotonic()
+            try:
+                events = self._selector.select(CONTROL_FRAME_TIMEOUT_SECONDS)
+            except OSError:
+                return
+            for key, mask in events:
+                if isinstance(key.data, _Connection) and mask & selectors.EVENT_WRITE:
+                    self._write_connection(key.data, now)
+            self._expire_connections(time.monotonic())
+
+    def _handoff_pending(self) -> bool:
+        return any(
+            connection.output_bytes is not None
+            for connection in self._connections.values()
+            if connection.operation in {"WAIT", "CANCEL"}
+        )
 
     def _tick(self) -> None:
         now = time.monotonic()
         self._expire_connections(now)
         self._advance_process(now)
         self._service_pending_exchange(now)
-        timeout = self._next_timeout(now)
-        try:
-            events = self._selector.select(timeout)
-        except OSError:
-            self._begin_termination("SUPERVISION", now)
-            return
+        events = self._selector.select(self._next_timeout(now))
         for key, mask in events:
             if key.data == "server":
                 self._accept_connection(now)
@@ -354,12 +361,10 @@ class Watchdog:
             return
         slot = _SLOT_OF_OPERATION.get(operation)
         if state.refuse_as_busy and slot != _TERMINAL_CONTROL_SLOT:
-            # A stop is why the busy refusal is read to its end rather than
-            # answered at the door: the relay reconnects for every exchange, so
-            # a cancellation racing one of those connections would otherwise be
-            # sent away and cost a retry -- a second in which nothing is
-            # signalled. One terminal control passes; its own slot still holds
-            # it to one at a time, and everything else is refused as before.
+            # A busy refusal is read to its end, not answered at the door,
+            # because the relay reconnects per exchange: a cancellation racing
+            # one of those connections would otherwise cost a retry -- a
+            # second where nothing is signalled. One terminal control passes.
             self._queue_response(state, {"type": "BUSY"}, now)
             return
         if slot is None:
@@ -384,6 +389,18 @@ class Watchdog:
             self._handle_exchange(state, request, now)
         else:
             self._handle_finalize(state, now)
+        if state.output_bytes is None:
+            self._stop_reading(state)
+
+    def _stop_reading(self, connection: _Connection) -> None:
+        """Left registered, an end of file the kernel keeps reporting readable
+        fires on every tick until there is a reply -- for a WAIT, that can be
+        the run's whole remaining lifetime."""
+
+        try:
+            self._selector.unregister(connection.socket)
+        except (KeyError, ValueError):
+            pass
 
     def _handle_launch(
         self,
@@ -512,12 +529,10 @@ class Watchdog:
     def _handle_exchange(
         self, connection: _Connection, request: dict[str, Any], now: float
     ) -> None:
-        """The parent counts in cumulative bytes on both directions, so an
-        exchange the control channel had to retry delivers no byte twice: what
-        this watchdog already accepted is skipped, and what it already sent is
-        simply sent again. It answers as soon as the child said something or
-        ended, and otherwise once its hold is up -- never a poll, never a wait
-        without an end.
+        """Counting in cumulative bytes on both directions means a retried
+        exchange delivers no byte twice: skip what is already accepted, resend
+        what is already sent. It answers on the child's word, its end, or its
+        hold expiring -- never a poll, never a wait without an end.
         """
 
         if not self._duplex:
@@ -579,11 +594,9 @@ class Watchdog:
         )
 
     def _exchange_ending(self) -> str | None:
-        """A reaped child answers `COMPLETED` even when a cancellation is what
-        reaped it, so termination is asked first: to a conversation, output
-        that stopped because someone stopped the process is not output that
-        simply ran out.
-        """
+        """A reaped child answers `COMPLETED` even when a cancellation reaped
+        it, so termination is asked first: output a cancellation stopped is
+        not output that simply ran out."""
 
         if self._wait_response is None:
             return None
@@ -881,8 +894,11 @@ class Watchdog:
         connection.output_bytes = response
         connection.output_offset = 0
         connection.response_deadline = now + CONTROL_FRAME_TIMEOUT_SECONDS
+        self._stop_reading(connection)
         try:
-            self._selector.modify(connection.socket, selectors.EVENT_WRITE, connection)
+            self._selector.register(
+                connection.socket, selectors.EVENT_WRITE, connection
+            )
         except (KeyError, ValueError):
             self._close_connection(connection)
 
@@ -920,10 +936,9 @@ class Watchdog:
         connection.socket.close()
 
     def _rest_standard_input(self) -> None:
-        """A print-mode child is told everything at once, so a drained input is a
-        finished one and end of file is what it waits for. A conversation's
-        child is told more later, so its pipe stays open -- unwatched, because
-        a writable pipe nobody has anything for would wake this selector
+        """A print-mode child, told everything at once, is finished once
+        drained; a conversation's child hears more later, so its pipe stays
+        open -- unwatched, since nothing to send would wake the selector
         without end.
         """
 
@@ -955,10 +970,9 @@ class Watchdog:
         return len(self._standard_input) - self._standard_input_offset
 
     def _drop_unwritten_input(self) -> None:
-        """A stop drops whatever the child never took, so those bytes leave the
-        count of what it has: a conversation that heard them acknowledged
-        would be told the provider received an answer that in fact went
-        nowhere.
+        """A stop drops what the child never took, uncounting it: told those
+        bytes were acknowledged, a conversation would believe an answer
+        arrived that in fact went nowhere.
         """
 
         self._delivered_input_bytes -= self._unwritten_input_bytes()
@@ -966,12 +980,11 @@ class Watchdog:
         self._standard_input_offset = 0
 
     def _written_input_bytes(self) -> int:
-        """The acknowledgement a conversation is held to its input bound by: bytes
-        this watchdog merely buffered are still the relay's to count, or the
-        bound the executor declared would end at this side of a pipe a child
-        never reads and the real backlog would grow behind it. What a launch
-        handed over is written before any of them, so while that payload is
-        still going out nothing of the relay's has left.
+        """What a conversation is held to its input bound by: bytes only
+        buffered here still count as the relay's, or the executor's declared
+        bound would end at a pipe a child never reads while the backlog grows
+        behind it. A launch's own payload is written first, so it counts
+        before the relay's.
         """
 
         return max(0, self._delivered_input_bytes - self._unwritten_input_bytes())
@@ -995,11 +1008,10 @@ class Watchdog:
         )
 
     def _write_cancellation_frame(self) -> None:
-        """The frame was composed while the conversation still ran, so stopping
-        costs no round trip through it. What does not fit the pipe right now is
-        dropped rather than waited for: the signal that follows in this same
-        selector turn is the actual stop, and a cancellation that waited on a
-        full pipe would be a cancellation a stuck child could postpone.
+        """Composed while the conversation still ran, stopping costs no round
+        trip through it. What does not fit the pipe now is dropped, not waited
+        for: the signal in this same turn is the real stop, and waiting on a
+        full pipe would let a stuck child postpone its own cancellation.
         """
 
         descriptor = self._standard_input_descriptor()
@@ -1040,9 +1052,8 @@ class Watchdog:
 def _decode_launch_request(
     request: dict[str, Any],
 ) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int, bool]:
-    # `duplex` is named only by a launch that opens a conversation, so a
-    # print-mode launch frame is byte-for-byte the one this watchdog has always
-    # been given.
+    # `duplex` is named only by a conversation launch, so a print-mode frame
+    # stays byte-for-byte the one this watchdog has always been given.
     if set(request) - {"duplex"} != {
         "arguments",
         "environment",
@@ -1052,9 +1063,8 @@ def _decode_launch_request(
         "working_directory",
         "working_directory_identity",
     }:
-        # A watchdog of an older build refuses a request carrying the identity
-        # rather than launching without checking it. Both sides land together;
-        # this is the net under the mixed state, not the ordinary path.
+        # An older-build watchdog refuses a request naming the identity rather
+        # than launching unchecked: the net under a mixed deploy, not the norm.
         raise ValueError("launch request has unexpected fields")
     arguments_value = request["arguments"]
     if (

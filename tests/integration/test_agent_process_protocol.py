@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
+    AgentAttemptId,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
@@ -201,39 +202,190 @@ def test_recovery_handoff_publication_and_retries_reuse_cached_bytes(
         os.close(owner_writer)
 
 
-def test_serve_reaches_finalizing_after_bounded_persistent_tick_failures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A `_tick()` that never stops raising must not spin `serve()` forever.
-
-    The bound is asserted from inside the fake tick itself: past it, the fake
-    raises `AssertionError` instead of `OSError`, so a coordinator that never
-    reaches `FINALIZING` fails this test promptly instead of hanging it.
+class _SpySelector:
+    """A real selector, plus what `serve()` handed it: the one seam a test
+    can fail or read without calling anything of Watchdog's own.
     """
 
-    endpoint = tmp_path / "control.sock"
-    owner_pipe, owner_writer = os.pipe()
-    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
-    tick_calls = 0
-    maximum_tolerated_ticks = 10
+    def __init__(self, before_select: Callable[[int], None] | None = None) -> None:
+        self._real: selectors.BaseSelector = selectors.DefaultSelector()
+        self._before_select = before_select
+        self.registered_events: dict[int, int] = {}
+        self.select_calls = 0
 
-    def persistently_failing_tick() -> None:
-        nonlocal tick_calls
-        tick_calls += 1
-        if tick_calls > maximum_tolerated_ticks:
+    def register(self, fileobj: Any, events: int, data: object = None) -> Any:
+        key = self._real.register(fileobj, events, data)
+        self.registered_events[key.fd] = events
+        return key
+
+    def unregister(self, fileobj: Any) -> Any:
+        key = self._real.unregister(fileobj)
+        self.registered_events.pop(key.fd, None)
+        return key
+
+    def select(self, timeout: float | None = None) -> list[Any]:
+        self.select_calls += 1
+        if self._before_select is not None:
+            self._before_select(self.select_calls)
+        return self._real.select(timeout)
+
+    def close(self) -> None:
+        self._real.close()
+
+
+class _FailNextSelects:
+    """A `before_select` hook that fails a fixed run of calls once armed."""
+
+    def __init__(self) -> None:
+        self.remaining = 0
+
+    def arm(self, failures: int) -> None:
+        self.remaining = failures
+
+    def __call__(self, _call_number: int) -> None:
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise OSError("selector is broken")
+
+
+def test_serve_reaches_finalizing_when_select_keeps_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selector that never stops erroring must not spin `serve()` forever.
+
+    The bound is asserted from inside the fake `select()` itself: past it, the
+    fake raises `AssertionError` instead of `OSError`, so a coordinator that
+    never reaches `FINALIZING` fails this test promptly instead of hanging it.
+    """
+
+    maximum_tolerated_selects = 10
+
+    def fail_every_select(call_number: int) -> None:
+        if call_number > maximum_tolerated_selects:
             raise AssertionError(
-                "serve() kept ticking past the bound without reaching FINALIZING"
+                "serve() kept selecting past the bound without reaching FINALIZING"
             )
-        raise OSError("descriptor of the long-dead child is gone")
+        raise OSError("selector is broken")
 
-    monkeypatch.setattr(watchdog, "_tick", persistently_failing_tick)
+    spy = _SpySelector(fail_every_select)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
     try:
         watchdog.serve(lambda: None)
     finally:
         os.close(owner_writer)
 
     assert watchdog._state is watchdog_module._CoordinatorState.FINALIZING
-    assert tick_calls <= maximum_tolerated_ticks
+    assert spy.select_calls <= maximum_tolerated_selects
+
+
+def test_a_wait_past_end_of_file_does_not_spin_the_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A WAIT already at end of file must not keep firing the selector readable.
+
+    Left registered for read, an end of file the kernel keeps reporting
+    readable returns from `select()` instantly, forever; correctly stopped,
+    five more calls each cost close to their own idle timeout. The elapsed
+    time is the fact a hot loop would erase, not a hope that a fixed delay
+    was long enough.
+    """
+
+    calls_since_eof = [0]
+    reached_five_more_calls = threading.Event()
+
+    def count_calls_after_eof(_call_number: int) -> None:
+        if calls_since_eof[0] > 0:
+            calls_since_eof[0] += 1
+            if calls_since_eof[0] >= 5:
+                reached_five_more_calls.set()
+
+    spy = _SpySelector(count_calls_after_eof)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    waiting: socket.socket | None = None
+    try:
+        waiting = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        )
+        _wait_until(lambda: "WAIT" in watchdog._slots)
+        fd = watchdog._slots["WAIT"]
+        assert fd not in spy.registered_events
+
+        calls_since_eof[0] = 1
+        started_at = time.monotonic()
+        assert reached_five_more_calls.wait(timeout=2)
+
+        assert time.monotonic() - started_at > 0.1
+    finally:
+        if waiting is not None:
+            waiting.close()
+        os.close(owner_writer)
+        thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_recovery_handoff_is_fully_written_before_the_socket_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FINALIZING` waits for the handoff to reach its connection.
+
+    Publishing only queues the bytes; a third failure that finalized before
+    they were ever written would hand the next owner nothing, on a connection
+    its own `finally` had by then closed.
+    """
+
+    fault = _FailNextSelects()
+    spy = _SpySelector(fault)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
+    provider_ready = tmp_path / "provider-ready"
+    provider = subprocess.Popen(
+        (
+            sys.executable,
+            "-c",
+            "import signal,sys; from pathlib import Path; signal.signal(signal.SIGTERM, lambda *_: None); Path(sys.argv[1]).touch()\nwhile True:\n signal.pause()",
+            str(provider_ready),
+        ),
+        start_new_session=True,
+    )
+    _wait_until(provider_ready.exists)
+    owner_pipe, owner_writer = os.pipe()
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 0.1)
+    watchdog._process = provider
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
+    waiting: socket.socket | None = None
+    try:
+        waiting = _send_without_reading(
+            endpoint, encode_control_frame({"operation": "WAIT"})
+        )
+        _wait_until(lambda: "WAIT" in watchdog._slots)
+
+        fault.arm(3)
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert _receive_control(waiting) == {"type": "RECOVERY_HANDOFF"}
+    finally:
+        if waiting is not None:
+            waiting.close()
+        os.close(owner_writer)
+        if provider.poll() is None:
+            os.killpg(provider.pid, signal.SIGKILL)
+        provider.wait(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert errors == []
 
 
 def test_provider_stream_error_deregisters_the_descriptor(
@@ -246,35 +398,42 @@ def test_provider_stream_error_deregisters_the_descriptor(
     for free -- the same failure, at no cost in wall time, spinning the loop.
     """
 
+    spy = _SpySelector()
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
+    endpoint = tmp_path / "control.sock"
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cgroup.events").write_text("populated 1\n", encoding="ascii")
     owner_pipe, owner_writer = os.pipe()
-    watchdog = Watchdog(tmp_path / "control.sock", tmp_path / "cgroup", owner_pipe, 0.1)
-    read_end, write_end = os.pipe()
-    os.set_blocking(read_end, False)
-    watchdog._provider_streams[read_end] = "stdout"
-    watchdog._selector.register(read_end, selectors.EVENT_READ, "stdout")
-    real_read = os.read
-
-    def fail_on_the_dead_descriptor(descriptor: int, size: int) -> bytes:
-        if descriptor == read_end:
-            raise OSError("bad file descriptor")
-        return real_read(descriptor, size)
-
-    monkeypatch.setattr(os, "read", fail_on_the_dead_descriptor)
+    watchdog = Watchdog(endpoint, cgroup, owner_pipe, 5.0)
+    errors: list[Exception] = []
+    thread = _start_wire_watchdog(watchdog, endpoint, errors)
     try:
-        watchdog._service_provider(read_end, "stdout", selectors.EVENT_READ, 1.0)
+        invocation = process_invocation(
+            AgentAttemptId.of(b"watchdog-descriptor-error-test"),
+            (sys.executable, "-c", "import time; time.sleep(60)"),
+            tmp_path / "workspace",
+        )
+        launch_frame = encode_control_frame(process_module._launch_request(invocation))
+        assert _request_control_bytes(endpoint, launch_frame) == encode_control_frame(
+            {"type": "STARTED"}
+        )
+        process = watchdog._process
+        assert process is not None and process.stdout is not None
+        stdout_fd = process.stdout.fileno()
+        assert stdout_fd in spy.registered_events
 
-        assert read_end not in watchdog._provider_streams
-        with pytest.raises(KeyError):
-            watchdog._selector.get_key(read_end)
+        os.close(stdout_fd)
+        _wait_until(lambda: stdout_fd not in spy.registered_events)
     finally:
-        watchdog._selector.close()
-        os.close(owner_pipe)
+        if watchdog._process is not None and watchdog._process.poll() is None:
+            os.killpg(watchdog._process.pid, signal.SIGKILL)
+            watchdog._process.wait(timeout=5)
         os.close(owner_writer)
-        os.close(write_end)
-        try:
-            os.close(read_end)
-        except OSError:
-            pass
+        thread.join(timeout=5)
+        endpoint.unlink(missing_ok=True)
+    assert not thread.is_alive()
+    assert errors == []
 
 
 def test_running_watchdog_bounds_four_control_roles_independently(
