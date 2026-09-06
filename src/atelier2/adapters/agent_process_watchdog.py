@@ -231,20 +231,23 @@ class Watchdog:
         if self._termination_owner is None:
             self._begin_termination("SUPERVISION", now)
         elif not self._publish_recovery_handoff(now):
-            self._drain_recovery_handoff()
-            self._state = _CoordinatorState.FINALIZING
+            try:
+                self._drain_recovery_handoff()
+            finally:
+                self._state = _CoordinatorState.FINALIZING
 
     def _drain_recovery_handoff(self) -> None:
         """A tick dying in supervision never reaches a select worth calling,
-        so this asks the selector directly, bounded by each connection's own
-        existing deadline rather than a new one."""
+        so this asks the selector directly: a failure here is not a delivery
+        failure, so it keeps trying rather than dropping queued bytes, bounded
+        by each connection's own existing deadline, not a new one."""
 
         while self._handoff_pending():
             now = time.monotonic()
             try:
-                events = self._selector.select(CONTROL_FRAME_TIMEOUT_SECONDS)
-            except OSError:
-                return
+                events = self._selector.select(self._next_timeout(now))
+            except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+                events = ()
             for key, mask in events:
                 if isinstance(key.data, _Connection) and mask & selectors.EVENT_WRITE:
                     self._write_connection(key.data, now)
@@ -530,10 +533,8 @@ class Watchdog:
         self, connection: _Connection, request: dict[str, Any], now: float
     ) -> None:
         """Counting in cumulative bytes on both directions means a retried
-        exchange delivers no byte twice: skip what is already accepted, resend
-        what is already sent. It answers on the child's word, its end, or its
-        hold expiring -- never a poll, never a wait without an end.
-        """
+        exchange delivers no byte twice: skip what is accepted, resend what is
+        sent. It answers on the child's word, its end, or its hold expiring."""
 
         if not self._duplex:
             self._queue_response(connection, {"type": "MALFORMED"}, now)
@@ -938,9 +939,7 @@ class Watchdog:
     def _rest_standard_input(self) -> None:
         """A print-mode child, told everything at once, is finished once
         drained; a conversation's child hears more later, so its pipe stays
-        open -- unwatched, since nothing to send would wake the selector
-        without end.
-        """
+        open -- unwatched, since nothing to send would wake the selector."""
 
         if not self._duplex:
             self._close_provider_stream("stdin")

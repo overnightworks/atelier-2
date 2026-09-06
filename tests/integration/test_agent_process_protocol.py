@@ -207,9 +207,14 @@ class _SpySelector:
     can fail or read without calling anything of Watchdog's own.
     """
 
-    def __init__(self, before_select: Callable[[int], None] | None = None) -> None:
+    def __init__(
+        self,
+        before_select: Callable[[int], None] | None = None,
+        after_select: Callable[[list[Any]], None] | None = None,
+    ) -> None:
         self._real: selectors.BaseSelector = selectors.DefaultSelector()
         self._before_select = before_select
+        self._after_select = after_select
         self.registered_events: dict[int, int] = {}
         self.select_calls = 0
 
@@ -227,7 +232,10 @@ class _SpySelector:
         self.select_calls += 1
         if self._before_select is not None:
             self._before_select(self.select_calls)
-        return self._real.select(timeout)
+        events = self._real.select(timeout)
+        if self._after_select is not None:
+            self._after_select(events)
+        return events
 
     def close(self) -> None:
         self._real.close()
@@ -246,6 +254,30 @@ class _FailNextSelects:
         if self.remaining > 0:
             self.remaining -= 1
             raise OSError("selector is broken")
+
+
+class _SteppedSelects:
+    """A `before_select` hook that, once armed, blocks each call for release.
+
+    A test drives exactly one `select()` at a time this way, so a fixed
+    number of ticks is a fact rather than a race against a background loop.
+    """
+
+    def __init__(self) -> None:
+        self._armed = False
+        self._release = threading.Event()
+
+    def arm(self) -> None:
+        self._armed = True
+
+    def release(self) -> None:
+        self._release.set()
+
+    def __call__(self, _call_number: int) -> None:
+        if not self._armed:
+            return
+        assert self._release.wait(timeout=5)
+        self._release.clear()
 
 
 def test_serve_reaches_finalizing_when_select_keeps_failing(
@@ -286,22 +318,14 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
     """A WAIT already at end of file must not keep firing the selector readable.
 
     Left registered for read, an end of file the kernel keeps reporting
-    readable returns from `select()` instantly, forever; correctly stopped,
-    five more calls each cost close to their own idle timeout. The elapsed
-    time is the fact a hot loop would erase, not a hope that a fixed delay
-    was long enough.
+    readable would put the fd in every `select()` result forever. Five ticks
+    are stepped one at a time, each one's own result set checked directly,
+    rather than racing a clock against a loop that might be spinning.
     """
 
-    calls_since_eof = [0]
-    reached_five_more_calls = threading.Event()
-
-    def count_calls_after_eof(_call_number: int) -> None:
-        if calls_since_eof[0] > 0:
-            calls_since_eof[0] += 1
-            if calls_since_eof[0] >= 5:
-                reached_five_more_calls.set()
-
-    spy = _SpySelector(count_calls_after_eof)
+    stepper = _SteppedSelects()
+    result_sets: list[list[Any]] = []
+    spy = _SpySelector(before_select=stepper, after_select=result_sets.append)
     monkeypatch.setattr(selectors, "DefaultSelector", lambda: spy)
     endpoint = tmp_path / "control.sock"
     owner_pipe, owner_writer = os.pipe()
@@ -317,11 +341,15 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
         fd = watchdog._slots["WAIT"]
         assert fd not in spy.registered_events
 
-        calls_since_eof[0] = 1
-        started_at = time.monotonic()
-        assert reached_five_more_calls.wait(timeout=2)
+        stepper.arm()
+        for _ in range(5):
+            recorded = len(result_sets)
+            stepper.release()
+            _wait_until(lambda recorded=recorded: len(result_sets) > recorded)
 
-        assert time.monotonic() - started_at > 0.1
+        assert len(result_sets) == 5
+        for events in result_sets:
+            assert all(key.fd != fd for key, _mask in events)
     finally:
         if waiting is not None:
             waiting.close()
