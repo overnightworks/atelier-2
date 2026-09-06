@@ -193,14 +193,6 @@ def test_the_order_tools_are_typed_in_does_not_change_the_definition() -> None:
         pytest.param(
             f"name: {AUTHORED_NAME}\n"
             f"description: {AUTHORED_DESCRIPTION}\n"
-            "color: cyan\n",
-            AgentDefinitionRefusal.FIELD_UNKNOWN,
-            "color",
-            id="unknown-field",
-        ),
-        pytest.param(
-            f"name: {AUTHORED_NAME}\n"
-            f"description: {AUTHORED_DESCRIPTION}\n"
             f"name: {AUTHORED_NAME}-again\n",
             AgentDefinitionRefusal.FIELD_DUPLICATED,
             AgentDefinitionField.NAME.value,
@@ -264,6 +256,47 @@ def test_a_refused_frontmatter_names_what_it_refuses(
     frontmatter: str, refusal: AgentDefinitionRefusal, subject: str
 ) -> None:
     assert refusal_of(authored_document(frontmatter=frontmatter)) == (refusal, subject)
+
+
+def _provider_native_document(*, body: str = AUTHORED_PROMPT) -> bytes:
+    return (
+        "---\n"
+        f"description: {AUTHORED_DESCRIPTION}\n"
+        f"name: {AUTHORED_NAME}\n"
+        "permissionMode: acceptEdits\n"
+        "skills:\n  - reviewing\n  - drafting\n"
+        "---\n"
+        f"{body}"
+    ).encode()
+
+
+def test_a_provider_native_key_the_atelier_does_not_model_is_accepted() -> None:
+    definition = parse_agent_definition(_provider_native_document())
+
+    assert definition.name == AUTHORED_NAME
+    assert definition.description == AUTHORED_DESCRIPTION
+    assert definition.model is None
+    assert definition.tools == UnrestrictedTools()
+
+
+def test_a_provider_native_keys_hash_is_stable() -> None:
+    document = _provider_native_document()
+
+    first = parse_agent_definition(document)
+    second = parse_agent_definition(document)
+
+    assert first.definition_hash == second.definition_hash
+
+
+def test_a_provider_native_key_reconstructs_byte_identically() -> None:
+    document = _provider_native_document(body="Prompt with a trailing blank line.\n\n")
+
+    reconstructed = reconstruct_agent_definition(
+        document, parse_agent_definition, render_agent_definition
+    )
+
+    assert reconstructed.revision.document == document
+    assert render_agent_definition(reconstructed.definition) == document
 
 
 @pytest.mark.parametrize(
