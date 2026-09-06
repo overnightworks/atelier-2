@@ -17,6 +17,18 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
+            "ports/work_item_claims.py:WorkItemClaims",
+            "adapters/agent_claim_cli.py:AgentClaimCli",
+        ),
+        "why": (
+            "The typed claim port and its agent-claim 0.12.0 adapter await "
+            "#1271 slice 3, which acquires the run claim before builder work "
+            "and fences the push."
+        ),
+        "item": "#1271 slice 3 (pre-build claim and push fence)",
+    },
+    {
+        "names": (
             "ports/agent_executions.py:terminal_outcome",
             "adapters/agent_client_protocol.py:AgentClientProtocolConversation",
         ),
