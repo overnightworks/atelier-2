@@ -56,6 +56,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutionPreflightRefusal,
     AgentExecutorV2,
+    AgentProcessCompletion,
     AgentProcessInvocation,
     AgentSession,
 )
@@ -208,20 +209,7 @@ def execute_agent_attempt(
         return claim
     try:
         workspaces.preflight()
-        if project is not None:
-            project.source.attest(project.pin)
-            if project.grant is not None:
-                project.verifications.preflight(project.pin)
-                if (
-                    project.grant.capability
-                    is ToolGrantCapability.RUN_PROJECT_VERIFICATION
-                    and artifacts is None
-                ):
-                    raise RuntimeError(
-                        "a project pinned a redeemable run-project-verification "
-                        "grant, but this attempt was given no artifact "
-                        "publisher to keep a failed verification's output with"
-                    )
+        _preflight_pinned_project(project, artifacts)
         session.prepare(execution)
         claim = store.claim(execution)
         if not isinstance(claim, AgentAttemptClaimedByThisCall):
@@ -248,32 +236,7 @@ def execute_agent_attempt(
             executor.decode_process_completion(invocation, completion), clock
         )
         if isinstance(result, AgentExecutionFailure):
-            if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
-                raise ValueError("executor returned an unsupported known failure")
-            _LOG.warning(
-                "Agent attempt %s on node %s of run %s failed.",
-                execution.attempt_id.value,
-                execution.request.node_id,
-                execution.request.run_id.value,
-                extra={
-                    "event": "agent_attempt_failed",
-                    "run_id": execution.request.run_id.value,
-                    "node_id": execution.request.node_id,
-                    "attempt_id": execution.attempt_id.value,
-                },
-            )
-            # The completion, not the executor's verdict, carries how the child
-            # ended: an executor answers whether it could use the process, and
-            # only supervision saw the exit code and the standard error that
-            # says why. Composing the durable naming here keeps that one reading
-            # of one process, rather than asking every provider to repeat it.
-            # What the process itself wrote is the other half, and only the
-            # executor can read it, so it travels on the failure it returned.
-            outcome = store.complete_known_failure(
-                execution,
-                ProcessExitSignature(completion.return_code, completion.standard_error),
-                result.transcript,
-            )
+            outcome = _ended_by_the_process(execution, result, completion, store)
         else:
             outcome = _ended_after_the_provider(
                 execution, result, lease, project, store, artifacts
@@ -285,6 +248,51 @@ def execute_agent_attempt(
     finally:
         executor.release_credential_channel(command)
     return outcome
+
+
+def _preflight_pinned_project(
+    project: PinnedProjectSource | None, artifacts: ArtifactPublisher | None
+) -> None:
+    """Attest the pin and its declared verification before anything is claimed."""
+    if project is None:
+        return
+    project.source.attest(project.pin)
+    if project.grant is None:
+        return
+    project.verifications.preflight(project.pin)
+    if (
+        project.grant.capability is ToolGrantCapability.RUN_PROJECT_VERIFICATION
+        and artifacts is None
+    ):
+        raise RuntimeError(
+            "a project pinned a redeemable run-project-verification "
+            "grant, but this attempt was given no artifact "
+            "publisher to keep a failed verification's output with"
+        )
+
+
+def _ended_by_the_process(
+    execution: AgentAttemptExecution,
+    result: AgentExecutionFailure,
+    completion: AgentProcessCompletion,
+    store: AgentAttemptStore,
+) -> AgentAttemptFailed:
+    """The named ending of an attempt whose process gave the executor no answer.
+
+    The completion, not the executor's verdict, carries how the child ended: the
+    executor answers whether it could use the process, and only supervision saw
+    the exit code and the standard error that says why. Naming the ending here
+    keeps that one reading of one process rather than asking every provider to
+    repeat it; what the process wrote travels on the failure the executor returned.
+    """
+    if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
+        raise ValueError("executor returned an unsupported known failure")
+    _warn_attempt(execution, "agent_attempt_failed", "failed.")
+    return store.complete_known_failure(
+        execution,
+        ProcessExitSignature(completion.return_code, completion.standard_error),
+        result.transcript,
+    )
 
 
 def _ended_after_the_provider(
@@ -464,12 +472,16 @@ def _log_named_failure(
             )
         case _:
             raise ValueError("attempt ended under an unnamed failure")
+    _warn_attempt(execution, event, detail)
+
+
+def _warn_attempt(execution: AgentAttemptExecution, event: str, ending: str) -> None:
     _LOG.warning(
         "Agent attempt %s on node %s of run %s %s",
         execution.attempt_id.value,
         execution.request.node_id,
         execution.request.run_id.value,
-        detail,
+        ending,
         extra={
             "event": event,
             "run_id": execution.request.run_id.value,

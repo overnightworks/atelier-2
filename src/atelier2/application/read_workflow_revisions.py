@@ -268,29 +268,41 @@ def _classify_wait_answer(
     schema = _resolved_schema_document(node.outputs[0].schema_reference, resolver)
     if isinstance(schema, (ReadUnavailable, DurableStateCorrupt)):
         return schema
-    if isinstance(schema, dict):
-        if schema.get("type") == "boolean":
-            return WaitAnswerClassification(node.id, "boolean", string_typed=False)
-        string_typed = schema.get("type") == "string"
-        enum = schema.get("enum")
-        if isinstance(enum, list):
-            if string_typed:
-                if all(isinstance(member, str) for member in enum):
-                    return WaitAnswerClassification(
-                        node.id, "enum", string_typed=True, values=tuple(enum)
-                    )
-            else:
-                encoded = [_json_wire_scalar(member) for member in enum]
-                if all(member is not None for member in encoded):
-                    return WaitAnswerClassification(
-                        node.id,
-                        "enum",
-                        string_typed=False,
-                        values=cast(tuple[str, ...], tuple(encoded)),
-                    )
-        elif string_typed:
-            return WaitAnswerClassification(node.id, "string", string_typed=True)
+    if not isinstance(schema, dict):
+        return WaitAnswerClassification(node.id, "free", string_typed=False)
+    if schema.get("type") == "boolean":
+        return WaitAnswerClassification(node.id, "boolean", string_typed=False)
+    string_typed = schema.get("type") == "string"
+    enum = schema.get("enum")
+    if isinstance(enum, list):
+        return _enum_classification(node.id, enum, string_typed)
+    if string_typed:
+        return WaitAnswerClassification(node.id, "string", string_typed=True)
     return WaitAnswerClassification(node.id, "free", string_typed=False)
+
+
+def _enum_classification(
+    node_id: str, enum: list[object], string_typed: bool
+) -> WaitAnswerClassification:
+    """The members a composer may offer, or `free` where one has no wire spelling."""
+    if string_typed:
+        if all(isinstance(member, str) for member in enum):
+            return WaitAnswerClassification(
+                node_id,
+                "enum",
+                string_typed=True,
+                values=cast(tuple[str, ...], tuple(enum)),
+            )
+        return WaitAnswerClassification(node_id, "free", string_typed=False)
+    encoded = [_json_wire_scalar(member) for member in enum]
+    if all(member is not None for member in encoded):
+        return WaitAnswerClassification(
+            node_id,
+            "enum",
+            string_typed=False,
+            values=cast(tuple[str, ...], tuple(encoded)),
+        )
+    return WaitAnswerClassification(node_id, "free", string_typed=False)
 
 
 def _resolved_schema_document(

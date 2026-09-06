@@ -474,10 +474,6 @@ qualified_name = "atelier2.api.openapi._install_problem_components"
 lines = 97
 
 [[function]]
-qualified_name = "atelier2.api.projection.events.run_event_resource"
-lines = 152
-
-[[function]]
 qualified_name = "atelier2.api.projection.runs._transcript_event_resource"
 lines = 70
 
@@ -506,20 +502,12 @@ qualified_name = "atelier2.api.stream.stream_attention_events"
 lines = 181
 
 [[function]]
-qualified_name = "atelier2.api.stream.stream_server_events"
-lines = 92
-
-[[function]]
 qualified_name = "atelier2.application.advance_queue._advance_one"
 lines = 134
 
 [[function]]
 qualified_name = "atelier2.application.answer_wait.answer_wait_result"
 lines = 64
-
-[[function]]
-qualified_name = "atelier2.application.evaluate_executability.resolve_document_references"
-lines = 93
 
 [[function]]
 qualified_name = "atelier2.application.execute_agent_attempt.execute_agent_attempt"
@@ -544,22 +532,6 @@ lines = 86
 [[function]]
 qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
 lines = 164
-
-[[function]]
-qualified_name = "atelier2.application.project_connections.connect_project_source"
-lines = 94
-
-[[function]]
-qualified_name = "atelier2.application.project_connections.disconnect_project_source"
-lines = 102
-
-[[function]]
-qualified_name = "atelier2.application.project_connections.rotate_project_source_token"
-lines = 234
-
-[[function]]
-qualified_name = "atelier2.application.read_workflow_revisions._classify_wait_answer"
-lines = 60
 
 [[function]]
 qualified_name = "atelier2.application.resolve_references.resolve_declared_reference_with_revision"
@@ -614,20 +586,12 @@ qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
 lines = 176
 
 [[function]]
-qualified_name = "atelier2.contracts.host_configuration.ProjectSourceConnectionRevision.__post_init__"
-lines = 64
-
-[[function]]
 qualified_name = "atelier2.contracts.provider_probe_receipts.read_provider_probe_receipt"
 lines = 89
 
 [[function]]
 qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
 lines = 72
-
-[[function]]
-qualified_name = "atelier2.contracts.tool_grants_v3.read_tool_grant_document"
-lines = 74
 
 [[function]]
 qualified_name = "atelier2.host._argument_parser"
@@ -660,10 +624,6 @@ lines = 74
 [[function]]
 qualified_name = "atelier2.host.serving.HostProviderModelInspector.validate_model"
 lines = 93
-
-[[function]]
-qualified_name = "atelier2.host.serving.HostSettings.__post_init__"
-lines = 112
 
 [[function]]
 qualified_name = "atelier2.host.serving._discover_codex_models"
@@ -722,20 +682,8 @@ qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
 complexity = 61
 
 [[complexity]]
-qualified_name = "atelier2.api.projection.events.run_event_resource"
-complexity = 23
-
-[[complexity]]
 qualified_name = "atelier2.api.routes.runs.start_run_route"
 complexity = 19
-
-[[complexity]]
-qualified_name = "atelier2.api.stream.stream_attention_events"
-complexity = 26
-
-[[complexity]]
-qualified_name = "atelier2.api.stream.stream_server_events"
-complexity = 18
 
 [[complexity]]
 qualified_name = "atelier2.application.advance_queue._advance_one"
@@ -754,18 +702,6 @@ qualified_name = "atelier2.application.model_configuration.validate_model_regist
 complexity = 21
 
 [[complexity]]
-qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
-complexity = 41
-
-[[complexity]]
-qualified_name = "atelier2.application.project_connections.disconnect_project_source"
-complexity = 27
-
-[[complexity]]
-qualified_name = "atelier2.application.project_connections.rotate_project_source_token"
-complexity = 62
-
-[[complexity]]
 qualified_name = "atelier2.application.resolve_start_bindings._select_component"
 complexity = 27
 
@@ -782,13 +718,6 @@ qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
 complexity = 22
 
 [[complexity]]
-qualified_name = "atelier2.contracts.provider_probe_receipts.ProviderProbeReceipt.__post_init__"
-complexity = 16
-
-[[complexity]]
 qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
 complexity = 18
 
-[[complexity]]
-qualified_name = "atelier2.host.serving.HostSettings.__post_init__"
-complexity = 18

@@ -551,6 +551,18 @@ class ProjectSourceConnectionRevision:
     revision_hash: HostProjectSourceConnectionRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
+        self._require_typed_identity()
+        self._require_typed_connection()
+        stored = str(self.credential_directory)
+        if not 1 <= len(stored) <= MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS:
+            raise ValueError(
+                "credential directory must contain "
+                f"1..{MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS} exact characters"
+            )
+        object.__setattr__(self, "credential_directory", Path(stored))
+        object.__setattr__(self, "revision_hash", self._revision_hash(stored))
+
+    def _require_typed_identity(self) -> None:
         if not isinstance(self.project_id, ProjectId):
             raise TypeError(_PROJECT_ID_TYPE_INVARIANT)
         if not isinstance(self.source_id, ProjectSourceId):
@@ -567,6 +579,8 @@ class ProjectSourceConnectionRevision:
             raise TypeError("source kind must use its typed contract")
         if not isinstance(self.source_address, SourceAddress):
             raise TypeError("source address must use its typed contract")
+
+    def _require_typed_connection(self) -> None:
         if not isinstance(self.credential_directory, Path):
             raise TypeError("credential directory must be a path")
         if not isinstance(self.auth_method, SourceConnectionAuthMethod):
@@ -583,34 +597,25 @@ class ProjectSourceConnectionRevision:
             self.source_ref, SourceReference
         ):
             raise TypeError("source reference must use its typed contract")
-        stored = str(self.credential_directory)
-        if not 1 <= len(stored) <= MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS:
-            raise ValueError(
-                "credential directory must contain "
-                f"1..{MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS} exact characters"
+
+    def _revision_hash(self, stored: str) -> HostProjectSourceConnectionRevisionHash:
+        return HostProjectSourceConnectionRevisionHash.of(
+            frame(
+                "host-project-source-connection-revision/v2",
+                self.project_id.value.encode("utf-8"),
+                self.source_id.value.encode("ascii"),
+                struct.pack(">Q", self.revision_number),
+                self.source_kind.value.encode("utf-8"),
+                self.source_address.value.encode("utf-8"),
+                stored.encode("utf-8"),
+                self.auth_method.value.encode("ascii"),
+                self.connected_by.value.encode("utf-8"),
+                self.lifecycle.value.encode("ascii"),
+                b""
+                if self.connected_at is None
+                else self.connected_at.value.encode("ascii"),
+                b""
+                if self.source_ref is None
+                else self.source_ref.value.encode("utf-8"),
             )
-        object.__setattr__(self, "credential_directory", Path(stored))
-        object.__setattr__(
-            self,
-            "revision_hash",
-            HostProjectSourceConnectionRevisionHash.of(
-                frame(
-                    "host-project-source-connection-revision/v2",
-                    self.project_id.value.encode("utf-8"),
-                    self.source_id.value.encode("ascii"),
-                    struct.pack(">Q", self.revision_number),
-                    self.source_kind.value.encode("utf-8"),
-                    self.source_address.value.encode("utf-8"),
-                    stored.encode("utf-8"),
-                    self.auth_method.value.encode("ascii"),
-                    self.connected_by.value.encode("utf-8"),
-                    self.lifecycle.value.encode("ascii"),
-                    b""
-                    if self.connected_at is None
-                    else self.connected_at.value.encode("ascii"),
-                    b""
-                    if self.source_ref is None
-                    else self.source_ref.value.encode("utf-8"),
-                )
-            ),
         )

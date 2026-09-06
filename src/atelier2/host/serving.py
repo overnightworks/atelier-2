@@ -379,19 +379,26 @@ class HostSettings:
         )
 
     def __post_init__(self) -> None:
-        database_path = self.database_path.resolve()
-        effect_store_path = self.effect_store_path.resolve()
-        frontend_dist = self.frontend_dist.resolve()
-        object.__setattr__(self, "database_path", database_path)
-        object.__setattr__(self, "effect_store_path", effect_store_path)
-        object.__setattr__(self, "frontend_dist", frontend_dist)
+        object.__setattr__(self, "database_path", self.database_path.resolve())
+        object.__setattr__(self, "effect_store_path", self.effect_store_path.resolve())
+        object.__setattr__(self, "frontend_dist", self.frontend_dist.resolve())
         if self.provider_probe_receipt_directory is not None:
             object.__setattr__(
                 self,
                 "provider_probe_receipt_directory",
                 self.provider_probe_receipt_directory.resolve(),
             )
-        if database_path == effect_store_path:
+        self._require_well_formed_fields()
+        self._require_coherent_executors()
+        self._require_start_refusals()
+        # Asked last, once every path this record resolves is settled. Its
+        # refusals belong to the durable runtime and are raised here so they
+        # travel the same way as the ones above -- the command line catches this
+        # constructor, and nothing below it.
+        self.runtime_settings()
+
+    def _require_well_formed_fields(self) -> None:
+        if self.database_path == self.effect_store_path:
             raise ValueError("durable database and effect store must be distinct")
         if self.project_root is not None and self.project_id is None:
             raise ValueError(
@@ -415,10 +422,12 @@ class HostSettings:
         if type(self.port) is not int or not 1 <= self.port <= 65_535:
             raise ValueError("port must be an integer between 1 and 65535")
         if (
-            not (frontend_dist / "index.html").is_file()
-            or not (frontend_dist / "assets").is_dir()
+            not (self.frontend_dist / "index.html").is_file()
+            or not (self.frontend_dist / "assets").is_dir()
         ):
             raise ValueError("frontend distribution must contain index.html and assets")
+
+    def _require_coherent_executors(self) -> None:
         billed = self.billed_providers
         if billed and self.agent_scratch_root is None:
             raise ValueError(
@@ -459,6 +468,8 @@ class HostSettings:
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
             )
+
+    def _require_start_refusals(self) -> None:
         _require_start_refusal(
             "Claude", self.claude_subscription, self.claude_start_refusal
         )
@@ -481,11 +492,6 @@ class HostSettings:
         _require_start_refusal(
             "Codex", self.codex_subscription, self.codex_start_refusal
         )
-        # Asked last, once every path this record resolves is settled. Its
-        # refusals belong to the durable runtime and are raised here so they
-        # travel the same way as the ones above -- the command line catches this
-        # constructor, and nothing below it.
-        self.runtime_settings()
 
 
 def _require_start_refusal(
@@ -1048,19 +1054,26 @@ def _read_json_rpc_result(
             while b"\n" in buffered:
                 line, _, remainder = buffered.partition(b"\n")
                 buffered = bytearray(remainder)
-                try:
-                    message = json.loads(line)
-                except (UnicodeDecodeError, json.JSONDecodeError) as error:
-                    raise ValueError(
-                        "Codex model discovery returned invalid JSON"
-                    ) from error
-                if not isinstance(message, dict) or message.get("id") != request_id:
-                    continue
-                result = message.get("result")
-                if not isinstance(result, dict):
-                    raise TypeError("Codex model discovery returned no result")
-                return result
+                result = _json_rpc_result_of(line, request_id)
+                if result is not None:
+                    return result
     raise BoundedProcessFailure("model discovery did not answer in time")
+
+
+def _json_rpc_result_of(
+    line: bytes | bytearray, request_id: int
+) -> dict[str, object] | None:
+    """The result this line answers `request_id` with; any other message is passed over."""
+    try:
+        message = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("Codex model discovery returned invalid JSON") from error
+    if not isinstance(message, dict) or message.get("id") != request_id:
+        return None
+    result = message.get("result")
+    if not isinstance(result, dict):
+        raise TypeError("Codex model discovery returned no result")
+    return result
 
 
 def _terminate_inspection_process(
