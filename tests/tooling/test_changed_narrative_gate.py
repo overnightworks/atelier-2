@@ -146,3 +146,45 @@ def test_added_docstring_line_with_date_is_rejected(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert 'src/example.py:1: """Updated 2026-09-06."""' in result.stdout
+
+
+def test_issue_number_in_code_sharing_a_comment_line_is_allowed(tmp_path: Path) -> None:
+    project = scratch_repository(tmp_path)
+    write_source(project, "value = 1\n")
+    base = commit(project, "base")
+    write_source(project, 'value = "#1305"  # note\n')
+    commit(project, "head")
+
+    result = run_gate(project, base)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_renamed_file_keeps_its_legacy_comment_green(tmp_path: Path) -> None:
+    project = scratch_repository(tmp_path)
+    write_source(project, "# Follow-up #1305\nvalue = 1\n", Path("src/legacy.py"))
+    base = commit(project, "base")
+    _git(project, "mv", "src/legacy.py", "src/renamed.py")
+    write_source(
+        project, "# Follow-up #1305\nvalue = 1\nvalue = 2\n", Path("src/renamed.py")
+    )
+    commit(project, "head")
+
+    result = run_gate(project, base)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_replaced_and_an_unrelated_later_with_is_allowed(tmp_path: Path) -> None:
+    project = scratch_repository(tmp_path)
+    write_source(project, "value = 1\n")
+    base = commit(project, "base")
+    write_source(project, "# replaced; continue with the rollout\nvalue = 1\n")
+    commit(project, "head")
+
+    result = run_gate(project, base)
+
+    assert result.returncode == 0
+    assert result.stdout == ""

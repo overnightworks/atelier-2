@@ -16,11 +16,13 @@ from report_corridor import CorridorError, git_diff_lines
 
 PYTHON_PATHS = (":(glob)src/**/*.py", ":(glob)scripts/**/*.py")
 NARRATIVE_PATTERN = re.compile(
-    r"\b(?:formerly|superseded|replaced\b.*\bwith|since\s+PR\b|PR\s*#|"
+    r"\b(?:formerly|superseded|since\s+PR\b|PR\s*#|"
     r"\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}|"
     r"(?:january|february|march|april|may|june|july|august|september|october|"
     r"november|december|januar|februar|märz|maerz|april|mai|juni|juli|august|"
-    r"september|oktober|november|dezember)\s+\d{4}|#\d+)",
+    r"september|oktober|november|dezember)\s+\d{4})"
+    r"|\breplaced\b(?:\s+\S+){1,4}\s+with\b"
+    r"|(?<!\w)#\d+\b",
     re.IGNORECASE,
 )
 DECISION_OWNER_REFERENCE = re.compile(
@@ -97,7 +99,12 @@ def _added_line_numbers(
     current_path: Path | None = None
     next_line_number: int | None = None
     for diff_line in git_diff_lines(
-        project_root, base, head, "-U0", pathspecs=PYTHON_PATHS
+        project_root,
+        base,
+        head,
+        "-U0",
+        rename_detection="-M",
+        pathspecs=PYTHON_PATHS,
     ):
         if diff_line.startswith("diff --git "):
             current_path = None
@@ -120,8 +127,20 @@ def _added_line_numbers(
     return changed_lines
 
 
-def _docstring_line_numbers(tree: ast.AST) -> set[int]:
-    line_numbers: set[int] = set()
+def _comment_texts(source: str) -> dict[int, str]:
+    return {
+        token.start[0]: token.string
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+    }
+
+
+def _docstring_texts(source_lines: list[str], tree: ast.AST) -> dict[int, str]:
+    """Per docstring line, only the docstring's own slice of that physical
+    line -- never any code sharing the line, such as a one-line function's
+    header before the opening quotes."""
+
+    texts: dict[int, str] = {}
     nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     for node in ast.walk(tree):
         if not isinstance(node, nodes) or not node.body:
@@ -132,20 +151,28 @@ def _docstring_line_numbers(tree: ast.AST) -> set[int]:
             and isinstance(statement.value, ast.Constant)
             and isinstance(statement.value.value, str)
             and statement.end_lineno is not None
+            and statement.end_col_offset is not None
         ):
             continue
-        line_numbers.update(range(statement.lineno, statement.end_lineno + 1))
-    return line_numbers
+        for line_number in range(statement.lineno, statement.end_lineno + 1):
+            line = source_lines[line_number - 1]
+            start_column = (
+                statement.col_offset if line_number == statement.lineno else 0
+            )
+            end_column = (
+                statement.end_col_offset
+                if line_number == statement.end_lineno
+                else len(line)
+            )
+            texts[line_number] = line[start_column:end_column]
+    return texts
 
 
-def _narrative_line_numbers(source: str) -> set[int]:
-    comment_lines = {
-        token.start[0]
-        for token in tokenize.generate_tokens(io.StringIO(source).readline)
-        if token.type == tokenize.COMMENT
-    }
+def _narrative_texts(source: str) -> dict[int, str]:
     tree = ast.parse(source)
-    return comment_lines | _docstring_line_numbers(tree)
+    texts = _comment_texts(source)
+    texts.update(_docstring_texts(source.splitlines(), tree))
+    return texts
 
 
 def _reference_only(line: str) -> bool:
@@ -188,16 +215,18 @@ def _findings(
     ).items():
         try:
             contents = _source_at_revision(project_root, head, relative_path)
-            narrative_lines = _narrative_line_numbers(contents)
+            narrative_texts = _narrative_texts(contents)
         except (NarrativeGateError, SyntaxError, tokenize.TokenError) as error:
             raise NarrativeGateError(
                 f"could not inspect {relative_path}: {error}"
             ) from error
         source_lines = contents.splitlines()
-        for line_number in sorted(added_lines & narrative_lines):
-            line = source_lines[line_number - 1]
-            if NARRATIVE_PATTERN.search(line) and not _reference_only(line):
-                yield relative_path, line_number, line
+        for line_number in sorted(added_lines & narrative_texts.keys()):
+            narrative_text = narrative_texts[line_number]
+            if NARRATIVE_PATTERN.search(narrative_text) and not _reference_only(
+                narrative_text
+            ):
+                yield relative_path, line_number, source_lines[line_number - 1]
 
 
 def _arguments() -> argparse.Namespace:

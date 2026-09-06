@@ -88,9 +88,14 @@ def git_diff_lines(
     base: str,
     head: str,
     *arguments: str,
+    rename_detection: str,
     pathspecs: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
-    command = ["git", "diff", "--no-renames", *arguments, f"{base}...{head}"]
+    """`rename_detection` is `--no-renames` or a `-M` flag; it has no default
+    because a numstat file count and an added-lines diff need opposite answers
+    to "does a rename count as a full add"."""
+
+    command = ["git", "diff", rename_detection, *arguments, f"{base}...{head}"]
     if pathspecs:
         command.extend(("--", *pathspecs))
     result = subprocess.run(
@@ -107,7 +112,9 @@ def git_diff_lines(
 
 def corridor_report(project_root: Path, base: str, head: str) -> CorridorReport:
     file_count = added_total = deleted_total = 0
-    for line in git_diff_lines(project_root, base, head, "--numstat"):
+    for line in git_diff_lines(
+        project_root, base, head, "--numstat", rename_detection="--no-renames"
+    ):
         if not line.strip():
             continue
         added, deleted, path = _parse_numstat_line(line)
