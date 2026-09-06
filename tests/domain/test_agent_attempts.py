@@ -301,7 +301,8 @@ def test_a_terminal_control_sequence_a_provider_wrote_cannot_reach_a_terminal() 
     """This reason is printed by the command line, so it may not drive a cursor."""
     named = ProcessExitSignature(1, b"\x1b[2Jcleared\x07").named()
 
-    assert "\x1b" not in named and "\x07" not in named
+    assert "\x1b" not in named
+    assert "\x07" not in named
     assert "cleared" in named
 
 
