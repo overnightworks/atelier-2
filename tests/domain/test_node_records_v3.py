@@ -122,7 +122,7 @@ def test_changing_one_request_preimage_field_changes_the_hash(builder) -> None:
 
 
 def test_identical_request_retry_keeps_the_literal_hash() -> None:
-    assert _request().request_hash == _request().request_hash
+    assert _request().request_hash.value == REQUEST_HASH
 
 
 def test_agent_request_requires_a_mode_and_other_kinds_refuse_one() -> None:
