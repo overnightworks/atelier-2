@@ -505,15 +505,14 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     tools has to narrate and act before it answers, and asks for the same shape
     in words instead (`_job_with_output_schema_ask`).
     """
-    if declared_output_schema_bytes is None:
-        return ()
-    try:
-        return (
-            _JSON_SCHEMA_FLAG,
-            declared_output_schema_bytes.decode("utf-8"),
-        )
-    except UnicodeDecodeError as error:
-        raise ValueError("declared output schema bytes must be UTF-8") from error
+    flag_arguments: list[str] = []
+    if declared_output_schema_bytes is not None:
+        try:
+            schema_text = declared_output_schema_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("declared output schema bytes must be UTF-8") from error
+        flag_arguments = [_JSON_SCHEMA_FLAG, schema_text]
+    return tuple(flag_arguments)
 
 
 def _child_environment(
