@@ -270,6 +270,9 @@ class _SteppedSelects:
     def arm(self) -> None:
         self._armed = True
 
+    def disarm(self) -> None:
+        self._armed = False
+
     def release(self) -> None:
         self._release.set()
 
@@ -318,9 +321,11 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
     """A WAIT already at end of file must not keep firing the selector readable.
 
     Left registered for read, an end of file the kernel keeps reporting
-    readable would put the fd in every `select()` result forever. Five ticks
-    are stepped one at a time, each one's own result set checked directly,
-    rather than racing a clock against a loop that might be spinning.
+    readable would put the fd in every `select()` result forever. Every
+    `select()` is stepped one at a time from the start, so a setup call that
+    read the request cannot be mistaken for one of the five checked after it,
+    and each one's own result set is checked directly rather than racing a
+    clock against a loop that might be spinning.
     """
 
     stepper = _SteppedSelects()
@@ -331,26 +336,38 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
     owner_pipe, owner_writer = os.pipe()
     watchdog = Watchdog(endpoint, tmp_path / "cgroup", owner_pipe, 0.1)
     errors: list[Exception] = []
+    stepper.arm()
     thread = _start_wire_watchdog(watchdog, endpoint, errors)
     waiting: socket.socket | None = None
+
+    def release_one_tick() -> None:
+        recorded = len(result_sets)
+        stepper.release()
+        _wait_until(lambda recorded=recorded: len(result_sets) > recorded)
+
     try:
         waiting = _send_without_reading(
             endpoint, encode_control_frame({"operation": "WAIT"})
         )
-        _wait_until(lambda: "WAIT" in watchdog._slots)
+        for _ in range(20):
+            if "WAIT" in watchdog._slots:
+                break
+            release_one_tick()
+        else:
+            raise AssertionError("WAIT was never classified within 20 stepped ticks")
         fd = watchdog._slots["WAIT"]
         assert fd not in spy.registered_events
 
-        stepper.arm()
+        result_sets.clear()
         for _ in range(5):
-            recorded = len(result_sets)
-            stepper.release()
-            _wait_until(lambda recorded=recorded: len(result_sets) > recorded)
+            release_one_tick()
 
         assert len(result_sets) == 5
         for events in result_sets:
             assert all(key.fd != fd for key, _mask in events)
     finally:
+        stepper.disarm()
+        stepper.release()
         if waiting is not None:
             waiting.close()
         os.close(owner_writer)

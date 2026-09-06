@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import os
 import selectors
 import signal
@@ -24,16 +25,16 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.provider_conversations import ProviderCancellationCause
 
-# The launch frame carries the process's whole standard input base64-encoded --
-# four characters per three bytes -- beside its argv, environment and working
-# directory. Twice the input bound is that expansion with the rest of the
-# envelope's room left over, so every input this product admits can be launched.
+_LOG = logging.getLogger("atelier2")
+
+# The launch frame carries the whole standard input base64-encoded -- four
+# characters per three bytes -- beside its argv, environment and working
+# directory; twice the input bound covers that expansion with room to spare.
 MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES = 2 * MAXIMUM_AGENT_PROCESS_INPUT_BYTES
 MAXIMUM_AGENT_CONTROL_RESPONSE_BYTES = 4_096
 CONTROL_FRAME_TIMEOUT_SECONDS = 1.0
-# What one relay exchange carries back: the size of a single pipe read, so a
-# child writing at full speed is drained in as many exchanges as it wrote
-# reads, and no control frame ever holds more than one of them.
+# One relay exchange carries back one pipe read, so no control frame ever
+# holds more than a full-speed child wrote in one write of its own.
 MAXIMUM_AGENT_EXCHANGE_OUTPUT_BYTES = 65_536
 EXCHANGE_HOLD_SECONDS = CONTROL_FRAME_TIMEOUT_SECONDS
 """Reusing the control channel's patience keeps a silent conversation at one
@@ -238,16 +239,22 @@ class Watchdog:
 
     def _drain_recovery_handoff(self) -> None:
         """A tick dying in supervision never reaches a select worth calling,
-        so this asks the selector directly: a failure here is not a delivery
-        failure, so it keeps trying rather than dropping queued bytes, bounded
-        by each connection's own existing deadline, not a new one."""
+        so this asks the selector directly, bounded by each connection's own
+        deadline -- but a selector failing twice running cannot deliver
+        anything, so the handoff stays cached for a later owner instead."""
 
+        failures = 0
         while self._handoff_pending():
             now = time.monotonic()
             try:
                 events = self._selector.select(self._next_timeout(now))
             except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
-                events = ()
+                failures += 1
+                if failures >= 2:
+                    _LOG.warning("recovery handoff drain: selector failed twice")
+                    return
+                continue
+            failures = 0
             for key, mask in events:
                 if isinstance(key.data, _Connection) and mask & selectors.EVENT_WRITE:
                     self._write_connection(key.data, now)
@@ -364,10 +371,9 @@ class Watchdog:
             return
         slot = _SLOT_OF_OPERATION.get(operation)
         if state.refuse_as_busy and slot != _TERMINAL_CONTROL_SLOT:
-            # A busy refusal is read to its end, not answered at the door,
-            # because the relay reconnects per exchange: a cancellation racing
-            # one of those connections would otherwise cost a retry -- a
-            # second where nothing is signalled. One terminal control passes.
+            # Read to its end, not answered at the door: the relay reconnects
+            # per exchange, so a racing cancellation would otherwise cost a
+            # retry -- a second where nothing is signalled.
             self._queue_response(state, {"type": "BUSY"}, now)
             return
         if slot is None:
@@ -971,8 +977,7 @@ class Watchdog:
     def _drop_unwritten_input(self) -> None:
         """A stop drops what the child never took, uncounting it: told those
         bytes were acknowledged, a conversation would believe an answer
-        arrived that in fact went nowhere.
-        """
+        arrived that in fact went nowhere."""
 
         self._delivered_input_bytes -= self._unwritten_input_bytes()
         self._standard_input = b""
@@ -981,10 +986,9 @@ class Watchdog:
     def _written_input_bytes(self) -> int:
         """What a conversation is held to its input bound by: bytes only
         buffered here still count as the relay's, or the executor's declared
-        bound would end at a pipe a child never reads while the backlog grows
-        behind it. A launch's own payload is written first, so it counts
-        before the relay's.
-        """
+        bound would end at a pipe a child never reads while the backlog grows.
+        A launch's own payload is written first, so it counts before the
+        relay's."""
 
         return max(0, self._delivered_input_bytes - self._unwritten_input_bytes())
 
@@ -1010,8 +1014,7 @@ class Watchdog:
         """Composed while the conversation still ran, stopping costs no round
         trip through it. What does not fit the pipe now is dropped, not waited
         for: the signal in this same turn is the real stop, and waiting on a
-        full pipe would let a stuck child postpone its own cancellation.
-        """
+        full pipe would let a stuck child postpone its own cancellation."""
 
         descriptor = self._standard_input_descriptor()
         if descriptor is None or not self._cancellation_frame:
@@ -1051,8 +1054,7 @@ class Watchdog:
 def _decode_launch_request(
     request: dict[str, Any],
 ) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int, bool]:
-    # `duplex` is named only by a conversation launch, so a print-mode frame
-    # stays byte-for-byte the one this watchdog has always been given.
+    # `duplex` names only a conversation launch, so print-mode stays as given.
     if set(request) - {"duplex"} != {
         "arguments",
         "environment",
@@ -1062,8 +1064,7 @@ def _decode_launch_request(
         "working_directory",
         "working_directory_identity",
     }:
-        # An older-build watchdog refuses a request naming the identity rather
-        # than launching unchecked: the net under a mixed deploy, not the norm.
+        # An older-build watchdog refuses this rather than launch unchecked.
         raise ValueError("launch request has unexpected fields")
     arguments_value = request["arguments"]
     if (
