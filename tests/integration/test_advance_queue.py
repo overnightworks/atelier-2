@@ -136,7 +136,8 @@ def _bound(tracker: str, rank: int, run_id: RunId) -> QueueItemSnapshot:
 
     item = _admitted(tracker, rank)
     admission = item.admission
-    assert admission is not None and admission.proposal_revision is not None
+    assert admission is not None
+    assert admission.proposal_revision is not None
     return replace(
         item,
         launch_binding=QueueLaunchBinding(
@@ -152,7 +153,8 @@ def _readmitted(item: QueueItemSnapshot) -> QueueItemSnapshot:
     """What the store answers about a released item: unbound, one revision on."""
 
     admission = item.admission
-    assert admission is not None and admission.proposal_revision is not None
+    assert admission is not None
+    assert admission.proposal_revision is not None
     return replace(
         item,
         revision=QueueProjectionRevision(item.revision.value + 1),
