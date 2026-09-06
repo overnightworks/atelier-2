@@ -1016,6 +1016,21 @@ the operator turns Automatic Analysis off in the SonarCloud project settings
 -- SonarCloud refuses CI-based analysis while Automatic Analysis stays
 enabled. `sonar` is not a required check.
 
+SonarCloud's own quality gate passes on ratings (A/B/C), not on a count of
+findings: three green landings still carried 16 new open findings past it
+(agent-claim #143, #1203's measurement). A single open finding on the pull
+request is therefore its own bar (ruling 06.09.2026, #1294): after the scan
+step (`sonar.qualitygate.wait=true` makes it block until analysis is final),
+the "SonarCloud open findings" step pages
+`api/issues/search?componentKeys=overnightworks_atelier-2&statuses=OPEN`,
+scoped to the pull request (or `branch=main` on a push, or the pull request
+number parsed from the merge queue's synthetic `head_ref` on a `merge_group`
+run), prints every hit as `severity rule file:line message`, and fails the
+job at one or more. No token: the project is public. Probed 06.09.2026 (#1294):
+`python:S1192` (duplicated string literal) does not fire inside test files, so
+it cannot serve as a red-path probe there; `python:S5778` (two exception-
+raising calls inside one `pytest.raises` block) does.
+
 ## Code rules: gates, metrics, audit
 
 The code rules in [`AGENTS.md`](../AGENTS.md) fall into three classes, and this

@@ -698,3 +698,76 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # The scan step above blocks on the analysis (sonar.qualitygate.wait=true
+      # in sonar-project.properties), so the report this reads is already
+      # final. The quality gate itself passes on ratings (A/B/C), not on "0
+      # open findings" (#1294, following #1203's measurement: three green
+      # landings still carried 16 new findings); this queries the public API
+      # directly for that stronger bar and fails loud, with the list, when it
+      # is not met. No token: the project is public.
+      - name: SonarCloud open findings
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          component_key="$(sed -n 's/^sonar\.projectKey=//p' sonar-project.properties)"
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request)
+              scope_query="pullRequest=${PULL_REQUEST_NUMBER}"
+              ;;
+            push)
+              scope_query="branch=main"
+              ;;
+            merge_group)
+              # The merge queue runs this workflow against a synthetic branch
+              # named gh-readonly-queue/main/pr-<n>-<sha>; that number is the
+              # only link back to the pull request under test.
+              pr_number="$(printf '%s' "${MERGE_GROUP_HEAD_REF}" | sed -n 's#^gh-readonly-queue/main/pr-\([0-9][0-9]*\)-[0-9a-f][0-9a-f]*$#\1#p')"
+              if [ -z "${pr_number}" ]; then
+                echo "::notice::cannot derive a pull request number from merge_group head_ref '${MERGE_GROUP_HEAD_REF}'; skipping the open-findings check for this run"
+                exit 0
+              fi
+              scope_query="pullRequest=${pr_number}"
+              ;;
+            *)
+              echo "::error::unexpected event '${GITHUB_EVENT_NAME}' for the SonarCloud open findings check" >&2
+              exit 1
+              ;;
+          esac
+          python3 - "${component_key}" "${scope_query}" <<'PYTHON'
+          import json
+          import sys
+          import urllib.request
+
+          component_key, scope_query = sys.argv[1], sys.argv[2]
+
+          def fetch_page(page: int) -> dict:
+              url = (
+                  "https://sonarcloud.io/api/issues/search"
+                  f"?componentKeys={component_key}&{scope_query}&statuses=OPEN&ps=500&p={page}"
+              )
+              with urllib.request.urlopen(url) as response:
+                  return json.load(response)
+
+          page = 1
+          printed = 0
+          total = None
+          while total is None or printed < total:
+              report = fetch_page(page)
+              total = report["total"]
+              for issue in report["issues"]:
+                  file_path = issue["component"].split(":", 1)[1]
+                  line = issue.get("line", "?")
+                  print(f'{issue["severity"]} {issue["rule"]} {file_path}:{line} {issue["message"]}')
+                  printed += 1
+              if not report["issues"]:
+                  break
+              page += 1
+
+          if total > 0:
+              print(f"{total} open SonarCloud finding(s)", file=sys.stderr)
+              sys.exit(1)
+          PYTHON
