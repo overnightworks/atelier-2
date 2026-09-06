@@ -4,7 +4,7 @@ Connecting is an explicit operator act (ADR 0010 decision 2): it appends one
 immutable revision binding the project to a source kind, an opaque source
 address, a credential-directory reference, the chosen auth method, and the
 connecting actor. The credential value never passes through here. A project
-without a record answers `platform-connection-unknown`.
+without a record answers `project-source-not-connected`.
 """
 
 from __future__ import annotations

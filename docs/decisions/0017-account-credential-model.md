@@ -448,7 +448,7 @@ tracks that GitHub or GitLab repository — is a declaration, not a use; the
 platform adapter contract (#24, ADR 0010) is generic, and GitLab is not a
 special case of it. The link *does* something — observe, import, write — only
 once a credential for that operation exists; until then each operation
-refuses with ADR 0010's `platform-connection-unknown` /
+refuses with ADR 0010's `project-source-not-connected` /
 `platform-credential-unresolvable` shapes rather than half-working.
 Runner-read is a named seam, not built; it follows the same build-when-needed
 discipline as locus Y.
