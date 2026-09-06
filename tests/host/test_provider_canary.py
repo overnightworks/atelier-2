@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import io
 import json
 import threading
 import types
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from email.message import Message
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.request import Request
 
+import httpx
 import pytest
 
 from atelier2.api.problems import problem_resource
@@ -44,6 +41,7 @@ from atelier2.host.provider_canary import (
     PROVIDER_CANARY_MAXIMUM_CONCURRENT_VECTORS,
     PROVIDER_CANARY_MAXIMUM_CONFIGURATION_PAGES,
     PROVIDER_CANARY_MAXIMUM_VECTORS,
+    AtelierApiProviderCanaryHttp,
     ProviderCanaryDiscoveryFailed,
     ProviderCanaryHttpRefused,
     ProviderCanaryServerUnavailable,
@@ -1053,7 +1051,6 @@ def test_empty_discovery_without_previous_receipts_is_a_loud_cli_failure(
 def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
     tmp_path: Path,
     workflow_directory: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     timeouts: list[tuple[str, float]] = []
     workflow_name = "provider-canary-headless"
@@ -1061,9 +1058,9 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
         (workflow_directory / f"{workflow_name}.yaml").read_bytes()
     ).value
 
-    def hung_start(request: Request, *, timeout: float) -> io.BytesIO:
-        full_url = request.full_url
-        timeouts.append((full_url, timeout))
+    def hung_start(request: httpx.Request) -> httpx.Response:
+        full_url = str(request.url)
+        timeouts.append((full_url, request.extensions["timeout"]["read"]))
         method = request.method
         if full_url.endswith("/health"):
             answer = HealthResource(
@@ -1084,12 +1081,11 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
                 revision_number=1,
             ).model_dump_json()
         elif full_url.endswith("/runs") and method == "POST":
-            raise TimeoutError("HTTP start timed out")
+            raise httpx.TimeoutException("HTTP start timed out")
         else:
             raise AssertionError((method, full_url))
-        return io.BytesIO(answer.encode())
+        return httpx.Response(200, content=answer.encode())
 
-    monkeypatch.setattr("atelier2.host.provider_canary.urlopen", hung_start)
     state_directory = tmp_path / "state"
     canary_settings = ProviderCanarySettings(
         service_url="http://127.0.0.1:8422",
@@ -1098,8 +1094,11 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
         terminal_timeout_seconds=5,
         poll_interval_seconds=1,
     )
+    http = AtelierApiProviderCanaryHttp(
+        canary_settings.service_url, transport=httpx.MockTransport(hung_start)
+    )
 
-    report = execute_provider_canaries(canary_settings, clock=FakeClock())
+    report = execute_provider_canaries(canary_settings, http=http, clock=FakeClock())
 
     assert timeouts
     assert all(
@@ -1129,7 +1128,6 @@ def test_a_hung_http_start_uses_the_terminal_bound_and_leaves_a_fail_receipt(
 def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
     tmp_path: Path,
     workflow_directory: Path,
-    monkeypatch: pytest.MonkeyPatch,
     failure_status: int,
     failure_body: Callable[[], bytes],
     expected_problem_code: str,
@@ -1147,8 +1145,8 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
         (workflow_directory / f"{workflow_name}.yaml").read_bytes()
     ).value
 
-    def answering(request: Request, *, timeout: float) -> io.BytesIO:
-        full_url = request.full_url
+    def answering(request: httpx.Request) -> httpx.Response:
+        full_url = str(request.url)
         method = request.method
         if full_url.endswith("/health"):
             answer = (
@@ -1175,18 +1173,11 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
                 .encode()
             )
         elif full_url.endswith("/runs") and method == "POST":
-            raise HTTPError(
-                full_url,
-                failure_status,
-                "refused",
-                Message(),
-                io.BytesIO(failure_body()),
-            )
+            return httpx.Response(failure_status, content=failure_body())
         else:
             raise AssertionError((method, full_url))
-        return io.BytesIO(answer)
+        return httpx.Response(200, content=answer)
 
-    monkeypatch.setattr("atelier2.host.provider_canary.urlopen", answering)
     state_directory = tmp_path / "state"
     canary_settings = ProviderCanarySettings(
         service_url="http://127.0.0.1:8422",
@@ -1195,8 +1186,11 @@ def test_a_real_http_start_refusal_is_classified_by_the_owning_vocabulary(
         terminal_timeout_seconds=5,
         poll_interval_seconds=1,
     )
+    http = AtelierApiProviderCanaryHttp(
+        canary_settings.service_url, transport=httpx.MockTransport(answering)
+    )
 
-    report = execute_provider_canaries(canary_settings, clock=FakeClock())
+    report = execute_provider_canaries(canary_settings, http=http, clock=FakeClock())
 
     assert report.failed == 1
     (receipt,) = read_receipts(state_directory)

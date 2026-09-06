@@ -50,9 +50,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -69,7 +67,6 @@ from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
 )
-from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionListItemResource,
@@ -103,6 +100,11 @@ from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
 from atelier2.host.address import ADDRESSABLE_SCHEMES, DEFAULT_SERVICE_URL
+from atelier2.host.atelier_api_client import (
+    AtelierApi,
+    AtelierApiTransport,
+    AtelierApiTransportFailure,
+)
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
     JSON_MEDIA_TYPE,
@@ -339,19 +341,24 @@ class _CanaryVector:
     workflow_name: str
 
 
-class UrllibProviderCanaryHttp:
-    """The narrow HTTP boundary used by the live command."""
+class AtelierApiProviderCanaryHttp:
+    """The narrow HTTP boundary used by the live command.
+
+    `transport` is a test seam only: production composition leaves it unset,
+    so it reaches the real network.
+    """
 
     def __init__(
         self,
         service_url: str = DEFAULT_SERVICE_URL,
+        *,
+        transport: AtelierApiTransport | None = None,
     ) -> None:
-        self._api_url = service_url.rstrip("/") + API_PREFIX
+        self._api = AtelierApi(service_url, transport=transport)
 
     def get(self, path: str, *, timeout_seconds: float) -> bytes:
-        return self._request(
-            Request(self._api_url + path, method="GET"),
-            timeout_seconds=timeout_seconds,
+        return self._called(
+            timeout_seconds, lambda timeout: self._api.get(path, timeout=timeout)
         )
 
     def post(
@@ -362,31 +369,25 @@ class UrllibProviderCanaryHttp:
         timeout_seconds: float,
         media_type: str = JSON_MEDIA_TYPE,
     ) -> bytes:
-        return self._request(
-            Request(
-                self._api_url + path,
-                data=body,
-                method="POST",
-                headers={"content-type": media_type, "accept": JSON_MEDIA_TYPE},
+        return self._called(
+            timeout_seconds,
+            lambda timeout: self._api.post(
+                path, body, media_type=media_type, timeout=timeout
             ),
-            timeout_seconds=timeout_seconds,
         )
 
-    def _request(self, request: Request, *, timeout_seconds: float) -> bytes:
+    def _called(
+        self, timeout_seconds: float, request: Callable[[float], bytes]
+    ) -> bytes:
         if timeout_seconds <= 0:
             raise ValueError("provider canary HTTP timeout must be positive")
         try:
-            with urlopen(
-                request,
-                timeout=min(PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS, timeout_seconds),
-            ) as response:
-                return response.read()
-        except HTTPError as refused:
-            document = refused.read(_MAXIMUM_PROBLEM_RESPONSE_BYTES + 1)
-            problem_code, detail = _problem_answer(document, str(refused))
-            raise ProviderCanaryHttpRefused(problem_code, detail) from refused
-        except (URLError, TimeoutError, OSError) as unavailable:
-            raise ProviderCanaryServerUnavailable(str(unavailable)) from unavailable
+            return request(min(PROVIDER_CANARY_HTTP_TIMEOUT_SECONDS, timeout_seconds))
+        except AtelierApiTransportFailure as failure:
+            if failure.status is None:
+                raise ProviderCanaryServerUnavailable(failure.reason) from failure
+            problem_code, detail = _problem_answer(failure.body, str(failure))
+            raise ProviderCanaryHttpRefused(problem_code, detail) from failure
 
 
 def default_provider_canary_state_directory(
@@ -545,7 +546,7 @@ def execute_provider_canaries(
     caller can journal it at that moment rather than waiting for every vector
     to finish (#1124)."""
 
-    client = http or UrllibProviderCanaryHttp(settings.service_url)
+    client = http or AtelierApiProviderCanaryHttp(settings.service_url)
     canary_clock = clock or SystemProviderCanaryClock()
     started_at = canary_clock.monotonic()
     process_deadline = started_at + settings.process_timeout_seconds
