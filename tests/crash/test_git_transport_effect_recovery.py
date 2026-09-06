@@ -75,6 +75,7 @@ from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 CRASHED = 86
 APPLICATION_VERSION = "git-transport-crash-test"
@@ -251,6 +252,7 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
             agent_scratch_root=agent_scratch_root(root),
             project_id=PROJECT,
             bootstrap_project_root=root / "project",
+            agent_claim_executable=fake_agent_claim_executable(root),
         ),
         registry,
         (executor,),
@@ -265,7 +267,7 @@ def _seed_public_run(root: Path) -> None:
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement P3.",
+            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
             WorkItemChangeMarker("issue-642-crash-v1"),
             RecordedAt("2026-08-27T12:00:00Z"),
         )
