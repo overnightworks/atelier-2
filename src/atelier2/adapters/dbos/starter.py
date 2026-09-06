@@ -127,6 +127,8 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionPublicationResult,
 )
 
+_OR_IGNORE = "OR IGNORE"
+
 
 def _supplied_orders(request: AnyStartPublishedRunRequest) -> tuple[RunInput, ...]:
     """The orders this start carries, for a request shape that can carry any."""
@@ -839,7 +841,7 @@ class DbosDurableRunStarter:
                 if run_configuration is not None:
                     connection.execute(
                         run_configuration_revisions.insert()
-                        .prefix_with("OR IGNORE")
+                        .prefix_with(_OR_IGNORE)
                         .values(
                             revision_hash=run_configuration.revision_hash.value,
                             preimage=run_configuration.preimage,
@@ -847,7 +849,7 @@ class DbosDurableRunStarter:
                     )
                 inserted = connection.execute(
                     runs.insert()
-                    .prefix_with("OR IGNORE")
+                    .prefix_with(_OR_IGNORE)
                     .values(
                         run_id=request.run_id.value,
                         bootstrap_workflow_id=workflow_id,
@@ -997,7 +999,7 @@ class DbosWorkflowRevisionPublisher:
             with canonical_write_transaction(self._engine) as connection:
                 inserted = connection.execute(
                     workflow_revisions.insert()
-                    .prefix_with("OR IGNORE")
+                    .prefix_with(_OR_IGNORE)
                     .values(
                         revision_hash=revision.revision_hash.value,
                         document=revision.document,

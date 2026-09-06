@@ -60,7 +60,6 @@ async function shoot(page: Page, name: string): Promise<void> {
     await page.emulateMedia({ colorScheme: theme });
     for (const viewport of widths) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.waitForTimeout(200);
       const artifact = test.info().outputPath(`${name}-${theme}-${viewport.name}.png`);
       await frame.screenshot({ path: artifact });
       copyFileSync(artifact, `${shotDir}/${name}-${viewport.name}-${theme}.png`);

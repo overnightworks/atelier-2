@@ -264,6 +264,8 @@ class GitTransportEffectAdapterFactory:
 
 
 class GitTransportEffectAdapter:
+    _OBJECT_NAME_FORMAT = "--format=%(objectname)"
+
     def __init__(
         self,
         candidate_store: Path,
@@ -425,7 +427,7 @@ class GitTransportEffectAdapter:
                 f"candidate store does not exist: {self._candidate_store}"
             )
         reference = f"refs/atelier/candidates/{request.attempt_id}"
-        result = self._store_git(("for-each-ref", "--format=%(objectname)", reference))
+        result = self._store_git(("for-each-ref", self._OBJECT_NAME_FORMAT, reference))
         if result.returncode != 0:
             raise GitTransportRefused("the candidate store could not be read")
         standing = result.stdout.decode("ascii", errors="strict").strip()
@@ -583,7 +585,7 @@ class GitTransportEffectAdapter:
     def _anchor_reviewed_candidate(self, attempt_id: str, tree: str) -> None:
         reference = f"refs/atelier/candidates/{attempt_id}"
         standing = self._store_git(
-            ("for-each-ref", "--format=%(objectname)", reference)
+            ("for-each-ref", self._OBJECT_NAME_FORMAT, reference)
         )
         if standing.returncode != 0:
             raise GitTransportRefused("the reviewed candidate ref could not be read")
@@ -597,7 +599,7 @@ class GitTransportEffectAdapter:
         written = self._store_git(("update-ref", reference, tree, ""))
         if written.returncode != 0:
             standing = self._store_git(
-                ("for-each-ref", "--format=%(objectname)", reference)
+                ("for-each-ref", self._OBJECT_NAME_FORMAT, reference)
             )
             if (
                 standing.returncode != 0

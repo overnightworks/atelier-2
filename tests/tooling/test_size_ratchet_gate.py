@@ -19,7 +19,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_size_ratchet.py"
-BASELINE = Path("size_ratchet_baseline.toml")
+BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
 
 LONG_FUNCTION_MODULE = "funcs.py"
@@ -66,6 +66,7 @@ def scratch_project(
     package.mkdir(parents=True)
     for module, source in modules.items():
         (package / module).write_text(source, encoding="utf-8")
+    (project / BASELINE).parent.mkdir()
     (project / BASELINE).write_text(baseline, encoding="utf-8")
     return project
 

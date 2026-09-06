@@ -184,6 +184,10 @@ def graph_action_intent(
     return EffectIntent(binding, request)
 
 
+_DOCUMENTATION_CANDIDATE_OWNER = "documentation candidate"
+_DOCUMENTATION_CHANGE_OWNER = "documentation change"
+
+
 def _documentation_release_action_intent(
     session: Any,
     run_id: RunId,
@@ -199,7 +203,7 @@ def _documentation_release_action_intent(
     if operation.operation is not AdapterOperationName.OPEN_PR:
         raise RunEffectConflict("documentation release Action pins open-pr")
     orders = _documentation_release_orders(session, run_id, action)
-    candidate = _object_order(orders["candidate"], "documentation candidate")
+    candidate = _object_order(orders["candidate"], _DOCUMENTATION_CANDIDATE_OWNER)
     verdict_bytes = orders["approved_verdict"]
     verdict = _object_order(verdict_bytes, "documentation trace-review verdict")
     changes = candidate.get("changes")
@@ -207,23 +211,23 @@ def _documentation_release_action_intent(
         raise RunEffectConflict("documentation candidate carries no reviewed changes")
     try:
         candidate_digest = _text_field(
-            candidate, "candidate_digest", "documentation candidate"
+            candidate, "candidate_digest", _DOCUMENTATION_CANDIDATE_OWNER
         )
         base_revision = _text_field(
-            candidate, "base_revision", "documentation candidate"
+            candidate, "base_revision", _DOCUMENTATION_CANDIDATE_OWNER
         )
         replacements = tuple(
             ReviewedDocumentReplacement(
-                _text_field(change, "path", "documentation change"),
-                _text_field(change, "current_digest", "documentation change"),
+                _text_field(change, "path", _DOCUMENTATION_CHANGE_OWNER),
+                _text_field(change, "current_digest", _DOCUMENTATION_CHANGE_OWNER),
                 _text_field(
-                    change, "replacement_utf8_content", "documentation change"
+                    change, "replacement_utf8_content", _DOCUMENTATION_CHANGE_OWNER
                 ).encode("utf-8"),
             )
             for change in changes
         )
-        title = _text_field(candidate, "title", "documentation candidate")
-        body = _text_field(candidate, "body", "documentation candidate")
+        title = _text_field(candidate, "title", _DOCUMENTATION_CANDIDATE_OWNER)
+        body = _text_field(candidate, "body", _DOCUMENTATION_CANDIDATE_OWNER)
         bound_candidate_digest = reviewed_documentation_candidate_digest(
             base_revision, replacements, title, body
         )

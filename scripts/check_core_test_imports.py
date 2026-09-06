@@ -28,7 +28,7 @@ CORE_TEST_DIRECTORIES: tuple[str, ...] = (
 ADAPTER_PACKAGE = "atelier2.adapters"
 _ADAPTER_PACKAGE_PARENT, _, _ADAPTER_PACKAGE_LEAF = ADAPTER_PACKAGE.rpartition(".")
 
-CORE_TEST_IMPORT_BASELINE_FILE = "core_test_import_baseline.toml"
+CORE_TEST_IMPORT_BASELINE_FILE = "scripts/baselines/core_test_import_baseline.toml"
 BASELINE_TABLE_NAME = "directory"
 BASELINE_PATH_FIELD = "path"
 BASELINE_COUNT_FIELD = "adapter_importing_test_modules"

@@ -224,6 +224,9 @@ class DurableStateCorrupt(RuntimeError):
     """
 
 
+_OR_IGNORE = "OR IGNORE"
+
+
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
     """Rebuild the typed attempt one `agent_attempts` row records.
 
@@ -1035,7 +1038,7 @@ def _store_output_schema_refusal_receipt(
     )
     connection.execute(
         agent_attempt_receipts_v3.insert()
-        .prefix_with("OR IGNORE")
+        .prefix_with(_OR_IGNORE)
         .values(
             attempt_id=receipt.attempt_id.value,
             reason=receipt.reason,
@@ -1125,7 +1128,7 @@ def _keep_tool_redemption(
         raise ToolRedemptionConflict("tool redemption differs from its exact attempt")
     connection.execute(
         tool_redemptions.insert()
-        .prefix_with("OR IGNORE")
+        .prefix_with(_OR_IGNORE)
         .values(_tool_redemption_values(redemption))
     )
     stored = (
@@ -1533,7 +1536,7 @@ class DbosAgentAttemptStore:
                 return existing
             inserted = connection.execute(
                 agent_attempts.insert()
-                .prefix_with("OR IGNORE")
+                .prefix_with(_OR_IGNORE)
                 .values(_attempt_values(prepared))
             )
             if inserted.rowcount == 1:
@@ -1748,7 +1751,7 @@ class DbosAgentAttemptStore:
         with canonical_write_transaction(self._engine) as connection:
             connection.execute(
                 permission_receipts.insert()
-                .prefix_with("OR IGNORE")
+                .prefix_with(_OR_IGNORE)
                 .values(_permission_receipt_values(receipt))
             )
             stored = (
@@ -1968,7 +1971,7 @@ class DbosAgentAttemptStore:
         receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
         connection.execute(
             agent_receipts_v2.insert()
-            .prefix_with("OR IGNORE")
+            .prefix_with(_OR_IGNORE)
             .values(_agent_receipt_v2_values(receipt))
         )
         receipt_record = (

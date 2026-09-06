@@ -348,7 +348,7 @@ describe("a version 3 run in the cockpit", () => {
     // shared component, REQ-UIQ-13), so both say the identical sentence.
     await screen.findByRole("heading", { level: 1, name: runPageCopy.looking });
     const statuses = screen.getAllByRole("status");
-    expect(statuses.length).toBe(2);
+    expect(statuses).toHaveLength(2);
     for (const status of statuses) {
       // Insignificant whitespace from the surrounding `{#if}` block's own
       // indentation collapses visually in a browser; this normalizes it the

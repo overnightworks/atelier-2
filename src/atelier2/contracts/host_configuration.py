@@ -65,6 +65,7 @@ PROJECT_ROOT_MISSING = "project-root-missing"
 HOST_CONFIGURATION_UNREADABLE = "host-configuration-unreadable"
 MODEL_REGISTRY_REVISION_CONFLICT = "model-registry-revision-conflict"
 PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT = "project-model-defaults-revision-conflict"
+_PROJECT_ID_TYPE_INVARIANT = "project id must use its typed contract"
 
 
 class ProjectUnknown(Exception):
@@ -129,7 +130,7 @@ class ProjectRootRevision:
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, ProjectId):
-            raise TypeError("project id must use its typed contract")
+            raise TypeError(_PROJECT_ID_TYPE_INVARIANT)
         if (
             type(self.revision_number) is not int
             or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
@@ -360,7 +361,7 @@ class ProjectModelDefaultsRevision:
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, ProjectId):
-            raise TypeError("project id must use its typed contract")
+            raise TypeError(_PROJECT_ID_TYPE_INVARIANT)
         if (
             type(self.revision_number) is not int
             or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
@@ -551,7 +552,7 @@ class ProjectSourceConnectionRevision:
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, ProjectId):
-            raise TypeError("project id must use its typed contract")
+            raise TypeError(_PROJECT_ID_TYPE_INVARIANT)
         if not isinstance(self.source_id, ProjectSourceId):
             raise TypeError("source id must use its typed contract")
         if (

@@ -20,7 +20,7 @@ const TOOL_GRANTS = /^(\d+) tool grants on node '([^']+)', and one attempt redee
  * is never dressed as something else.
  */
 export function humanStartRefusal(reason: string): string {
-  const shape = reason.match(OUTPUT_SHAPE);
+  const shape = OUTPUT_SHAPE.exec(reason);
   if (shape !== null) {
     const count = shape[1] ?? "0";
     const node = shape[2] ?? "this node";
@@ -56,12 +56,12 @@ export function humanStartRefusal(reason: string): string {
   if (reason.includes("do not form one line")) {
     return "This workflow is not one line. The runtime cannot choose between branches yet; keep a single chain and publish again.";
   }
-  const waitInputs = reason.match(WAIT_INPUTS);
+  const waitInputs = WAIT_INPUTS.exec(reason);
   if (waitInputs !== null) {
     const node = waitInputs[1] ?? "this wait";
     return `Wait node '${node}' declares inputs nothing composes into the question. Remove those inputs and publish again.`;
   }
-  const grants = reason.match(TOOL_GRANTS);
+  const grants = TOOL_GRANTS.exec(reason);
   if (grants !== null) {
     const node = grants[2] ?? "this node";
     return `Node '${node}' pins more than one tool grant; one attempt redeems one. Keep a single grant and publish again.`;

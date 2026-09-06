@@ -121,7 +121,7 @@ describe("the bounded recovery probe for a page with no open stream (#700)", () 
     expect(attemptsMade).toBeGreaterThan(50);
 
     await vi.advanceTimersByTimeAsync(3_000 * 10);
-    expect(probe.mock.calls.length).toBe(attemptsMade);
+    expect(probe.mock.calls).toHaveLength(attemptsMade);
     stop();
   });
 
@@ -137,7 +137,7 @@ describe("the bounded recovery probe for a page with no open stream (#700)", () 
     stop();
 
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(probe.mock.calls.length).toBe(attemptsMade);
+    expect(probe.mock.calls).toHaveLength(attemptsMade);
   });
 
   it("recovers after the initial budget is exhausted -- the network itself reporting online earns one more try", async () => {

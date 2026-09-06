@@ -151,12 +151,12 @@ def test_an_operator_home_path_in_a_provider_refusal_is_replaced_too() -> None:
             ProviderTerminalRefusal(
                 "api_error",
                 "",
-                "reading /home/felix-hummert/git/atelier-2/AGENTS.md failed",
+                "reading /home/operator/git/atelier-2/AGENTS.md failed",
             )
         ]
     )
 
-    assert "felix-hummert" not in transcript.document.decode("utf-8")
+    assert "operator" not in transcript.document.decode("utf-8")
     assert kept_events(transcript) == [
         {
             "event": "provider-terminal-refusal",
