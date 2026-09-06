@@ -9,6 +9,7 @@ import { nodeDetailSchema } from "../../src/api/client";
 import { observedWorkItemLabel, workflowStartCopy } from "../../src/lib/catalogPageCopy";
 import { decodeUtf8Base64 } from "../../src/lib/exactBytes";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
+import { WORK_ITEM_SCHEMA_DOCUMENT } from "./workItemSchema";
 
 const VIEWPORTS = [
   { width: 390, height: 844 },
@@ -33,8 +34,6 @@ const REAL_DIFF_REVIEW_FINDING_SCHEMA = readFileSync(
   "utf8"
 );
 
-const workItemSchemaDocument =
-  '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"},"scope":{"items":{"type":"string"},"type":"array","uniqueItems":true}},"required":["body","change_marker","digest","kind","observed_at","reference","scope"],"title":"work item","type":"object"}';
 const observedWorkItemBody = "e2e observed work item gh:450 — Grüße 東京";
 const workItemPickerName = `${workflowStartCopy.workItem} for work_item`;
 // The tracker title the harness seeds for gh:450 (tests/e2e/serve_cockpit.py
@@ -47,7 +46,8 @@ const observedWorkItemRevision = {
   digest: createHash("sha256").update(observedWorkItemBody, "utf8").digest("hex"),
   kind: "issue",
   observed_at: "2026-08-26T09:15:00Z",
-  reference: "gh:450"
+  reference: "gh:450",
+  scope: []
 } as const;
 const workItemOrderValueSchema = z
   .object({
@@ -56,7 +56,8 @@ const workItemOrderValueSchema = z
     digest: z.string().regex(/^[0-9a-f]{64}$/),
     kind: z.enum(["issue", "change_request"]),
     observed_at: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/),
-    reference: z.string().min(1)
+    reference: z.string().min(1),
+    scope: z.array(z.string())
   })
   .strict();
 
@@ -197,7 +198,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker) proves(the-work-item-pick
     const profileId = `start-sheet-e2e-${token}`;
     const workItemSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
       headers: { "content-type": "application/json" },
-      data: workItemSchemaDocument
+      data: WORK_ITEM_SCHEMA_DOCUMENT
     });
     expect([200, 201]).toContain(workItemSchema.status());
     const workItemSchemaHash = (await workItemSchema.json()).schema_revision_hash as string;

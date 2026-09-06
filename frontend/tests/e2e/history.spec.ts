@@ -6,6 +6,7 @@ import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyWhenLabel } from "../../src/lib/historyRows";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 import { standingWords } from "../../src/lib/runState";
+import { WORK_ITEM_SCHEMA_DOCUMENT } from "./workItemSchema";
 
 const VIEWPORTS = [
   { width: 1280, height: 900 },
@@ -13,9 +14,6 @@ const VIEWPORTS = [
 ] as const;
 
 const RAW_PROVIDER_BYTES = "V3 provider bytes";
-
-const WORK_ITEM_SCHEMA_DOCUMENT =
-  '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"},"scope":{"items":{"type":"string"},"type":"array","uniqueItems":true}},"required":["body","change_marker","digest","kind","observed_at","reference","scope"],"title":"work item","type":"object"}';
 
 function historyCards(page: Page, workflowName: string) {
   return page.locator(".history-row").filter({ hasText: workflowName });
