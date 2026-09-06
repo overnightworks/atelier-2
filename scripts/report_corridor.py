@@ -89,15 +89,12 @@ def git_diff_lines(
     head: str,
     *arguments: str,
     rename_detection: str,
-    pathspecs: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """`rename_detection` is `--no-renames` or a `-M` flag; it has no default
     because a numstat file count and an added-lines diff need opposite answers
     to "does a rename count as a full add"."""
 
     command = ["git", "diff", rename_detection, *arguments, f"{base}...{head}"]
-    if pathspecs:
-        command.extend(("--", *pathspecs))
     result = subprocess.run(
         command,
         cwd=project_root,

@@ -17,6 +17,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_dead_code.py"
+BASELINES = Path("scripts") / "baselines"
 
 A_MODULE = "lonely.py"
 ANOTHER_MODULE = "elsewhere.py"
@@ -99,13 +100,17 @@ class Lists:
     pending: tuple[str, ...] = ()
     frozen: tuple[str, ...] = ()
 
-    def files(self) -> dict[str, str]:
+    def files(self) -> dict[Path, str]:
         return {
-            ".vulture_allowlist.py": _binding(
+            BASELINES / "vulture_allowlist.py": _binding(
                 "REACHED_BY_A_SITE_VULTURE_CANNOT_SEE", self.allowlist
             ),
-            "vulture_pending.py": _binding("WAITING_FOR_A_DECISION", self.pending),
-            "vulture_frozen.py": _binding("WAITING_FOR_A_CALLER", self.frozen),
+            BASELINES / "vulture_pending.py": _binding(
+                "WAITING_FOR_A_DECISION", self.pending
+            ),
+            BASELINES / "vulture_frozen.py": _binding(
+                "WAITING_FOR_A_CALLER", self.frozen
+            ),
         }
 
 
@@ -120,7 +125,7 @@ def scratch_project(
     elsewhere: str | None = None,
 ) -> Path:
     project = tmp_path / "project"
-    (project / "scripts").mkdir(parents=True)
+    (project / BASELINES).mkdir(parents=True)
     package = project / "src" / "atelier2"
     package.mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
