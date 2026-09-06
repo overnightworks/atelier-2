@@ -38,6 +38,24 @@ import {
   QueueProposalResource,
 } from "./generated/authAgentAndQueue.zod";
 import {
+  AgentBindingResourceV2,
+  DefectiveRunRowResource,
+  NodeDetailResource,
+  NodeRailResource,
+  nodeRefusalOutputResourceValueBase64Max,
+  NodeRefusalOutputResource,
+  RunCancellabilityResource,
+  RunForkOriginResource,
+  RunForkSuccessorResource,
+  RunListRowResource,
+  runResourceV3AgentBindingsMax,
+  runResourceV3ForkSuccessorsMax,
+  RunResourceV3,
+  RunTerminalAnswerOmittedResource,
+  RunTerminalAnswerValueResource,
+  VersionedRunPageResource,
+} from "./generated/runsRailAndNodes.zod";
+import {
   reportConnectionLost,
   reportConnectionRestored,
 } from "../lib/connectionState";
@@ -391,102 +409,42 @@ export const authProfileRevisionPageSchema = AuthProfileRevisionPageResource.ext
   items: z.array(authProfileRevisionSchema),
 });
 
-const agentBindingV2Schema = z
-  .object({
-    role: z.string().min(1),
-    agent_configuration_revision_hash: sha256,
-    auth_profile_revision_hash: sha256,
-    profile_id: z.string().min(1),
-    revision_number: positiveSafeInteger,
-    provider_id: z.string().min(1),
-    auth_mode: z.enum(["subscription", "api_key"]),
-    model: z.string().min(1),
-    executor_revision: z.string().min(1),
-  })
-  .strict();
-
-/** The attempt states the served document names, in the order it names them. */
-export const PUBLIC_ATTEMPT_STATES = [
-  "PREPARED",
-  "POSSIBLY_RAN",
-  "CANCEL_REQUESTED",
-  "CANCELLED",
-  "INTERRUPTED",
-  "FAILED",
-  "SUCCEEDED",
-] as const;
-
-/** The states the served document names; tests/api/servedVocabulary holds them to it. */
-export const NODE_STATES = [
-  "queued",
-  "working",
-  "needs_you",
-  "succeeded",
-  "failed",
-  "cancelled",
-  "interrupted",
-] as const;
-
-export const nodeRailEntrySchema = z
-  .object({
-    node_id: z.string().min(1),
-    state: z.enum(NODE_STATES),
-    attempt: z
-      .object({
-        ordinal: z.union([z.literal(1), z.literal(2)]),
-        state: z.enum(PUBLIC_ATTEMPT_STATES).nullable(),
-      })
-      .strict()
-      .nullable(),
-    reused_from_run_reference: publicRunReference.nullable().optional(),
-    source_event_hash: sha256.nullable().optional(),
-    source_receipt_hash: sha256.nullable().optional(),
-    source_declared_context_package_hash: sha256.nullable().optional(),
-  })
-  .strict()
-  .superRefine((entry, context) => {
-    const reuseEvidence = [
-      entry.reused_from_run_reference,
-      entry.source_event_hash,
-      entry.source_receipt_hash,
-      entry.source_declared_context_package_hash,
-    ];
-    const namedEvidence = reuseEvidence.filter((value) => value != null).length;
-    if (namedEvidence !== 0 && namedEvidence !== reuseEvidence.length) {
-      context.addIssue({
-        code: "custom",
-        message: "a reused rail node names its complete source evidence",
-      });
-    }
-    if (namedEvidence === reuseEvidence.length && entry.state !== "succeeded") {
-      context.addIssue({
-        code: "custom",
-        message: "only a succeeded rail node can be reused",
-      });
-    }
-  });
-
 /**
- * A V3 run as the server answers it -- the only run format the wire still
- * serves (#901 slice 4; the start door refuses every other format and the
- * server projects format 3 alone since PR #920).
- *
- * A V3 run names its current node by id and carries no `waiting` block,
- * although it does reach WAITING_INPUT: what a V3 Wait node asks and which
- * schema judges the answer belong to the document, and the rail is what marks
- * the node owing a person a move.
+ * Reused-rail-node evidence is a cross-field rule no schema-only generator
+ * states: either every source field of the prior run is named, or none is,
+ * and only a succeeded node can be reused at all.
  */
-/** The V3 run states the served document names; tests/api/servedVocabulary holds them to it. */
-export const RUN_STATES_V3 = [
-  "STARTED",
-  "WAITING_RECONCILIATION",
-  "WAITING_INPUT",
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-] as const;
+export const nodeRailEntrySchema = NodeRailResource.extend({
+  // The document defaults these four to `null`, which zod's own `.default()`
+  // would make always-present on the decoded type; kept `.optional()` instead
+  // so a caller before this evidence existed still decodes the same way.
+  reused_from_run_reference: publicRunReference.nullable().optional(),
+  source_event_hash: sha256.nullable().optional(),
+  source_receipt_hash: sha256.nullable().optional(),
+  source_declared_context_package_hash: sha256.nullable().optional(),
+}).superRefine((entry, context) => {
+  const reuseEvidence = [
+    entry.reused_from_run_reference,
+    entry.source_event_hash,
+    entry.source_receipt_hash,
+    entry.source_declared_context_package_hash,
+  ];
+  const namedEvidence = reuseEvidence.filter((value) => value != null).length;
+  if (namedEvidence !== 0 && namedEvidence !== reuseEvidence.length) {
+    context.addIssue({
+      code: "custom",
+      message: "a reused rail node names its complete source evidence",
+    });
+  }
+  if (namedEvidence === reuseEvidence.length && entry.state !== "succeeded") {
+    context.addIssue({
+      code: "custom",
+      message: "only a succeeded rail node can be reused",
+    });
+  }
+});
 
-export type RunStateV3 = (typeof RUN_STATES_V3)[number];
+export type RunStateV3 = RunResourceV3["state"];
 
 /** Why the server says a V3 run cannot be operator-cancelled; #439 D3's closed set. */
 export const RUN_NOT_CANCELLABLE_REASONS = [
@@ -502,23 +460,13 @@ export type RunNotCancellableReason =
   (typeof RUN_NOT_CANCELLABLE_REASONS)[number];
 
 /**
- * Whether a V3 run can be operator-cancelled right now, said by the server.
- *
- * #439 D3 makes this the server's predicate, not the cockpit's guess: a
- * cancellable run names the `target_node_execution_id` a cancel fences on, and a
- * run that cannot be cancelled names the closed reason token instead. The server
- * sends it on every V3 run, so it is decoded as required here: the cancel
- * control reads it to know whether the run can be stopped and, when it cannot,
- * which sentence to show instead of a grey nothing.
+ * #439 D3 makes cancellability the server's predicate, not the cockpit's
+ * guess: a cancellable run names its target node execution, and a
+ * non-cancellable one names exactly one reason -- a cross-field rule no
+ * schema-only generator states.
  */
-const runCancellabilitySchema = z
-  .object({
-    cancellable: z.boolean(),
-    reason: z.enum(RUN_NOT_CANCELLABLE_REASONS).nullable(),
-    target_node_execution_id: sha256.nullable(),
-  })
-  .strict()
-  .superRefine((cancellation, context) => {
+const runCancellabilitySchema = RunCancellabilityResource.superRefine(
+  (cancellation, context) => {
     if (
       cancellation.cancellable !==
       (cancellation.target_node_execution_id !== null)
@@ -534,187 +482,74 @@ const runCancellabilitySchema = z
         message: "a non-cancellable run names exactly one reason",
       });
     }
-  });
+  },
+);
+
+const agentBindingV2Schema = AgentBindingResourceV2.extend({
+  revision_number: positiveSafeInteger,
+});
+
+// `public_run_reference` is a public-reference codec the document states only
+// as a pattern; the base64url round trip it names is checked here, not there.
+const runForkOriginSchema = RunForkOriginResource.extend({
+  public_run_reference: publicRunReference,
+});
+
+const runForkSuccessorSchema = RunForkSuccessorResource.extend({
+  public_run_reference: publicRunReference,
+});
 
 /**
- * One order a V3 run was started with, told safely -- never its own bytes.
- *
- * An order's material can be a secret a caller pasted by mistake, or an
- * artifact up to the server's own artifact size bound, and this resource is
- * served on every listed run -- so it never echoes the order's bytes at all.
- * `bytes` is how large the order's material is; `schema_revision_hash` is
- * the schema it satisfies. No text preview travels here yet: that needs a
- * redaction owner the server does not carry until #666 lands.
+ * @public re-exports the generated bound under its established name: the
+ * decoder no longer references it directly (it decodes through
+ * `NodeRefusalOutputResource` as generated), but `readableResultDisplay`'s
+ * boundary test still builds an at-cap fixture against it, and the API
+ * facade -- not `generated/**`, which stays internal -- is where that stays.
  */
-const runOrderSchema = z
-  .object({
-    name: z.string().min(1),
-    bytes: nonnegativeSafeInteger,
-    schema_revision_hash: sha256,
-  })
-  .strict();
+export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS =
+  nodeRefusalOutputResourceValueBase64Max;
 
+const nodeRefusalOutputSchema = NodeRefusalOutputResource;
 
-const runForkOriginSchema = z
-  .object({
-    public_run_reference: publicRunReference,
-    terminal_hash: sha256,
-    restart_from_node_id: z.string().min(1),
-    fork_hash: sha256,
-  })
-  .strict();
-
-const runForkSuccessorSchema = z
-  .object({
-    public_run_reference: publicRunReference,
-    restart_from_node_id: z.string().min(1),
-    fork_hash: sha256,
-  })
-  .strict();
-
-export const MAXIMUM_RUN_FORK_SUCCESSORS = 100;
-
-/**
- * One node of a run, as `GET /runs/{ref}/nodes/{node_id}` answers it.
- *
- * Five answers, each allowed to be absent, because the absence is the answer: a
- * node that has not run yet was asked nothing this reader can prove, wrote
- * nothing and has no receipt, and a refusal exists only where something really
- * refuses. The panel renders exactly that and invents no placeholder.
- *
- * `refusal_output` is deliberately not `answer`: it is a redacted presentation
- * of the bytes a schema owner judged and refused, never the value the run
- * accepted (#664), and it is present only where that judgment happened and
- * the store still held something safe to show. Optional, like `started_at` /
- * `ended_at` above -- an older test fixture or a caller of a build before
- * #664 omits the key entirely, and that reads exactly as the absence it is
- * (`?? null` at every reader), never a parse failure.
- *
- * `transcript` is the decoded, already-redacted steps of the attempt that
- * named one. Optional the same way: the server omits the key when no attempt
- * stored a transcript, and an older fixture that never heard of the field
- * still decodes. Usage is still not a receipt field; it can appear as a
- * `usage` transcript event when the attempt stored one. Duration sits beside
- * the attempt as started_at / ended_at, not on the receipt.
- */
-const nodeProvenanceSchema = z
-  .object({
-    role: z.string().min(1),
-    provider_id: z.string().min(1),
-    model: z.string().min(1),
-    executor_revision: z.string().min(1),
-    executor_operational_identity: z.string().min(1),
-    auth_mode: z.string().min(1),
-    profile_id: z.string().min(1),
-    agent_configuration_revision_hash: sha256,
-    request_hash: sha256,
-    receipt_hash: sha256,
-  })
-  .strict();
-
-const nodeAnswerSchema = z
-  .object({ value_base64: z.string(), value_hash: sha256 })
-  .strict();
-
-/**
- * `base64_characters_for(maximum_redacted_length(MAXIMUM_AGENT_OUTPUT_BYTES_V2))`
- * (`api/references.py`), mirrored here as a plain number the way every other
- * server-owned wire bound already is on this side (see `.max(64)` above).
- * Only a V3 agent node's own schema-refused output ever reaches
- * `refusal_output`, and every executor adapter already refuses the domain
- * more than 49,152 bytes before that judgment runs -- but the server redacts
- * credential shapes out of that text before it is served (#664), and
- * replacing a short credential with the longer `[redacted]` marker can grow
- * it. `maximum_redacted_length` is the redaction owner's own declared
- * worst case for that growth, so this bound rests on the agent output cap
- * *and* that owner's own number, not a third one invented on this side.
- */
-export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS = 81_920;
-
-const nodeRefusalOutputSchema = z
-  .object({
-    value_base64: z.string().max(MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS),
-    value_hash: sha256,
-  })
-  .strict();
-
-/**
- * `base64_characters_for(MAXIMUM_AGENT_OUTPUT_BYTES_V2)` (`api/references.py`),
- * mirrored here the same way `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS` above
- * already is. `RunResourceV3.answer` (#1045) is served on every listed run,
- * repeated once per row, so unlike `nodeAnswerSchema` (unbounded: a single
- * node detail read shares no byte bound across node kinds) it needs one.
- */
-const MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = 65_536;
-
-const runTerminalAnswerValueSchema = z
-  .object({
-    kind: z.literal("value"),
-    value_base64: z.string().max(MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS),
-    value_hash: sha256,
-  })
-  .strict();
-
-/**
- * A terminal node did write an answer, but not the value this row carries
- * (#1045): a bare `null` would read the same as a node that wrote nothing at
- * all, so an oversized value is named instead of hidden behind that absence.
- */
-const runTerminalAnswerOmittedSchema = z
-  .object({
-    kind: z.literal("omitted"),
-    reason: z.literal("too_large"),
-    maximum_bytes: nonnegativeSafeInteger,
-  })
-  .strict();
+const runTerminalAnswerOmittedSchema = RunTerminalAnswerOmittedResource.extend({
+  maximum_bytes: nonnegativeSafeInteger,
+});
 
 const runTerminalAnswerSchema = z.discriminatedUnion("kind", [
-  runTerminalAnswerValueSchema,
+  RunTerminalAnswerValueResource,
   runTerminalAnswerOmittedSchema,
 ]);
 
-
-export const runV3Schema = z
-  .object({
-    workflow_format_version: z.literal(3),
-    run_id: z.string().min(1),
-    public_run_reference: publicRunReference,
-    workflow_revision_hash: sha256,
-    // A format-3 document always declares a name, so this is never absent
-    // (#1045). History used to ask `getWorkflowRevision` once per distinct
-    // revision hash for exactly this; this is that fact carried on the row.
-    workflow_name: z.string().min(1),
-    agent_binding_set_hash: sha256,
-    run_configuration_revision_hash: sha256,
-    agent_bindings: z.array(agentBindingV2Schema).max(100),
-    orders: z.array(runOrderSchema),
-    // The tracker reference one of `orders` above names, read against the
-    // published `work_item` order schema server-side (#1045) -- never a
-    // guess parsed from a node's job text. `1_024` mirrors
-    // `MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS` (`contracts/queue_projection.py`).
-    work_item_reference: z.string().min(1).max(1_024).nullable().optional(),
-    fork_origin: runForkOriginSchema.nullable().optional(),
-    fork_successors: z
-      .array(runForkSuccessorSchema)
-      .max(MAXIMUM_RUN_FORK_SUCCESSORS)
-      .optional(),
-    // What the terminal node wrote or refused, mutually exclusive, both
-    // absent on a run that has not ended (#1045). History used to ask
-    // `getNodeDetail` once per row for exactly these two facts.
-    answer: runTerminalAnswerSchema.nullable().optional(),
-    refusal_output: nodeRefusalOutputSchema.nullable().optional(),
-    state_version: nonnegativeSafeInteger,
-    state: z.enum(RUN_STATES_V3),
-    current_node_id: z.string().min(1),
-    current_node_execution_id: sha256,
-    node_rail: z.array(nodeRailEntrySchema).min(1),
-    cancellation: runCancellabilitySchema,
-    terminal_hash: sha256.nullable(),
-    latest_event_cursor: eventCursor.nullable(),
-    started_at: z.string().nullable().optional(),
-    ended_at: z.string().nullable().optional(),
-  })
-  .strict();
+/**
+ * A V3 run as the server answers it -- the only run format the wire still
+ * serves (#901 slice 4; the start door refuses every other format and the
+ * server projects format 3 alone since PR #920).
+ *
+ * A V3 run names its current node by id and carries no `waiting` block,
+ * although it does reach WAITING_INPUT: what a V3 Wait node asks and which
+ * schema judges the answer belong to the document, and the rail is what marks
+ * the node owing a person a move.
+ */
+export const runV3Schema = RunResourceV3.extend({
+  public_run_reference: publicRunReference,
+  agent_bindings: z.array(agentBindingV2Schema).max(runResourceV3AgentBindingsMax),
+  fork_origin: runForkOriginSchema.nullable().optional(),
+  fork_successors: z
+    .array(runForkSuccessorSchema)
+    .max(runResourceV3ForkSuccessorsMax)
+    .optional(),
+  // What the terminal node wrote or refused, mutually exclusive, both
+  // absent on a run that has not ended (#1045). History used to ask
+  // `getNodeDetail` once per row for exactly these two facts.
+  answer: runTerminalAnswerSchema.nullable().optional(),
+  refusal_output: nodeRefusalOutputSchema.nullable().optional(),
+  state_version: nonnegativeSafeInteger,
+  // `event1.<run>.<sequence>` names a public run reference and a positive
+  // sequence, both checked here; the document states only the pattern.
+  latest_event_cursor: eventCursor.nullable(),
+  node_rail: z.array(nodeRailEntrySchema).min(1),
+  cancellation: runCancellabilitySchema,
+});
 
 /**
  * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`),
@@ -831,39 +666,14 @@ export const attemptTranscriptSchema = z
 
 export type AttemptTranscript = z.infer<typeof attemptTranscriptSchema>;
 
-export const nodeDetailSchema = z
-  .object({
-    run_id: z.string().min(1),
-    public_run_reference: publicRunReference,
-    node_id: z.string().min(1),
-    state: z.enum(NODE_STATES),
-    job_base64: z.string().nullable(),
-    job_hash: sha256.nullable(),
-    answer: nodeAnswerSchema.nullable(),
-    provenance: nodeProvenanceSchema.nullable(),
-    refusal: z.string().nullable(),
-    refusal_output: nodeRefusalOutputSchema.nullable().optional(),
-    started_at: z.string().nullable().optional(),
-    ended_at: z.string().nullable().optional(),
-    transcript: attemptTranscriptSchema.nullable().optional(),
-  })
-  .strict();
+export const nodeDetailSchema = NodeDetailResource.extend({
+  public_run_reference: publicRunReference,
+  transcript: attemptTranscriptSchema.nullable().optional(),
+});
 
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 
-/**
- * `MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS` (`contracts/run_projections.py`),
- * mirrored here as a plain number the way every other server-owned wire bound
- * already is on this side.
- */
-const MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS = 512;
-
-const runListRowSchema = z
-  .object({
-    kind: z.literal("run"),
-    run: runV3Schema,
-  })
-  .strict();
+const runListRowSchema = RunListRowResource.extend({ run: runV3Schema });
 
 /**
  * One listed run whose own projection failed, told apart from a run instead
@@ -871,14 +681,9 @@ const runListRowSchema = z
  * this one, so a run list answers with this row rather than refusing the
  * whole page for the sake of one entry.
  */
-const defectiveRunRowSchema = z
-  .object({
-    kind: z.literal("defective"),
-    public_run_reference: publicRunReference,
-    problem_code: z.literal("durable-state-corrupt"),
-    detail: z.string().min(1).max(MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS),
-  })
-  .strict();
+const defectiveRunRowSchema = DefectiveRunRowResource.extend({
+  public_run_reference: publicRunReference,
+});
 
 const runListRowUnionSchema = z.discriminatedUnion("kind", [
   runListRowSchema,
@@ -888,12 +693,10 @@ const runListRowUnionSchema = z.discriminatedUnion("kind", [
 export type RunListRow = z.infer<typeof runListRowUnionSchema>;
 export type DefectiveRunRow = z.infer<typeof defectiveRunRowSchema>;
 
-const runPageSchema = z
-  .object({
-    items: z.array(runListRowUnionSchema),
-    next_after: publicRunReference.nullable(),
-  })
-  .strict();
+const runPageSchema = VersionedRunPageResource.extend({
+  items: z.array(runListRowUnionSchema),
+  next_after: publicRunReference.nullable(),
+});
 
 export const EFFECT_CONFIRMATION_SOURCES = [
   "ADAPTER_READBACK",

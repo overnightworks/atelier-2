@@ -9,6 +9,7 @@ import {
   decodeStreamFrame,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   nodeDetailSchema,
+  nodeRailEntrySchema,
   projectSourceConnectionRevisionSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
@@ -2082,5 +2083,31 @@ describe("the node a click asks the server about", () => {
         }
       })
     ).toThrow();
+  });
+});
+
+describe("a run's node rail", () => {
+  it("refuses partial reuse evidence and reuse on a node that did not succeed", () => {
+    const completeEvidence = {
+      reused_from_run_reference: "run1.cnVu",
+      source_event_hash: "a".repeat(64),
+      source_receipt_hash: "b".repeat(64),
+      source_declared_context_package_hash: "c".repeat(64)
+    };
+    const ordinary = { node_id: "implement", state: "succeeded", attempt: null };
+
+    for (const field of Object.keys(completeEvidence) as Array<keyof typeof completeEvidence>) {
+      const partial: Partial<typeof completeEvidence> = { ...completeEvidence };
+      delete partial[field];
+      expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...partial }).success).toBe(false);
+    }
+    expect(
+      nodeRailEntrySchema.safeParse({
+        ...ordinary,
+        state: "failed",
+        ...completeEvidence
+      }).success
+    ).toBe(false);
+    expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...completeEvidence }).success).toBe(true);
   });
 });
