@@ -9,7 +9,7 @@ flowchart TB
     subgraph Workshop["Workshop UI — operator"]
         subgraph Rooms["Four rooms"]
             direction LR
-            Workbench["Workbench<br/>needs me · moving · conversation"]
+            Workbench["Workbench<br/>needs me · moving · terminal"]
             Catalog["Catalog<br/>library · intake · manual start"]
             History["History<br/>terminal runs"]
             Settings["Settings<br/>project · sources · models"]
@@ -36,7 +36,7 @@ flowchart TB
 
 2. Atelier is a workshop rather than a dashboard, and the first thing in a room is the work or the quiet fact that nothing needs the operator.[^2]
 3. Its rail contains Workbench, Catalog and History, with Settings set apart as the project context and the only project-switch seam.[^3]
-4. Workbench owns what needs the operator, what is moving, the conversation and the unfolding queue, while a terminal run crosses once into History.[^4]
+4. Workbench owns what needs the operator, what is moving, the operator's own terminal and the unfolding queue, while a terminal run crosses once into History.[^4]
 5. Catalog owns the library, provenance, intake, workflow approval and the single manual start door.[^5]
 6. History contains only terminal runs and identifies each by when, purpose, work item, result and duration rather than by standing alone.[^6]
 7. Settings owns connected sources, the provider model registry and the three project model defaults, while credential material is never shown or stored as ordinary application state.[^7]

@@ -104,8 +104,9 @@ admission — is one line on the workbench that unfolds in place into its list;
 it lives nowhere else.
 
 **There is no Workflows room and no Chat room.** Starting lives in the catalog
-detail (one door, #704); the conversation lives on the workbench, whose ear
-speaks to the conductor — you do not visit a chat page. HEART lines 19–22
+detail (one door, #704); speaking to an agent lives on the workbench, in the
+terminal seat that stands where the conversation stood (amendment 06.09.2026,
+below) — you do not visit a chat page. HEART lines 19–22
 ("Workflows owns starting … Catalog owns the library … admitted in the
 Catalog and started in Workflows", landed 25.08.2026 by #684) are **retracted
 by this record** (§5).
@@ -114,14 +115,15 @@ by this record** (§5).
 
 Everything the workshop says is a question it holds out — a wait node of some
 run — and everything the operator says is an answer. The decision with two
-buttons, the ear, and the "yes" to the conductor are one mechanism in three
-sizes. Therefore every room is composed from exactly four blocks, each a
+buttons and the "yes" on a start sheet are one mechanism in two sizes; what
+the operator says to an agent is said in the terminal, which the workshop
+frames and never reads (amendment 06.09.2026, below). Therefore every room is composed from exactly four blocks, each a
 reused component (REQ-UIQ-07):
 
 | Block | Question | Where |
 | --- | --- | --- |
-| **Stage** — sender line · question in serif · two honest buttons · one aside with a door | What is asked of me, what are my answers? | workbench top, waiting run, the conductor's question, every dialog (a dialog is the stage in the operator's own hand: ink border, not ochre) |
-| **Row** — name · work item · one sentence · clock; smallest form: name · work item · standing word | Which run, for what, how does it stand? | workbench, cards inside the conductor's replies, Recent runs, History |
+| **Stage** — sender line · question in serif · two honest buttons · one aside with a door | What is asked of me, what are my answers? | workbench top, waiting run, every dialog (a dialog is the stage in the operator's own hand: ink border, not ochre) |
+| **Row** — name · work item · one sentence · clock; smallest form: name · work item · standing word | Which run, for what, how does it stand? | workbench, Recent runs, History |
 | **Card** — the row in grid form: glyph · name · one sentence · pills | What is this, may I open it? | Catalog |
 | **Sheet** — over the still page from the right at 1280, from the bottom at 390 (picture frame "Import", 390 shots), as tall as its content | What does this step need before it goes? | Start, Import, Connect a source |
 
@@ -142,7 +144,7 @@ breath — and is never repeated as a sentence. Text stands only where no
 element shows it. Corollaries the picture applies everywhere:
 
 - Origin and provenance stand only where they deviate from the default
-  ("chosen now", "set in the conversation", "group, 3 projects").
+  ("chosen now", "set on the start sheet", "group, 3 projects").
 - Explanations come on request — tooltip, "Technical", "Raw" — never inline.
 - Under a graph node stands the **role**, never the agent and never the
   difficulty; who fills it stands on the start sheet and in Settings, the
@@ -184,8 +186,7 @@ element shows it. Corollaries the picture applies everywhere:
   the Models list that writes on change; nothing is derived, no thresholds. Start override
   and pin take exact ids; aliases ("newest opus") are convenience only and are
   not drawn. Precedence per role, unchanged: **start override** (the start
-  sheet's dropdown, or the conductor's yes in the conversation — both for
-  this run only) > **pinned in workflow** > **model default per difficulty**
+  sheet's dropdown, for this run only) > **pinned in workflow** > **model default per difficulty**
   > **next higher difficulty** (#557: never silent, never weaker; the field
   says "(next higher)") > none (ochre "choose a configuration", only when no
   higher difficulty has one either or the family rule refuses them all; the
@@ -215,11 +216,12 @@ element shows it. Corollaries the picture applies everywhere:
 - Framed is what lies on a living shelf and opens; ruled is the list of what is
   over. A room never mixes the two on one shelf.
 - Empty is the shape without content where the absence is obvious (an empty
-  workbench is only the ear; an empty history is only its column heads; an
+  workbench is only its terminal and the one next move; an empty history is
+  only its column heads; an
   empty catalog shows no zero-count chips); a sentence stays only where it
   teaches the next move. Loading is a still skeleton. Error is brick with one
-  sentence and one move — the failed run's move is "Say what should change",
-  which opens the ear with the run as its subject. Waiting is the stage.
+  sentence and one move — the failed run's move is "open the run", where what
+  it did and where it stopped stand. Waiting is the stage.
 - Anything wider than the screen — graph, log, table — fades at its right
   edge; a stack taller than its ceiling fades at the bottom. The fade is the
   one affordance, because overlay scrollbars cannot be promised.
@@ -276,10 +278,10 @@ from this table and approved through the requirement lifecycle.
 
 | Today (verbatim) | Amended |
 | --- | --- |
-| "The Board owns what wants you now — what is still moving or waiting on you; History owns what already happened. A run lives in exactly one of the two at any moment, and it crosses from Board to History once, at the instant it turns terminal, never lingering in both." | "The Workbench owns what wants you now and what is still moving; History owns what already happened. A run lives in exactly one of the two at any moment and crosses from Workbench to History once, at the instant it turns terminal. The conversation may still quote a finished run — as the conductor's words, never as a second shelf." |
-| "Workflows owns starting — nothing lives there but what is already admitted and ready to run; Catalog owns the library — everything this workshop has ever been given, with where it came from and whether it may yet be started. A piece is admitted in the Catalog and started in Workflows, never the other way." (lines 19–22, #684) | **retracted**, replaced by: "The Catalog owns the library and starting: everything this workshop has ever been given, with where it came from, whether it may yet be started — and the one door to start it by hand. The ear starts everything else." |
-| "You speak to the workshop, you do not visit a chat page." | **kept verbatim** — the conversation is the workbench's body, not a room. |
-| "The composer is always within reach, and until the conductor is connected it says so honestly — in one sentence, without a button that duplicates a door." | "The ear is always within reach, and until the conductor is connected its placeholder says so — in the field itself, without a sentence beneath and without a button that duplicates a door." |
+| "The Board owns what wants you now — what is still moving or waiting on you; History owns what already happened. A run lives in exactly one of the two at any moment, and it crosses from Board to History once, at the instant it turns terminal, never lingering in both." | "The Workbench owns what wants you now and what is still moving; History owns what already happened. A run lives in exactly one of the two at any moment and crosses from Workbench to History once, at the instant it turns terminal." |
+| "Workflows owns starting — nothing lives there but what is already admitted and ready to run; Catalog owns the library — everything this workshop has ever been given, with where it came from and whether it may yet be started. A piece is admitted in the Catalog and started in Workflows, never the other way." (lines 19–22, #684) | **retracted**, replaced by: "The Catalog owns the library and starting: everything this workshop has ever been given, with where it came from, whether it may yet be started — and the one door to start it by hand. The terminal starts everything else." |
+| "You speak to the workshop, you do not visit a chat page." | **kept verbatim** — where you speak is the workbench's own body, not a room. |
+| "The composer is always within reach, and until the conductor is connected it says so honestly — in one sentence, without a button that duplicates a door." | "The terminal is always within reach on the workbench, and while it cannot be reached it says so in one sentence naming the way out — the agent CLI, or the HTTP API — without a button that duplicates a door." (amendment 06.09.2026) |
 | "No naked numbers ("1 step"), no unlabeled sentences, no jargon ("took"), no word the operator has to guess ("ATELIER" floating over a title), no board numbers, no two ways to the same door." | "No naked numbers ("1 step"), no unlabeled sentences, no jargon ("took"), no word the operator has to guess ("ATELIER" floating over a title), no count that does not lead to an action, no two ways to the same door. A state is shown, never restated: where colour, shape or placeholder already says it, no sentence repeats it." |
 
 **Requirement 0003 — identified rules: successor identifiers**
@@ -343,8 +345,8 @@ approval line has a field for neither, so this table is where both are named.
   (the degraded picker's "Connect one in Settings →"); the queue line is not
   a door but the fact itself, unfolding in place; every other cross-room link — empty-state buttons, reference
   cards, a second link to the same room — goes, because the rail is that door.
-- Who fills a role has two homes only — the start sheet (this run, including
-  the conductor's yes) and Settings (this project: three model defaults
+- Who fills a role has two homes only — the start sheet (this run) and
+  Settings (this project: three model defaults
   chosen from the host's registry) plus the workflow's own optional pin —
   and the graph never names an agent or a difficulty; the catalog card names
   the provider by its mark and nothing of the project's choices. Which models
@@ -373,9 +375,9 @@ approval line has a field for neither, so this table is where both are named.
 
 ## Open decisions for the operator
 
-1. **The door from the workbench to the conversation's run view** ("The
-   conversation is a run" frame) is not drawn — "open the run" exists only on
-   a decision's stage. Candidate: the "Atelier" label in the transcript.
+1. **The door from the workbench to a run's own view** stands on a decision's
+   stage and on every row of the living shelf; the conversation that used to
+   carry a second one is gone (amendment 06.09.2026, below).
 2. **Where reconciliation lives.** `ReconciliationActionCard` had no room in
    this picture and fell with the V1/V2 surface (#924); it is repair, not
    work. Candidate: a stage raised by the run that owns the effect, with the
@@ -409,9 +411,9 @@ surface that claims this picture as its standard.
 - **No page overflow**: `scrollWidth` equals the viewport at 1280 and 390;
   anything wider sits inside its own faded scroll container (graph, log,
   table).
-- **The ear is reachable without scrolling** in a room-height frame with five
-  runs and a long conversation, at both widths.
-- **Click budgets** (picture §07): send a message 0 + Enter; answer the open
+- **The terminal stands on the workbench at both widths**, taking the room's
+  full width where the room is narrow.
+- **Click budgets** (picture §07): answer the open
   decision 1, any other 1 + 1; find the running run 0; open a finished result
   1 from the workbench, 2 from History; start by hand 4 (+1 for a work item);
   import 1 by drop, 3 by button; cancel 3; connect a source 3 + one address;
@@ -427,7 +429,7 @@ surface that claims this picture as its standard.
   never a hardcoded string, through Testing Library); `frontend/tests/e2e/ui-quality.spec.ts`
   (e2e: axe-core accessibility violations, pseudo-locale copy survival, and
   the Workbench control inventory at desktop and 390px); and
-  `frontend/tests/e2e/uiq-budget.spec.ts` (e2e, at 390 and 1280: send-a-message,
+  `frontend/tests/e2e/uiq-budget.spec.ts` (e2e, at 390 and 1280:
   answer-a-decision, find-the-running-run and read-run-standing in the
   Workbench/Run view; open-a-finished-run from History; open-node-log; find-by-
   search, open-tile and reach-Start — Catalog + card until Start is in view,
@@ -462,12 +464,39 @@ by the workflow; build/review flags on a configuration; buttons replaced by a dr
 answer given once (dropdowns for values chosen per role, work item or account
 are fine); a wait answered anywhere but a stage; a hash on a card.
 
+## Amendment, 06.09.2026: the terminal seat replaces the conversation
+
+The record above stands as decided; this amendment names what #1099 changed
+about one of its blocks, so the two are read together rather than one silently
+rewriting the other.
+
+The web-chat conductor was a rebuilt agent CLI inside a browser page. The
+agent CLIs already work, so the workbench now holds the operator's own
+terminal — a tmux session with the CLI in it, reached over loopback through
+ttyd — where the conversation and its ear used to be. The stage, the living
+shelf, the queue line and every other block are untouched, and the picture
+owner's own `#v8-22-seat` frames (blessed with PR #1272) are the drawing.
+
+What this amendment retracts from the record above: the conversation as a
+block of the workbench, the ear as the place an answer is typed, "the
+conversation is a run" as a door, and the send-a-message click budget. What it
+keeps: "you speak to the workshop, you do not visit a chat page" — truer of a
+terminal than of a chat page — and every sentence about the stage, the rows,
+the rail and the rooms.
+
+One expectation line of #1099's list was overruled by the operator the day it
+was built (06.09.2026, "Terminal geht nicht auf dem Phone? Das muss gehen"):
+there is no width at which the workbench refuses the terminal. On a phone the
+terminal takes the room's full width and asks its own client for smaller type;
+it is never replaced by a refusal for being narrow.
+
 ## Supersedes
 
 The four-surface rail of REQ-UI-01 as ruled on #516 (22.08.2026) and Mockup
 v5 as gestalt owner (REQ-UI-18), through the successor identifiers in §5. It
 amends HEART "The place" (two paragraphs, one of them the #684 text
 retracted) and the second sentence of HEART "The ear" as quoted in §5; "you
-do not visit a chat page" stands. It creates one explicit exception to ADR
+do not visit a chat page" stands. The amendment of 06.09.2026 above replaces
+the conversation and its ear with the terminal seat (#1099). It creates one explicit exception to ADR
 0018 §1 — the workflow's optional model pin — to be written into ADR 0018 as
 an amendment; otherwise ADR 0018 applies unchanged.

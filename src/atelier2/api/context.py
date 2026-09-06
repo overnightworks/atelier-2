@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fastapi import Depends, FastAPI, Request
 
 from atelier2.api.limits import ApiLimits
+from atelier2.api.seat import SeatReader
 from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     AdmitMemberResult,
@@ -409,6 +410,7 @@ class ApiContext:
     source_commit: str
     source_tree: str
     serve_started_at: RecordedAt
+    seat: SeatReader
     use_cases: ApiUseCases
     ports: ApiPorts
     limits: ApiLimits

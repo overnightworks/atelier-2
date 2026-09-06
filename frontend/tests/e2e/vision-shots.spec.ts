@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
-import { conductorConversationCopy } from "../../src/lib/conductorConversation";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { seatCopy } from "../../src/lib/seatCopy";
 import { standingWords } from "../../src/lib/runState";
 import { stateLabels } from "../../src/lib/stateMarkCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -21,12 +21,6 @@ const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
  * locally it is skipped unless that variable names where the images go.
  */
 test.skip(shotDir === "", "no shot directory named");
-
-// The reply text is `CONDUCTOR_FAKE_ANSWER` in `tests/e2e/serve_cockpit.py`,
-// asserted verbatim so the words a human reads are the proof (mirrors
-// `workbench-conductor.spec.ts`).
-const CONDUCTOR_FAKE_ANSWER =
-  "Nothing started: the workbench probe only asked for an answer.";
 
 // Not a gate but a sitting: two themes, two widths, every surface, and two
 // runs staged live. It is allowed to take as long as that honestly takes.
@@ -214,15 +208,15 @@ test("captures every surface at both widths", async ({ page }) => {
   const schemaHash = await anyJsonSchema(page);
   const agentHash = await immediateAgent(page);
 
-  // The Workbench before anything is said: the empty room teaches the one
-  // next move instead of staying blank, and the composer is already within
-  // reach (#580, REQ-UI-24).
+  // The Workbench as a cold server serves it: the terminal, and whatever the
+  // harness's own baseline is already carrying above it. Not the empty room --
+  // that baseline always holds its two reconciliation fixtures, so the empty
+  // room's own card is proven where it can be staged, in
+  // `frontend/tests/app/workbenchPage.test.ts` (REQ-UI-24).
   await page.goto("/atelier/chat");
   await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: workbenchPageCopy.emptyTitle })
-  ).toBeVisible();
-  await shoot(page, "workbench-empty");
+  await expect(page.getByRole("region", { name: seatCopy.regionLabel })).toBeVisible();
+  await shoot(page, "workbench-cold");
 
   const iterate = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
@@ -289,22 +283,10 @@ test("captures every surface at both widths", async ({ page }) => {
   // The waiting run staged above is pinned here: the decision that needs a
   // person, held in the open-decisions region so it never scrolls away (#580).
   await expect(page.getByRole("heading", { name: "The review is green. Merge this, or name the blocking defect." })).toBeVisible();
+  // The terminal stands below the stage, framed by the room that neither
+  // reads nor keeps what is in it (#1099).
+  await expect(page.getByRole("region", { name: seatCopy.regionLabel })).toBeVisible();
   await shoot(page, "workbench-needs-you");
-
-  // A sent message needs a real conductor to send into (#1103): without one
-  // the composer stays honestly locked, so this shot's own subject -- a
-  // message that was said -- seeds the production conductor catalog the
-  // same way `workbench-conductor.spec.ts` does, then reloads to resolve the
-  // connection fresh.
-  const seeded = await page.request.post("/__e2e/seed-conductor");
-  expect(seeded.ok()).toBeTruthy();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
-  await expect(page.getByText(conductorConversationCopy.composerHint)).toBeVisible();
-  await page.getByLabel(workbenchPageCopy.composerLabel).fill("Finish the preview door and fix the wait bug, in parallel.");
-  await page.getByRole("button", { name: workbenchPageCopy.send }).click();
-  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER)).toBeVisible({ timeout: 60_000 });
-  await shoot(page, "workbench-said");
 
   await page.goto("/atelier/catalog/iterate-code");
   await expect(page.getByRole("heading", { level: 1, name: "iterate-code" })).toBeVisible();

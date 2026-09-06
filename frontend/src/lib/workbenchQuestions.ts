@@ -9,10 +9,6 @@ export const workbenchQuestions = {
     id: "empty-start",
     question: "What is the one next action when nothing has happened yet?"
   },
-  emptyOpenSettings: {
-    id: "empty-open-settings",
-    question: "Can I go fix the conductor's binding or model in Settings?"
-  },
   openRun: {
     id: "open-run",
     question: "Can I open a run to see it or answer what it needs?"
@@ -20,14 +16,6 @@ export const workbenchQuestions = {
   reloadWorkbenchRuns: {
     id: "reload-workbench-runs",
     question: "Can I read the workbench runs again?"
-  },
-  saySomething: {
-    id: "say-something",
-    question: "Can I tell the workshop what I want?"
-  },
-  resendConductorMessage: {
-    id: "resend-conductor-message",
-    question: "Can I send this exact message again after it failed to send?"
   },
   answerDecision: {
     id: "answer-decision",

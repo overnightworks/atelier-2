@@ -12,7 +12,6 @@ import {
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
-import { conductorConnectionOverrides } from "../support/conductorConnection";
 import { notCancellableBlock } from "../support/runV3";
 import { revisionHash, runRow, startedRun, waitingInput } from "../support/runV3";
 
@@ -215,11 +214,9 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
       run_id: runId,
       public_run_reference: encodePublicRunReference(runId),
       // Each row names its own revision hash (#1148 REVISE M3, same
-      // rationale as `historyRun`): a reintroduced per-hash
-      // `getWorkflowRevision` fan-out inside `selectConductorConversation`
-      // would then scale with the row count and this suite's own growth
-      // assertions would catch it again -- a shared hash across every row
-      // hid that fan-out instead of proving it stays bounded.
+      // rationale as `historyRun`): a per-hash read fan-out on open would
+      // then scale with the row count and this suite's own growth assertions
+      // would catch it -- a shared hash across every row would hide it.
       workflow_revision_hash: hexId(index, "2")
     });
   });
@@ -251,11 +248,7 @@ function workbenchApi(rows: number): Partial<CockpitApi> {
     getRun: vi.fn(async (reference: string) =>
       runs.find((run) => run.public_run_reference === reference) ??
       startedRun({ public_run_reference: reference })
-    ),
-    // A CONNECTED conductor (#1148 REVISE M3) so a Workbench open really
-    // reaches `selectConductorConversation`'s own per-hash resolution
-    // instead of this suite silently never exercising it.
-    ...conductorConnectionOverrides()
+    )
   };
 }
 

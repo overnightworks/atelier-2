@@ -1,16 +1,12 @@
 """The e2e harness's own copy of the conductor conversation-loop document.
 
-`src/atelier2/host/conductor_workflow.py` no longer builds this document
-(operator ruling 05.09.2026, audit #1244 finding 10): no production caller
-ever published it, only tests did. The Workbench chat surface stays live
-until #1099's terminal seat replaces it, so `workbench-conductor.spec.ts`
-still needs one served instance to publish a real "conductor" catalog
-revision it can connect to and drive a conversation against -- this module
-is that revision's only owner now, sized to exactly what the spec drives:
-the wait/agent node ids and message-schema kind `conductorConversationShape`
-(`frontend/src/lib/conductorEpisode.ts`) reads to recognize the episode, the
-report fields `readableWaitAnswer` (`conductorConversation.ts`) reads back,
-and the round ceiling the round-cap spec asserts by its literal number.
+No production caller publishes this document, so this module is its only
+owner. `/__e2e/seed-conductor` (`serve_cockpit.py`) publishes it to give one
+served instance a real "conductor" catalog revision and a role bound to the
+harness's fixed-answer executor. It carries exactly what that seeding needs:
+the wait and agent node ids, the message schema the wait's answer is checked
+against, and the report schema `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`)
+answers with.
 """
 
 from __future__ import annotations
@@ -24,8 +20,8 @@ CONDUCTOR_WAIT_NODE_ID = "next_message"
 CONDUCTOR_AGENT_NODE_ID = "conduct"
 CONDUCTOR_LOOP_ID = "conversation"
 
-# `workbench-conductor.spec.ts` asserts this exact number as the round the
-# conversation ends on and the round a 25th message starts fresh past.
+# The seeded conversation's own round ceiling: harness scenario data, never a
+# product limit to read back out of here.
 CONDUCTOR_LOOP_MAXIMUM_ROUNDS = 24
 
 CONDUCTOR_MESSAGE_OUTPUT = "message"
@@ -42,12 +38,9 @@ def _canonical_schema_bytes(schema: dict[str, object]) -> bytes:
     return json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
 
 
-# `conductorConversationShape` classifies the wait's answer schema as
-# "string" only for exactly this shape.
 CONDUCTOR_MESSAGE_SCHEMA = _canonical_schema_bytes({"type": "string", "minLength": 1})
 
-# What `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`) answers with, and what
-# `readableWaitAnswer` reads `answer` back out of.
+# The declared shape `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`) answers with.
 CONDUCTOR_REPORT_SCHEMA = _canonical_schema_bytes(
     {
         "type": "object",

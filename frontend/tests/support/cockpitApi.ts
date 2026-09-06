@@ -5,7 +5,8 @@ import type {
   HealthResource,
   RunEventHandlers,
   RunPage,
-  RunV3
+  RunV3,
+  SeatResource
 } from "../../src/api/client";
 import { runRow } from "./runV3";
 
@@ -18,6 +19,11 @@ export function healthResource(overrides: Partial<HealthResource> = {}): HealthR
     serve_started_at: "2026-08-31T08:00:00Z",
     ...overrides
   };
+}
+
+/** A `GET /seat` answer: a serve holding no seat, unless a test names one. */
+export function seatResource(overrides: Partial<SeatResource> = {}): SeatResource {
+  return { state: "MISSING", url: null, project_id: null, ...overrides };
 }
 
 /**
@@ -33,6 +39,7 @@ export function healthResource(overrides: Partial<HealthResource> = {}): HealthR
 export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return {
     health: vi.fn(async () => healthResource()),
+    getSeat: vi.fn(async () => seatResource()),
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listProjects: vi.fn(async () => ({ items: [] })),
     getProjectSourceConnection: vi.fn(),
