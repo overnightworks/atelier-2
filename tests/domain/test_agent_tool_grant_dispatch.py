@@ -92,6 +92,7 @@ from tests.scenarios.agents import (
     agent_execution_request_v2,
     leased_directory_identity,
     prepared_agent_attempt,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.projects import (
     CandidatesKeptInMemory,
@@ -299,6 +300,7 @@ def _drive(
         project,
         _UnreachedArtifactPublisher(),  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
     return store, supervisor, workspaces
 
@@ -353,6 +355,7 @@ def test_a_capability_no_redeemer_performs_is_refused_by_name(tmp_path: Path) ->
             workspaces,  # type: ignore[arg-type]
             project,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
     assert raised.value.capability == "open-pr"
@@ -400,6 +403,7 @@ def test_a_non_verification_grant_needs_no_artifact_publisher_to_reach_its_own_r
             project,
             None,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
     assert raised.value.capability == "open-pr"

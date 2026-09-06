@@ -16,24 +16,31 @@ import errno
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from atelier2.adapters import attempt_workspace_files
-from atelier2.adapters.attempt_workspace_files import (
-    AttemptWorkspaceFileAccess,
-    AttemptWorkspaceFileOutcome,
-    AttemptWorkspaceFileRefusal,
-)
+from atelier2.adapters.attempt_workspace_files import AttemptWorkspaceFileAccess
 from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.agent_permissions import (
+    ATTEMPT_WORKSPACE,
+    GRANTS_NOTHING,
+    PermissionCorrelationId,
+    PermissionDecision,
+    PermissionEffect,
+    PermissionPolicyRevision,
+    PermissionRequest,
+    PolicyPermissionDecider,
+)
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.provider_conversations import (
     ProviderFilesystemAccess,
     ProviderFilesystemAnswer,
     ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
     ProviderFilesystemReply,
     ProviderFilesystemRequest,
     ProviderFilesystemRequestId,
@@ -42,6 +49,54 @@ from atelier2.ports.provider_conversations import (
 ATTEMPT = AgentAttemptId("a" * 64)
 REQUEST_ID = ProviderFilesystemRequestId(1)
 A_READ_CEILING = 1_024
+GRANTS_THE_WORKSPACE = PermissionPolicyRevision(
+    frozenset(
+        {
+            (PermissionEffect.WORKSPACE_READ, ATTEMPT_WORKSPACE),
+            (PermissionEffect.WORKSPACE_WRITE, ATTEMPT_WORKSPACE),
+        }
+    )
+)
+
+
+@dataclass
+class _Ledger:
+    """The authority a scenario binds: one policy, and what it was asked."""
+
+    policy: PermissionPolicyRevision = GRANTS_THE_WORKSPACE
+    decided: list[PermissionRequest] = field(default_factory=list)
+    refused: list[PermissionRequest] = field(default_factory=list)
+    before_answering: Callable[[], None] = lambda: None
+
+    def decide(self, request: PermissionRequest) -> PermissionDecision:
+        self.before_answering()
+        self.decided.append(request)
+        return PolicyPermissionDecider(self.policy).decide(request)
+
+    def refuse(self, request: PermissionRequest) -> PermissionDecision:
+        self.refused.append(request)
+        return PolicyPermissionDecider(self.policy).refuse(request)
+
+
+class _TheLedgerIsGone(RuntimeError):
+    """What the ledger raises when a receipt cannot be kept."""
+
+
+def _raising_ledger() -> _Ledger:
+    def unavailable() -> None:
+        raise _TheLedgerIsGone("durable state is unavailable")
+
+    return _Ledger(before_answering=unavailable)
+
+
+def _question(
+    effect: PermissionEffect, call_ordinal: int = REQUEST_ID.call_ordinal
+) -> PermissionRequest:
+    return PermissionRequest(
+        effect,
+        ATTEMPT_WORKSPACE,
+        PermissionCorrelationId.for_file_call(ATTEMPT, call_ordinal),
+    )
 
 
 def _lease(working_directory: Path) -> AgentAttemptWorkspaceLease:
@@ -52,9 +107,13 @@ def _lease(working_directory: Path) -> AgentAttemptWorkspaceLease:
 
 
 def _access(
-    working_directory: Path, maximum_read_bytes: int = A_READ_CEILING
+    working_directory: Path,
+    maximum_read_bytes: int = A_READ_CEILING,
+    ledger: _Ledger | None = None,
 ) -> AttemptWorkspaceFileAccess:
-    return AttemptWorkspaceFileAccess(_lease(working_directory), maximum_read_bytes)
+    return AttemptWorkspaceFileAccess(
+        _lease(working_directory), maximum_read_bytes, ledger or _Ledger()
+    )
 
 
 def _read(path: Path) -> ProviderFilesystemRequest:
@@ -67,15 +126,21 @@ def _write(path: Path, content: bytes) -> ProviderFilesystemRequest:
     )
 
 
-def _answered(content: bytes) -> AttemptWorkspaceFileOutcome:
-    return AttemptWorkspaceFileOutcome(
-        ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, content)
+def _answered(content: bytes) -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, content
     )
 
 
-def _answered_write() -> AttemptWorkspaceFileOutcome:
-    return AttemptWorkspaceFileOutcome(
-        ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED)
+def _answered_write() -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.ANSWERED)
+
+
+def _refused(
+    refusal: ProviderFilesystemRefusal, detail: str = ""
+) -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(
+        REQUEST_ID, ProviderFilesystemAnswer.REFUSED, refusal=refusal, detail=detail
     )
 
 
@@ -91,11 +156,11 @@ def test_a_file_inside_the_lease_is_read(
     workspace.mkdir()
     (workspace / "notes.md").write_bytes(b"hello workspace")
 
-    outcome = _access(workspace).describe(
+    reply = _access(workspace).answer(
         _read(requested if requested is not None else workspace / "notes.md")
     )
 
-    assert outcome == _answered(b"hello workspace")
+    assert reply == _answered(b"hello workspace")
 
 
 @pytest.mark.parametrize(
@@ -116,9 +181,9 @@ def test_a_nested_relative_path_inside_the_lease_is_read(
     (workspace / "sub").mkdir(parents=True)
     (workspace / "sub" / "deep.txt").write_bytes(b"deep bytes")
 
-    outcome = _access(workspace).describe(_read(requested))
+    reply = _access(workspace).answer(_read(requested))
 
-    assert outcome == _answered(b"deep bytes")
+    assert reply == _answered(b"deep bytes")
 
 
 def test_answer_returns_only_the_port_contract(tmp_path: Path) -> None:
@@ -138,7 +203,7 @@ def test_answer_returns_only_the_port_contract(tmp_path: Path) -> None:
 class _RefusalScenario:
     name: str
     build: Callable[[Path, Path], Path]
-    refusal: AttemptWorkspaceFileRefusal
+    refusal: ProviderFilesystemRefusal
 
 
 def _parent_directory_escape(tmp_path: Path, _workspace: Path) -> Path:
@@ -199,52 +264,52 @@ _REFUSAL_SCENARIOS = (
     _RefusalScenario(
         "parent directory escape",
         _parent_directory_escape,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE,
     ),
     _RefusalScenario(
         "foreign absolute address",
         _foreign_absolute_address,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE,
     ),
     _RefusalScenario(
         "absolute address only sharing the lease name as a prefix",
         _a_workspace_name_prefixed_by_another,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE,
     ),
     _RefusalScenario(
         "embedded NUL byte",
         _an_embedded_nul_byte,
-        AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE,
+        ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE,
     ),
     _RefusalScenario(
         "missing file",
         _a_missing_file,
-        AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
+        ProviderFilesystemRefusal.FILE_NOT_FOUND,
     ),
     _RefusalScenario(
         "an unreadable intermediate directory",
         _an_unreadable_intermediate_directory,
-        AttemptWorkspaceFileRefusal.ACCESS_DENIED,
+        ProviderFilesystemRefusal.ACCESS_DENIED,
     ),
     _RefusalScenario(
         "symlink path component",
         _a_symlink_path_component,
-        AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
+        ProviderFilesystemRefusal.PATH_NAMED_A_SYMLINK,
     ),
     _RefusalScenario(
         "symlink as the requested file",
         _a_symlink_as_the_requested_file,
-        AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
+        ProviderFilesystemRefusal.PATH_NAMED_A_SYMLINK,
     ),
     _RefusalScenario(
         "a FIFO named where a file was expected",
         _a_fifo,
-        AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE,
+        ProviderFilesystemRefusal.NOT_A_REGULAR_FILE,
     ),
     _RefusalScenario(
         "a hard link reaching a file outside the lease",
         _a_hard_link_reaching_outside_the_lease,
-        AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED,
+        ProviderFilesystemRefusal.FILE_IS_HARD_LINKED,
     ),
 )
 
@@ -257,17 +322,20 @@ _REFUSAL_SCENARIOS = (
 def test_a_request_unreachable_inside_the_lease_is_refused(
     tmp_path: Path, scenario: _RefusalScenario
 ) -> None:
+    """Refused by the fence, and kept as a refusal the policy was never asked:
+    the policy grants the workspace, and this path was never the workspace."""
+
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     requested = scenario.build(tmp_path, workspace)
+    ledger = _Ledger()
 
     try:
-        outcome = _access(workspace).describe(_read(requested))
+        reply = _access(workspace, ledger=ledger).answer(_read(requested))
 
-        assert outcome.reply == ProviderFilesystemReply(
-            REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-        )
-        assert outcome.refusal is scenario.refusal
+        assert reply == _refused(scenario.refusal)
+        assert ledger.decided == []
+        assert ledger.refused == [_question(PermissionEffect.WORKSPACE_READ)]
     finally:
         if scenario.name == "an unreadable intermediate directory":
             (workspace / "locked").chmod(0o755)
@@ -286,9 +354,9 @@ def test_a_fifo_probe_never_performs_a_data_open(
     os.mkfifo(workspace / "pipe")
     open_calls = _spying_open(monkeypatch)
 
-    outcome = _access(workspace).describe(_read(Path("pipe")))
+    reply = _access(workspace).answer(_read(Path("pipe")))
 
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE
+    assert reply.refusal is ProviderFilesystemRefusal.NOT_A_REGULAR_FILE
     assert open_calls == []
 
 
@@ -308,14 +376,11 @@ def test_a_lease_whose_directory_changed_identity_is_refused(tmp_path: Path) -> 
     shutil.rmtree(workspace)
     impostor.rename(workspace)
 
-    outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
+    reply = AttemptWorkspaceFileAccess(lease, A_READ_CEILING, _Ledger()).answer(
         _read(Path("notes.md"))
     )
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.LEASED_DIRECTORY_CHANGED
+    assert reply == _refused(ProviderFilesystemRefusal.LEASED_DIRECTORY_CHANGED)
 
 
 def test_a_component_swapped_immediately_before_the_kernel_resolves_it_is_refused(
@@ -349,14 +414,11 @@ def test_a_component_swapped_immediately_before_the_kernel_resolves_it_is_refuse
         attempt_workspace_files, "_openat2_path_descriptor", swap_then_resolve
     )
 
-    outcome = AttemptWorkspaceFileAccess(lease, A_READ_CEILING).describe(
+    reply = AttemptWorkspaceFileAccess(lease, A_READ_CEILING, _Ledger()).answer(
         _read(Path("sub/file.txt"))
     )
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
+    assert reply == _refused(ProviderFilesystemRefusal.PATH_NAMED_A_SYMLINK)
     assert (sentinel / "file.txt").read_bytes() == b"sentinel secret"
 
 
@@ -382,12 +444,9 @@ def test_a_mount_crossing_reported_by_the_kernel_is_mapped_to_its_own_refusal(
         attempt_workspace_files, "_openat2_path_descriptor", raising_openat2
     )
 
-    outcome = _access(workspace).describe(_read(Path("sub/file.txt")))
+    reply = _access(workspace).answer(_read(Path("sub/file.txt")))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+    assert reply == _refused(ProviderFilesystemRefusal.PATH_CROSSED_A_MOUNT)
 
 
 def test_a_kernel_without_openat2_support_is_refused_as_workspace_io_failed(
@@ -403,13 +462,9 @@ def test_a_kernel_without_openat2_support_is_refused_as_workspace_io_failed(
         attempt_workspace_files, "_openat2_path_descriptor", raising_openat2
     )
 
-    outcome = _access(workspace).describe(_read(Path("notes.md")))
+    reply = _access(workspace).answer(_read(Path("notes.md")))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
-    assert outcome.detail == "ENOSYS"
+    assert reply == _refused(ProviderFilesystemRefusal.WORKSPACE_IO_FAILED, "ENOSYS")
 
 
 def test_a_resolved_file_that_changed_identity_before_the_data_reopen_is_refused(
@@ -451,12 +506,9 @@ def test_a_resolved_file_that_changed_identity_before_the_data_reopen_is_refused
     monkeypatch.setattr(attempt_workspace_files.os, "open", marking_open)
     monkeypatch.setattr(attempt_workspace_files.os, "fstat", spoofing_fstat)
 
-    outcome = _access(workspace).describe(_read(Path("notes.md")))
+    reply = _access(workspace).answer(_read(Path("notes.md")))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.RESOLVED_FILE_CHANGED_IDENTITY
+    assert reply == _refused(ProviderFilesystemRefusal.RESOLVED_FILE_CHANGED_IDENTITY)
 
 
 def test_an_already_oversize_file_is_refused_without_opening_or_reading_its_data(
@@ -481,12 +533,9 @@ def test_an_already_oversize_file_is_refused_without_opening_or_reading_its_data
 
     monkeypatch.setattr(attempt_workspace_files.os, "read", spying_read)
 
-    outcome = _access(workspace, maximum_read_bytes=5).describe(_read(Path("big.bin")))
+    reply = _access(workspace, maximum_read_bytes=5).answer(_read(Path("big.bin")))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+    assert reply == _refused(ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING)
     assert open_calls == []
     assert read_calls == []
 
@@ -516,14 +565,9 @@ def test_a_file_that_grows_during_the_read_is_refused_once_past_the_ceiling(
 
     monkeypatch.setattr(attempt_workspace_files.os, "read", growing_read)
 
-    outcome = _access(workspace, maximum_read_bytes=5).describe(
-        _read(Path("growing.bin"))
-    )
+    reply = _access(workspace, maximum_read_bytes=5).answer(_read(Path("growing.bin")))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+    assert reply == _refused(ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING)
 
 
 @dataclass(frozen=True)
@@ -562,9 +606,9 @@ def test_a_write_creates_the_exact_bytes(
     scenario.build_parent(workspace)
     target = workspace / scenario.requested
 
-    outcome = _access(workspace).describe(_write(scenario.requested, b"exact bytes"))
+    reply = _access(workspace).answer(_write(scenario.requested, b"exact bytes"))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert target.read_bytes() == b"exact bytes"
     assert {entry.name for entry in target.parent.iterdir()} == {target.name}
 
@@ -574,9 +618,9 @@ def test_a_write_overwrites_an_existing_file_atomically(tmp_path: Path) -> None:
     workspace.mkdir()
     (workspace / "notes.md").write_bytes(b"original content")
 
-    outcome = _access(workspace).describe(_write(Path("notes.md"), b"replaced content"))
+    reply = _access(workspace).answer(_write(Path("notes.md"), b"replaced content"))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert (workspace / "notes.md").read_bytes() == b"replaced content"
     assert list(workspace.iterdir()) == [workspace / "notes.md"]
 
@@ -594,13 +638,9 @@ def test_a_failure_during_staging_leaves_the_target_unchanged_and_no_temp_file(
 
     monkeypatch.setattr(attempt_workspace_files.os, failing_call, raising)
 
-    outcome = _access(workspace).describe(_write(Path("notes.md"), b"new content"))
+    reply = _access(workspace).answer(_write(Path("notes.md"), b"new content"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
-    assert outcome.detail == "EIO"
+    assert reply == _refused(ProviderFilesystemRefusal.WORKSPACE_IO_FAILED, "EIO")
     assert (workspace / "notes.md").read_bytes() == b"original content"
     assert list(workspace.iterdir()) == [workspace / "notes.md"]
 
@@ -621,9 +661,9 @@ def test_a_write_completes_despite_short_underlying_writes(
 
     monkeypatch.setattr(attempt_workspace_files.os, "write", one_byte_at_a_time)
 
-    outcome = _access(workspace).describe(_write(Path("notes.md"), content))
+    reply = _access(workspace).answer(_write(Path("notes.md"), content))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert (workspace / "notes.md").read_bytes() == content
 
 
@@ -656,9 +696,9 @@ def test_a_target_swapped_for_a_symlink_after_the_check_still_leaves_its_referen
 
     monkeypatch.setattr(attempt_workspace_files.os, "replace", swap_then_replace)
 
-    outcome = _access(workspace).describe(_write(Path("notes.md"), b"new content"))
+    reply = _access(workspace).answer(_write(Path("notes.md"), b"new content"))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert not (workspace / "notes.md").is_symlink()
     assert (workspace / "notes.md").read_bytes() == b"new content"
     assert referent.read_bytes() == b"referent content"
@@ -684,12 +724,9 @@ def test_a_path_no_filesystem_encoding_could_hold_is_refused(
         else _write(requested, b"content")
     )
 
-    outcome = _access(workspace).describe(request)
+    reply = _access(workspace).answer(request)
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NOT_ENCODABLE
+    assert reply == _refused(ProviderFilesystemRefusal.PATH_NOT_ENCODABLE)
     assert list(workspace.iterdir()) == []
 
 
@@ -736,12 +773,9 @@ def test_a_write_naming_a_protected_path_is_refused(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+    reply = _access(workspace).answer(_write(requested, b"malicious"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PROTECTED_PATH
+    assert reply == _refused(ProviderFilesystemRefusal.PROTECTED_PATH)
     assert list(workspace.rglob("*")) == []
 
 
@@ -755,9 +789,9 @@ def test_a_write_naming_a_git_prefixed_but_distinct_file_is_not_protected(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    outcome = _access(workspace).describe(_write(Path(".gitignore"), b"*.log"))
+    reply = _access(workspace).answer(_write(Path(".gitignore"), b"*.log"))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert (workspace / ".gitignore").read_bytes() == b"*.log"
 
 
@@ -770,14 +804,9 @@ def test_a_write_onto_a_symlinked_name_is_refused_leaving_the_real_file_unchange
     real.write_bytes(b"actual content")
     (workspace / "alias.txt").symlink_to(real)
 
-    outcome = _access(workspace).describe(
-        _write(Path("alias.txt"), b"attempted overwrite")
-    )
+    reply = _access(workspace).answer(_write(Path("alias.txt"), b"attempted overwrite"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.TARGET_IS_SYMLINK
+    assert reply == _refused(ProviderFilesystemRefusal.TARGET_IS_SYMLINK)
     assert real.read_bytes() == b"actual content"
     assert (workspace / "alias.txt").is_symlink()
 
@@ -786,14 +815,11 @@ def test_an_oversize_write_is_refused_without_creating_anything(tmp_path: Path) 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    outcome = _access(workspace, maximum_read_bytes=5).describe(
+    reply = _access(workspace, maximum_read_bytes=5).answer(
         _write(Path("notes.md"), b"too many bytes")
     )
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+    assert reply == _refused(ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING)
     assert list(workspace.iterdir()) == []
 
 
@@ -801,12 +827,9 @@ def test_a_write_whose_parent_directory_is_missing_is_refused(tmp_path: Path) ->
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    outcome = _access(workspace).describe(_write(Path("sub/notes.md"), b"content"))
+    reply = _access(workspace).answer(_write(Path("sub/notes.md"), b"content"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PARENT_MISSING
+    assert reply == _refused(ProviderFilesystemRefusal.PARENT_MISSING)
     assert list(workspace.iterdir()) == []
 
 
@@ -836,12 +859,9 @@ def test_a_write_reaching_outside_the_lease_is_refused_the_same_way_as_a_read(
     workspace.mkdir()
     requested = scenario.build(tmp_path, workspace)
 
-    outcome = _access(workspace).describe(_write(requested, b"malicious"))
+    reply = _access(workspace).answer(_write(requested, b"malicious"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is scenario.refusal
+    assert reply == _refused(scenario.refusal)
 
 
 def test_a_write_parent_mount_crossing_is_mapped_to_its_own_refusal(
@@ -863,12 +883,9 @@ def test_a_write_parent_mount_crossing_is_mapped_to_its_own_refusal(
         raising_openat2_directory,
     )
 
-    outcome = _access(workspace).describe(_write(Path("sub/file.txt"), b"content"))
+    reply = _access(workspace).answer(_write(Path("sub/file.txt"), b"content"))
 
-    assert outcome.reply == ProviderFilesystemReply(
-        REQUEST_ID, ProviderFilesystemAnswer.REFUSED
-    )
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT
+    assert reply == _refused(ProviderFilesystemRefusal.PATH_CROSSED_A_MOUNT)
 
 
 @dataclass(frozen=True)
@@ -931,9 +948,9 @@ def test_a_pure_escape_calls_openat2_never_at_all(
         attempt_workspace_files, "_openat2_path_descriptor", never_called
     )
 
-    outcome = _access(workspace).describe(_read(Path("../sentinel/secret.txt")))
+    reply = _access(workspace).answer(_read(Path("../sentinel/secret.txt")))
 
-    assert outcome.reply.answer is ProviderFilesystemAnswer.REFUSED
+    assert reply.answer is ProviderFilesystemAnswer.REFUSED
     assert calls == []
 
 
@@ -960,7 +977,7 @@ def test_a_symlink_escape_calls_openat2_exactly_once_against_the_lease_root(
 
     def recording_openat2(dir_fd: int, relative_path: str) -> int:
         # The identity is read here, while `dir_fd` is still open: by the
-        # time `describe` returns, `entered_leased_directory` has already
+        # time `answer` returns, `entered_leased_directory` has already
         # closed it.
         status = os.fstat(dir_fd)
         calls.append(((status.st_dev, status.st_ino), relative_path))
@@ -970,9 +987,9 @@ def test_a_symlink_escape_calls_openat2_exactly_once_against_the_lease_root(
         attempt_workspace_files, "_openat2_path_descriptor", recording_openat2
     )
 
-    outcome = _access(workspace).describe(_read(Path("escape/secret.txt")))
+    reply = _access(workspace).answer(_read(Path("escape/secret.txt")))
 
-    assert outcome.refusal is AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK
+    assert reply.refusal is ProviderFilesystemRefusal.PATH_NAMED_A_SYMLINK
     assert len(calls) == 1
     called_dir_identity, called_path = calls[0]
     assert called_dir_identity == lease_root_identity
@@ -1012,9 +1029,9 @@ def test_a_write_opens_only_relative_names_through_a_lease_internal_directory(
         recording_openat2_directory,
     )
 
-    outcome = _access(workspace).describe(_write(Path("sub/deep.txt"), b"deep bytes"))
+    reply = _access(workspace).answer(_write(Path("sub/deep.txt"), b"deep bytes"))
 
-    assert outcome == _answered_write()
+    assert reply == _answered_write()
     assert len(directory_calls) == 1
     called_dir_identity, called_path = directory_calls[0]
     assert called_dir_identity in lease_internal_identities
@@ -1033,38 +1050,165 @@ def test_the_constructor_rejects_a_ceiling_above_the_artifact_bound(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="exceeds"):
-        AttemptWorkspaceFileAccess(_lease(tmp_path), MAXIMUM_ARTIFACT_BYTES + 1)
+        AttemptWorkspaceFileAccess(
+            _lease(tmp_path), MAXIMUM_ARTIFACT_BYTES + 1, _Ledger()
+        )
 
 
 def test_the_constructor_rejects_a_non_positive_ceiling(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="positive"):
-        AttemptWorkspaceFileAccess(_lease(tmp_path), 0)
+        AttemptWorkspaceFileAccess(_lease(tmp_path), 0, _Ledger())
 
 
-def test_an_answered_outcome_cannot_also_carry_a_refusal() -> None:
+def test_an_answered_reply_cannot_also_carry_a_refusal() -> None:
     with pytest.raises(ValueError, match="no refusal"):
-        AttemptWorkspaceFileOutcome(
-            ProviderFilesystemReply(
-                REQUEST_ID, ProviderFilesystemAnswer.ANSWERED, b"x"
-            ),
-            AttemptWorkspaceFileRefusal.PARENT_MISSING,
+        ProviderFilesystemReply(
+            REQUEST_ID,
+            ProviderFilesystemAnswer.ANSWERED,
+            b"x",
+            refusal=ProviderFilesystemRefusal.PARENT_MISSING,
         )
 
 
-def test_a_refused_outcome_must_name_its_reason() -> None:
+def test_a_refused_reply_must_name_its_reason() -> None:
     with pytest.raises(ValueError, match="names why"):
-        AttemptWorkspaceFileOutcome(
-            ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED)
-        )
+        ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED)
 
 
 def test_only_a_workspace_io_failure_may_name_an_errno() -> None:
     with pytest.raises(ValueError, match="only a workspace I/O failure"):
-        AttemptWorkspaceFileOutcome(
-            ProviderFilesystemReply(REQUEST_ID, ProviderFilesystemAnswer.REFUSED),
-            AttemptWorkspaceFileRefusal.PARENT_MISSING,
-            "EIO",
+        _refused(ProviderFilesystemRefusal.PARENT_MISSING, "EIO")
+
+
+@pytest.mark.parametrize(
+    "effect", [ProviderFilesystemEffect.READ, ProviderFilesystemEffect.WRITE]
+)
+def test_a_request_inside_the_lease_is_decided_under_the_workspace_scope(
+    tmp_path: Path, effect: ProviderFilesystemEffect
+) -> None:
+    """One question per request, naming the effect, the fixed workspace scope
+    and the file-call correlation of this attempt's ordinal -- never the path."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"hello")
+    ledger = _Ledger()
+    request = (
+        _read(Path("notes.md"))
+        if effect is ProviderFilesystemEffect.READ
+        else _write(Path("notes.md"), b"replaced")
+    )
+
+    reply = _access(workspace, ledger=ledger).answer(request)
+
+    assert reply.answer is ProviderFilesystemAnswer.ANSWERED
+    assert ledger.refused == []
+    assert ledger.decided == [
+        _question(
+            PermissionEffect.WORKSPACE_READ
+            if effect is ProviderFilesystemEffect.READ
+            else PermissionEffect.WORKSPACE_WRITE
         )
+    ]
+
+
+def test_a_read_the_policy_refuses_is_refused_after_the_fence_and_before_the_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"hello")
+    ledger = _Ledger(policy=GRANTS_NOTHING)
+    open_calls = _spying_open(monkeypatch)
+
+    reply = _access(workspace, ledger=ledger).answer(_read(Path("notes.md")))
+
+    assert reply == _refused(ProviderFilesystemRefusal.PERMISSION_REFUSED)
+    assert ledger.decided == [_question(PermissionEffect.WORKSPACE_READ)]
+    assert ledger.refused == []
+    assert open_calls == []
+
+
+def test_a_write_the_policy_refuses_creates_nothing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ledger = _Ledger(policy=GRANTS_NOTHING)
+
+    reply = _access(workspace, ledger=ledger).answer(_write(Path("notes.md"), b"x"))
+
+    assert reply == _refused(ProviderFilesystemRefusal.PERMISSION_REFUSED)
+    assert ledger.decided == [_question(PermissionEffect.WORKSPACE_WRITE)]
+    assert list(workspace.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "effect", [ProviderFilesystemEffect.READ, ProviderFilesystemEffect.WRITE]
+)
+def test_a_receipt_that_cannot_be_kept_moves_no_byte_and_is_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, effect: ProviderFilesystemEffect
+) -> None:
+    """ADR 0020 §2: the receipt is the authorisation. A ledger that will not
+    take it leaves no decision to act on -- the read opens no data descriptor,
+    the write stages nothing, and the failure rises to whoever holds the
+    process rather than being answered around."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"original")
+    open_calls = _spying_open(monkeypatch)
+    request = (
+        _read(Path("notes.md"))
+        if effect is ProviderFilesystemEffect.READ
+        else _write(Path("notes.md"), b"replaced")
+    )
+
+    with pytest.raises(_TheLedgerIsGone):
+        _access(workspace, ledger=_raising_ledger()).answer(request)
+
+    assert open_calls == []
+    assert (workspace / "notes.md").read_bytes() == b"original"
+    assert list(workspace.iterdir()) == [workspace / "notes.md"]
+
+
+def test_a_failure_after_the_grant_leaves_the_one_receipt_it_already_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ledger = _Ledger()
+
+    def raising(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EIO, "simulated staging failure")
+
+    monkeypatch.setattr(attempt_workspace_files.os, "fsync", raising)
+
+    reply = _access(workspace, ledger=ledger).answer(_write(Path("notes.md"), b"x"))
+
+    assert reply.refusal is ProviderFilesystemRefusal.WORKSPACE_IO_FAILED
+    assert ledger.decided == [_question(PermissionEffect.WORKSPACE_WRITE)]
+    assert ledger.refused == []
+
+
+def test_each_file_request_ordinal_is_its_own_question(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "notes.md").write_bytes(b"hello")
+    ledger = _Ledger()
+    access = _access(workspace, ledger=ledger)
+
+    access.answer(_read(Path("notes.md")))
+    access.answer(
+        ProviderFilesystemRequest(
+            ProviderFilesystemEffect.READ,
+            Path("notes.md"),
+            ProviderFilesystemRequestId(2),
+        )
+    )
+
+    assert ledger.decided == [
+        _question(PermissionEffect.WORKSPACE_READ, 1),
+        _question(PermissionEffect.WORKSPACE_READ, 2),
+    ]
 
 
 def test_openat2_path_descriptor_reads_a_real_file_through_the_raw_syscall(

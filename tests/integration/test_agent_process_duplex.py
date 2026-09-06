@@ -68,6 +68,7 @@ from atelier2.ports.provider_conversations import (
     ProviderConversationEnding,
     ProviderFilesystemAnswer,
     ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
     ProviderFilesystemReply,
     ProviderFilesystemRequest,
     ProviderFilesystemRequestId,
@@ -292,7 +293,9 @@ class _FakeFilesystemAccess:
         found = self.contents.get(named)
         if found is None:
             return ProviderFilesystemReply(
-                request.request_id, ProviderFilesystemAnswer.REFUSED
+                request.request_id,
+                ProviderFilesystemAnswer.REFUSED,
+                refusal=ProviderFilesystemRefusal.FILE_NOT_FOUND,
             )
         return ProviderFilesystemReply(
             request.request_id, ProviderFilesystemAnswer.ANSWERED, found

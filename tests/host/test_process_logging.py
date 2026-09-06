@@ -58,6 +58,7 @@ from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_execution_request_v2,
     prepared_agent_attempt,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
@@ -98,6 +99,7 @@ def test_a_failed_attempt_emits_exactly_one_parseable_json_line(
         _SilentSupervisor(),
         workspaces,
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert isinstance(outcome, AgentAttemptFailed)

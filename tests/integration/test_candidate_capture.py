@@ -76,6 +76,7 @@ from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.projects import declaring_verification, git_project
 
@@ -294,6 +295,7 @@ class Attempt:
             project.pinned(pin, grant),
             artifacts,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
 

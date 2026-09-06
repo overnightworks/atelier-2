@@ -13,6 +13,7 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 
 import atelier2.adapters.dbos.agent_attempt_store as agent_attempt_store_module
 import atelier2.adapters.dbos.run_transitions as run_transitions_module
+from atelier2.adapters.attempt_workspace_files import AttemptWorkspaceFileAccess
 from atelier2.adapters.dbos.agent_attempt_store import (
     DbosAgentAttemptStore,
     DurableStateCorrupt,
@@ -51,6 +52,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agent_permissions import (
+    ATTEMPT_WORKSPACE,
     GRANTS_NOTHING,
     PermissionCorrelationId,
     PermissionEffect,
@@ -60,6 +62,7 @@ from atelier2.contracts.agent_permissions import (
     PermissionScope,
     PermissionScopeKind,
     decide,
+    refuse,
 )
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
@@ -86,7 +89,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -118,6 +121,14 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.provider_conversations import (
+    ProviderFilesystemAnswer,
+    ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
+    ProviderFilesystemReply,
+    ProviderFilesystemRequest,
+    ProviderFilesystemRequestId,
+)
 from atelier2.ports.run_queries import RunFound
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
@@ -129,6 +140,7 @@ from tests.scenarios.agents import (
     agent_execution_request_v2,
     agent_scratch_root,
     answering,
+    conversation_nobody_drives,
     decode_process_exit,
     emitting,
     launching,
@@ -136,6 +148,7 @@ from tests.scenarios.agents import (
     process_exit,
     publish_checked_model_registry,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import publish_pinned_revisions
@@ -372,6 +385,7 @@ def test_attempt_is_prepared_before_controlled_executor_invocation(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -399,6 +413,7 @@ def test_thirty_two_claims_invoke_one_controlled_executor(tmp_path: Path) -> Non
                     runtime.agent_process_supervisor,
                     runtime_workspace_owner(runtime),
                     permissions=GRANTS_NOTHING,
+                    workspace_files=workspace_files_nobody_opens,
                 )
                 for _ in range(32)
             ]
@@ -431,6 +446,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         recovered = execute_agent_attempt(
             agent_attempt_execution(request),
@@ -439,6 +455,7 @@ def test_reentering_after_terminal_attempt_never_authorizes_invocation(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert isinstance(first, AgentAttemptSucceeded)
@@ -505,6 +522,7 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         recovered = execute_agent_attempt(
             execution,
@@ -513,6 +531,7 @@ def test_terminal_agent_success_is_one_durable_write_and_exact_reentry(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         with runtime.engine.connect() as connection:
@@ -588,6 +607,7 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert isinstance(outcome, AgentAttemptPossiblyRan)
@@ -687,6 +707,7 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
             runtime_workspace_owner(runtime),
             clock=lambda: TRANSCRIPT_RECORDED_AT,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         with runtime.engine.connect() as connection:
@@ -830,6 +851,7 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         assert len(terminal.released_commands) == 1
         with runtime.engine.connect() as connection:
@@ -1081,6 +1103,7 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
         assert isinstance(first, AgentAttemptSucceeded)
         assert first.completion == RunCompletes()
@@ -1098,6 +1121,7 @@ def test_reentry_after_a_terminal_success_refuses_a_run_head_that_disagrees(
                 runtime.agent_process_supervisor,
                 runtime_workspace_owner(runtime),
                 permissions=GRANTS_NOTHING,
+                workspace_files=workspace_files_nobody_opens,
             )
 
         assert len(executor.results) == 1
@@ -1194,6 +1218,7 @@ def test_a_terminal_attempt_is_never_driverless(tmp_path: Path) -> None:
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert tuple(store.iter_driverless_attempts(PageLimit(1))) == ()
@@ -1425,6 +1450,7 @@ def test_a_changed_permission_policy_leaves_a_live_attempt_recoverable(
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
             permissions=may_read_one_path,
+            workspace_files=workspace_files_nobody_opens,
         )
         assert isinstance(outcome, AgentAttemptSucceeded)
         durable = store.load(execution.attempt_id)
@@ -1503,6 +1529,7 @@ def test_each_question_a_provider_asks_leaves_its_own_receipt(tmp_path: Path) ->
             runtime_workspace_owner(runtime),
             clock=lambda: _WHEN_IT_WAS_DECIDED,
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -1517,6 +1544,300 @@ def test_each_question_a_provider_asks_leaves_its_own_receipt(tmp_path: Path) ->
             and receipt.policy_revision_hash == GRANTS_NOTHING.revision_hash
             for receipt in kept.values()
         )
+    finally:
+        runtime.close()
+
+
+_GRANTS_THE_WORKSPACE = PermissionPolicyRevision(
+    frozenset(
+        {
+            (PermissionEffect.WORKSPACE_READ, ATTEMPT_WORKSPACE),
+            (PermissionEffect.WORKSPACE_WRITE, ATTEMPT_WORKSPACE),
+        }
+    )
+)
+
+
+def _file_request(
+    effect: ProviderFilesystemEffect, name: str, call_ordinal: int, content: bytes = b""
+) -> ProviderFilesystemRequest:
+    return ProviderFilesystemRequest(
+        effect, Path(name), ProviderFilesystemRequestId(call_ordinal), content
+    )
+
+
+def _answered(call_ordinal: int, content: bytes = b"") -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(
+        ProviderFilesystemRequestId(call_ordinal),
+        ProviderFilesystemAnswer.ANSWERED,
+        content,
+    )
+
+
+def _refused(
+    call_ordinal: int, refusal: ProviderFilesystemRefusal
+) -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(
+        ProviderFilesystemRequestId(call_ordinal),
+        ProviderFilesystemAnswer.REFUSED,
+        refusal=refusal,
+    )
+
+
+def _file_receipt(
+    attempt_id: AgentAttemptId,
+    effect: PermissionEffect,
+    call_ordinal: int,
+    policy: PermissionPolicyRevision,
+    *,
+    granted: bool,
+) -> PermissionReceipt:
+    question = PermissionRequest(
+        effect,
+        ATTEMPT_WORKSPACE,
+        PermissionCorrelationId.for_file_call(attempt_id, call_ordinal),
+    )
+    decision = decide(policy, question) if granted else refuse(policy, question)
+    assert decision.granted is granted
+    return PermissionReceipt.of(attempt_id, question, decision, _WHEN_IT_WAS_DECIDED)
+
+
+def _conversing_attempt(
+    runtime: DbosRuntime,
+    execution: AgentAttemptExecution,
+    session: FakeAgentSession,
+    policy: PermissionPolicyRevision,
+    store: DbosAgentAttemptStore | None = None,
+) -> AgentAttemptSucceeded | AgentAttemptFailed | AgentAttemptPossiblyRan:
+    """One attempt whose executor opened a conversation, files bound by the dispatch."""
+
+    return execute_agent_attempt(
+        execution,
+        RecordingAgentExecutorV2(
+            command=emitting(b'"done"'), conversation=conversation_nobody_drives()
+        ),
+        store or DbosAgentAttemptStore(runtime.engine),
+        session,
+        runtime_workspace_owner(runtime),
+        clock=lambda: _WHEN_IT_WAS_DECIDED,
+        permissions=policy,
+        workspace_files=AttemptWorkspaceFileAccess,
+    )
+
+
+def test_the_closed_policy_refuses_a_file_and_keeps_the_refusal(tmp_path: Path) -> None:
+    """Deny-all, the live policy: the path is the workspace, so the policy is
+    asked, and its no is a row like any other."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/file-refused")
+        )
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            file_requests=(
+                _file_request(ProviderFilesystemEffect.WRITE, "notes.md", 1, b"kept"),
+            ),
+        )
+
+        outcome = _conversing_attempt(runtime, execution, session, GRANTS_NOTHING)
+
+        assert isinstance(outcome, AgentAttemptSucceeded)
+        assert session.file_replies == [
+            _refused(1, ProviderFilesystemRefusal.PERMISSION_REFUSED)
+        ]
+        assert _kept_receipts(runtime) == (
+            _file_receipt(
+                execution.attempt_id,
+                PermissionEffect.WORKSPACE_WRITE,
+                1,
+                GRANTS_NOTHING,
+                granted=False,
+            ),
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_granting_policy_writes_and_reads_the_lease_with_a_receipt_each(
+    tmp_path: Path,
+) -> None:
+    """Two files are two rows, and the read answers what the write kept: the
+    access is anchored to the very lease the attempt runs in."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/file-granted")
+        )
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            file_requests=(
+                _file_request(ProviderFilesystemEffect.WRITE, "notes.md", 1, b"kept"),
+                _file_request(ProviderFilesystemEffect.READ, "notes.md", 2),
+            ),
+        )
+
+        outcome = _conversing_attempt(
+            runtime, execution, session, _GRANTS_THE_WORKSPACE
+        )
+
+        assert isinstance(outcome, AgentAttemptSucceeded)
+        assert session.file_replies == [_answered(1), _answered(2, b"kept")]
+        assert set(_kept_receipts(runtime)) == {
+            _file_receipt(
+                execution.attempt_id,
+                PermissionEffect.WORKSPACE_WRITE,
+                1,
+                _GRANTS_THE_WORKSPACE,
+                granted=True,
+            ),
+            _file_receipt(
+                execution.attempt_id,
+                PermissionEffect.WORKSPACE_READ,
+                2,
+                _GRANTS_THE_WORKSPACE,
+                granted=True,
+            ),
+        }
+    finally:
+        runtime.close()
+
+
+def test_a_path_that_left_the_lease_is_kept_as_a_refusal_the_policy_never_made(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/file-escaped")
+        )
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            file_requests=(
+                _file_request(ProviderFilesystemEffect.READ, "../elsewhere.txt", 1),
+            ),
+        )
+
+        _conversing_attempt(runtime, execution, session, _GRANTS_THE_WORKSPACE)
+
+        assert session.file_replies == [
+            _refused(1, ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE)
+        ]
+        assert _kept_receipts(runtime) == (
+            _file_receipt(
+                execution.attempt_id,
+                PermissionEffect.WORKSPACE_READ,
+                1,
+                _GRANTS_THE_WORKSPACE,
+                granted=False,
+            ),
+        )
+    finally:
+        runtime.close()
+
+
+def test_the_first_file_request_and_the_first_question_are_two_rows(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/two-families")
+        )
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            asks=((PermissionEffect.NETWORK, _THE_UNNAMED_HOST),),
+            file_requests=(_file_request(ProviderFilesystemEffect.READ, "a.md", 1),),
+        )
+
+        _conversing_attempt(runtime, execution, session, GRANTS_NOTHING)
+
+        assert {receipt.correlation_id for receipt in _kept_receipts(runtime)} == {
+            PermissionCorrelationId.for_call(execution.attempt_id, 1),
+            PermissionCorrelationId.for_file_call(execution.attempt_id, 1),
+        }
+    finally:
+        runtime.close()
+
+
+def test_the_same_file_request_asked_again_keeps_the_one_row_it_has(
+    tmp_path: Path,
+) -> None:
+    """A recovered provider re-asks the same ordinal for the same file; the
+    ledger holds one row and both askings are answered."""
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/file-replayed")
+        )
+        read = _file_request(ProviderFilesystemEffect.READ, "missing.md", 1)
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""), file_requests=(read, read)
+        )
+
+        _conversing_attempt(runtime, execution, session, _GRANTS_THE_WORKSPACE)
+
+        assert (
+            session.file_replies
+            == [_refused(1, ProviderFilesystemRefusal.FILE_NOT_FOUND)] * 2
+        )
+        assert _kept_receipts(runtime) == (
+            _file_receipt(
+                execution.attempt_id,
+                PermissionEffect.WORKSPACE_READ,
+                1,
+                _GRANTS_THE_WORKSPACE,
+                granted=False,
+            ),
+        )
+    finally:
+        runtime.close()
+
+
+class _TheLedgerIsGone(RuntimeError):
+    """What the store raises when durable state will not take the receipt."""
+
+
+class _StoreThatCannotKeepAReceipt(DbosAgentAttemptStore):
+    def record_permission_decision(self, receipt: PermissionReceipt) -> None:
+        del receipt
+        raise _TheLedgerIsGone("durable state is unavailable")
+
+
+def test_a_file_receipt_that_cannot_be_kept_writes_nothing_and_leaves_the_attempt_armed(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = _StoreThatCannotKeepAReceipt(runtime.engine)
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "attempt/file-ledger-gone")
+        )
+        session = FakeAgentSession(
+            AgentProcessCompletion(0, b'"done"', b""),
+            file_requests=(
+                _file_request(ProviderFilesystemEffect.WRITE, "notes.md", 1, b"kept"),
+            ),
+        )
+
+        with pytest.raises(_TheLedgerIsGone):
+            _conversing_attempt(
+                runtime, execution, session, _GRANTS_THE_WORKSPACE, store
+            )
+
+        assert session.file_replies == []
+        assert _kept_receipts(runtime) == ()
+        assert not list(agent_scratch_root(tmp_path).rglob("notes.md"))
+        assert store.load(execution.attempt_id).state is AgentAttemptState.LAUNCH_ARMED
     finally:
         runtime.close()
 

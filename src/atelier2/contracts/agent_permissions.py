@@ -67,6 +67,18 @@ class PermissionScope:
             raise ValueError("a permission scope names what it reaches")
 
 
+ATTEMPT_WORKSPACE = PermissionScope(
+    PermissionScopeKind.PATH_PREFIX, "attempt-workspace"
+)
+"""The one scope a running provider's file request is judged under.
+
+A file request names a path, and the path never reaches the ledger (ADR 0020
+§2 keeps raw provider arguments out of it): what the policy grants or refuses
+is the attempt's own leased workspace as a whole, and whether a given path is
+that workspace is the fence's finding, not the policy's.
+"""
+
+
 class PermissionCorrelationId(Sha256Hash):
     """The identity of one permission question inside one attempt."""
 
@@ -80,6 +92,30 @@ class PermissionCorrelationId(Sha256Hash):
         always addresses the same question however the provider spelled it.
         """
 
+        return cls._minted(
+            "agent-permission-correlation-id/v1", attempt_id, call_ordinal
+        )
+
+    @classmethod
+    def for_file_call(
+        cls, attempt_id: AgentAttemptId, call_ordinal: int
+    ) -> PermissionCorrelationId:
+        """Mint the id of this attempt's `call_ordinal`-th file request.
+
+        A conversation counts its file requests apart from its permission
+        questions, so the two families are framed apart: the first file request
+        and the first permission question of one attempt are two receipts, never
+        one row answered twice.
+        """
+
+        return cls._minted(
+            "agent-filesystem-correlation-id/v1", attempt_id, call_ordinal
+        )
+
+    @classmethod
+    def _minted(
+        cls, family: str, attempt_id: AgentAttemptId, call_ordinal: int
+    ) -> PermissionCorrelationId:
         if type(call_ordinal) is not int or not (
             MINIMUM_PERMISSION_CALL_ORDINAL
             <= call_ordinal
@@ -88,7 +124,7 @@ class PermissionCorrelationId(Sha256Hash):
             raise ValueError("a permission call ordinal counts from one, within uint64")
         return cls.of(
             frame(
-                "agent-permission-correlation-id/v1",
+                family,
                 attempt_id.value.encode("ascii"),
                 struct.pack(">Q", call_ordinal),  # minted-id family; see hashing.frame
             )
@@ -208,6 +244,24 @@ def decide(
     )
 
 
+def refuse(
+    policy: PermissionPolicyRevision, request: PermissionRequest
+) -> PermissionDecision:
+    """Refuse one question without judging it, under this revision's name.
+
+    For a question the policy must not be asked: a file request whose path the
+    fence found not to be the workspace at all. The policy may well grant the
+    workspace, and asking it would record a grant for a path that was never
+    the thing granted -- so the answer is a refusal, and it still names the
+    revision this execution ran under, because that is the authority every
+    receipt of the execution stands on.
+    """
+
+    return PermissionDecision(
+        request.correlation_id, False, policy.revision_hash, PermissionAuthority.POLICY
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyPermissionDecider:
     """The bound policy, answering every question of one execution.
@@ -221,6 +275,9 @@ class PolicyPermissionDecider:
 
     def decide(self, request: PermissionRequest) -> PermissionDecision:
         return decide(self.policy, request)
+
+    def refuse(self, request: PermissionRequest) -> PermissionDecision:
+        return refuse(self.policy, request)
 
 
 class PermissionReceiptHash(Sha256Hash):

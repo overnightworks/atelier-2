@@ -52,6 +52,7 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     resolved_agent_binding,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.projects import (
     commit_to_project,
@@ -286,6 +287,7 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
                 tmp_path / "project", runtime.settings.database_path
             ).pinned(pin, None),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
