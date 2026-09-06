@@ -9,7 +9,7 @@ graph_inputs:
   - name: work_item
     schema:
       ref: work-item
-      revision: "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a"
+      revision: "0bffb19e43509cb4cb446dd33c1d70b0d19f8a9a65cbe270d382edc2860d2921"
 nodes:
   - id: implement
     type: agent
