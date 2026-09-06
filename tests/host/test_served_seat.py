@@ -188,3 +188,18 @@ def test_stopping_the_seat_ends_the_session_the_serve_left_running(
     assert capsys.readouterr().out.strip() == STOPPED_REPORT
     assert machine.commands_containing("kill-session") != []
     assert machine.commands_containing("stop") != []
+
+
+def test_a_seat_whose_terminal_program_is_not_there_refuses_the_start(
+    tmp_path: Path,
+) -> None:
+    """The seat starts from the named path or not at all; it searches nowhere."""
+
+    declaration = declared_seat(tmp_path)
+
+    with pytest.raises(ValueError, match="--seat-ttyd-executable"):
+        SeatDeclaration(
+            declaration.tmux_executable,
+            tmp_path / "no-ttyd-here",
+            declaration.claude_executable,
+        )
