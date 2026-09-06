@@ -275,15 +275,38 @@ def test_bytes_this_module_never_wrote_are_not_that_document(document: bytes) ->
     assert read_work_item_order_document(document) is None
 
 
+def _workflow_paths_pinning_work_item() -> list[Path]:
+    """Every workflow document under `workflows/` whose graph input pins `work-item`.
+
+    Read from the directory rather than a hand-kept list, so a new workflow
+    document that pins this schema is caught here without anyone remembering
+    to add its name.
+    """
+
+    pinning: list[Path] = []
+    for workflow_path in sorted((_PROJECT_ROOT / "workflows").glob("*.yaml")):
+        document = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        graph_inputs = document.get("graph_inputs", ())
+        if any(
+            graph_input["schema"]["ref"] == "work-item" for graph_input in graph_inputs
+        ):
+            pinning.append(workflow_path)
+    return pinning
+
+
+def test_at_least_one_workflow_pins_the_work_item_schema() -> None:
+    assert _workflow_paths_pinning_work_item(), (
+        "workflows/ must not lose its work-item consumer"
+    )
+
+
 @pytest.mark.parametrize(
-    "workflow_name", ["issue-to-pr.yaml", "documentation-release.yaml"]
+    "workflow_path", _workflow_paths_pinning_work_item(), ids=lambda path: path.name
 )
-def test_the_schema_revision_matches_the_workflow_s_pin(workflow_name: str) -> None:
+def test_the_schema_revision_matches_the_workflow_s_pin(workflow_path: Path) -> None:
     """A workflow pin and the code that owns the schema must never drift apart."""
 
-    document = yaml.safe_load(
-        (_PROJECT_ROOT / "workflows" / workflow_name).read_text(encoding="utf-8")
-    )
+    document = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     pins = [
         graph_input["schema"]["revision"]
         for graph_input in document["graph_inputs"]
