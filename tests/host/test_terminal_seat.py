@@ -12,6 +12,7 @@ import pytest
 
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.host.terminal_seat import (
+    SYSTEMCTL_STOP_ABSENT_EXIT_CODE,
     SeatCommandResult,
     SeatMcpDocument,
     TerminalSeat,
@@ -29,6 +30,11 @@ MCP_DOCUMENT = SeatMcpDocument(
 )
 SEAT_PORT = 7681
 TMUX_WITHOUT_SERVER = "no server running on /tmp/tmux-1000/atelier-seat"
+# What the installed tmux (3.4) answers before any seat ever ran: the socket
+# was never created, which is the absence every first start meets.
+TMUX_WITHOUT_SOCKET = (
+    "error connecting to /tmp/tmux-1000/atelier-seat (No such file or directory)"
+)
 TMUX_UNREADABLE = "error connecting to /tmp/tmux-1000/atelier-seat (Permission denied)"
 SYSTEMCTL_INACTIVE_EXIT_CODE = 3
 SYSTEMCTL_BUS_UNREACHABLE = SeatCommandResult(1, "Failed to connect to bus")
@@ -54,6 +60,7 @@ class FakeSeatHost:
     scope_active: bool = False
     free_port: bool = True
     tmux_probe_unreadable: bool = False
+    absent_answer: str = TMUX_WITHOUT_SERVER
     scope_probe_unreadable: bool = False
     exit_codes: dict[str, int] = field(default_factory=dict)
     commands: list[tuple[str, ...]] = field(default_factory=list)
@@ -66,7 +73,7 @@ class FakeSeatHost:
                 return SeatCommandResult(1, TMUX_UNREADABLE)
             if self.session_alive:
                 return SeatCommandResult(0)
-            return SeatCommandResult(1, TMUX_WITHOUT_SERVER)
+            return SeatCommandResult(1, self.absent_answer)
         if "is-active" in command:
             if self.scope_probe_unreadable:
                 return SYSTEMCTL_BUS_UNREACHABLE
@@ -191,7 +198,7 @@ def test_the_agent_is_typed_into_the_login_shell(tmp_path: Path) -> None:
         settings.socket_name,
         "send-keys",
         "-t",
-        f"={settings.session_name}",
+        f"={settings.session_name}:",
         "-l",
     )
     assert shlex.split(typed[-1]) == [
@@ -282,6 +289,47 @@ def test_a_probe_that_did_not_answer_ends_the_call_without_touching_anything(
     assert host.commands_containing("new-session") == []
 
 
+def test_a_socket_that_was_never_created_reads_as_a_seat_that_is_not_there(
+    tmp_path: Path,
+) -> None:
+    """The absence every first start meets, in the installed tmux's own words."""
+
+    host = FakeSeatHost(absent_answer=TMUX_WITHOUT_SOCKET)
+
+    outcome = TerminalSeat(settings_for(tmp_path), host).ensure_session()
+
+    assert outcome is TerminalSeatOutcome.CREATED
+
+
+def test_a_scope_that_ended_with_its_own_session_is_not_a_failed_stop(
+    tmp_path: Path,
+) -> None:
+    """Killing the seat's session collects its scope; the stop meets nothing."""
+
+    host = FakeSeatHost(
+        session_alive=True,
+        scope_active=True,
+        exit_codes={"stop": SYSTEMCTL_STOP_ABSENT_EXIT_CODE},
+    )
+
+    outcome = TerminalSeat(settings_for(tmp_path), host).stop_session()
+
+    assert outcome is TerminalSeatOutcome.STOPPED
+
+
+def test_a_living_seat_is_found_again_even_while_its_own_port_is_held(
+    tmp_path: Path,
+) -> None:
+    """An unclean serve death leaves its ttyd on the port; the seat still lives."""
+
+    host = FakeSeatHost(session_alive=True, scope_active=True, free_port=False)
+
+    outcome = TerminalSeat(settings_for(tmp_path), host).ensure_session()
+
+    assert outcome is TerminalSeatOutcome.ALREADY_RUNNING
+    assert host.commands_containing("new-session") == []
+
+
 def test_a_seat_whose_project_root_is_gone_is_reported_without_being_killed(
     tmp_path: Path,
 ) -> None:
@@ -307,12 +355,15 @@ def test_a_machine_without_systemd_run_is_refused_without_a_fallback_child(
 
 
 def test_a_busy_seat_port_is_refused_rather_than_moved(tmp_path: Path) -> None:
+    """With no session of our own behind it, a held port is somebody else's."""
+
     host = FakeSeatHost(free_port=False)
 
     outcome = TerminalSeat(settings_for(tmp_path), host).ensure_session()
 
     assert outcome is TerminalSeatOutcome.REFUSED_PORT_BUSY
-    assert host.commands == []
+    assert host.commands_containing("new-session") == []
+    assert host.commands_containing("kill-session") == []
 
 
 def test_a_failing_management_command_is_not_swallowed(tmp_path: Path) -> None:

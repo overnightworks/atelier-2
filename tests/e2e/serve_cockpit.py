@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,9 @@ from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext, ApiPorts
 from atelier2.api.limits import ApiLimits
+from atelier2.api.openapi import SEAT_PATH
 from atelier2.api.references import decode_public_run_reference
+from atelier2.api.seat import SeatReader, no_seat_declared
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
     ModelRegistryPublished,
@@ -245,6 +248,28 @@ GENERATION_DRAIN_SECONDS = 60.0
 # in-flight request gets before the restart drops the sockets anyway; uvicorn
 # reads it as whole seconds.
 RESTART_CONNECTION_GRACE_SECONDS = 1
+# The seat this harness serves, and why it is a fixture rather than a seat.
+#
+# A real seat is a tmux server, a ttyd child and a transient systemd user
+# scope. The pipeline's runner image (`ubuntu-latest`) carries none of the
+# three -- no `tmux`, no `ttyd`, and no systemd user instance -- so a harness
+# that opened a real seat would fail there for the machine's reasons rather
+# than the cockpit's. This harness therefore serves its own terminal page and
+# answers the seat door with its address, and says so at startup instead of
+# quietly standing in for a seat.
+#
+# What that proves is the room: the frame, whose seat it is, the address it
+# reattaches to across a reload, the refusal below the readable width, and the
+# stage beside it. The session's own lifecycle is proven against the real
+# binaries in `tests/integration/test_terminal_seat_live.py`.
+E2E_SEAT_PATH = "/__e2e/seat"
+E2E_SEAT_ANNOUNCEMENT = (
+    "e2e harness: serving a fixture terminal at "
+    f"{E2E_SEAT_PATH} -- no real seat binaries are driven here"
+)
+E2E_SEAT_PROJECT_ID = "e2e-workshop"
+E2E_SEAT_TERMINAL_PATH = "/__e2e/seat-terminal"
+
 # The fake conductor's fixed round report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
@@ -850,6 +875,35 @@ def _published_schema_hash(result: object) -> str:
             raise RuntimeError(f"schema publication failed: {refused!r}")
 
 
+def _fixture_terminal_page(session: str) -> bytes:
+    """The harness's stand-in terminal: a running CLI line, a session mark, and
+    a prompt that echoes what is typed.
+
+    It echoes because the room's own phone path is what this proves: a finger
+    reaching the terminal, a keyboard typing into it, and the answer appearing
+    where the operator is looking. What the characters mean is the real agent
+    CLI's business, and it is not here.
+    """
+
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        "<title>fixture terminal</title></head>"
+        '<body style="background:#111;color:#eee;font-family:monospace;margin:0">'
+        '<pre id="terminal" style="margin:0;padding:8px">$ claude\n'
+        "Atelier MCP connected - list_workflows, start_run, run_status\n"
+        f"seat session {session}</pre>"
+        '<input id="prompt" aria-label="terminal input" autocomplete="off" '
+        'style="width:100%;background:#111;color:#eee;font-family:monospace;'
+        'border:0;padding:8px">'
+        "<script>const typed=document.getElementById('prompt');"
+        "const screen=document.getElementById('terminal');"
+        "typed.addEventListener('keydown',(event)=>{"
+        "if(event.key!=='Enter')return;"
+        "screen.textContent+='\\n> '+typed.value;typed.value='';});</script>"
+        "</body></html>"
+    ).encode()
+
+
 class BrowserProofHarness:
     def __init__(
         self,
@@ -867,6 +921,10 @@ class BrowserProofHarness:
         self.reset_state = reset_state
         self.drain_inflight = drain_inflight or (lambda: None)
         self.generation = 1
+        # One session marker for this harness process: a reload reaches the
+        # same terminal, exactly as reattaching to a living session does.
+        self.terminal_page = _fixture_terminal_page(secrets.token_hex(4))
+        self.seat_terminal_answers = True
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.stream_counts: dict[str, int] = {}
 
@@ -929,6 +987,56 @@ class BrowserProofHarness:
             return
         if (
             scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path
+            in (
+                E2E_SEAT_PATH,
+                f"{E2E_SEAT_PATH}/",
+            )
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                }
+            )
+            await send({"type": "http.response.body", "body": self.terminal_page})
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and path == E2E_SEAT_TERMINAL_PATH
+        ):
+            # How a browser proof reaches the state a machine whose terminal
+            # died is in, and back again -- the spec that turns it off turns it
+            # on again, so the shared server is left as every other spec
+            # expects it (#742).
+            self.seat_terminal_answers = (
+                parse_qs(scope.get("query_string", b"").decode()).get(
+                    "state", ["answering"]
+                )[0]
+                != "missing"
+            )
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path == SEAT_PATH
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": self.seat_answer()})
+            return
+        if (
+            scope["type"] == "http"
             and scope.get("method") == "POST"
             and path == "/__e2e/seed-conductor"
         ):
@@ -987,6 +1095,21 @@ class BrowserProofHarness:
             await send(message)
 
         await self.app(scope, receive, proof_send)
+
+    def seat_answer(self) -> bytes:
+        """What the seat door says: this harness's fixture terminal, or none."""
+
+        if not self.seat_terminal_answers:
+            return json.dumps(
+                {"state": "FAILED", "url": None, "project_id": None}
+            ).encode()
+        return json.dumps(
+            {
+                "state": "ALIVE",
+                "url": f"{E2E_SEAT_PATH}/",
+                "project_id": E2E_SEAT_PROJECT_ID,
+            }
+        ).encode()
 
     def current_wait_execution(self, public_run_reference: str) -> bytes | None:
         if not isinstance(self.app, FastAPI):
@@ -1047,14 +1170,16 @@ class BrowserProofHarness:
     def seed_conductor(self) -> bytes:
         """Publish the whole conductor catalog through the production doors.
 
-        Everything the workbench needs to see a connected conductor: the
-        message and report schemas, the production conductor document (built
-        by its own owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
-        auth profile plus agent configuration bound to the fake conductor
-        executor, and the project level-2 model default selecting that exact
-        model. On demand rather than at startup, so one served
-        instance proves BOTH workbench states: the honest refusal before this
-        endpoint is called, the real conversation after.
+        The message and report schemas, the conversation document
+        (`conductor_seed.py`) and its catalog lineage, an auth profile plus
+        agent configuration bound to the fake conductor executor, its model
+        registry entry, and the project level-2 default selecting that exact
+        model. The configuration hash comes back so a run can bind its
+        `conductor` role to the executor seeded here.
+
+        A door rather than startup state, because the cold-boot baseline
+        carries no conductor: a spec that resets this one shared server back
+        to that baseline seeds the catalog again for itself.
         """
 
         context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
@@ -1372,6 +1497,8 @@ def main() -> None:
     application_version = "r3-phase5-e2e"
     seed_boot_baseline(database, effects, application_version)
 
+    print(E2E_SEAT_ANNOUNCEMENT, file=sys.stderr, flush=True)
+
     holds = FakeProviderHolds()
     dbos_workflow.execute_agent_attempt = track_execute_agent_attempt(
         holds, dbos_workflow.execute_agent_attempt
@@ -1490,6 +1617,7 @@ def main() -> None:
         event_poll_backoff: EventPollBackoff,
         frontend_dist: Path | None = None,
         served_project_id: ProjectId | None = None,
+        seat_reader: SeatReader = no_seat_declared,
         lifespan: Lifespan[FastAPI] | None = None,
     ) -> FastAPI:
         seeded = replace(
@@ -1507,6 +1635,7 @@ def main() -> None:
             event_poll_backoff=event_poll_backoff,
             frontend_dist=frontend_dist,
             served_project_id=served_project_id,
+            seat_reader=seat_reader,
             lifespan=lifespan,
         )
         observed = seeded.queue_projection.reconcile_open_items(

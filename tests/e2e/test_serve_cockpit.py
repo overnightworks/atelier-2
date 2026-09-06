@@ -201,9 +201,9 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
     through a `TestClient`, the same observable surface a spec's browser
     uses, but calls `recompose_after_server_stop` directly instead of
     stopping a real uvicorn process -- that real process-restart shape is
-    already proven end-to-end by `connection-restart.spec.ts` and
-    `workbench-conductor.spec.ts`. What this test owns is that the state
-    left behind is the exact cold-boot baseline, not merely "smaller".
+    already proven end-to-end by `connection-restart.spec.ts`. What this
+    test owns is that the state left behind is the exact cold-boot baseline,
+    not merely "smaller".
     """
     database = tmp_path / "atelier.sqlite"
     effects = tmp_path / "effects.sqlite"

@@ -1,12 +1,10 @@
 import type * as SvelteTestingLibrary from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { encodePublicRunReference } from "../../src/api/client";
-import type { CockpitApi, Problem, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
-import { conductorConversationCopy } from "../../src/lib/conductorConversation";
-import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
+import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { railCopy } from "../../src/lib/railCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
+import { seatCopy } from "../../src/lib/seatCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
 import {
@@ -16,16 +14,8 @@ import {
   workbenchInteractiveSelector,
   workbenchStageSelector
 } from "../support/workbenchControls";
-import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
-import {
-  conductorConfigurationHash,
-  conductorConnectionOverrides,
-  conductorProjectReference,
-  conductorRevisionDetail,
-  conductorRevisionHash,
-  conductorRole
-} from "../support/conductorConnection";
-import { cancellableBlock, notCancellableBlock } from "../support/runV3";
+import { FakeRunEventFeed, PAGE_CURSORS, seatResource } from "../support/cockpitApi";
+import { cancellableBlock } from "../support/runV3";
 import {
   defectiveRunRow,
   runRow,
@@ -36,49 +26,35 @@ import {
 } from "../support/runV3";
 
 /**
- * The Workbench's conversation is owned by the `chatTranscript` module, not the
- * page component (issue #556), so it survives the page being torn down and
- * rebuilt by in-app rail navigation. That means it also survives from one
- * test to the next unless each test gets a fresh module instance -- exactly
- * what a real reload gives the operator. `vi.resetModules()` plus a fresh
- * dynamic import of testing-library alongside the app keeps every piece
- * bound to the same reloaded Svelte runtime; mixing a freshly reset
- * component with a stale `render` from a different runtime instance fails.
+ * Every test gets a freshly reset module graph -- exactly what a real reload
+ * gives the operator, and what keeps a store another test wrote out of this
+ * one. `vi.resetModules()` plus a fresh dynamic import of testing-library
+ * alongside the app keeps every piece bound to the same reloaded Svelte
+ * runtime; mixing a freshly reset component with a stale `render` from a
+ * different runtime instance fails.
  */
 let testingLibrary: typeof SvelteTestingLibrary;
-let openChat: (overrides?: Partial<CockpitApi>) => void;
-let reportConnectionLost: () => void;
-let reportConnectionRestored: () => void;
-let restartNoticeCopy: string;
+let openWorkbenchApp: (overrides?: Partial<CockpitApi>) => void;
 
 async function bootApp(): Promise<{
   testingLibrary: typeof SvelteTestingLibrary;
-  openChat: (overrides?: Partial<CockpitApi>) => void;
-  reportConnectionLost: () => void;
-  reportConnectionRestored: () => void;
-  restartNoticeCopy: string;
+  openWorkbenchApp: (overrides?: Partial<CockpitApi>) => void;
 }> {
   vi.resetModules();
   const library = await import("@testing-library/svelte");
   const { default: App } = await import("../../src/App.svelte");
   const { MutationJournal } = await import("../../src/lib/mutationJournal");
   const { cockpitApiStub } = await import("../support/cockpitApi");
-  // Loaded from the same reset module graph App.svelte binds to, so reporting
-  // here reaches the exact store the composer reads (#700).
-  const connection = await import("../../src/lib/connectionState");
 
   return {
     testingLibrary: library,
-    openChat: (overrides: Partial<CockpitApi> = {}) =>
+    openWorkbenchApp: (overrides: Partial<CockpitApi> = {}) =>
       library.render(App, {
         props: {
           cockpitApi: cockpitApiStub(overrides),
           mutationJournal: new MutationJournal(sessionStorage)
         }
-      }),
-    reportConnectionLost: connection.reportConnectionLost,
-    reportConnectionRestored: connection.reportConnectionRestored,
-    restartNoticeCopy: connection.restartNoticeCopy
+      })
   };
 }
 
@@ -86,1081 +62,76 @@ beforeEach(async () => {
   sessionStorage.clear();
   window.history.replaceState(null, "", "/atelier/chat");
 
-  ({ testingLibrary, openChat, reportConnectionLost, reportConnectionRestored, restartNoticeCopy } =
-    await bootApp());
+  ({ testingLibrary, openWorkbenchApp } = await bootApp());
 });
 
 afterEach(() => testingLibrary.cleanup());
 
-async function say(words: string): Promise<void> {
-  const { fireEvent, screen } = testingLibrary;
-  await fireEvent.input(screen.getByLabelText(workbenchPageCopy.composerLabel), {
-    target: { value: words }
-  });
-  await fireEvent.click(screen.getByRole("button", { name: workbenchPageCopy.send }));
-}
+describe("the workbench seats the operator at a terminal (#1099)", () => {
+  const SEAT_URL = "http://127.0.0.1:7681/seat-9Kx2/";
 
-describe("the workbench door", () => {
-  it("teaches where work starts today instead of leaving an empty room, with no button duplicating the rail's own door", async () => {
-    openChat();
-    const { screen } = testingLibrary;
-
-    expect((await screen.findByRole("heading", { name: "Workbench" })).isConnected).toBe(true);
-    expect(screen.getByText(workbenchPageCopy.emptyDescription).isConnected).toBe(true);
-    // The rail already carries a door to Workflows; the empty state names it
-    // in a sentence rather than repeating it as a second button (#579).
-    expect(screen.queryByRole("link", { name: "Open Workflows" })).toBeNull();
-  });
-
-  it("keeps what was said and answers that nothing was started, naming no board or issue number", async () => {
-    openChat();
-    const { screen, within } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    await say("Finish the preview door");
-
-    const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
-    expect(within(transcript).getByText(/Finish the preview door/).isConnected).toBe(true);
-    // No invented answer, no pretence that anything started, and no internal
-    // vision or issue number leaked into the operator's own conversation
-    // (Adressaten-Regel, operator ruling 23.08.).
-    const answer = within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown);
-    expect(answer.textContent).not.toMatch(/#\d/);
-  });
-
-  it("empties the composer after sending, so the same words cannot be sent twice by accident", async () => {
-    openChat();
-    const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    await say("start two runs");
-
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
-  });
-
-  it("takes no turn at all for a blank message", async () => {
-    openChat();
-    const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    await say("   ");
-
-    expect(screen.queryByRole("list", { name: workbenchPageCopy.transcriptLabel })).toBeNull();
-    expect(screen.getByText(workbenchPageCopy.emptyTitle).isConnected).toBe(true);
-  });
-
-  it("keeps the conversation across a rail change and back, since that is not leaving the page", async () => {
-    openChat();
-    const { screen, within } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await say("Finish the preview door");
-
-    // Rail navigation tears down and rebuilds the Workbench page component the
-    // same way `{#if route.page === "chat"}` does in App.svelte, while the
-    // module that now owns the conversation stays loaded across that swap.
-    testingLibrary.cleanup();
-    openChat();
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
-    expect(within(transcript).getByText(/Finish the preview door/).isConnected).toBe(true);
-    expect(
-      within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown).isConnected
-    ).toBe(true);
-  });
-
-  it("starts a fresh, empty conversation after a reload", async () => {
-    openChat();
-    await testingLibrary.screen.findByRole("heading", { name: "Workbench" });
-    await say("Finish the preview door");
-    testingLibrary.cleanup();
-
-    // A reload re-executes the whole module graph from scratch: a second
-    // reset plus a second fresh boot is that reload, and the conductor's
-    // module-owned conversation comes back empty.
-    ({ testingLibrary, openChat } = await bootApp());
-    openChat();
-    const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    expect(screen.queryByRole("list", { name: workbenchPageCopy.transcriptLabel })).toBeNull();
-    expect(screen.getByText(workbenchPageCopy.emptyTitle).isConnected).toBe(true);
-  });
-
-  it("disables Send and shows the restart line while the connection is lost, not the no-conductor refusal (#700)", async () => {
-    openChat();
-    const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await testingLibrary.fireEvent.input(screen.getByLabelText(workbenchPageCopy.composerLabel), {
-      target: { value: "Finish the preview door" }
-    });
-
-    reportConnectionLost();
-    await testingLibrary.waitFor(() => {
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    // The ear (HEART) names its own state in one sentence; the shell's top
-    // banner stays silent on this one room so the fact is said exactly once,
-    // never as a page-local echo of the same line (#700).
-    expect(screen.getAllByText(restartNoticeCopy)).toHaveLength(1);
-    expect(document.querySelector(".composer-hint")?.textContent).toBe(restartNoticeCopy);
-    expect(screen.queryByText(workbenchPageCopy.composerHint)).toBeNull();
-    // Nothing was sent: the word stays exactly where it was typed.
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
-      "value",
-      "Finish the preview door"
-    );
-    expect(screen.queryByRole("list", { name: workbenchPageCopy.transcriptLabel })).toBeNull();
-  });
-
-  it("re-enables Send and restores the ordinary hint once the connection returns, with no reload", async () => {
-    openChat();
-    const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    reportConnectionLost();
-    await testingLibrary.waitFor(() => {
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    reportConnectionRestored();
-
-    await testingLibrary.waitFor(() => {
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        false
-      );
-    });
-    expect(screen.queryByText(restartNoticeCopy)).toBeNull();
-    // Whichever ordinary hint the composer settles on (which conductor state
-    // that is is not this test's question), it is back to something other
-    // than the restart line.
-    const hint = document.querySelector(".composer-hint");
-    expect(hint?.textContent).not.toBe(restartNoticeCopy);
-  });
-});
-
-/**
- * A connected conductor's own conversation, real reducer and journal
- * included: the shared fixture below is the smallest published loop
- * (`resolveConductorConnection`'s own shape check) any of these three
- * scenarios needs to actually connect.
- */
-describe("the workbench conductor conversation", () => {
-  const conductorPublicRunReference = encodePublicRunReference(
-    "workbench/conductor-conversation"
-  );
-
-  function conductorRunFixture(overrides: Partial<RunV3> = {}): RunV3 {
-    return {
-      workflow_format_version: 3,
-      run_id: "workbench/conductor-conversation",
-      workflow_name: "conductor conversation",
-      public_run_reference: conductorPublicRunReference,
-      workflow_revision_hash: conductorRevisionHash,
-      agent_binding_set_hash: "5".repeat(64),
-      run_configuration_revision_hash: "4".repeat(64),
-      agent_bindings: [],
-      orders: [],
-      state_version: 1,
-      state: "WAITING_INPUT",
-      current_node_id: "next_message",
-      current_node_execution_id: "3".repeat(64),
-      node_rail: [
-        { node_id: "next_message", state: "needs_you", attempt: null },
-        { node_id: "conduct", state: "queued", attempt: null }
-      ],
-      cancellation: notCancellableBlock("waiting-for-you"),
-      terminal_hash: null,
-      latest_event_cursor: null,
-      started_at: "2026-08-18T15:00:00Z",
-      ended_at: null,
-      ...overrides
-    };
+  function openSeatRoom(overrides: Partial<CockpitApi> = {}): void {
+    window.history.replaceState(null, "", "/atelier/chat");
+    openWorkbenchApp(overrides);
   }
 
-  /** Only the run this room already knows about, and only for the state it is served under. */
-  function listRunsForConductor(run: RunV3 | null): CockpitApi["listRuns"] {
-    return vi.fn(async (_after?: string, state?: string) => ({
-      items: run !== null && (state === undefined || state === run.state) ? [runRow(run)] : [],
-      next_after: null
-    }));
-  }
-
-  async function completedAnswerEvent(
-    publicRunReference: string,
-    workflowRevisionHash: string,
-    answer: string,
-    sequence: number
-  ): Promise<Record<string, unknown>> {
-    const output = JSON.stringify({ answer });
-    const outputDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(output));
-    return {
-      workflow_format_version: 3,
-      // The decoder checks the cursor's own run reference against the event's
-      // (client.ts, "event cursor, run reference, and sequence disagree"),
-      // so this fixture's cursor must carry the same reference as the run.
-      cursor: `event1.${publicRunReference.slice("run1.".length)}.${sequence}`,
-      sequence,
-      public_run_reference: publicRunReference,
-      workflow_revision_hash: workflowRevisionHash,
-      node_id: "conduct",
-      node_execution_id: "2".repeat(64),
-      event_hash: "1".repeat(64),
-      node_rail: [
-        { node_id: "next_message", state: "succeeded", attempt: null },
-        { node_id: "conduct", state: "succeeded", attempt: null }
-      ],
-      event: "AGENT_COMPLETED",
-      output_base64: btoa(output),
-      output_hash: [...new Uint8Array(outputDigest)]
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join(""),
-      attempt_id: "e".repeat(64),
-      attempt_ordinal: 1
-    };
-  }
-
-  // The Send guard race (#1103, #1114 investigation): whether a conductor is
-  // even there is read over several round trips (`resolveConductorConnection`,
-  // conductorEpisode.ts). A click landing in that window used to fall into
-  // the no-conductor branch and start nothing at all -- the button looked
-  // ready before the room actually knew.
-  it("keeps Send disabled and names the passing read while a conductor's connection is still being read, then enables it once connected", async () => {
-    let letTheReadFinish = (): void => {};
-    const readFinished = new Promise<void>((resolve) => {
-      letTheReadFinish = resolve;
-    });
-    openChat({
-      ...conductorConnectionOverrides(),
-      getWorkflowRevision: vi.fn(async () => {
-        await readFinished;
-        return conductorRevisionDetail();
-      }),
-      listRuns: listRunsForConductor(null)
-    });
-    const { screen, waitFor } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-
-    expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-      "disabled",
-      true
-    );
-    expect(screen.getByText(workbenchPageCopy.composerHintReading).isConnected).toBe(true);
-
-    letTheReadFinish();
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        false
+  it("frames the terminal at the address the serve named, under the project it belongs to", async () => {
+    openSeatRoom({
+      getSeat: vi.fn(async () =>
+        seatResource({ state: "ALIVE", url: SEAT_URL, project_id: "atelier-2" })
       )
-    );
-    await screen.findByText(conductorConversationCopy.composerHint);
-    expect(screen.queryByText(workbenchPageCopy.composerHintReading)).toBeNull();
+    });
+    const { screen } = testingLibrary;
+
+    const seat = await screen.findByRole("region", { name: seatCopy.regionLabel });
+    const terminal = await screen.findByTitle(seatCopy.terminalTitle);
+    expect(terminal.getAttribute("src")).toBe(SEAT_URL);
+    expect(seat.textContent).toContain("atelier-2");
+    expect(seat.textContent).toContain(seatCopy.trustBoundary);
   });
 
-  it("carries one link back to the conversation's own run, however many rounds it holds", async () => {
-    const feed = new FakeRunEventFeed();
-    const run = conductorRunFixture();
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(run),
-      getRun: vi.fn(async () => run),
-      openRunEvents: feed.open
-    });
-    const { screen, waitFor } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-    await waitFor(() => expect(feed.handlers).not.toBeNull());
+  it("says it is connecting rather than framing an empty surface while the read is still out", async () => {
+    openSeatRoom({ getSeat: vi.fn(() => new Promise<never>(() => {})) });
+    const { screen } = testingLibrary;
 
-    feed.handlers?.opened();
-    feed.handlers?.event(
-      JSON.stringify(
-        await completedAnswerEvent(run.public_run_reference, run.workflow_revision_hash, "Guten Tag!", 1)
-      )
-    );
-
-    const conversation = await screen.findByRole("link", {
-      name: conductorChatCopy.openEpisode
-    });
-    expect(conversation.getAttribute("href")).toBe(`/atelier/runs/${run.public_run_reference}`);
-
-    // A second round is a second reply in the same run, so it adds no second
-    // way to open that run: the link belongs to the conversation, not to a line.
-    feed.handlers?.event(
-      JSON.stringify(
-        await completedAnswerEvent(
-          run.public_run_reference,
-          run.workflow_revision_hash,
-          "Und noch etwas",
-          2
-        )
-      )
-    );
-    await screen.findByText("Und noch etwas");
-    expect(screen.getAllByRole("link", { name: conductorChatCopy.openEpisode })).toHaveLength(1);
+    expect((await screen.findByText(seatCopy.connecting)).isConnected).toBe(true);
+    expect(screen.queryByTitle(seatCopy.terminalTitle)).toBeNull();
   });
 
-  it("answers a conductor round without re-mounting an unrelated shelf row (#1148)", async () => {
-    const feed = new FakeRunEventFeed();
-    const run = conductorRunFixture();
-    const unrelated = startedRun({
-      run_id: "unrelated-run",
-      public_run_reference: encodePublicRunReference("unrelated-run")
-    });
-    openChat({
-      ...conductorConnectionOverrides(),
+  it("refuses in one sentence with the way out when no terminal answers, and leaves the room beside it working", async () => {
+    const moving = startedRun({ public_run_reference: "run1.YQ", run_id: "still moving" });
+    openSeatRoom({
       listRuns: vi.fn(async (_after?: string, state?: string) => ({
-        items: [run, unrelated]
-          .filter((candidate) => state === undefined || candidate.state === state)
-          .map(runRow),
+        items: state === "STARTED" ? [moving].map(runRow) : [],
         next_after: null
       })),
-      getRun: vi.fn(async () => run),
-      openRunEvents: feed.open
-    });
-    const { screen, waitFor } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-    await waitFor(() => expect(feed.handlers).not.toBeNull());
-    feed.handlers?.opened();
-
-    // Its identity, not just its text, is the claim: a whole-page re-render
-    // would destroy and recreate this node even if the replacement read the
-    // same words.
-    const shelfRow = await screen.findByRole("link", { name: /unrelated-run/ });
-
-    feed.handlers?.event(
-      JSON.stringify(
-        await completedAnswerEvent(run.public_run_reference, run.workflow_revision_hash, "Guten Tag!", 1)
-      )
-    );
-    await screen.findByText("Guten Tag!");
-
-    expect(screen.getByRole("link", { name: /unrelated-run/ })).toBe(shelfRow);
-    expect(shelfRow.isConnected).toBe(true);
-  });
-
-  it("keeps the first round's reply and adds the second, answering the wait each round has open", async () => {
-    const feed = new FakeRunEventFeed();
-    const waitingFirstRound = conductorRunFixture();
-    const waitingSecondRound = conductorRunFixture({
-      state_version: 2,
-      current_node_execution_id: "a".repeat(64)
-    });
-    let standing = waitingFirstRound;
-    // The durable route answers a wait with 202 and moves the run on its own
-    // (verified against `tests/e2e/serve_cockpit.py`), and it fences the answer
-    // to the exact execution it was written for -- so this double refuses an
-    // answer aimed at a round the run has already left.
-    const staleWaitRefusal = "that wait is no longer open";
-    const answer = vi.fn<CockpitApi["answer"]>(async (mutation) => {
-      if (mutation.expected_node_execution_id !== standing.current_node_execution_id) {
-        throw new Error(staleWaitRefusal);
-      }
-      const accepted = standing;
-      standing = waitingSecondRound;
-      return { status: 202, value: accepted };
-    });
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(waitingFirstRound),
-      getRun: vi.fn(async () => standing),
-      answer,
-      openRunEvents: feed.open
-    });
-    const { screen, waitFor } = testingLibrary;
-    /** Sending ends where the composer takes focus back, ready for the next message. */
-    async function sendAndSettle(words: string): Promise<void> {
-      const composer = screen.getByLabelText(workbenchPageCopy.composerLabel);
-      composer.blur();
-      await say(words);
-      await waitFor(() => expect(document.activeElement).toBe(composer));
-    }
-
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-    await waitFor(() => expect(feed.handlers).not.toBeNull());
-    feed.handlers?.opened();
-
-    await sendAndSettle("Erste Nachricht");
-    feed.handlers?.event(
-      JSON.stringify(
-        await completedAnswerEvent(
-          waitingFirstRound.public_run_reference,
-          waitingFirstRound.workflow_revision_hash,
-          "Erste Antwort",
-          1
-        )
-      )
-    );
-    await screen.findByText("Erste Antwort");
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        false
-      )
-    );
-    await sendAndSettle("Zweite Nachricht");
-
-    // The second message went out as its own round's answer, aimed at the wait
-    // the run stands in now rather than at the one round 1 already closed.
-    // Read from the call and from the room, because the transcript below is fed
-    // by the stream either way and would look the same had this answer been
-    // refused -- a refusal leaves the composer holding the words back with the
-    // refusal on screen.
-    expect(answer).toHaveBeenCalledTimes(2);
-    expect(answer.mock.calls[1]?.[0].expected_node_execution_id).toBe(
-      waitingSecondRound.current_node_execution_id
-    );
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
-    expect(screen.queryByText(staleWaitRefusal)).toBeNull();
-
-    feed.handlers?.event(
-      JSON.stringify(
-        await completedAnswerEvent(
-          waitingFirstRound.public_run_reference,
-          waitingFirstRound.workflow_revision_hash,
-          "Zweite Antwort",
-          2
-        )
-      )
-    );
-
-    // The second round's reply is added to the transcript, not a replacement
-    // of the first: both rounds stand.
-    await screen.findByText("Zweite Antwort");
-    expect(screen.queryByText("Erste Antwort")).not.toBeNull();
-  });
-
-  // Finding 1 (#959 review): a retry of the same open wait with edited text
-  // can conflict with its own earlier, differently-worded attempt still in
-  // the journal (mutationJournal.ts, "mutation identity already belongs to a
-  // different exact request") -- the composer must unlock and keep the words
-  // instead of leaving `conductorDeliveryBusy` stuck true forever.
-  it("keeps the composer usable and restores the message when the journal refuses a retried wait answer", async () => {
-    const run = conductorRunFixture();
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(run),
-      getRun: vi.fn(async () => run)
+      getSeat: vi.fn(async () => seatResource({ state: "FAILED" }))
     });
     const { screen } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
 
-    // A previous, uncommitted attempt at this same wait already sits in the
-    // journal with different content -- exactly what a retry after a
-    // non-definitive failure leaves behind.
-    const { MutationJournal, waitMutation } = await import("../../src/lib/mutationJournal");
-    const { encodeWaitAnswer } = await import("../../src/lib/waitAnswer");
-    const journal = new MutationJournal(sessionStorage);
-    await journal.prepare(
-      await waitMutation(
-        run.public_run_reference,
-        run.workflow_revision_hash,
-        run.current_node_id,
-        run.current_node_execution_id,
-        // The conductor's message wait is a string schema (#1091): a real
-        // earlier attempt would have been journaled verbatim, not JSON-quoted.
-        encodeWaitAnswer("an earlier, different attempt", true)
+    expect((await screen.findByText(seatCopy.unreachableTitle)).isConnected).toBe(true);
+    expect(screen.getByText(seatCopy.unreachableDetail).isConnected).toBe(true);
+    expect(screen.queryByTitle(seatCopy.terminalTitle)).toBeNull();
+    // The room does not fall over with the seat: what is moving still stands
+    // on the shelf, one click from its graph.
+    expect((await screen.findByRole("link", { name: /still moving/ })).isConnected).toBe(true);
+  });
+
+  it("keeps no trace of the web chat: no composer, no transcript, no way back to one", async () => {
+    openSeatRoom({
+      getSeat: vi.fn(async () =>
+        seatResource({ state: "ALIVE", url: SEAT_URL, project_id: "atelier-2" })
       )
-    );
-
-    await say("the retried answer");
-
-    await screen.findByText(/mutation identity already belongs to a different exact request/);
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
-      "value",
-      "the retried answer"
-    );
-    expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-      "disabled",
-      false
-    );
-  });
-
-  // #1078 B4 (Opus field report): a typed message twice vanished on send --
-  // composer cleared, no POST, no error -- because the composer used to clear
-  // before the write was confirmed. The composer now keeps the words on a
-  // failed send and the transcript carries the failed line with its own
-  // Resend, which is the exact same send path the composer's own Send uses.
-  it("keeps the composer text and offers Resend on a failed send, and Resend performs the same POST", async () => {
-    const run = conductorRunFixture();
-    let refuseNextAnswer = true;
-    const answer = vi.fn<CockpitApi["answer"]>(async () => {
-      if (refuseNextAnswer) {
-        refuseNextAnswer = false;
-        throw new Error("network down");
-      }
-      return { status: 200, value: run };
     });
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(run),
-      getRun: vi.fn(async () => run),
-      answer
-    });
-    const { screen, waitFor, fireEvent } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
+    const { screen } = testingLibrary;
 
-    await say("the message that failed");
-
-    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
-      "value",
-      "the message that failed"
-    );
-    const failedLine = screen.getByText(workbenchPageCopy.conductorMessageFailed).closest("li");
-    expect(failedLine?.classList.contains("conversation-line-failed")).toBe(true);
-    expect(failedLine?.textContent).toContain("the message that failed");
-    expect(answer).toHaveBeenCalledTimes(1);
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
-    );
-
-    await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
-    expect(answer.mock.calls[1]?.[0].body_base64).toBe(answer.mock.calls[0]?.[0].body_base64);
-    await waitFor(() => expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull());
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
-  });
-
-  // #1078 review finding 6: the pending-first-message catch above
-  // (`refreshConductorRun`) had no test naming the root cause Opus's field
-  // report traced -- a run that started fine but whose first `getRun` read
-  // failed used to swallow that failure silently, dropping the message with
-  // no error and no way back. It now reaches the same failed-line/Resend
-  // path any other delivery failure does.
-  it("keeps the first message and offers Resend when the run starts but its first read fails", async () => {
-    const run = conductorRunFixture();
-    const start = vi.fn(async () => ({ status: 201, value: run }));
-    const getRun = vi.fn(async () => run);
-    getRun.mockRejectedValueOnce(new Error("network down"));
-    const answer = vi.fn<CockpitApi["answer"]>(async () => ({ status: 200, value: run }));
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(null),
-      getRun,
-      start,
-      answer
-    });
-    const { screen, waitFor, fireEvent } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-
-    await say("the first message");
-
-    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
-    expect(start).toHaveBeenCalledTimes(1);
-    expect(answer).not.toHaveBeenCalled();
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
-      "value",
-      "the first message"
-    );
-    const failedLine = screen.getByText(workbenchPageCopy.conductorMessageFailed).closest("li");
-    expect(failedLine?.classList.contains("conversation-line-failed")).toBe(true);
-    expect(failedLine?.textContent).toContain("the first message");
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
-    );
-
-    await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
-    const sentBody = JSON.parse(atob(answer.mock.calls[0]?.[0].body_base64 ?? "{}")) as {
-      answer_base64: string;
-    };
-    expect(atob(sentBody.answer_base64)).toBe("the first message");
-    await waitFor(() => expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull());
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty("value", "");
-  });
-
-  // #1078 review finding 2: a second failed send used to overwrite the
-  // first in a single `string | null` slot, silently losing whichever
-  // failed line came first. Two failures now stand as their own lines, and
-  // resending the first must not disturb the second.
-  //
-  // Both failures (and the resend) go through the same start-a-conversation
-  // path the sibling test above drives (`conductorRun` never reaches
-  // `WAITING_INPUT`): a second failure through the journaled wait-answer
-  // path instead would conflict with the first's still-uncertain journal
-  // entry for the same node execution (`mutationJournal.prepare`,
-  // "mutation identity already belongs to a different exact request") -- a
-  // different, already-covered seam, not the one this test is about. The
-  // resend is left to fail again too, so its own tail settles on the same
-  // short, already-proven `say()` path the two failures above use, rather
-  // than the longer successful-start chain (`followConductor`,
-  // `refreshConductorRun`) that has nothing to do with this finding.
-  it("keeps a second failed send as its own line, and resending the first leaves the second standing", async () => {
-    const start = vi.fn(async () => {
-      throw new Error("network down");
-    });
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(null),
-      getRun: vi.fn(async () => {
-        throw new Error("unreachable: start never succeeds in this test");
-      }),
-      start
-    });
-    const { screen, waitFor, fireEvent, within } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-
-    await say("the first message that failed");
-    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
-    await say("the second message that failed");
-    await waitFor(() =>
-      expect(screen.getAllByText(workbenchPageCopy.conductorMessageFailed)).toHaveLength(2)
-    );
-    expect(start).toHaveBeenCalledTimes(2);
-
-    const failedLines = screen
-      .getAllByText(workbenchPageCopy.conductorMessageFailed)
-      .map((notice) => notice.closest("li"));
-    expect(failedLines[0]?.textContent).toContain("the first message that failed");
-    expect(failedLines[1]?.textContent).toContain("the second message that failed");
-
-    await fireEvent.click(
-      within(failedLines[0] as HTMLElement).getByRole("button", {
-        name: workbenchPageCopy.resendConductorMessage
-      })
-    );
-
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(3));
-    // The resend failed again, so both lines still stand -- the second
-    // untouched throughout, the first now the standing failed line's most
-    // recent attempt.
-    await waitFor(() =>
-      expect(screen.getAllByText(workbenchPageCopy.conductorMessageFailed)).toHaveLength(2)
-    );
-    const stillFailed = screen
-      .getAllByText(workbenchPageCopy.conductorMessageFailed)
-      .map((notice) => notice.closest("li")?.textContent);
-    expect(stillFailed.some((text) => text?.includes("the first message that failed"))).toBe(
-      true
-    );
-    expect(stillFailed.some((text) => text?.includes("the second message that failed"))).toBe(
-      true
-    );
-  });
-
-  // #1078 fix round 3, finding 3: Resend used to share `attemptSend`'s own
-  // "not connected" branch with the composer's fresh-message send, so a
-  // Resend clicked while the link read "unreadable" silently answered the
-  // standing failed line from the local-chat fallback instead of leaving it
-  // standing for the real conductor. Resend now refuses on its own until the
-  // link reads "connected" again.
-  it("refuses Resend and keeps the failed line standing while the link is unreadable, then performs the POST once it reads connected again", async () => {
-    const run = conductorRunFixture();
-    let refuseNextAnswer = true;
-    const answer = vi.fn<CockpitApi["answer"]>(async () => {
-      if (refuseNextAnswer) {
-        refuseNextAnswer = false;
-        throw new Error("network down");
-      }
-      return { status: 200, value: run };
-    });
-    const workflowResolution = {
-      display_name: "conductor",
-      lineage_id: "7".repeat(64),
-      workflow_revision_hash: conductorRevisionHash,
-      revision_number: 1
-    };
-    openChat({
-      ...conductorConnectionOverrides(),
-      // The link's own read fails only on the round after the failed send
-      // below, the same shape the "honest conductor connection" tests use
-      // to move an already-resolved link to a fresh reason -- here back to
-      // "unreadable" instead of a named one, then back to resolved.
-      getRevisionByName: vi
-        .fn()
-        .mockResolvedValueOnce(workflowResolution)
-        .mockRejectedValueOnce(new Error("network hiccup"))
-        .mockResolvedValue(workflowResolution),
-      listRuns: listRunsForConductor(run),
-      getRun: vi.fn(async () => run),
-      answer
-    });
-    const { screen, waitFor, fireEvent } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.composerHint);
-
-    await say("a message that failed");
-    await screen.findByText(workbenchPageCopy.conductorMessageFailed);
-    expect(answer).toHaveBeenCalledTimes(1);
-
-    reportConnectionLost();
-    reportConnectionRestored();
-    await screen.findByText(conductorChatCopy.connectionUnknown);
-
-    const resendButton = screen.getByRole("button", {
-      name: workbenchPageCopy.resendConductorMessage
-    });
-    expect(resendButton).toHaveProperty("disabled", true);
-
-    await fireEvent.click(resendButton);
-    // Neither the real POST nor the local-chat fallback ran: the failed
-    // line still stands, unresent, and no house reply for it was invented.
-    expect(answer).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText(workbenchPageCopy.conductorConnectionUnknown)).toBeNull();
-    expect(screen.getByText(workbenchPageCopy.conductorMessageFailed)).toBeTruthy();
-
-    reportConnectionLost();
-    reportConnectionRestored();
-    await screen.findByText(conductorConversationCopy.composerHint);
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: workbenchPageCopy.resendConductorMessage })
-    );
-    await waitFor(() => expect(answer).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(screen.queryByText(workbenchPageCopy.conductorMessageFailed)).toBeNull()
-    );
-  });
-
-  // Finding 2 (#959 review): the old guard allowed only WAITING_INPUT and
-  // COMPLETED, so a FAILED conversation blocked Send forever and survived a
-  // reload via `restoreConductorConversation`. Every terminal state now
-  // behaves like COMPLETED: a message after it starts a fresh conversation.
-  it("starts a fresh conversation instead of staying stuck after a run that failed, including across a reload", async () => {
-    const failedRun = conductorRunFixture({
-      state: "FAILED",
-      current_node_id: "conduct",
-      node_rail: [
-        { node_id: "next_message", state: "succeeded", attempt: null },
-        { node_id: "conduct", state: "failed", attempt: null }
-      ],
-      cancellation: notCancellableBlock("already-ended"),
-      terminal_hash: "1".repeat(64),
-      ended_at: "2026-08-18T15:05:00Z"
-    });
-    const startedConversation = conductorRunFixture({
-      public_run_reference: encodePublicRunReference("workbench/conductor-conversation-2"),
-      state_version: 0,
-      state: "STARTED",
-      current_node_id: "next_message",
-      node_rail: [
-        { node_id: "next_message", state: "queued", attempt: null },
-        { node_id: "conduct", state: "queued", attempt: null }
-      ],
-      cancellation: cancellableBlock()
-    });
-
-    // The remembered run is how a reload finds a conversation again
-    // (`restoreConductorConversation`) -- exactly the door through which the
-    // deadlock survived a reload before this fix.
-    const { rememberConductorRun } = await import("../../src/lib/conductorConversation");
-    rememberConductorRun(sessionStorage, failedRun.public_run_reference);
-
-    const start = vi.fn(async () => ({ status: 201, value: startedConversation }));
-    const getRun = vi.fn(async (reference: string) =>
-      reference === failedRun.public_run_reference ? failedRun : startedConversation
-    );
-    openChat({
-      ...conductorConnectionOverrides(),
-      listRuns: listRunsForConductor(null),
-      getRun,
-      start
-    });
-    const { screen, waitFor } = testingLibrary;
-    await screen.findByRole("heading", { name: "Workbench" });
-    await screen.findByText(conductorConversationCopy.endedHint);
-    expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-      "disabled",
-      false
-    );
-
-    await say("Let's try again");
-
-    // The run starting is not the message landing (#1078 B4): this fixture's
-    // fresh run never reaches WAITING_INPUT, so the wait answer never
-    // confirms, and the composer keeps the words rather than clearing on the
-    // start alone.
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
-      "value",
-      "Let's try again"
-    );
-    await waitFor(() => expect(start).toHaveBeenCalled());
-    // The fresh run is genuinely a new, distinct conversation in flight --
-    // not the same failed one pretending to have recovered.
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-  });
-
-  // #1103: `resolveConductorConnection` answers a discriminated union instead
-  // of folding five refusals onto `null`. Each non-connected answer names its
-  // own reason and locks the composer with a real `disabled` attribute,
-  // instead of silently accepting a message that starts nothing.
-  describe("the honest conductor connection (#1103)", () => {
-    function catalogNameNotFoundOverrides(): Partial<CockpitApi> {
-      return {
-        getRevisionByName: vi.fn(async () => {
-          // `beforeEach` already reset the module graph for this test; a
-          // dynamic import here resolves to the exact same fresh
-          // `CockpitRequestError` class `conductorEpisode.ts`'s own
-          // `instanceof` check reads (module identity, not just shape --
-          // this file's own `vi.resetModules()` note above explains why).
-          const { CockpitRequestError: FreshCockpitRequestError } = await import(
-            "../../src/api/client"
-          );
-          throw new FreshCockpitRequestError("not found", {
-            type: "urn:atelier2:problem:v1:catalog-name-not-found",
-            title: "Catalog name not found",
-            status: 404,
-            detail: "conductor"
-          } as Problem);
-        })
-      };
-    }
-
-    function unboundOverrides(): Partial<CockpitApi> {
-      return {
-        getRevisionByName: vi.fn(async () => ({
-          display_name: "conductor",
-          lineage_id: "7".repeat(64),
-          catalog_revision_hash: conductorRevisionHash,
-          revision_number: 1
-        })),
-        getWorkflowRevision: vi.fn(async () => conductorRevisionDetail()),
-        listProjects: vi.fn(async () => ({
-          items: [{ public_project_reference: conductorProjectReference }]
-        })),
-        resolveProjectModels: vi.fn(async () => ({
-          project_id: "conductor-project",
-          public_project_reference: conductorProjectReference,
-          workflow_revision_hash: conductorRevisionHash,
-          resolutions: []
-        }))
-      };
-    }
-
-    function notStartableOverrides(): Partial<CockpitApi> {
-      return {
-        ...unboundOverrides(),
-        resolveProjectModels: vi.fn(async () => ({
-          project_id: "conductor-project",
-          public_project_reference: conductorProjectReference,
-          workflow_revision_hash: conductorRevisionHash,
-          resolutions: [
-            {
-              role: conductorRole,
-              agent_configuration_revision_hash: conductorConfigurationHash,
-              source: "chosen-now" as const,
-              model_id: "claude-opus-5",
-              declared_difficulty: 3 as const,
-              default_difficulty: null,
-              uncast_reason: null,
-              family_differs_from: null
-            }
-          ]
-        })),
-        listAgentConfigurationRevisions: vi.fn(async () => ({
-          items: [
-            {
-              agent_configuration_revision_hash: conductorConfigurationHash,
-              provider_id: "anthropic",
-              model: "claude-opus-5",
-              auth_mode: "subscription" as const,
-              auth_profile_revision_hash: "6".repeat(64),
-              executor_revision: "immediate/v1",
-              requested_capability: "headless" as const,
-              startable: false,
-              structurally_startable: false,
-              not_startable_reason: "provider-probe-failed" as const,
-              provider_probe_problem_code: "provider-overloaded",
-              // Deliberately far in the past: `ageLabel`'s "just now" only
-              // holds inside the first minute, and this assertion pins the
-              // sentence's shape, never a duration this real clock would make
-              // flaky.
-              provider_probe_observed_at: "2020-01-01T00:00:00Z"
-            }
-          ],
-          next_after_revision_hash: null
-        }))
-      };
-    }
-
-    it("names no catalog conductor as absent, with a locked composer", async () => {
-      openChat(catalogNameNotFoundOverrides());
-      const { screen } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-
-      await screen.findByText(workbenchPageCopy.composerHint);
-      expect(screen.getByText(workbenchPageCopy.emptyDescription).isConnected).toBe(true);
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    it("names an unbound role, with the door to Settings and a locked composer", async () => {
-      openChat(unboundOverrides());
-      const { screen } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-
-      await screen.findByText(workbenchPageCopy.emptyDescriptionUnbound(conductorRole));
-      expect(screen.getByRole("link", { name: workbenchPageCopy.openSettings }).isConnected).toBe(
-        true
-      );
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-
-      // The empty room's own card already names the reason: HEART's "a state
-      // is shown, never restated" leaves the composer hint silent here
-      // rather than repeating the same sentence a second time on one screen
-      // (#1103).
-      expect(document.querySelector(".composer-hint")).toBeNull();
-    });
-
-    it("names a not-startable configuration by its real reason, with a locked composer", async () => {
-      openChat(notStartableOverrides());
-      const { screen, within } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-
-      // The empty room names the model and the real reason -- the exact
-      // relative "ago" wording is `when.ts`'s own concern, not pinned here.
-      const empty = within(document.querySelector(".workbench-empty") as HTMLElement);
-      await empty.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
-      expect(
-        empty.getByText(/its last provider probe failed/).textContent
-      ).toMatch(/its last provider probe failed .+ ago/);
-      expect(
-        empty.getByText(/The next canary run or a Settings change re-arms it\./).isConnected
-      ).toBe(true);
-      expect(empty.getByRole("link", { name: workbenchPageCopy.openSettings })).toHaveProperty(
-        "href",
-        expect.stringContaining("/atelier/settings")
-      );
-
-      // The empty room's own card already names the reason: HEART's "a state
-      // is shown, never restated" leaves the composer hint silent here
-      // rather than repeating the same sentence a second time on one screen
-      // (#1103).
-      expect(document.querySelector(".composer-hint")).toBeNull();
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    it("names the unbound role in the composer hint once a message already turned the room away from its empty card", async () => {
-      const workflowResolution = {
-        display_name: "conductor",
-        lineage_id: "7".repeat(64),
-        workflow_revision_hash: conductorRevisionHash,
-        revision_number: 1
-      };
-      openChat({
-        ...unboundOverrides(),
-        // The connection's first read cannot be told apart from a real
-        // outage yet ("unreadable"), so the composer is not locked and a
-        // message can land; only the *second* read -- run again once the
-        // connection recovers -- resolves the real "unbound" reason.
-        getRevisionByName: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("network hiccup"))
-          .mockResolvedValue(workflowResolution)
-      });
-      const { screen } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-      await screen.findByText(conductorChatCopy.connectionUnknown);
-
-      await say("Is anyone there?");
-
-      reportConnectionLost();
-      reportConnectionRestored();
-
-      await screen.findByText(workbenchPageCopy.composerHintUnbound(conductorRole));
-      // The conversation already holds turns, so the empty room's card never
-      // mounts here -- the composer hint is the one place left standing to
-      // carry the reason, and it names it on its own.
-      expect(document.querySelector(".workbench-empty")).toBeNull();
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    it("names the not-startable reason in the composer hint once a message already turned the room away from its empty card", async () => {
-      const workflowResolution = {
-        display_name: "conductor",
-        lineage_id: "7".repeat(64),
-        workflow_revision_hash: conductorRevisionHash,
-        revision_number: 1
-      };
-      openChat({
-        ...notStartableOverrides(),
-        // The connection's first read cannot be told apart from a real
-        // outage yet ("unreadable"), so the composer is not locked and a
-        // message can land; only the *second* read -- run again once the
-        // connection recovers -- resolves the real "not-startable" reason.
-        getRevisionByName: vi
-          .fn()
-          .mockRejectedValueOnce(new Error("network hiccup"))
-          .mockResolvedValue(workflowResolution)
-      });
-      const { screen, within } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-      await screen.findByText(conductorChatCopy.connectionUnknown);
-
-      await say("Is anyone there?");
-      const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
-      expect(
-        within(transcript).getByText(workbenchPageCopy.conductorConnectionUnknown).isConnected
-      ).toBe(true);
-
-      reportConnectionLost();
-      reportConnectionRestored();
-
-      await screen.findByText(/Your conductor \(claude-opus-5\) cannot start right now/);
-      // The conversation already holds turns, so the empty room's card never
-      // mounts here -- the composer hint is the one place left standing to
-      // carry the reason, and it names it on its own.
-      expect(document.querySelector(".workbench-empty")).toBeNull();
-      expect(document.querySelector(".composer-hint")?.textContent).toMatch(
-        /Your conductor \(claude-opus-5\) cannot start right now/
-      );
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        true
-      );
-    });
-
-    it("leaves the composer unlocked once a conductor is connected", async () => {
-      openChat(conductorConnectionOverrides());
-      const { screen } = testingLibrary;
-      await screen.findByRole("heading", { name: "Workbench" });
-
-      await screen.findByText(conductorConversationCopy.composerHint);
-      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
-        "disabled",
-        false
-      );
-    });
+    await screen.findByTitle(seatCopy.terminalTitle);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Conversation" })).toBeNull();
   });
 });
 
-/**
- * The room the workshop opens on (ADR 0019 §1). What the Board used to hold
- * lives here now: the decisions that want a person, the runs that are moving,
- * and the one number the rail carries.
- */
 describe("the workbench is the room the workshop opens on", () => {
   /**
    * A source is either the fixed set an ordinary open reads, or a getter a
@@ -1183,7 +154,7 @@ describe("the workbench is the room the workshop opens on", () => {
 
   function openRoom(runs: readonly RunV3[] = [], overrides: Partial<CockpitApi> = {}): void {
     window.history.replaceState(null, "", "/atelier");
-    openChat({ listRuns: listRunsByState(runs), ...overrides });
+    openWorkbenchApp({ listRuns: listRunsByState(runs), ...overrides });
   }
 
   // The identifier stays "the-workshop-opens-in-the-studio" (acceptance/131):
@@ -1461,19 +432,11 @@ describe("the workbench is the room the workshop opens on", () => {
     ).toBe(true);
     feed.handlers?.opened();
 
-    await say("keep this conversation");
-    expect(
-      screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).isConnected
-    ).toBe(true);
     const pathname = window.location.pathname;
 
     feed.handlers?.disconnected();
     expect(screen.getByRole("region", { name: waitingDecisionQuestion }).isConnected).toBe(true);
     expect(screen.queryByText("Reconnecting")).toBeNull();
-    expect(
-      screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel }).isConnected
-    ).toBe(true);
-    expect(screen.getByLabelText(workbenchPageCopy.composerLabel).isConnected).toBe(true);
 
     feed.handlers?.opened();
     runs = [first, recovered];
@@ -1580,7 +543,7 @@ describe("the workbench is the room the workshop opens on", () => {
       next_after_revision_hash: null
     }));
     window.history.replaceState(null, "", "/atelier");
-    openChat({ listRuns, listWorkflowRevisions });
+    openWorkbenchApp({ listRuns, listWorkflowRevisions });
     const { screen } = testingLibrary;
     await screen.findByRole("link", { name: /run/ });
 
@@ -1616,22 +579,16 @@ describe("the workbench is the room the workshop opens on", () => {
 
     openRoom([startedRun({ public_run_reference: "run1.YQ" })]);
     await screen.findByRole("link", { name: /run/ });
-    expectWorkbenchControlsAreInventoried([
-      workbenchQuestions.openRun.id,
-      workbenchQuestions.saySomething.id,
-      workbenchQuestions.emptyStart.id
-    ]);
+    expectWorkbenchControlsAreInventoried([workbenchQuestions.openRun.id]);
 
     testingLibrary.cleanup();
     openRoom([], { listRuns: vi.fn().mockRejectedValue(new Error("wire detail")) });
     await screen.findByRole("button", {
       name: retryLabel(workbenchPageCopy.runsLabel)
     });
-    expectWorkbenchControlsAreInventoried([
-      workbenchQuestions.reloadWorkbenchRuns.id,
-      workbenchQuestions.saySomething.id,
-      workbenchQuestions.emptyStart.id
-    ]);
+    // A read that failed names no empty room: `ReadState`'s own retry is the
+    // only control the room offers until it lands.
+    expectWorkbenchControlsAreInventoried([workbenchQuestions.reloadWorkbenchRuns.id]);
 
     const stage = document.querySelector(workbenchStageSelector);
     if (stage === null) {

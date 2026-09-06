@@ -79,6 +79,7 @@ CANCELLATION_PATH = (
 )
 RUN_CANCELLATION_PATH = API_PREFIX + "/runs/{public_ref}/cancellations"
 RUN_FORK_PATH = API_PREFIX + "/runs/{public_ref}/forks"
+SEAT_PATH = API_PREFIX + "/seat"
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_SOURCE_CONNECTION_PATH = PROJECT_PATH + "/source-connection"
@@ -118,6 +119,7 @@ EVENT_MODELS_V3 = (
 )
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/health", "get"): ("internal-error",),
+    (SEAT_PATH, "get"): ("internal-error",),
     (API_PREFIX + "/auth-profile-revisions", "post"): (
         "invalid-request",
         "auth-profile-revision-conflict",

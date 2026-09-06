@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import select
@@ -258,14 +259,19 @@ class _FailNextSelects:
 
 
 class _SteppedSelects:
-    """A `before_select` hook that, once armed, blocks each call for release.
+    """A `before_select` hook that, once armed, parks each call until released.
 
-    A test drives exactly one `select()` at a time this way, so a fixed
-    number of ticks is a fact rather than a race against a background loop.
+    Parking is announced before the hook waits, so `step()` returns only once
+    the loop has parked again: everything the released `select()` found has
+    been serviced by then, and nothing of the next tick has run. A test
+    therefore reads finished state instead of racing a tick in flight.
     """
+
+    _PARK_TIMEOUT_SECONDS = 5.0
 
     def __init__(self) -> None:
         self._armed = False
+        self._parked = threading.Event()
         self._release = threading.Event()
 
     def arm(self) -> None:
@@ -274,14 +280,24 @@ class _SteppedSelects:
     def disarm(self) -> None:
         self._armed = False
 
+    def step(self) -> None:
+        self._await_park()
+        self._parked.clear()
+        self._release.set()
+        self._await_park()
+
     def release(self) -> None:
         self._release.set()
 
     def __call__(self, _call_number: int) -> None:
         if not self._armed:
             return
-        assert self._release.wait(timeout=5)
+        self._parked.set()
+        assert self._release.wait(timeout=self._PARK_TIMEOUT_SECONDS)
         self._release.clear()
+
+    def _await_park(self) -> None:
+        assert self._parked.wait(timeout=self._PARK_TIMEOUT_SECONDS)
 
 
 def test_serve_reaches_finalizing_when_select_keeps_failing(
@@ -340,12 +356,6 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
     stepper.arm()
     thread = _start_wire_watchdog(watchdog, endpoint, errors)
     waiting: socket.socket | None = None
-
-    def release_one_tick() -> None:
-        recorded = len(result_sets)
-        stepper.release()
-        _wait_until(lambda recorded=recorded: len(result_sets) > recorded)
-
     try:
         waiting = _send_without_reading(
             endpoint, encode_control_frame({"operation": "WAIT"})
@@ -353,7 +363,7 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
         for _ in range(20):
             if "WAIT" in watchdog._slots:
                 break
-            release_one_tick()
+            stepper.step()
         else:
             raise AssertionError("WAIT was never classified within 20 stepped ticks")
         fd = watchdog._slots["WAIT"]
@@ -361,7 +371,7 @@ def test_a_wait_past_end_of_file_does_not_spin_the_selector(
 
         result_sets.clear()
         for _ in range(5):
-            release_one_tick()
+            stepper.step()
 
         assert len(result_sets) == 5
         for events in result_sets:
@@ -490,32 +500,37 @@ def test_provider_stream_error_deregisters_the_descriptor(
         stepper.arm()
 
         for _ in range(20):
-            if stdout_fd not in spy.registered_events:
+            if watchdog._termination_owner is not None:
                 break
-            recorded = spy.select_calls
-            stepper.release()
-            _wait_until(lambda recorded=recorded: spy.select_calls > recorded)
+            stepper.step()
         else:
             raise AssertionError(
-                "the failing read never deregistered the descriptor"
+                "the failing read never handed the run to supervision"
                 " within 20 stepped ticks"
             )
 
         assert watchdog._termination_owner == "SUPERVISION"
+        assert stdout_fd not in spy.registered_events
     finally:
         stepper.disarm()
         stepper.release()
-        if watchdog._process is not None:
-            if watchdog._process.poll() is None:
-                os.killpg(watchdog._process.pid, signal.SIGKILL)
-            watchdog._process.wait(timeout=5)
         # A live cgroup reports empty only once every member process has
         # actually exited; this fake one holds "populated 1" until told
         # otherwise, so left untouched it would hide the reaped child from
         # _advance_process and strand serve() escalating its grace forever.
         (cgroup / "cgroup.events").write_text("populated 0\n", encoding="ascii")
         os.close(owner_writer)
-        _wait_until(lambda: not thread.is_alive())
+        # While the watchdog runs, the child is its to signal and to reap, so
+        # the join comes first: a kill beside a live watchdog is a second
+        # reaper racing it for one pid. Past the join nobody owns the child --
+        # an assertion killing the served thread never reaches a reap -- so a
+        # survivor is killed here instead of holding its session for a minute.
+        thread.join(timeout=5)
+        child = watchdog._process
+        if child is not None and child.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
         endpoint.unlink(missing_ok=True)
     assert not thread.is_alive()
     assert errors == []
