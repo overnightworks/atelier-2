@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -2306,16 +2306,71 @@ def test_a_queue_policy_default_names_a_workflow_and_a_priority_together(
     assert isinstance(queue.current_policy(PROJECT), QueueProjectPolicyAbsent)
 
 
-def _queue_api(queue: object) -> TestClient:
+def _queue_api(
+    queue: object, request_queue_sweep: Callable[[], None] | None = None
+) -> TestClient:
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=api_ports(queue_projection=queue),
+            ports=api_ports(
+                queue_projection=queue, request_queue_sweep=request_queue_sweep
+            ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
         )
     )
+
+
+def test_the_admission_door_asks_for_a_sweep_of_its_own_admission(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """An admitted item does not wait out the sweep's tick to start."""
+
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    proposed = _prepare_proposed(queue, lineage_id, "gh:admitted-then-swept")
+    asked: list[None] = []
+
+    with _queue_api(queue, lambda: asked.append(None)) as api:
+        response = api.post(
+            QUEUE_ADMISSIONS_PATH,
+            json={
+                "project_id": PROJECT.value,
+                "tracker_item_reference": (proposed.item_reference.tracker_item.value),
+                "expected_revision": proposed.revision.value,
+                "rationale": "operator approved the inspected proposal",
+            },
+        )
+
+    assert response.status_code == 201
+    assert len(asked) == 1
+
+
+def test_a_refused_admission_asks_for_no_sweep(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """Nothing was admitted, so there is nothing for a sweep to start."""
+
+    queue, _engine = store
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:unproposed-sweep"))
+    _seed_open_items(queue, reference)
+    asked: list[None] = []
+
+    with _queue_api(queue, lambda: asked.append(None)) as api:
+        response = api.post(
+            QUEUE_ADMISSIONS_PATH,
+            json={
+                "project_id": PROJECT.value,
+                "tracker_item_reference": reference.tracker_item.value,
+                "expected_revision": 0,
+                "rationale": "cannot skip proposal",
+            },
+        )
+
+    assert response.status_code == 409
+    assert asked == []
 
 
 @pytest.mark.parametrize(

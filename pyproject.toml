@@ -228,7 +228,8 @@ unmatched_ignore_imports_alerting = "error"
 
 [tool.ruff.lint.per-file-ignores]
 # Runtime lifecycle must preserve the initiating failure while collecting every
-# independently failing third-party cleanup operation.
+# independently failing third-party cleanup operation, and one failed queue
+# sweep must end its own turn rather than the tick that runs it.
 "src/atelier2/adapters/dbos/runtime.py" = ["BLE001"]
 
 [tool.hatch.build.targets.wheel]
