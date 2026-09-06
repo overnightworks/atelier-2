@@ -150,9 +150,9 @@ class OpenPullRequest:
         branch = value["head_branch"]
         if not isinstance(body, str) or not isinstance(branch, str):
             raise TypeError("open-pr body and head_branch are text")
-        if fields == legacy_fields:
+        reference = value.get("work_item_reference")
+        if reference is None:
             return cls(body, HeadBranch(branch))
-        reference = value["work_item_reference"]
         if not isinstance(reference, str):
             raise TypeError("open-pr work_item_reference is text")
         return cls(body, HeadBranch(branch), _tracker_item_reference(reference))
