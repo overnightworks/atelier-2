@@ -706,6 +706,10 @@ jobs:
       # landings still carried 16 new findings); this queries the public API
       # directly for that stronger bar and fails loud, with the list, when it
       # is not met. No token: the project is public.
+      #
+      # main already carries #1203's pre-existing backlog (318 open findings,
+      # measured 06.09.2026), so a push to main only reports that count; only
+      # a pull request or its merge-queue candidate -- new code -- is gated.
       - name: SonarCloud open findings
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -717,9 +721,11 @@ jobs:
           case "${GITHUB_EVENT_NAME}" in
             pull_request)
               scope_query="pullRequest=${PULL_REQUEST_NUMBER}"
+              gate=true
               ;;
             push)
               scope_query="branch=main"
+              gate=false
               ;;
             merge_group)
               # The merge queue runs this workflow against a synthetic branch
@@ -731,18 +737,19 @@ jobs:
                 exit 0
               fi
               scope_query="pullRequest=${pr_number}"
+              gate=true
               ;;
             *)
               echo "::error::unexpected event '${GITHUB_EVENT_NAME}' for the SonarCloud open findings check" >&2
               exit 1
               ;;
           esac
-          python3 - "${component_key}" "${scope_query}" <<'PYTHON'
+          python3 - "${component_key}" "${scope_query}" "${gate}" <<'PYTHON'
           import json
           import sys
           import urllib.request
 
-          component_key, scope_query = sys.argv[1], sys.argv[2]
+          component_key, scope_query, gate = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
 
           def fetch_page(page: int) -> dict:
               url = (
@@ -751,6 +758,11 @@ jobs:
               )
               with urllib.request.urlopen(url) as response:
                   return json.load(response)
+
+          if not gate:
+              total = fetch_page(1)["total"]
+              print(f"{total} open SonarCloud finding(s) on main (informational; #1203 backlog, not gated)")
+              sys.exit(0)
 
           page = 1
           printed = 0

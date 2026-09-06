@@ -1018,15 +1018,19 @@ enabled. `sonar` is not a required check.
 
 SonarCloud's own quality gate passes on ratings (A/B/C), not on a count of
 findings: three green landings still carried 16 new open findings past it
-(agent-claim #143, #1203's measurement). A single open finding on the pull
-request is therefore its own bar (ruling 06.09.2026, #1294): after the scan
-step (`sonar.qualitygate.wait=true` makes it block until analysis is final),
-the "SonarCloud open findings" step pages
+(agent-claim #143, #1203's measurement). A single open finding on new code is
+therefore its own bar (ruling 06.09.2026, #1294): after the scan step
+(`sonar.qualitygate.wait=true` makes it block until analysis is final), the
+"SonarCloud open findings" step pages
 `api/issues/search?componentKeys=overnightworks_atelier-2&statuses=OPEN`,
-scoped to the pull request (or `branch=main` on a push, or the pull request
-number parsed from the merge queue's synthetic `head_ref` on a `merge_group`
-run), prints every hit as `severity rule file:line message`, and fails the
-job at one or more. No token: the project is public. Probed 06.09.2026 (#1294):
+scoped to the pull request or the pull request number parsed from the merge
+queue's synthetic `head_ref` on a `merge_group` run, prints every hit as
+`severity rule file:line message`, and fails the job at one or more. On a
+push to main it instead prints the total as one informational line and always
+exits 0: main already carries #1203's pre-existing backlog (318 open findings,
+measured 06.09.2026), so PRs are gated on zero open findings while main's
+backlog is #1203's to work down. No token: the project is public. Probed
+06.09.2026 (#1294):
 `python:S1192` (duplicated string literal) does not fire inside test files, so
 it cannot serve as a red-path probe there; `python:S5778` (two exception-
 raising calls inside one `pytest.raises` block) is silently excluded on
