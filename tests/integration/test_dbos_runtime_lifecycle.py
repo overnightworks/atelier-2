@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +17,7 @@ from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
 
 import atelier2.adapters.dbos.runtime as dbos_runtime
+from atelier2.adapters.dbos.queue_sweep import QUEUE_SWEEP_THREAD_NAME
 from atelier2.adapters.dbos.runtime import (
     AgentProcessSupervisorUnavailable,
     DbosRuntime,
@@ -103,6 +105,7 @@ from tests.scenarios.workflows import (
 
 WORKFLOW_TIMEOUT_SECONDS = 5.0
 WORKFLOW_POLL_SECONDS = 0.025
+SWEEP_PATIENCE_SECONDS = 5.0
 BARRIER_TIMEOUT_SECONDS = 5.0
 WORKFLOW_DOCUMENT = V3_WAIT_LINE_DOCUMENT
 
@@ -311,6 +314,35 @@ def test_closing_one_of_two_identical_leases_keeps_the_executor_running(
     assert (
         wait_until_run_state(second.engine, started.run_id, RunState.WAITING_INPUT)
         is RunState.WAITING_INPUT
+    )
+
+
+def test_a_launched_runtime_sweeps_the_queue_when_asked_and_stops_at_its_close(
+    acquire: AcquireLease, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runtime owns the sweep's clock, from its launch until its close.
+
+    A door that admits an item asks this same runtime for a sweep, so the item
+    starts without waiting out the tick; a closed runtime leaves no thread
+    sweeping against a binding it no longer holds.
+    """
+
+    swept = threading.Event()
+    monkeypatch.setattr(
+        dbos_runtime, "advance_queue", lambda *_args, **_kwargs: swept.set()
+    )
+    runtime = acquire(runtime_settings(canonical_database(tmp_path)))
+    runtime.initialize_storage()
+    runtime.launch()
+    swept.clear()
+
+    runtime.request_queue_sweep()
+
+    assert swept.wait(SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
+    runtime.close()
+    assert not any(
+        thread.name == QUEUE_SWEEP_THREAD_NAME and thread.is_alive()
+        for thread in threading.enumerate()
     )
 
 

@@ -560,6 +560,7 @@ def create_app(
             ),
             workflow_projection_limit=workflow_projection_limit,
             event_poll_backoff=event_poll_backoff,
+            request_queue_sweep=ports.request_queue_sweep,
         ),
     )
 

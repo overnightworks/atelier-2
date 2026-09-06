@@ -217,6 +217,11 @@ class ApiPorts:
     # None is the honest default: a composition that serves no connected
     # project has no tracker to observe, and the import door says so by name.
     tracker_item_source: TrackerItemSource | None = None
+    # What an admission asks for the moment it commits, so a newly admitted
+    # item does not wait out the queue sweep's tick before it starts. `None`
+    # where no runtime clock stands behind this app -- a composition without
+    # one says so rather than pretending an admission started anything.
+    request_queue_sweep: Callable[[], None] | None = None
     model_registry_inspector: ProviderModelInspector | None = None
     # None is the honest default too: a deployment with no auto-redeploy
     # watcher in front of it (every test app, and any host serving without
@@ -411,6 +416,7 @@ class ApiContext:
     event_runner: BoundedQueryRunner
     workflow_projection_limit: WorkflowPublicationLimits
     event_poll_backoff: EventPollBackoff
+    request_queue_sweep: Callable[[], None] | None = None
 
 
 def install_api_context(app: FastAPI, context: ApiContext) -> None:
