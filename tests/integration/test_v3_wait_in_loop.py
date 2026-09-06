@@ -486,18 +486,13 @@ def test_one_public_run_keeps_three_attributed_turns_and_classifies_repeats(
         assert repeated.status_code == 200, repeated.text
         assert durable_events(recovered) == before_repeat
         changed = public_answer(recovered_client, workflow, ANSWER_ROUND_2, 1)
-        assert changed.status_code == 500, changed.text
-        assert changed.json()["type"].endswith(":durable-state-corrupt")
+        assert changed.status_code == 409, changed.text
+        assert changed.json()["type"].endswith(":answer-state-conflict")
         assert durable_events(recovered) == before_repeat
         with recovered.engine.connect() as connection:
-            assert (
-                connection.scalar(
-                    sa.select(sa.func.count())
-                    .select_from(wait_answers)
-                    .where(wait_answers.c.round_ordinal == 2)
-                )
-                == 0
-            )
+            assert connection.execute(
+                sa.select(wait_answers.c.round_ordinal, wait_answers.c.answer_bytes)
+            ).all() == [(1, ANSWER_ROUND_1)]
 
         second = public_answer(recovered_client, workflow, ANSWER_ROUND_2, 2)
         assert second.status_code == 202, second.text
