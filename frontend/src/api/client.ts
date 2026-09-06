@@ -3079,15 +3079,18 @@ export function decodePublicRunReference(reference: string): string | null {
   }
 }
 
+function base64PaddingLength(base64: string): number {
+  if (base64.endsWith("==")) return 2;
+  if (base64.endsWith("=")) return 1;
+  return 0;
+}
+
 export function encodePublicRunReference(runId: string): string {
   const bytes = new TextEncoder().encode(runId);
   const binary = String.fromCodePoint(...bytes);
   const padded = btoa(binary).replaceAll("+", "-").replaceAll("/", "_");
-  const unpadded = padded.endsWith("==")
-    ? padded.slice(0, -2)
-    : padded.endsWith("=")
-      ? padded.slice(0, -1)
-      : padded;
+  const paddingLength = base64PaddingLength(padded);
+  const unpadded = paddingLength === 0 ? padded : padded.slice(0, -paddingLength);
   return `run1.${unpadded}`;
 }
 
