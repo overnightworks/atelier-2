@@ -1,6 +1,7 @@
 import { CockpitRequestError, type CockpitApi, type RunV3 } from "../api/client";
 import { humanErrorMessage } from "./humanRefusal";
 import {
+  JournalUnreadableError,
   MutationJournal,
   waitMutation,
   waitMutationId,
@@ -98,6 +99,11 @@ export async function deliverWaitAnswer(
     }
     return { kind: "confirmed", run: result.value };
   } catch (error) {
+    // The journal itself, not this delivery, refused: recording the failure
+    // would read it again and refuse identically, so this propagates the one
+    // true reason instead of `recordWaitAnswerFailure` masking it with a
+    // second, unrelated-looking throw from its own read.
+    if (error instanceof JournalUnreadableError) throw error;
     return {
       kind: "failed",
       pending: await recordWaitAnswerFailure(mutationJournal, mutation, error),

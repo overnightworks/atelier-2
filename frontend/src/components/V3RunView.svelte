@@ -11,6 +11,7 @@
   import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
+    JournalUnreadableError,
     MutationJournal,
     waitAnswerText,
     type WaitMutation
@@ -401,9 +402,10 @@
         run.current_node_id,
         nodeExecutionId
       );
-    } catch {
-      // The journal itself could not be read (#914): the page's own notice
-      // takes over the room, so this card has nothing left to show.
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
+      // The journal itself could not be read: the page's own notice takes
+      // over the room, so this card has nothing left to show.
       onJournalPoisoned();
       return;
     }
@@ -459,14 +461,29 @@
     try {
       await deliverAndSettle(pendingWait, runPageCopy.exactRetryUnconfirmed);
       await focusAfterDelivery();
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
+      onJournalPoisoned();
     } finally {
       waitBusy = false;
     }
   }
 
+  /**
+   * `discard` reads the whole journal before it writes, so a journal that
+   * turned unreadable since this card last loaded refuses here exactly as it
+   * would on a fresh read -- reported through the same `onJournalPoisoned`
+   * door rather than left as an unhandled rejection.
+   */
   async function discardWait(): Promise<void> {
     if (pendingWait === null) return;
-    await mutationJournal.discard(pendingWait.mutation_id);
+    try {
+      await mutationJournal.discard(pendingWait.mutation_id);
+    } catch (error) {
+      if (!(error instanceof JournalUnreadableError)) throw error;
+      onJournalPoisoned();
+      return;
+    }
     pendingWait = null;
     waitAccepted = false;
     waitFailureMessage = null;
