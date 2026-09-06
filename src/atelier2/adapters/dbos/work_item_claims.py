@@ -71,8 +71,7 @@ from atelier2.ports.work_item_claims import (
 
 LOGICAL_KEY_FIELD = "logical_key"
 REFUSAL_FIELD = "refusal"
-UNCONFIGURED_CLAIM_LEDGER = AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED.value
-"""The refusal a node ends on where this runtime holds no claim boundary."""
+_UNCONFIGURED_CLAIM_LEDGER = AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED.value
 
 _REFUSAL_WORDS = {
     ClaimRefusalReason.PRIORITY: (
@@ -152,11 +151,11 @@ def prepare_work_item_claim(
     if push_atelier_commit_capability_for(grant) is None:
         return None
     if ledger_binding is None or project_id is None:
-        return {REFUSAL_FIELD: UNCONFIGURED_CLAIM_LEDGER}
+        return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
     order = issue_work_item_order(session, run_id)
     item = github_issue_number_or_none(order.reference)
     if item is None:
-        return {REFUSAL_FIELD: UNCONFIGURED_CLAIM_LEDGER}
+        return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
     if not order.scope.paths:
         return {REFUSAL_FIELD: AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE.value}
     request = ClaimWorkItem(

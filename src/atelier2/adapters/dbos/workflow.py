@@ -87,7 +87,6 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.work_item_claims import (
     LOGICAL_KEY_FIELD,
     REFUSAL_FIELD,
-    UNCONFIGURED_CLAIM_LEDGER,
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
@@ -680,17 +679,18 @@ def register_durable_run_workflow(
         ledger = work_item_claims
         if prepared is None:
             return None
-        refused = prepared.get(
-            REFUSAL_FIELD,
-            None if ledger is not None else UNCONFIGURED_CLAIM_LEDGER,
-        )
-        if refused is not None or ledger is None:
+        refused = prepared.get(REFUSAL_FIELD)
+        if refused is not None:
             return refuse_work_item_claim(
                 run_id,
                 revision_hash,
                 node_id,
                 round_ordinal,
                 AgentExecutionRefusal(refused),
+            )
+        if ledger is None:
+            raise RunBindingConflict(
+                "a prepared work-item claim requires the ledger that bound it"
             )
         logical_key = prepared[LOGICAL_KEY_FIELD]
         intent = cast(
