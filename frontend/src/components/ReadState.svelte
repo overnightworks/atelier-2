@@ -12,22 +12,25 @@
   export let label: string;
   export let onRetry: () => void;
 
-  // The control mounts only in the failed state, so an operator's own retry
-  // that fails again re-mounts a new button and would otherwise drop
-  // keyboard focus into the void between the two failures. Refocusing it
-  // exactly then -- never on a first, unprompted failure -- keeps the
-  // keyboard journey continuous without stealing focus the operator never
-  // asked this control for.
-  let retriedByOperator = false;
+  // The control exists only while the read is failed, so every fresh attempt
+  // -- the operator's own retry and any background read of the same resource
+  // alike -- destroys it and builds a new one, leaving the keyboard on
+  // nothing at all. Taking focus back on a rebuild this control's own
+  // keyboard held, and only while nothing else has claimed it since, keeps
+  // the keyboard journey continuous across however many attempts run,
+  // without ever pulling focus off a control the operator moved to or onto
+  // one an unprompted first failure raised.
+  let retryHoldsKeyboard = false;
 
-  function activate(): void {
-    retriedByOperator = true;
-    onRetry();
+  function keyboardArrived(): void {
+    retryHoldsKeyboard = true;
   }
 
-  function focusIfRetried(node: HTMLButtonElement): void {
-    if (retriedByOperator) node.focus();
-    retriedByOperator = false;
+  function keepKeyboardOnRetry(node: HTMLButtonElement): void {
+    const { activeElement, body } = node.ownerDocument;
+    const keyboardIsNowhere = activeElement === null || activeElement === body;
+    retryHoldsKeyboard = retryHoldsKeyboard && keyboardIsNowhere;
+    if (retryHoldsKeyboard) node.focus();
   }
 </script>
 
@@ -66,8 +69,9 @@
       class="quiet"
       type="button"
       aria-label={retryLabel(label)}
-      onclick={activate}
-      use:focusIfRetried
+      onclick={onRetry}
+      onfocus={keyboardArrived}
+      use:keepKeyboardOnRetry
     >{readStateCopy.retry}</button>
   </div>
 {/if}

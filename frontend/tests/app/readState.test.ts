@@ -64,35 +64,65 @@ describe("recoverable read state", () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
-  it("does not steal focus on a first, unprompted failure, but returns it to Retry when the operator's own retry fails again", async () => {
-    const first = beginRead(retainedRead<string, ReadStateFailure>());
-    const failed = failRead(
-      first.read,
-      first.generation,
-      { kind: "unavailable", title: "Saved workflows unavailable" }
-    );
-    const view = render(ReadState, {
-      props: { read: failed, label: "saved workflows", onRetry: vi.fn() }
+  /**
+   * The control exists only while the read is failed, so every attempt
+   * rebuilds it -- and only a rebuild that carries the keyboard with it keeps
+   * a keyboard operator on the one thing a failed read offers (REQ-UIQ-10).
+   */
+  describe("the keyboard across a rebuilt Retry", () => {
+    const label = "saved workflows";
+    const unavailable = { kind: "unavailable", title: "Saved workflows unavailable" } as const;
+    const retryControl = (): HTMLElement => screen.getByRole("button", { name: retryLabel(label) });
+
+    function renderFailedRead() {
+      const onRetry = vi.fn();
+      const first = beginRead(retainedRead<string, ReadStateFailure>());
+      let read = failRead(first.read, first.generation, unavailable);
+      const view = render(ReadState, { props: { read, label, onRetry } });
+      return {
+        container: view.container,
+        async attemptAgain(): Promise<void> {
+          const attempt = beginRead(read);
+          await view.rerender({ read: attempt.read, label, onRetry });
+          expect(screen.queryByRole("button", { name: retryLabel(label) })).toBeNull();
+          read = failRead(attempt.read, attempt.generation, unavailable);
+          await view.rerender({ read, label, onRetry });
+        }
+      };
+    }
+
+    it("leaves the keyboard where it stands when an unprompted failure raises the control", () => {
+      renderFailedRead();
+
+      expect(document.activeElement).not.toBe(retryControl());
     });
-    expect(document.activeElement).not.toBe(
-      screen.getByRole("button", { name: retryLabel("saved workflows") })
-    );
 
-    await fireEvent.click(screen.getByRole("button", { name: retryLabel("saved workflows") }));
-    const secondAttempt = beginRead(failed);
-    await view.rerender({ read: secondAttempt.read, label: "saved workflows", onRetry: vi.fn() });
-    expect(screen.queryByRole("button")).toBeNull();
+    it("returns the keyboard on every rebuild, not only on the attempt the operator pressed", async () => {
+      const { attemptAgain } = renderFailedRead();
+      retryControl().focus();
+      await fireEvent.click(retryControl());
 
-    const retriedAgain = failRead(
-      secondAttempt.read,
-      secondAttempt.generation,
-      { kind: "unavailable", title: "Saved workflows unavailable" }
-    );
-    await view.rerender({ read: retriedAgain, label: "saved workflows", onRetry: vi.fn() });
+      await attemptAgain();
+      expect(document.activeElement).toBe(retryControl());
 
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: retryLabel("saved workflows") })
-    );
+      // A background read of the same resource rebuilds the control exactly
+      // as the operator's own retry does, and the keyboard belongs on it
+      // either way.
+      await attemptAgain();
+      expect(document.activeElement).toBe(retryControl());
+    });
+
+    it("leaves the keyboard on whatever the operator moved to instead", async () => {
+      const { container, attemptAgain } = renderFailedRead();
+      retryControl().focus();
+      const otherControl = container.ownerDocument.createElement("button");
+      container.append(otherControl);
+      otherControl.focus();
+
+      await attemptAgain();
+
+      expect(document.activeElement).toBe(otherControl);
+    });
   });
 
   it("shows no button while looking, refreshing or holding confirmed truth -- a control only ever answers a named failure", () => {
