@@ -224,7 +224,7 @@ def resolve_document_references(
         if revision is None or declared.kind is not RevisionKind.TOOL:
             resolutions.append(resolution)
             continue
-        pinned = _pinned_tool_grant_resolutions(
+        pinned = _pinned_tool_grant(
             graph,
             declared,
             resolution,
@@ -233,13 +233,23 @@ def resolve_document_references(
             cache,
             redeemed_grant_shapes,
         )
-        if not isinstance(pinned, tuple):
+        if not isinstance(pinned, _PinnedToolGrant):
             return pinned
-        resolutions.extend(pinned)
+        resolutions.append(pinned.resolution)
+        if pinned.operation is not None:
+            resolutions.append(pinned.operation)
     return ExecutableDocument(tuple(resolutions))
 
 
-def _pinned_tool_grant_resolutions(
+@dataclass(frozen=True)
+class _PinnedToolGrant:
+    """One resolved tool grant and, for a push grant, the adapter operation it pins."""
+
+    resolution: ResolvedReference
+    operation: ResolvedReference | None = None
+
+
+def _pinned_tool_grant(
     graph: WorkflowGraphV3,
     declared: DeclaredReference,
     resolution: ResolvedReference,
@@ -247,16 +257,10 @@ def _pinned_tool_grant_resolutions(
     resolver: PublishedRevisionResolver,
     cache: ReferenceSettlementCache,
     redeemed_grant_shapes: set[tuple[str, bool]],
-) -> (
-    tuple[ResolvedReference, ...]
-    | DocumentNotExecutable
-    | ReadUnavailable
-    | DurableStateCorrupt
-):
-    """The tool reference itself and, for a push grant, the adapter operation it pins."""
+) -> _PinnedToolGrant | DocumentNotExecutable | ReadUnavailable | DurableStateCorrupt:
     grant = read_tool_grant_document(revision.document)
     if not isinstance(grant, ToolGrantAccepted):
-        return (resolution,)
+        return _PinnedToolGrant(resolution)
     conflict = _second_grant_of_one_shape(
         redeemed_grant_shapes, declared.site.node, grant.capability
     )
@@ -264,10 +268,10 @@ def _pinned_tool_grant_resolutions(
         return DocumentNotExecutable(conflict)
     resolution = _sited_by_grant_shape(graph, declared, resolution, grant.capability)
     if grant.operation is None:
-        return (resolution,)
+        return _PinnedToolGrant(resolution)
     operation = _pinned_operation_resolution(declared, grant.operation, resolver, cache)
     if isinstance(operation, ResolvedReference):
-        return (resolution, operation)
+        return _PinnedToolGrant(resolution, operation)
     return operation
 
 
@@ -293,11 +297,16 @@ def _sited_by_grant_shape(
         and len(pinning_node.tools) > 1
     ):
         return resolution
-    return dataclasses.replace(
-        resolution,
-        site=dataclasses.replace(
-            resolution.site, field=EFFECT_SHAPED_TOOL_RESOLUTION_FIELD
+    return ResolvedReference(
+        ReferenceSite(
+            field=EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
+            node=resolution.site.node,
+            entry=resolution.site.entry,
+            chain=resolution.site.chain,
         ),
+        resolution.kind,
+        resolution.reference,
+        resolution.revision_hash,
     )
 
 
