@@ -54,6 +54,7 @@ from atelier2.api.references import (
     MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
+    PUBLIC_RUN_REFERENCE_PATTERN,
     PUBLIC_SOURCE_REFERENCE_PATTERN,
     encode_public_run_reference,
 )
@@ -495,7 +496,9 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
         "$ref": "#/components/schemas/EventCursor"
     }
     assert parameters[("public_ref", "path")]["schema"] == {
-        "$ref": "#/components/schemas/PublicRunReference"
+        "type": "string",
+        "pattern": PUBLIC_RUN_REFERENCE_PATTERN,
+        "title": "Public Ref",
     }
     attention_parameters = {
         (parameter["name"], parameter["in"]): parameter
@@ -528,42 +531,30 @@ def test_openapi_v3_event_union_names_every_wire_v3_event_resource() -> None:
     assert published_resource_names == wire_resource_names
 
 
-def test_model_configuration_paths_use_the_owned_project_reference_component() -> None:
-    schema = served_app().openapi()
-    project_component = schema["components"]["schemas"]["PublicProjectReference"]
+def test_project_and_source_reference_routes_publish_the_pattern_at_the_parameter() -> (
+    None
+):
+    """Each route that reads a public project or source reference declares its
+    own typed parameter (`references.py`'s `PublicProjectReferencePathParameter`
+    / `PublicSourceReferencePathParameter`), so the document inlines the
+    pattern and bound at the parameter instead of a `$ref` only a hand-kept
+    table used to install.
 
-    assert project_component == {
+    `PROJECT_MODEL_DEFAULTS_PATH` and `PROJECT_MODEL_RESOLUTION_PATH` live in
+    `routes/models.py`, outside this parameter migration's file list, and
+    still declare a bare `public_project_reference: str`; they are not
+    asserted here.
+    """
+    schema = served_app().openapi()
+    project_reference_schema = {
         "type": "string",
         "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
         "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+        "title": "Public Project Reference",
     }
     for path, method in (
-        (PROJECT_MODEL_DEFAULTS_PATH, "get"),
-        (PROJECT_MODEL_DEFAULTS_PATH, "put"),
-        (PROJECT_MODEL_RESOLUTION_PATH, "post"),
+        (PROJECT_PATH, "get"),
         (PROJECT_SOURCE_CONNECTION_PATH, "get"),
-    ):
-        parameters = {
-            (parameter["name"], parameter["in"]): parameter
-            for parameter in schema["paths"][path][method]["parameters"]
-        }
-        assert parameters[("public_project_reference", "path")]["schema"] == {
-            "$ref": "#/components/schemas/PublicProjectReference"
-        }
-
-
-def test_project_source_paths_use_owned_reference_components() -> None:
-    schema = served_app().openapi()
-
-    assert schema["components"]["schemas"]["PublicSourceReference"] == {
-        "type": "string",
-        "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
-        "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
-    }
-    assert schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
-        "public_source_reference"
-    ] == {"$ref": "#/components/schemas/PublicSourceReference"}
-    for path, method in (
         (PROJECT_SOURCES_PATH, "get"),
         (PROJECT_SOURCES_PATH, "post"),
         (PROJECT_SOURCE_PATH, "delete"),
@@ -573,9 +564,17 @@ def test_project_source_paths_use_owned_reference_components() -> None:
             (parameter["name"], parameter["in"]): parameter
             for parameter in schema["paths"][path][method]["parameters"]
         }
-        assert parameters[("public_project_reference", "path")]["schema"] == {
-            "$ref": "#/components/schemas/PublicProjectReference"
-        }
+        assert (
+            parameters[("public_project_reference", "path")]["schema"]
+            == project_reference_schema
+        )
+
+    source_reference_schema = {
+        "type": "string",
+        "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+        "title": "Public Source Reference",
+    }
     for path, method in (
         (PROJECT_SOURCE_PATH, "delete"),
         (PROJECT_SOURCE_TOKEN_PATH, "put"),
@@ -584,9 +583,27 @@ def test_project_source_paths_use_owned_reference_components() -> None:
             (parameter["name"], parameter["in"]): parameter
             for parameter in schema["paths"][path][method]["parameters"]
         }
-        assert parameters[("public_source_reference", "path")]["schema"] == {
-            "$ref": "#/components/schemas/PublicSourceReference"
-        }
+        assert (
+            parameters[("public_source_reference", "path")]["schema"]
+            == source_reference_schema
+        )
+
+    assert schema["components"]["schemas"]["PublicProjectReference"] == {
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    }
+    assert schema["components"]["schemas"]["ProjectResource"]["properties"][
+        "public_project_reference"
+    ] == {"$ref": "#/components/schemas/PublicProjectReference"}
+    assert schema["components"]["schemas"]["PublicSourceReference"] == {
+        "type": "string",
+        "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+    }
+    assert schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
+        "public_source_reference"
+    ] == {"$ref": "#/components/schemas/PublicSourceReference"}
 
 
 def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:
@@ -609,7 +626,10 @@ def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:
     }
     assert set(schema["paths"][PROJECTS_PATH]["get"].get("parameters", ())) == set()
     assert detail_parameters[("public_project_reference", "path")]["schema"] == {
-        "$ref": "#/components/schemas/PublicProjectReference"
+        "type": "string",
+        "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+        "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+        "title": "Public Project Reference",
     }
     assert set(openapi_module.OPERATION_PROBLEMS[(PROJECTS_PATH, "get")]) == {
         "project-unknown",
@@ -790,7 +810,11 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "application/json"
         }
 
-    for path in (API_PREFIX + "/workflow-revisions", API_PREFIX + "/runs"):
+    for path in (
+        API_PREFIX + "/workflow-revisions",
+        API_PREFIX + "/runs",
+        API_PREFIX + "/agent-definition-revisions",
+    ):
         parameters = {
             (parameter["name"], parameter["in"]): parameter
             for parameter in schema["paths"][path]["get"]["parameters"]
@@ -800,6 +824,7 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "minimum": 1,
             "maximum": 100,
             "default": 50,
+            "title": "Limit",
         }
 
 

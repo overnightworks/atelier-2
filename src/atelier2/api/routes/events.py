@@ -16,7 +16,11 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
-from atelier2.api.references import InvalidEventCursor, parse_event_cursor
+from atelier2.api.references import (
+    InvalidEventCursor,
+    PublicRunReferencePathParameter,
+    parse_event_cursor,
+)
 from atelier2.api.stream import (
     PreparedAttentionStream,
     PreparedEventStream,
@@ -45,7 +49,7 @@ router = APIRouter()
 
 async def prepare_events(
     request: Request,
-    public_ref: str,
+    public_ref: PublicRunReferencePathParameter,
     context: ApiContext = api_context_dependency,
 ) -> PreparedEventStream:
     require_sse_accept(request)

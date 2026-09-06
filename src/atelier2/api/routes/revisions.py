@@ -8,7 +8,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from atelier2.api._support import (
-    parse_limit,
     parse_revision_view,
     require_media_type,
     resource_response,
@@ -38,7 +37,14 @@ from atelier2.api.projection.workflows import (
     workflow_revision_detail_resource,
     workflow_revision_page_resource,
 )
-from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
+from atelier2.api.references import (
+    DEFAULT_PAGE_LIMIT,
+    InvalidRevisionHash,
+    PageLimitParameter,
+    RevisionHashPathParameter,
+    RevisionHashQueryParameter,
+    parse_revision_hash,
+)
 from atelier2.api.wire.library import (
     DocumentNotHeldResource,
     DocumentUnrecognizedResource,
@@ -234,7 +240,8 @@ async def publish_schema_revision_route(
     },
 )
 async def get_schema_revision_route(
-    schema_revision_hash: str, context: ApiContext = api_context_dependency
+    schema_revision_hash: RevisionHashPathParameter,
+    context: ApiContext = api_context_dependency,
 ) -> Response:
     """The exact bytes a `schema` reference pins, for a caller holding only the hash.
 
@@ -420,8 +427,8 @@ async def publish_agent_definition_revision_route(
     response_model=AgentDefinitionRevisionPageResource,
 )
 async def list_agent_definition_revisions_route(
-    after_revision_hash: str | None = None,
-    limit: str = "50",
+    after_revision_hash: RevisionHashQueryParameter | None = None,
+    limit: PageLimitParameter = DEFAULT_PAGE_LIMIT,
     context: ApiContext = api_context_dependency,
 ) -> AgentDefinitionRevisionPageResource:
     """List published agent definitions by the names their authors gave them."""
@@ -432,10 +439,9 @@ async def list_agent_definition_revisions_route(
             after = PublishedRevisionHash(after_revision_hash)
         except ValueError as error:
             raise ApiProblem("invalid-revision-hash") from error
-    parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_agent_definition_revisions(after, parsed_limit),
+        lambda: context.use_cases.list_agent_definition_revisions(after, limit),
     )
     match result:
         case AgentDefinitionRevisionsListed(items, next_after):
@@ -468,7 +474,8 @@ def _agent_definition_list_item(
     response_model=AgentDefinitionRevisionDetailResource,
 )
 async def get_agent_definition_revision_route(
-    agent_definition_revision_hash: str, context: ApiContext = api_context_dependency
+    agent_definition_revision_hash: RevisionHashPathParameter,
+    context: ApiContext = api_context_dependency,
 ) -> AgentDefinitionRevisionDetailResource:
     """The whole authored definition a caller holding its hash asked to read.
 
@@ -712,8 +719,8 @@ async def publish_revision(
     response_model=AnyWorkflowRevisionPageResource,
 )
 async def list_revisions(
-    after_revision_hash: str | None = None,
-    limit: str = "50",
+    after_revision_hash: RevisionHashQueryParameter | None = None,
+    limit: PageLimitParameter = DEFAULT_PAGE_LIMIT,
     view: str = RevisionListingView.SUMMARY.value,
     context: ApiContext = api_context_dependency,
 ) -> AnyWorkflowRevisionPageResource:
@@ -730,10 +737,9 @@ async def list_revisions(
             after = parse_revision_hash(after_revision_hash)
         except InvalidRevisionHash as error:
             raise ApiProblem("invalid-revision-hash") from error
-    parsed_limit = parse_limit(limit)
     if parse_revision_view(view) is RevisionListingView.SUMMARY:
-        return await _summary_page(context, after, parsed_limit)
-    return await _described_page(context, after, parsed_limit)
+        return await _summary_page(context, after, limit)
+    return await _described_page(context, after, limit)
 
 
 async def _summary_page(
@@ -1013,7 +1019,8 @@ async def get_revision_by_name(
     response_model=WorkflowRevisionDetailResource,
 )
 async def get_revision(
-    workflow_revision_hash: str, context: ApiContext = api_context_dependency
+    workflow_revision_hash: RevisionHashPathParameter,
+    context: ApiContext = api_context_dependency,
 ) -> WorkflowRevisionDetailResource:
     try:
         parsed = parse_revision_hash(workflow_revision_hash)

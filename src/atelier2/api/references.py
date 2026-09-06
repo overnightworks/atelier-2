@@ -4,6 +4,9 @@ import base64
 import binascii
 import re
 from dataclasses import dataclass
+from typing import Annotated
+
+from fastapi import Path, Query
 
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -21,6 +24,7 @@ from atelier2.contracts.host_configuration import (
     ProjectSourceId,
     ProjectUnknown,
 )
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.secret_redaction import maximum_redacted_length
 
@@ -41,6 +45,18 @@ MAXIMUM_RUN_ORDERS = 100
 # problem object decides the glance once.
 MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
+# The wire's own default: no durable owner picks how many items an unspecified
+# page holds, so the query parameter decides it, once, at the size every
+# listing already served before this bound was named.
+DEFAULT_PAGE_LIMIT = 50
+PageLimitParameter = Annotated[int, Query(ge=1, le=MAXIMUM_PAGE_ITEMS)]
+"""How many items a page-bounded listing may be asked to return.
+
+`MAXIMUM_PAGE_ITEMS` is `PageLimit`'s own upper bound (`contracts.pages`); a
+lower request is honoured as asked, and FastAPI refuses an out-of-range or
+non-integer value itself (`invalid-request`, the same code and status a
+route's own parsing used to raise for the identical refusal).
+"""
 
 
 def base64_characters_for(payload_bytes: int) -> int:
@@ -92,7 +108,19 @@ MAXIMUM_RUN_TERMINAL_ANSWER_BASE64_CHARACTERS = base64_characters_for(
     MAXIMUM_RUN_TERMINAL_ANSWER_BYTES
 )
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
+ArtifactHashPathParameter = Annotated[
+    str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
+]
+AgentAttemptIdPathParameter = Annotated[
+    str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
+]
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
+RevisionHashPathParameter = Annotated[
+    str, Path(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
+]
+RevisionHashQueryParameter = Annotated[
+    str, Query(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
+]
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
 PROVIDER_PROBE_PROBLEM_CODE_PATTERN = f"^{PROVIDER_PROBE_TOKEN.pattern}$"
 SOURCE_COMMIT_PATTERN = (
@@ -101,6 +129,12 @@ SOURCE_COMMIT_PATTERN = (
 )
 """A git object name as its durable owner bounds it: SHA-1 or SHA-256, lowercase."""
 PUBLIC_RUN_REFERENCE_PATTERN = r"^run1\.[A-Za-z0-9_-]+$"
+PublicRunReferencePathParameter = Annotated[
+    str, Path(json_schema_extra={"pattern": PUBLIC_RUN_REFERENCE_PATTERN})
+]
+PublicRunReferenceQueryParameter = Annotated[
+    str, Query(json_schema_extra={"pattern": PUBLIC_RUN_REFERENCE_PATTERN})
+]
 PUBLIC_PROJECT_REFERENCE_PATTERN = r"^project1\.[A-Za-z0-9_-]+$"
 PUBLIC_SOURCE_REFERENCE_PATTERN = r"^source1\.[A-Za-z0-9_-]+$"
 EVENT_CURSOR_PATTERN = r"^event1\.[A-Za-z0-9_-]+\.[1-9][0-9]*$"
@@ -189,6 +223,15 @@ MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS = len(
         ProjectSourceId("ffffffff-ffff-ffff-ffff-ffffffffffff")
     )
 )
+PublicSourceReferencePathParameter = Annotated[
+    str,
+    Path(
+        json_schema_extra={
+            "pattern": PUBLIC_SOURCE_REFERENCE_PATTERN,
+            "maxLength": MAXIMUM_PUBLIC_SOURCE_REFERENCE_CHARACTERS,
+        }
+    ),
+]
 
 
 def encode_public_definition_source_reference(source_id: DefinitionSourceId) -> str:
@@ -247,6 +290,15 @@ MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS = len(
         ProjectId("\U00010000" * MAXIMUM_PROJECT_ID_CHARACTERS)
     )
 )
+PublicProjectReferencePathParameter = Annotated[
+    str,
+    Path(
+        json_schema_extra={
+            "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
+            "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+        }
+    ),
+]
 
 
 def decode_public_project_reference(reference: str) -> ProjectId:
