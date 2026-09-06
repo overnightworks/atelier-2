@@ -31,7 +31,7 @@ from atelier2.api.projection.runs import (
 )
 from atelier2.api.references import (
     AgentAttemptIdPath,
-    PageLimit,
+    PageLimitQuery,
     PublicRunReferencePath,
     PublicRunReferenceQuery,
     encode_public_run_reference,
@@ -168,6 +168,7 @@ from atelier2.contracts.orders import (
     InlineOrderValue,
     WorkItemOrderValue,
 )
+from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.run_projections import RunProjection
@@ -330,7 +331,7 @@ async def start_run_route(
 @router.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
 async def list_runs(
     after: PublicRunReferenceQuery | None = None,
-    limit: PageLimit = 50,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     state: str | None = None,
     context: ApiContext = api_context_dependency,
 ) -> VersionedRunPageResource:

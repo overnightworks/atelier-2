@@ -20,7 +20,6 @@ from atelier2.api.problems import (
     TOOL_GRANT_DOCUMENT_PROBLEM_CODES,
 )
 from atelier2.api.references import (
-    CATALOG_LINEAGE_ID_PATTERN,
     EVENT_CURSOR_PATTERN,
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
@@ -993,10 +992,6 @@ def _install_event_components(schema: dict[str, Any]) -> None:
     schema["components"]["schemas"]["ProjectSourceResource"]["properties"][
         "public_source_reference"
     ] = {"$ref": "#/components/schemas/PublicSourceReference"}
-    components["CatalogLineageId"] = {
-        "type": "string",
-        "pattern": CATALOG_LINEAGE_ID_PATTERN,
-    }
 
 
 def _install_closed_start_union(schema: dict[str, Any]) -> None:

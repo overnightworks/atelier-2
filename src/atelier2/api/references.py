@@ -24,7 +24,7 @@ from atelier2.contracts.host_configuration import (
     ProjectSourceId,
     ProjectUnknown,
 )
-from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, MINIMUM_PAGE_ITEMS
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.secret_redaction import maximum_redacted_length
 
@@ -45,16 +45,16 @@ MAXIMUM_RUN_ORDERS = 100
 # problem object decides the glance once.
 MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
-PageLimit = Annotated[int, Query(ge=1, le=MAXIMUM_PAGE_ITEMS)]
+PageLimitQuery = Annotated[int, Query(ge=MINIMUM_PAGE_ITEMS, le=MAXIMUM_PAGE_ITEMS)]
 """How many items a page-bounded listing may be asked to return.
 
-`MAXIMUM_PAGE_ITEMS` is `PageLimit`'s own upper bound (`contracts.pages`);
-FastAPI cannot carry a default inside `Query` here (it refuses one on an
-`Annotated` field), so each route still writes `= 50`, exactly as it wrote
-`limit: str = "50"` before. A lower request is honoured as asked, and an
-out-of-range or non-integer value is refused by FastAPI itself
-(`invalid-request`, the same code and status a route's own parsing used to
-raise for the identical refusal).
+The bounds are `contracts.pages.PageLimit`'s own (`MINIMUM_PAGE_ITEMS`,
+`MAXIMUM_PAGE_ITEMS`); every route defaults to that module's
+`DEFAULT_PAGE_LIMIT`, so no route names its own copy of the number. FastAPI
+refuses an out-of-range or non-integer value as `invalid-request`/422. It
+also accepts a leading-zero decimal such as `01` as `1`: Pydantic's own
+integer coercion does not distinguish the two, and `PageLimit` bounds only
+the resulting integer, not the string it arrived as.
 """
 
 
@@ -113,6 +113,9 @@ ArtifactHashPath = Annotated[
 AgentAttemptIdPath = Annotated[
     str, Path(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
 ]
+QueueItemIdQuery = Annotated[
+    str, Query(json_schema_extra={"pattern": SHA256_HASH_PATTERN})
+]
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 RevisionHashPath = Annotated[
     str, Path(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
@@ -120,7 +123,6 @@ RevisionHashPath = Annotated[
 RevisionHashQuery = Annotated[
     str, Query(json_schema_extra={"pattern": REVISION_HASH_PATTERN})
 ]
-CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN
 PROVIDER_PROBE_PROBLEM_CODE_PATTERN = f"^{PROVIDER_PROBE_TOKEN.pattern}$"
 SOURCE_COMMIT_PATTERN = (
     f"^[0-9a-f]{{{MINIMUM_GIT_OBJECT_NAME_CHARACTERS},"

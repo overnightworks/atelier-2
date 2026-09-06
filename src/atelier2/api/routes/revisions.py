@@ -39,7 +39,7 @@ from atelier2.api.projection.workflows import (
     workflow_revision_page_resource,
 )
 from atelier2.api.references import (
-    PageLimit,
+    PageLimitQuery,
     RevisionHashPath,
     RevisionHashQuery,
     parse_revision_hash,
@@ -183,6 +183,7 @@ from atelier2.contracts.library_recognition import (
     RecognizedAgentDefinition,
     RecognizedWorkflow,
 )
+from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
@@ -231,7 +232,7 @@ async def publish_schema_revision_route(
 def _revision_hash_or_refuse[T](value: str, parse: Callable[[str], T]) -> T:
     try:
         return parse(value)
-    except (TypeError, ValueError) as error:
+    except ValueError as error:
         raise ApiProblem("invalid-revision-hash") from error
 
 
@@ -430,7 +431,7 @@ async def publish_agent_definition_revision_route(
 )
 async def list_agent_definition_revisions_route(
     after_revision_hash: RevisionHashQuery | None = None,
-    limit: PageLimit = 50,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     context: ApiContext = api_context_dependency,
 ) -> AgentDefinitionRevisionPageResource:
     """List published agent definitions by the names their authors gave them."""
@@ -718,7 +719,7 @@ async def publish_revision(
 )
 async def list_revisions(
     after_revision_hash: RevisionHashQuery | None = None,
-    limit: PageLimit = 50,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     view: str = RevisionListingView.SUMMARY.value,
     context: ApiContext = api_context_dependency,
 ) -> AnyWorkflowRevisionPageResource:

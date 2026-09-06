@@ -536,9 +536,8 @@ def test_project_and_source_reference_routes_publish_the_pattern_at_the_paramete
 ):
     """Each route that reads a public project or source reference declares its
     own typed parameter (`references.py`'s `PublicProjectReferencePath`
-    / `PublicSourceReferencePath`), so the document inlines the
-    pattern and bound at the parameter instead of a `$ref` only a hand-kept
-    table used to install.
+    / `PublicSourceReferencePath`), so the document inlines the pattern and
+    bound directly at the parameter.
     """
     schema = served_app().openapi()
     project_reference_schema = {

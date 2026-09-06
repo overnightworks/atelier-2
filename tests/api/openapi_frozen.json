@@ -2068,10 +2068,6 @@
         "title": "CatalogIntakeKind",
         "type": "string"
       },
-      "CatalogLineageId": {
-        "pattern": "^[0-9a-f]{64}$",
-        "type": "string"
-      },
       "CatalogNameResolutionResource": {
         "additionalProperties": false,
         "description": "Which revision one catalog name resolves to, and nothing about running it.\n\nThe caller named the kind it asked under, so the answer does not repeat it.",
@@ -11571,6 +11567,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -11585,9 +11582,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -12318,6 +12317,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -12332,9 +12332,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
@@ -14616,6 +14618,8 @@
             "name": "public_project_reference",
             "required": true,
             "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
               "title": "Public Project Reference",
               "type": "string"
             }
@@ -15479,6 +15483,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "pattern": "^[0-9a-f]{64}$",
                   "type": "string"
                 },
                 {
@@ -15493,9 +15498,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": "50",
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
-              "type": "string"
+              "type": "integer"
             }
           }
         ],
