@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -29,8 +30,10 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     effect_intents,
     effect_receipts,
+    run_events,
     run_inputs_v3,
 )
 from atelier2.adapters.dbos.starter import (
@@ -75,6 +78,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
 )
+from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import InlineOrderValue, ObservedWorkItemOrderValue
@@ -409,11 +413,11 @@ nodes:
     )
 
 
-@pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
-def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
-    tmp_path: Path,
-) -> None:
-    project, remote, base = _repositories(tmp_path)
+def _public_runtime(
+    tmp_path: Path, project: Path, remote: Path
+) -> tuple[DbosRuntime, GitHubEffectAdapterFactory]:
+    """The served instance this proof drives: both effects, and its claim ledger."""
+
     github = GitHubEffectAdapterFactory(
         tmp_path / "github.sqlite",
         AdapterRevision("github-open-pr-v1"),
@@ -458,40 +462,97 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         (executor,),
     )
     runtime.initialize_storage()
+    return runtime, github
+
+
+def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
+    """Start the shipped line on one issue whose body says exactly this."""
+
+    workflow, bindings = _publish(runtime)
+    item = ObservedWorkItemRevision(
+        ITEM,
+        WorkItemKind.ISSUE,
+        body,
+        WorkItemChangeMarker("issue-642-v1"),
+        RecordedAt("2026-08-27T12:00:00Z"),
+    )
+    binding = bindings.bindings[0]
+    client = durable_api_client(
+        runtime,
+        served_project_id=PROJECT,
+        tracker_item_source=FakeTrackerItemSource(
+            snapshot_answer=WorkItemRevisionObserved(item),
+            expected_snapshot_reference=item.item,
+        ),
+    )
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": RUN.value,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "work_item": ITEM.value}],
+        },
+    )
+
+
+def test_an_item_naming_no_scope_ends_the_node_before_any_work(
+    tmp_path: Path,
+) -> None:
+    """A claim nobody could take ends the run where it stands, and nothing ran.
+
+    The scope is the item's own `## Dateien`; an item without one names no
+    claim, and a wide claim is not this runtime's to invent. So the node ends
+    under its own word before an attempt of it exists -- which is what proves
+    no workspace was leased, no provider started and nothing was pushed.
+    """
+
+    project, remote, _base = _repositories(tmp_path)
+    runtime, github = _public_runtime(tmp_path, project, remote)
     try:
-        workflow, bindings = _publish(runtime)
-        item = ObservedWorkItemRevision(
-            ITEM,
-            WorkItemKind.ISSUE,
-            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
-            WorkItemChangeMarker("issue-642-v1"),
-            RecordedAt("2026-08-27T12:00:00Z"),
-        )
-        binding = bindings.bindings[0]
-        client = durable_api_client(
-            runtime,
-            served_project_id=PROJECT,
-            tracker_item_source=FakeTrackerItemSource(
-                snapshot_answer=WorkItemRevisionObserved(item),
-                expected_snapshot_reference=item.item,
-            ),
-        )
-        response = client.post(
-            API_PREFIX + "/runs",
-            json={
-                "workflow_format_version": 3,
-                "run_id": RUN.value,
-                "workflow_revision_hash": workflow.revision_hash.value,
-                "agent_bindings": [
-                    {
-                        "role": binding.role.value,
-                        "agent_configuration_revision_hash": (
-                            binding.agent_configuration_revision_hash.value
-                        ),
-                    }
-                ],
-                "orders": [{"name": ORDER_NAME, "work_item": ITEM.value}],
-            },
+        assert _start_public_run(runtime, b"Implement P3.").status_code == 201
+        runtime.launch()
+        wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
+
+        with runtime.engine.connect() as connection:
+            failures = connection.execute(
+                sa.select(run_events.c.payload, run_events.c.agent_attempt_id).where(
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value
+                )
+            ).all()
+            attempts = connection.execute(
+                sa.select(sa.func.count()).select_from(agent_attempts)
+            ).scalar()
+            intents = connection.execute(
+                sa.select(sa.func.count()).select_from(effect_intents)
+            ).scalar()
+        assert failures == [
+            (AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE.value.encode("ascii"), None)
+        ]
+        assert (attempts, intents) == (0, 0)
+        assert github.recorded_pull_requests() == ()
+        assert _git(remote, "branch", "--list", "atelier2/*") == ""
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
+def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
+    tmp_path: Path,
+) -> None:
+    project, remote, base = _repositories(tmp_path)
+    runtime, github = _public_runtime(tmp_path, project, remote)
+    try:
+        response = _start_public_run(
+            runtime, b"Implement P3.\n\n## Dateien\n`one.txt`\n"
         )
         assert response.status_code == 201, response.text
         runtime.launch()
