@@ -7,7 +7,6 @@ from typing import Protocol
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import (
     SubmitWaitAnswerRequest,
-    WaitAnswerActor,
     WaitAnswerSnapshot,
 )
 from atelier2.contracts.host_configuration import UncastRole
@@ -271,11 +270,6 @@ class DurableAnswerExisting:
 
 
 @dataclass(frozen=True)
-class DurableAnswerActorMismatch:
-    expected_actor: WaitAnswerActor
-
-
-@dataclass(frozen=True)
 class DurableAnswerRunMissing:
     pass
 
@@ -293,6 +287,16 @@ class DurableAnswerRevisionConflict:
 @dataclass(frozen=True)
 class DurableAnswerStateConflict:
     pass
+
+
+@dataclass(frozen=True)
+class DurableAnswerRoundAnswered:
+    """The round named already holds a different answer, pending or applied.
+
+    The same bytes again are `DurableAnswerExisting`; a row the store cannot
+    read stays `DurableStateCorrupt`. Only a second answer that contradicts the
+    one recorded lands here, and it is a valid state, not a corrupt one.
+    """
 
 
 @dataclass(frozen=True)
@@ -317,11 +321,11 @@ class DurableAnswerNotAdmitted:
 type DurableAnswerResult = (
     DurableAnswerCreated
     | DurableAnswerExisting
-    | DurableAnswerActorMismatch
     | DurableAnswerRunMissing
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
+    | DurableAnswerRoundAnswered
     | DurableAnswerStale
     | DurableAnswerNotAdmitted
     | DurableWriteUnavailable

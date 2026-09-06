@@ -11,12 +11,12 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
-    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
     DurableAnswerNotAdmitted,
     DurableAnswerRevisionConflict,
+    DurableAnswerRoundAnswered,
     DurableAnswerRunMissing,
     DurableAnswerStale,
     DurableAnswerStateConflict,
@@ -44,11 +44,6 @@ class AnswerExistingApplied:
 
 
 @dataclass(frozen=True)
-class AnswerActorMismatch:
-    expected_actor: WaitAnswerActor
-
-
-@dataclass(frozen=True)
 class RunMissing:
     pass
 
@@ -65,7 +60,13 @@ class AnswerRevisionConflict:
 
 @dataclass(frozen=True)
 class AnswerStateConflict:
-    pass
+    """The run is not waiting for this answer.
+
+    Two ways reach it: the run is not waiting at all, or the round named
+    already holds a different answer. Whoever asked does the same either way --
+    reload the run and answer only what it is waiting for now -- so the two
+    share one word.
+    """
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,6 @@ type AnswerWaitResult = (
     | AnswerAcceptedPending
     | AnswerExistingPending
     | AnswerExistingApplied
-    | AnswerActorMismatch
     | RunMissing
     | NodeMissing
     | AnswerRevisionConflict
@@ -145,15 +145,13 @@ def answer_wait_result(
             if snapshot.state is WaitAnswerState.PENDING:
                 return AnswerExistingPending(snapshot)
             return AnswerExistingApplied(snapshot)
-        case DurableAnswerActorMismatch(expected_actor):
-            return AnswerActorMismatch(expected_actor)
         case DurableAnswerRunMissing():
             return RunMissing()
         case DurableAnswerNodeMissing():
             return NodeMissing()
         case DurableAnswerRevisionConflict():
             return AnswerRevisionConflict()
-        case DurableAnswerStateConflict():
+        case DurableAnswerStateConflict() | DurableAnswerRoundAnswered():
             return AnswerStateConflict()
         case DurableAnswerStale():
             return AnswerStale()

@@ -8,7 +8,6 @@ import pytest
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerActorMismatch,
     AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
@@ -68,11 +67,11 @@ from atelier2.contracts.workflow_refusals import (
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
-    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
     DurableAnswerRevisionConflict,
+    DurableAnswerRoundAnswered,
     DurableAnswerRunMissing,
     DurableAnswerStale,
     DurableAnswerStateConflict,
@@ -363,14 +362,11 @@ def test_start_maps_every_durable_result(
         (DurableAnswerCreated(ANSWER), AnswerAcceptedPending),
         (DurableAnswerExisting(ANSWER), AnswerExistingPending),
         (DurableAnswerExisting(APPLIED_ANSWER), AnswerExistingApplied),
-        (
-            DurableAnswerActorMismatch(WaitAnswerActor.OPERATOR),
-            AnswerActorMismatch,
-        ),
         (DurableAnswerRunMissing(), RunMissing),
         (DurableAnswerNodeMissing(), NodeMissing),
         (DurableAnswerRevisionConflict(), AnswerRevisionConflict),
         (DurableAnswerStateConflict(), AnswerStateConflict),
+        (DurableAnswerRoundAnswered(), AnswerStateConflict),
         (DurableAnswerStale(), AnswerStale),
         (DurableWriteUnavailable(), WriteUnavailable),
         (PortDurableStateCorrupt(), DurableStateCorrupt),
