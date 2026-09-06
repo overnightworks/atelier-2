@@ -94,7 +94,7 @@ from atelier2.contracts.queue_projection import (
     QueueProposalSource,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.runs import RunState
+from atelier2.contracts.runs import UNSUCCESSFUL_TERMINAL_RUN_STATES, RunState
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -433,6 +433,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "run_events.replacement": _values(AgentAttemptReplacement),
     "run_events.wait_answer_actor": _values(WaitAnswerActor),
     "runs.state": _values(RunState),
+    # The ending a released launch binding names is the run contract's own
+    # word for a run that ended without an answer, never a list of its own.
+    "queue_launch_bindings.ended_run_state": _values(UNSUCCESSFUL_TERMINAL_RUN_STATES),
     "runs.workflow_format_version": _values(WorkflowFormatVersion),
     "wait_answers.state": _values(WaitAnswerState),
     "wait_answers.actor": _values(WaitAnswerActor),
