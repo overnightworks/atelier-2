@@ -714,6 +714,22 @@ CREATE TABLE agent_attempts (
 """The attempt table V50 published, admitting the unchanged tree."""
 
 
+_TWO_EFFECT_OPERATIONS = "('open-pr', 'push-atelier-commit')"
+_THREE_EFFECT_OPERATIONS = "('open-pr', 'push-atelier-commit', 'claim-work-item')"
+_EFFECT_INTENTS_WITH_CLAIM = _EFFECT_INTENTS_WITH_OPERATION.replace(
+    _TWO_EFFECT_OPERATIONS, _THREE_EFFECT_OPERATIONS
+)
+_EFFECT_RECEIPTS_WITH_CLAIM = _EFFECT_RECEIPTS_WITH_OPERATION.replace(
+    _TWO_EFFECT_OPERATIONS, _THREE_EFFECT_OPERATIONS
+)
+"""The two effect tables V54 published, admitting the work-item claim.
+
+Derived from the record above rather than from the declaration: V54 widened
+that one vocabulary and moved nothing else, and a record derived from a record
+stays as frozen as the text it reads.
+"""
+
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     **PUBLISHED_QUEUE_TABLE_SHAPES,
     (33, "host_project_source_connection_revisions"): (
@@ -761,6 +777,8 @@ PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     # else, so V43 to V53 published exactly the shape V42 did.
     (53, "effect_intents"): _EFFECT_INTENTS_WITH_OPERATION,
     (53, "effect_receipts"): _EFFECT_RECEIPTS_WITH_OPERATION,
+    (54, "effect_intents"): _EFFECT_INTENTS_WITH_CLAIM,
+    (54, "effect_receipts"): _EFFECT_RECEIPTS_WITH_CLAIM,
     (26, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
     (26, "host_occupancy_bindings"): _HOST_OCCUPANCY_BINDINGS,
     (39, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,

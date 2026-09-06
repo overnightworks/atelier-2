@@ -562,11 +562,15 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         _PRODUCT_SCHEMA_FINGERPRINT_SHA256[53]
         == "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 54
+    assert (
+        _PRODUCT_SCHEMA_FINGERPRINT_SHA256[54]
+        == "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 55
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[54]
-        == "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[55]
+        == "51111cb385fa429bd596df41e633c8f3eb15e81be8874b950de4e3c896b9f1b2"
     )
 
 
@@ -593,6 +597,7 @@ def test_v47_store_migrates_onwards_inventing_no_observation_or_retirement(
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("BEGIN IMMEDIATE")
+        _restore_v48_definition_source_predecessor(connection)
         schema_module._rebuild_product_table(
             connection,
             queue_items,
@@ -621,7 +626,6 @@ def test_v47_store_migrates_onwards_inventing_no_observation_or_retirement(
                 reference.tracker_item.value,
             ),
         )
-        _restore_v48_definition_source_predecessor(connection)
         connection.execute("UPDATE atelier_schema_versions SET version = 47")
         connection.commit()
         _require_product_shape(connection, 47)
@@ -661,6 +665,7 @@ _REPUBLISHED_BY_A_LATER_HOP = (
     "agent_attempts",
     "effect_intents",
     "effect_receipts",
+    "queue_launch_bindings",
     "queue_project_policy_revisions",
     "queue_proposal_revisions",
 )
@@ -669,10 +674,14 @@ _REPUBLISHED_BY_A_LATER_HOP = (
 A store migrated to today crosses every remaining hop, not only the one a test
 is about: V50 and V53 rebuild the attempt table to widen its failure-code
 vocabulary, V52 gives the queue policy its proposal defaults and every proposal
-the source that wrote it, and V54 widens the effect tables' operation
-vocabulary. Their declarations are therefore expected to differ afterwards;
-every row in them, and every other statement, is not.
+the source that wrote it, V54 widens the effect tables' operation vocabulary,
+and V55 gives a launch binding its ending and its key. Their declarations are
+therefore expected to differ afterwards; every row in them, and every other
+statement, is not.
 """
+
+_RETRIGGERED_BY_A_LATER_HOP = ("queue_items_state_transition",)
+"""The guards a later hop rewrites without moving the table they stand on."""
 
 
 def _rows_beside_the_version_owner(connection: sqlite3.Connection) -> frozenset[str]:
@@ -682,7 +691,7 @@ def _rows_beside_the_version_owner(connection: sqlite3.Connection) -> frozenset[
         prefix
         for name in _REPUBLISHED_BY_A_LATER_HOP
         for prefix in (f"CREATE TABLE {name} (", f"CREATE TRIGGER {name}_")
-    )
+    ) + tuple(f"CREATE TRIGGER {name}" for name in _RETRIGGERED_BY_A_LATER_HOP)
     return frozenset(
         statement
         for statement in connection.iterdump()
@@ -736,6 +745,7 @@ def test_a_v48_store_gains_the_definition_source_tables_and_keeps_its_rows(
                 "permission_receipts",
                 "permission_receipts_no_update",
                 "permission_receipts_no_delete",
+                "queue_launch_bindings_release_only",
             }
         )
         assert all(

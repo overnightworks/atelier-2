@@ -36,6 +36,10 @@ from atelier2.adapters.dbos.host_configuration import (
     project_source_connection_revision_from_record,
 )
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
+from atelier2.adapters.dbos.published_queue_shapes import (
+    PUBLISHED_QUEUE_ITEMS_TRANSITION_BEFORE_RELEASE,
+    PUBLISHED_QUEUE_LAUNCH_BINDINGS_NO_UPDATE_BEFORE_RELEASE,
+)
 from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION,
     PUBLISHED_TABLE_SHAPES,
@@ -129,6 +133,7 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     published_revisions,
     queue_items,
+    queue_launch_bindings,
     queue_project_policy_revisions,
     queue_proposal_revisions,
     run_agent_bindings,
@@ -215,6 +220,7 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.queue_projection import (
     QueueAutomationDisposition,
+    QueueDecisionAuthority,
     QueueItemState,
     QueueProposalSource,
     TrackerItemReference,
@@ -550,6 +556,30 @@ def _restore_v50_permission_ledger_predecessor(
     connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
 
 
+def _restore_v54_launch_binding_predecessor(connection: sqlite3.Connection) -> None:
+    """Take back the ending, the ordinal and the key V55 gave a launch binding.
+
+    Rebuilding the table in the shape V54 published is the hop run the other
+    way: every stored binding keeps its remaining columns, and the two columns
+    V55 introduced simply stop being. Its update guard and the item transition
+    trigger travel back with it, because the release V55 admits is spelled in
+    both of them.
+    """
+
+    connection.execute("DROP TRIGGER queue_launch_bindings_release_only")
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.queue_launch_bindings,
+        "queue_launch_bindings_after_release",
+        ("queue_launch_bindings_no_delete",),
+        SCHEMA_VERSION,
+        54,
+    )
+    connection.execute(PUBLISHED_QUEUE_LAUNCH_BINDINGS_NO_UPDATE_BEFORE_RELEASE)
+    connection.execute("DROP TRIGGER queue_items_state_transition")
+    connection.execute(PUBLISHED_QUEUE_ITEMS_TRANSITION_BEFORE_RELEASE)
+
+
 def _restore_v53_effect_operation_vocabulary(connection: sqlite3.Connection) -> None:
     """Take back the effect operation V54 added, keeping every stored effect.
 
@@ -559,6 +589,7 @@ def _restore_v53_effect_operation_vocabulary(connection: sqlite3.Connection) -> 
     first, so the child is rebuilt against the parent it keeps.
     """
 
+    _restore_v54_launch_binding_predecessor(connection)
     for table, parked, triggers in (
         (
             effect_receipts,
@@ -577,7 +608,7 @@ def _restore_v53_effect_operation_vocabulary(connection: sqlite3.Connection) -> 
         ),
     ):
         schema_module._rebuild_product_table(
-            connection, table, parked, triggers, SCHEMA_VERSION, 53
+            connection, table, parked, triggers, 54, 53
         )
 
 
@@ -7391,3 +7422,172 @@ def test_a_v38_redemption_crosses_the_v39_hop_owned_by_its_own_attempt(
     # they accept after it: a carry that changed any byte a hash covers would
     # be refused here rather than noticed years later.
     assert _read_as_production_does(database_path) == before_readers
+
+
+_V54_QUEUE_REFERENCE = WorkItemReference(
+    ProjectId("studio"), TrackerItemReference("gh:1337")
+)
+_V54_ADVANCE_THE_ADMITTED_ITEM = (
+    "UPDATE queue_items SET state_version = 3, current_proposal_revision = 2 "
+    "WHERE item_id = ?"
+)
+
+
+def _populated_v54_store_with(database_path: Path) -> tuple[object, ...]:
+    """A published V54 store holding one admitted item bound to one run."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    published = PublishedRevision(RevisionKind.WORKFLOW, b"name: launch\n")
+    lineage = CatalogLineage(published.kind, published.revision_hash)
+    reference = _V54_QUEUE_REFERENCE
+    with engine.begin() as connection:
+        connection.execute(
+            published_revisions.insert().values(
+                kind=published.kind.value,
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=published.revision_hash.value,
+                document=published.document,
+            )
+        )
+        connection.execute(
+            catalog_lineages.insert().values(
+                lineage_id=lineage.lineage_id.value,
+                kind=published.kind.value,
+                founding_revision_hash=published.revision_hash.value,
+            )
+        )
+        connection.execute(
+            queue_project_policy_revisions.insert().values(
+                project_id=reference.project.value,
+                revision_number=1,
+                maximum_active_runs=2,
+            )
+        )
+        connection.execute(
+            queue_items.insert().values(
+                item_id=reference.item_id.value,
+                project_id=reference.project.value,
+                tracker_item_reference=reference.tracker_item.value,
+                state=QueueItemState.OBSERVED.value,
+                state_version=0,
+            )
+        )
+        connection.execute(
+            queue_proposal_revisions.insert().values(
+                item_id=reference.item_id.value,
+                proposal_revision=1,
+                project_id=reference.project.value,
+                priority_rank=3,
+                workflow_lineage_id=lineage.lineage_id.value,
+                automation_disposition=QueueAutomationDisposition.HUMAN_REQUIRED.value,
+                policy_revision=1,
+                source=QueueProposalSource.OPERATOR.value,
+            )
+        )
+        item_rows = queue_items.update().where(
+            queue_items.c.item_id == reference.item_id.value
+        )
+        connection.execute(
+            item_rows.values(
+                state=QueueItemState.PROPOSED.value,
+                state_version=1,
+                current_proposal_revision=1,
+            )
+        )
+        connection.execute(
+            item_rows.values(
+                state=QueueItemState.ADMITTED.value,
+                state_version=2,
+                workflow_lineage_id=lineage.lineage_id.value,
+                admission_rationale="the operator approved it",
+                decision_authority=QueueDecisionAuthority.OPERATOR.value,
+            )
+        )
+        connection.execute(
+            queue_launch_bindings.insert().values(
+                item_id=reference.item_id.value,
+                proposal_revision=1,
+                project_id=reference.project.value,
+                run_id="v54-run",
+                workflow_revision_hash=published.revision_hash.value,
+                restart_ordinal=0,
+            )
+        )
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v54_launch_binding_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 54")
+        connection.commit()
+        _require_product_shape(connection, 54)
+        standing = connection.execute("SELECT * FROM queue_launch_bindings").fetchone()
+    assert standing is not None
+    return standing
+
+
+def test_an_admitted_item_advances_a_revision_only_after_the_v55_hop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A binding may be given back only once it names how its run ended.
+
+    Before the hop the durable rule knows one way out of ADMITTED, which is
+    none: an item whose run failed stays bound to it forever. After it, the
+    same advance is admitted -- but only for an item whose held binding has
+    taken its ending, and a binding that has taken one never takes another.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    standing_binding = _populated_v54_store_with(database_path)
+    item_id = (_V54_QUEUE_REFERENCE.item_id.value,)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="invalid queue item transition"),
+    ):
+        connection.execute(_V54_ADVANCE_THE_ADMITTED_ITEM, item_id)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT item_id, proposal_revision, project_id, run_id, "
+                "workflow_revision_hash FROM queue_launch_bindings"
+            ).fetchone()
+            == standing_binding
+        )
+        assert connection.execute(
+            "SELECT ended_run_state, restart_ordinal FROM queue_launch_bindings"
+        ).fetchone() == (None, 0)
+        with pytest.raises(
+            sqlite3.IntegrityError, match="invalid queue item transition"
+        ):
+            connection.execute(_V54_ADVANCE_THE_ADMITTED_ITEM, item_id)
+        connection.execute(
+            "UPDATE queue_launch_bindings SET ended_run_state = 'FAILED'"
+        )
+        connection.execute(
+            "INSERT INTO queue_proposal_revisions "
+            "SELECT item_id, 2, project_id, priority_rank, workflow_lineage_id, "
+            "automation_disposition, policy_revision, source "
+            "FROM queue_proposal_revisions WHERE proposal_revision = 1"
+        )
+        connection.execute(_V54_ADVANCE_THE_ADMITTED_ITEM, item_id)
+        connection.commit()
+        assert connection.execute(
+            "SELECT state, state_version, current_proposal_revision FROM queue_items"
+        ).fetchone() == ("ADMITTED", 3, 2)
+        with pytest.raises(sqlite3.IntegrityError, match="only ever takes its ending"):
+            connection.execute(
+                "UPDATE queue_launch_bindings SET ended_run_state = 'CANCELLED'"
+            )
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+        _require_product_shape(connection, SCHEMA_VERSION)

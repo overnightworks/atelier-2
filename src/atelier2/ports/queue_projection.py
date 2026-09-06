@@ -16,8 +16,10 @@ from atelier2.contracts.queue_projection import (
     QueueLaunchBinding,
     QueueProjectPolicyRevision,
     QueueProposalOutcome,
+    ReleaseQueueLaunch,
     WorkItemReference,
 )
+from atelier2.contracts.runs import RunState
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -83,6 +85,54 @@ type ReserveQueueLaunchResult = (
 @dataclass(frozen=True)
 class QueueReadUnavailable:
     """The store could not answer this read, and a later attempt may succeed."""
+
+
+@dataclass(frozen=True)
+class QueueLaunchRunEnded:
+    """The bound run reached an ending, after this many restarts of its item."""
+
+    state: RunState
+    restarts_spent: int
+
+
+@dataclass(frozen=True)
+class QueueLaunchRunOpen:
+    """The bound run has not ended, so the binding stays exactly where it is.
+
+    A reservation whose start never landed says this too: the store holds no
+    run row for it yet, which is no ending either, and the sweep asks the
+    starter again rather than giving back a binding that spent nothing.
+    """
+
+
+type ReadQueueLaunchResult = (
+    QueueLaunchRunEnded
+    | QueueLaunchRunOpen
+    | QueueReadUnavailable
+    | DurableStateCorrupt
+)
+
+
+@dataclass(frozen=True)
+class QueueLaunchReleased:
+    """The ended run gave its binding back and the item stands one revision on."""
+
+
+@dataclass(frozen=True)
+class QueueLaunchReleaseRefused:
+    """The durable rows no longer say what this release was decided against.
+
+    Another sweep released the same binding first: nothing is written, and the
+    next sweep decides again against rows it can see.
+    """
+
+
+type ReleaseQueueLaunchResult = (
+    QueueLaunchReleased
+    | QueueLaunchReleaseRefused
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
 
 
 @dataclass(frozen=True)
@@ -164,6 +214,20 @@ class QueueLaunchReserver(Protocol):
     ) -> ReserveQueueLaunchResult: ...
 
 
+class QueueLaunchRuns(Protocol):
+    """Where a launch binding meets the run it reserved, once that run exists.
+
+    The two answers a sweep needs about a launch it already holds: how the run
+    stands, and the release of a binding whose run ended without an answer.
+    """
+
+    def read_launch(self, binding: QueueLaunchBinding) -> ReadQueueLaunchResult: ...
+
+    def release_launch(
+        self, command: ReleaseQueueLaunch
+    ) -> ReleaseQueueLaunchResult: ...
+
+
 class QueueItemsReader(Protocol):
     def list_items(
         self, after: QueueItemId | None, limit: int
@@ -176,6 +240,7 @@ class QueueProjection(
     QueuePolicyReader,
     QueuePolicyWriter,
     QueueLaunchReserver,
+    QueueLaunchRuns,
     QueueItemsReader,
     Protocol,
 ):

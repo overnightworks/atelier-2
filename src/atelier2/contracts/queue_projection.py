@@ -15,13 +15,24 @@ from typing import Final
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    UNSUCCESSFUL_TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.when import RecordedAt
 
 MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS = 1_024
 MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS = 4_096
 MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS = 256
 MAXIMUM_QUEUE_ACTIVE_RUNS = 1_000
+# How often one item may be given a fresh run after its own ended badly. Two
+# restarts is three paid runs on the same item: enough that a flaky provider or
+# a transient tool failure recovers without a person, and few enough that an
+# item failing for its own reasons stops instead of spending a budget nobody is
+# watching.
+MAXIMUM_QUEUE_LAUNCH_RESTARTS: Final = 2
 # GitHub's own issue and pull-request title bound; every tracker source this
 # codebase reads titles from is GitHub today (ADR 0010).
 MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS = 256
@@ -313,6 +324,28 @@ class QueueLaunchBinding:
     def __post_init__(self) -> None:
         if self.proposal_revision.value < 1:
             raise ValueError("a launch binding must name a proposal revision")
+
+
+@dataclass(frozen=True)
+class ReleaseQueueLaunch:
+    """Give one item its binding back because the run it named ended badly.
+
+    The item stays admitted under the same proposal and rejoins the start order
+    one proposal revision on, which is what makes its next launch a differently
+    identified run rather than a second attempt at the same one.
+    """
+
+    binding: QueueLaunchBinding
+    ended_state: RunState
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, QueueLaunchBinding):
+            raise TypeError("a launch release names its binding through the contract")
+        if self.ended_state not in UNSUCCESSFUL_TERMINAL_RUN_STATES:
+            raise ValueError(
+                "a completed or unfinished run keeps its binding; only a failed "
+                "or cancelled one is given back"
+            )
 
 
 @dataclass(frozen=True)

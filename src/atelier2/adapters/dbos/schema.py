@@ -12,6 +12,10 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from atelier2.adapters.dbos.published_queue_shapes import (
+    PUBLISHED_QUEUE_ITEMS_TRANSITION_BEFORE_RELEASE,
+    PUBLISHED_QUEUE_LAUNCH_BINDINGS_NO_UPDATE_BEFORE_RELEASE,
+)
 from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION,
     PUBLISHED_TABLE_INDEXES,
@@ -91,10 +95,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 53 admits `claim-work-item` as an effect operation, so the lane claim a
-# run holds before it works is a prepared intent and a confirmed receipt in the
-# one effect ledger rather than a second record beside it.
-_HOP_PREDECESSOR_VERSION = 53
+# Hop 54 gives a launch binding the ending of its run, the restart ordinal it
+# was written at, and a key that admits its successor, so an item whose run
+# failed or was cancelled is given back to the sweep rather than bound forever.
+_HOP_PREDECESSOR_VERSION = 54
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -142,6 +146,7 @@ _VERSION_FIFTY_ONE = 51
 _VERSION_FIFTY_TWO = 52
 _VERSION_FIFTY_THREE = 53
 _VERSION_FIFTY_FOUR = 54
+_VERSION_FIFTY_FIVE = 55
 # docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -319,6 +324,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # and every proposal revision the source that wrote it. A stored proposal
 # crosses as OPERATOR: the operator's own door is the only writer that existed
 # before this hop.
+# V55 gives a launch binding the ending of its run and the restart ordinal it
+# was written at, keys it by the proposal revision so a restarted item keeps
+# every binding it held, and admits one proposal revision advance per release.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -370,6 +378,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     52: "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2",
     53: "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881",
     54: "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4",
+    55: "51111cb385fa429bd596df41e633c8f3eb15e81be8874b950de4e3c896b9f1b2",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -3420,6 +3429,18 @@ _PRODUCT_TRIGGERS = {
                AND proposal.automation_disposition = 'AUTOMATION_AUTHORIZED'
            )))
           OR
+          (OLD.state = 'ADMITTED' AND NEW.state = 'ADMITTED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = OLD.current_proposal_revision + 1
+           AND NEW.workflow_lineage_id IS OLD.workflow_lineage_id
+           AND NEW.admission_rationale IS OLD.admission_rationale
+           AND NEW.decision_authority IS OLD.decision_authority
+           AND EXISTS (
+             SELECT 1 FROM queue_launch_bindings AS binding
+             WHERE binding.item_id = OLD.item_id
+               AND binding.proposal_revision = OLD.current_proposal_revision
+               AND binding.ended_run_state IS NOT NULL))
+          OR
           (NEW.state = OLD.state
            AND NEW.state_version = OLD.state_version
            AND NEW.workflow_lineage_id IS OLD.workflow_lineage_id
@@ -3466,10 +3487,19 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'queue dependency edges are immutable');
         END
     """,
-    "queue_launch_bindings_no_update": """
-        CREATE TRIGGER queue_launch_bindings_no_update
-        BEFORE UPDATE ON queue_launch_bindings BEGIN
-          SELECT RAISE(ABORT, 'queue launch bindings are immutable');
+    "queue_launch_bindings_release_only": """
+        CREATE TRIGGER queue_launch_bindings_release_only
+        BEFORE UPDATE ON queue_launch_bindings
+        WHEN OLD.ended_run_state IS NOT NULL
+          OR NEW.ended_run_state IS NULL
+          OR NEW.item_id <> OLD.item_id
+          OR NEW.proposal_revision <> OLD.proposal_revision
+          OR NEW.project_id <> OLD.project_id
+          OR NEW.run_id <> OLD.run_id
+          OR NEW.workflow_revision_hash <> OLD.workflow_revision_hash
+          OR NEW.restart_ordinal <> OLD.restart_ordinal
+        BEGIN
+          SELECT RAISE(ABORT, 'a queue launch binding only ever takes its ending');
         END
     """,
     "queue_launch_bindings_no_delete": """
@@ -3656,9 +3686,7 @@ _V27_ACCESS_TRIGGER_NAMES = (
 )
 
 
-_VERSIONS_WITH_TODAYS_TABLES = frozenset(
-    (SCHEMA_VERSION, _VERSION_FIFTY_THREE, _VERSION_FIFTY_TWO, _VERSION_FIFTY_ONE)
-)
+_VERSIONS_WITH_TODAYS_TABLES = frozenset(range(_VERSION_FIFTY_ONE, SCHEMA_VERSION + 1))
 
 
 def _table_names_for_version(version: int) -> frozenset[str]:
@@ -3700,8 +3728,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V52 to V54 widened vocabularies and added no table, so V51 -- which adds
-    # the authorisation ledger -- holds exactly today's set. V50 widened one
+    # V52 to V55 widened a vocabulary or moved one table's shape and added no
+    # table, so V51 -- which adds the ledger -- holds today's set. V50 widened one
     # table's failure-code vocabulary and added no table either, so V49 and V50
     # hold the same set: today's without that ledger.
     if version in _VERSIONS_WITH_TODAYS_TABLES:
@@ -5755,7 +5783,6 @@ _PHASE_D_QUEUE_IMMUTABILITY_TRIGGERS = (
     "queue_proposal_revisions_no_delete",
     "queue_dependency_edges_no_update",
     "queue_dependency_edges_no_delete",
-    "queue_launch_bindings_no_update",
     "queue_launch_bindings_no_delete",
 )
 
@@ -5793,6 +5820,7 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
         _VERSION_FORTY_THREE,
         _VERSION_FORTY_FOUR,
     )
+    connection.execute(PUBLISHED_QUEUE_LAUNCH_BINDINGS_NO_UPDATE_BEFORE_RELEASE)
     connection.execute(_PRODUCT_TRIGGERS["queue_items_no_nonobserved_insert"])
     connection.execute(
         PUBLISHED_QUEUE_ITEMS_STATE_TRANSITION_TRIGGER_BEFORE_OBSERVATION
@@ -6061,6 +6089,7 @@ def _apply_v47_to_v48(connection: sqlite3.Connection) -> None:
     writes one.
     """
 
+    connection.execute("DROP TRIGGER queue_items_state_transition")
     _rebuild_product_table(
         connection,
         queue_items,
@@ -6069,11 +6098,11 @@ def _apply_v47_to_v48(connection: sqlite3.Connection) -> None:
             "queue_items_identity_no_update",
             "queue_items_no_delete",
             "queue_items_no_nonobserved_insert",
-            "queue_items_state_transition",
         ),
         _VERSION_FORTY_SEVEN,
         _VERSION_FORTY_EIGHT,
     )
+    connection.execute(PUBLISHED_QUEUE_ITEMS_TRANSITION_BEFORE_RELEASE)
     _raise_declared_version(connection, _VERSION_FORTY_SEVEN, _VERSION_FORTY_EIGHT)
 
 
@@ -6285,6 +6314,33 @@ def _apply_v53_to_v54(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FIFTY_THREE, _VERSION_FIFTY_FOUR)
 
 
+_V54_QUEUE_LAUNCH_BINDINGS = "queue_launch_bindings_before_release"
+
+
+def _apply_v54_to_v55(connection: sqlite3.Connection) -> None:
+    """Let a launch binding take the ending of its run, and keep every one.
+
+    Every stored binding crosses byte-for-byte as the first launch of its item,
+    at restart ordinal zero and without an ending: writing one now would say
+    the sweep had given that item back under a rule that released nothing.
+    """
+
+    connection.execute("DROP TRIGGER queue_launch_bindings_no_update")
+    _rebuild_product_table(
+        connection,
+        queue_launch_bindings,
+        _V54_QUEUE_LAUNCH_BINDINGS,
+        ("queue_launch_bindings_no_delete",),
+        _VERSION_FIFTY_FOUR,
+        _VERSION_FIFTY_FIVE,
+        filled_columns={"restart_ordinal": "0"},
+    )
+    connection.execute(_PRODUCT_TRIGGERS["queue_launch_bindings_release_only"])
+    connection.execute("DROP TRIGGER queue_items_state_transition")
+    connection.execute(_PRODUCT_TRIGGERS["queue_items_state_transition"])
+    _raise_declared_version(connection, _VERSION_FIFTY_FOUR, _VERSION_FIFTY_FIVE)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6466,6 +6522,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO, _apply_v51_to_v52),
     _SchemaMigrationStep(_VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE, _apply_v52_to_v53),
     _SchemaMigrationStep(_VERSION_FIFTY_THREE, _VERSION_FIFTY_FOUR, _apply_v53_to_v54),
+    _SchemaMigrationStep(_VERSION_FIFTY_FOUR, _VERSION_FIFTY_FIVE, _apply_v54_to_v55),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS

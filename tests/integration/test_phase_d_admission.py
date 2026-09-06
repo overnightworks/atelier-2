@@ -15,7 +15,9 @@ from typing import Any, cast
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.functions import Function
 
 import atelier2.application.advance_queue as advance_queue_module
@@ -100,6 +102,7 @@ from atelier2.contracts.queue_projection import (
     QueueProposalRefused,
     QueueProposalRevisionConflict,
     QueueProposalSource,
+    ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -112,6 +115,7 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     DurableStateCorrupt,
@@ -131,7 +135,11 @@ from atelier2.ports.queue_projection import (
     QueueItemsPage,
     QueueItemsReconciled,
     QueueLaunchBlocked,
+    QueueLaunchReleased,
+    QueueLaunchReleaseRefused,
     QueueLaunchReserved,
+    QueueLaunchRunEnded,
+    QueueLaunchRunOpen,
     QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
@@ -1522,7 +1530,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 54
+    assert report.target_version == SCHEMA_VERSION == 55
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
@@ -1943,6 +1951,9 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
 
         def reserve_launch(self, _binding: object) -> object:
             raise AssertionError("a stored binding must not be reserved again")
+
+        def read_launch(self, _binding: object) -> QueueLaunchRunOpen:
+            return QueueLaunchRunOpen()
 
     def started(
         run_id: RunId,
@@ -2522,4 +2533,217 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
             workflow_document_parser=parse_workflow_document,
+        )
+
+
+def _ended_run(
+    engine: Engine,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    state: RunState,
+) -> None:
+    """One durable run row already at its ending, for the sweep to read."""
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.insert(schema_module.runs).values(
+                run_id=run_id.value,
+                bootstrap_workflow_id=f"bootstrap-{run_id.value}",
+                revision_hash=revision_hash.value,
+                workflow_format_version=int(WorkflowFormatVersion.V1),
+                current_node_id="final",
+                current_round_ordinal=1,
+                state=state.value,
+                state_version=1,
+                last_event_sequence=1,
+                terminal_hash="e" * 64,
+            )
+        )
+
+
+def _bound_and_ended(
+    queue: DbosQueueProjectionStore,
+    engine: Engine,
+    reference: WorkItemReference,
+    revision_hash: WorkflowRevisionHash,
+    run_id: RunId,
+    state: RunState,
+    proposal_revision: int = 1,
+) -> QueueLaunchBinding:
+    """Reserve this item's launch and leave its run at the named ending."""
+
+    binding = QueueLaunchBinding(
+        reference.item_id,
+        QueueProjectionRevision(proposal_revision),
+        run_id,
+        revision_hash,
+    )
+    assert isinstance(queue.reserve_launch(binding), QueueLaunchReserved)
+    _ended_run(engine, run_id, revision_hash, state)
+    return binding
+
+
+def _stored_bindings(engine: Engine) -> list[tuple[object, ...]]:
+    with engine.connect() as connection:
+        return [
+            tuple(record)
+            for record in connection.execute(
+                sa.select(
+                    queue_launch_bindings.c.run_id,
+                    queue_launch_bindings.c.ended_run_state,
+                    queue_launch_bindings.c.restart_ordinal,
+                ).order_by(queue_launch_bindings.c.proposal_revision)
+            )
+        ]
+
+
+def test_a_failed_launch_is_released_onto_the_next_proposal_it_carries_forward(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """The item comes back admitted, prerequisites and all, one revision on.
+
+    The proposal is re-issued rather than re-decided: same workflow, same rank,
+    same prerequisites. Only the revision moves, which is what makes the next
+    launch a differently identified run instead of a second attempt at the one
+    that failed.
+    """
+
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
+    prerequisite = _prepare_admitted(queue, lineage_id, "gh:pre")
+    _bound_and_ended(
+        queue,
+        engine,
+        prerequisite,
+        revision_hash,
+        RunId("prerequisite-run"),
+        RunState.COMPLETED,
+    )
+    reference = _prepare_admitted(
+        queue, lineage_id, "gh:79", prerequisites=(prerequisite.item_id,)
+    )
+    binding = _bound_and_ended(
+        queue, engine, reference, revision_hash, RunId("failed-run"), RunState.FAILED
+    )
+
+    assert queue.read_launch(binding) == QueueLaunchRunEnded(RunState.FAILED, 0)
+    released = queue.release_launch(ReleaseQueueLaunch(binding, RunState.FAILED))
+
+    assert isinstance(released, QueueLaunchReleased)
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    (item,) = [
+        candidate for candidate in page.items if candidate.item_reference == reference
+    ]
+    assert item.state is QueueItemState.ADMITTED
+    assert item.admission is not None
+    assert item.admission.proposal_revision == QueueProjectionRevision(2)
+    assert item.launch_binding is None
+    assert item.blockers == ()
+    assert item.proposal is not None
+    assert item.proposal.prerequisite_item_ids == (prerequisite.item_id,)
+
+    restarted = QueueLaunchBinding(
+        reference.item_id,
+        QueueProjectionRevision(2),
+        RunId("second-run"),
+        revision_hash,
+    )
+    assert isinstance(queue.reserve_launch(restarted), QueueLaunchReserved)
+    assert _stored_bindings(engine) == [
+        ("prerequisite-run", None, 0),
+        ("failed-run", RunState.FAILED.value, 0),
+        ("second-run", None, 1),
+    ]
+
+
+def test_two_sweeps_release_the_same_ended_launch_exactly_once(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """The binding's own ending is the compare-and-set, so one sweep wins it.
+
+    Without that, both sweeps would advance the item's revision and the second
+    would start a run nobody decided to pay for.
+    """
+
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    binding = _bound_and_ended(
+        queue,
+        engine,
+        reference,
+        revision_hash,
+        RunId("cancelled-run"),
+        RunState.CANCELLED,
+    )
+    barrier = Barrier(2)
+
+    def release(_index: int) -> object:
+        barrier.wait()
+        return queue.release_launch(ReleaseQueueLaunch(binding, RunState.CANCELLED))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(release, range(2)))
+
+    assert sum(isinstance(outcome, QueueLaunchReleased) for outcome in outcomes) == 1
+    assert (
+        sum(isinstance(outcome, QueueLaunchReleaseRefused) for outcome in outcomes) == 1
+    )
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    (item,) = page.items
+    assert item.admission is not None
+    assert item.admission.proposal_revision == QueueProjectionRevision(2)
+    assert item.revision == QueueProjectionRevision(3)
+
+
+def test_a_store_that_refuses_the_items_advance_releases_nothing(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    """A half-released item would be bound to nothing and startable twice."""
+
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    binding = _bound_and_ended(
+        queue, engine, reference, revision_hash, RunId("failed-run"), RunState.FAILED
+    )
+
+    def refuse_the_advance(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if statement.startswith("UPDATE queue_items"):
+            raise OperationalError("advance", {}, Exception("the disk is full"))
+
+    event.listen(engine, "before_cursor_execute", refuse_the_advance)
+    try:
+        refused = queue.release_launch(ReleaseQueueLaunch(binding, RunState.FAILED))
+    finally:
+        event.remove(engine, "before_cursor_execute", refuse_the_advance)
+
+    assert isinstance(refused, DurableWriteUnavailable)
+    assert _stored_bindings(engine) == [("failed-run", None, 0)]
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    (item,) = page.items
+    assert item.admission is not None
+    assert item.admission.proposal_revision == QueueProjectionRevision(1)
+    assert item.launch_binding == binding
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(
+                    schema_module.queue_proposal_revisions
+                )
+            )
+            == 1
         )

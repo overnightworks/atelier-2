@@ -213,7 +213,7 @@ CREATE TABLE queue_launch_bindings (
 )
 
 """
-"""The launch-binding table V44 introduced, which no later hop has moved."""
+"""The launch-binding table V44 introduced, unmoved until the V55 release."""
 
 
 PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
@@ -248,6 +248,10 @@ PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     # that step build a shape V44 never published.
     (44, "queue_dependency_edges"): _V44_QUEUE_DEPENDENCY_EDGES,
     (44, "queue_launch_bindings"): _V44_QUEUE_LAUNCH_BINDINGS,
+    # V55 gives the binding its ending and its restart ordinal and keys it by
+    # the proposal revision, so the shape every version from V44 to V54
+    # published is the one text above.
+    (54, "queue_launch_bindings"): _V44_QUEUE_LAUNCH_BINDINGS,
     (51, "queue_project_policy_revisions"): _V51_QUEUE_PROJECT_POLICY_REVISIONS,
     (51, "queue_proposal_revisions"): _V51_QUEUE_PROPOSAL_REVISIONS,
     # V53 widens the attempt table's vocabulary and moves neither of these, so
@@ -255,3 +259,72 @@ PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (52, "queue_project_policy_revisions"): _V52_QUEUE_PROJECT_POLICY_REVISIONS,
     (52, "queue_proposal_revisions"): _V52_QUEUE_PROPOSAL_REVISIONS,
 }
+
+
+PUBLISHED_QUEUE_LAUNCH_BINDINGS_NO_UPDATE_BEFORE_RELEASE = """
+        CREATE TRIGGER queue_launch_bindings_no_update
+        BEFORE UPDATE ON queue_launch_bindings BEGIN
+          SELECT RAISE(ABORT, 'queue launch bindings are immutable');
+        END
+    """
+"""The launch-binding update guard V44 through V54 published.
+
+V55 replaces it with `queue_launch_bindings_release_only`, which lets a held
+binding take the ending of its run and nothing else. `_apply_v43_to_v44`
+installs this exact predecessor text, or the V44 fingerprint taken on the way
+up from V43 would disagree with the one V44 actually published.
+"""
+
+PUBLISHED_QUEUE_ITEMS_TRANSITION_BEFORE_RELEASE = """
+        CREATE TRIGGER queue_items_state_transition
+        BEFORE UPDATE ON queue_items
+        WHEN NOT (
+          (OLD.state = 'OBSERVED'
+           AND NEW.state = 'PROPOSED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = NEW.state_version
+           AND NEW.workflow_lineage_id IS NULL
+           AND NEW.admission_rationale IS NULL
+           AND NEW.decision_authority IS NULL
+           AND EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = NEW.current_proposal_revision
+           ))
+          OR
+          (OLD.state = 'PROPOSED'
+           AND NEW.state = 'ADMITTED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = OLD.current_proposal_revision
+           AND NEW.workflow_lineage_id = (
+             SELECT proposal.workflow_lineage_id
+             FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+           )
+           AND NEW.admission_rationale IS NOT NULL
+           AND NEW.decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')
+           AND (NEW.decision_authority = 'OPERATOR' OR EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+               AND proposal.automation_disposition = 'AUTOMATION_AUTHORIZED'
+           )))
+          OR
+          (NEW.state = OLD.state
+           AND NEW.state_version = OLD.state_version
+           AND NEW.workflow_lineage_id IS OLD.workflow_lineage_id
+           AND NEW.admission_rationale IS OLD.admission_rationale
+           AND NEW.current_proposal_revision IS OLD.current_proposal_revision
+           AND NEW.decision_authority IS OLD.decision_authority)
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid queue item transition');
+        END
+    """
+"""The queue item transition trigger V48 through V54 published.
+
+V55 adds a fourth branch, letting an admitted item advance one proposal
+revision when the launch it held has been given back. `_apply_v47_to_v48`
+installs this exact predecessor text for the same reason `_apply_v43_to_v44`
+installs the one before it.
+"""
