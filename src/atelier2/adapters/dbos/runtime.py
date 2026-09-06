@@ -385,7 +385,11 @@ def _work_item_claim_ledger(
 
 
 def _project_checkout_for(engine: Engine, project_id: ProjectId | None) -> Path | None:
-    """Where the project this process serves is checked out, or nothing."""
+    """Where the project this process serves is checked out, or nothing.
+
+    A missing mapping is `project-unknown`: naming a project with no configured
+    root is the ADR 0011 service refusal, not the channel's own row miss.
+    """
 
     if project_id is None:
         return None
@@ -397,13 +401,10 @@ def _project_checkout_for(engine: Engine, project_id: ProjectId | None) -> Path 
         ) from missing
 
 
-def _declared_project_for(
-    engine: Engine, project_id: ProjectId | None, database_path: Path
+def _declared_project_at(
+    project_checkout: Path | None, database_path: Path
 ) -> DeclaredProject | None:
-    """The project this process serves, read from the host channel.
-
-    A missing mapping is `project-unknown`: naming a project with no configured
-    root is the ADR 0011 service refusal, not the channel's own row miss.
+    """The project this process serves, composed from the checkout it stands in.
 
     The database path travels with it because the project's candidate store is
     placed beside the store this process binds, the same derivation the
@@ -411,8 +412,9 @@ def _declared_project_for(
     is served from rather than inside the checkout it reads.
     """
 
-    checkout = _project_checkout_for(engine, project_id)
-    return None if checkout is None else declared_project(checkout, database_path)
+    if project_checkout is None:
+        return None
+    return declared_project(project_checkout, database_path)
 
 
 # DBOS owns this table and these tokens; read only to decide whether an open
@@ -699,12 +701,12 @@ def _open_binding(
             append_project_root(
                 engine, settings.project_id, settings.bootstrap_project_root
             )
-        declared_project_source = _declared_project_for(
-            engine, settings.project_id, settings.database_path
+        project_checkout = _project_checkout_for(engine, settings.project_id)
+        declared_project_source = _declared_project_at(
+            project_checkout, settings.database_path
         )
         work_item_claims = _work_item_claim_ledger(
-            settings.agent_claim_executable,
-            _project_checkout_for(engine, settings.project_id),
+            settings.agent_claim_executable, project_checkout
         )
         if work_item_claims is not None:
             effect_bindings = (*effect_bindings, work_item_claims.binding)
