@@ -18,8 +18,6 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import (
     API_PREFIX,
-    CATALOG_LINEAGE_MEMBERS_PATH,
-    CATALOG_LINEAGE_RETIREMENTS_PATH,
     CATALOG_LINEAGES_PATH,
     CATALOG_REVISION_BY_NAME_PATH,
     LIBRARY_ADDITION_PATH,
@@ -44,6 +42,7 @@ from atelier2.api.references import (
     RevisionHashQuery,
     parse_revision_hash,
 )
+from atelier2.api.routes.catalog_lineage import catalog_admission_resource
 from atelier2.api.wire.library import (
     DocumentNotHeldResource,
     DocumentUnrecognizedResource,
@@ -54,9 +53,7 @@ from atelier2.api.wire.library import (
     RecognizedWorkflowResource,
 )
 from atelier2.api.wire.requests import (
-    AdmitCatalogMemberRequestResource,
     FoundCatalogLineageRequestResource,
-    RetireCatalogLineageRequestResource,
     RevisionListingView,
 )
 from atelier2.api.wire.resources import (
@@ -75,12 +72,6 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionDetailResource,
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
-)
-from atelier2.application.admit_catalog_member import (
-    CatalogAuthoredNameRestated,
-    CatalogDisplayNameInvalid,
-    CatalogExplicitNameRequired,
-    CatalogRevisionUnpublished,
 )
 from atelier2.application.admit_library_addition import (
     LibraryAdditionExisting,
@@ -159,20 +150,7 @@ from atelier2.contracts.catalog_intakes import CatalogIntakeId, CatalogIntakeKin
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
-    CatalogAdmissionExisting,
-    CatalogAdmissionKindMismatch,
-    CatalogAdmissionLineageMissing,
-    CatalogAdmissionNameHeld,
-    CatalogAdmissionRetired,
-    CatalogAdmissionRevisionOwned,
-    CatalogAdmissionUnpublished,
     CatalogLineageDisplayName,
-    CatalogLineageFounded,
-    CatalogLineageId,
-    CatalogLineageIdMismatch,
-    CatalogLineageRetired,
-    CatalogMemberAdmitted,
-    CatalogRetirementExisting,
     catalog_lineage_query,
 )
 from atelier2.contracts.library_recognition import (
@@ -825,136 +803,7 @@ async def found_catalog_lineage_route(
             activated_at,
         ),
     )
-    return _admission_resource(result)
-
-
-@router.post(
-    CATALOG_LINEAGE_MEMBERS_PATH,
-    response_model=CatalogAdmissionResource,
-    status_code=201,
-)
-async def admit_catalog_member_route(
-    lineage_id: str,
-    request: AdmitCatalogMemberRequestResource,
-    context: ApiContext = api_context_dependency,
-) -> CatalogAdmissionResource:
-    """Admit one published revision into the lineage this path names."""
-
-    try:
-        identity = CatalogLineageId(lineage_id)
-    except ValueError as error:
-        raise ApiProblem("catalog-lineage-missing") from error
-    try:
-        actor = CatalogActor(request.actor)
-        activated_at = CatalogActivatedAt(request.activated_at)
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-request") from error
-    result = await run_control_query(
-        context.control_runner,
-        lambda: context.use_cases.admit_catalog_member(
-            request.kind,
-            identity,
-            PublishedRevisionHash(request.catalog_revision_hash),
-            actor,
-            activated_at,
-        ),
-    )
-    return _admission_resource(result)
-
-
-@router.post(
-    CATALOG_LINEAGE_RETIREMENTS_PATH,
-    status_code=204,
-)
-async def retire_catalog_lineage_route(
-    lineage_id: str,
-    request: RetireCatalogLineageRequestResource,
-    context: ApiContext = api_context_dependency,
-) -> Response:
-    """Retire one live lineage while preserving its immutable revision history."""
-
-    try:
-        identity = CatalogLineageId(lineage_id)
-    except ValueError as error:
-        raise ApiProblem("catalog-lineage-missing") from error
-    try:
-        actor = CatalogActor(request.actor)
-        activated_at = CatalogActivatedAt(request.activated_at)
-    except (TypeError, ValueError) as error:
-        raise ApiProblem("invalid-request") from error
-
-    result = await run_control_query(
-        context.control_runner,
-        lambda: context.use_cases.retire_catalog_lineage(identity, actor, activated_at),
-    )
-    match result:
-        case CatalogLineageRetired() | CatalogRetirementExisting():
-            return Response(status_code=204)
-        case CatalogAdmissionLineageMissing():
-            raise ApiProblem("catalog-lineage-missing")
-        case CatalogLineageIdMismatch() | DurableStateCorrupt():
-            raise ApiProblem("durable-state-corrupt")
-        case WriteUnavailable(detail):
-            raise ApiProblem("temporarily-unavailable", detail)
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _admission_resource(result: object) -> CatalogAdmissionResource:
-    """One resource for both acts, because both answer the same question."""
-
-    match result:
-        case CatalogLineageFounded(lineage, revision, display_name):
-            return CatalogAdmissionResource(
-                display_name=display_name.value,
-                lineage_id=lineage.lineage_id.value,
-                catalog_revision_hash=revision.revision_hash.value,
-                revision_number=1,
-            )
-        case CatalogMemberAdmitted(lineage, revision, revision_number, display_name):
-            return CatalogAdmissionResource(
-                display_name=display_name.value,
-                lineage_id=lineage.lineage_id.value,
-                catalog_revision_hash=revision.revision_hash.value,
-                revision_number=revision_number,
-            )
-        case CatalogAdmissionExisting(lineage, revision, revision_number, display_name):
-            # Admitting what is already admitted is the same answer, not a
-            # conflict: the caller asked for a state the catalog is already in.
-            return CatalogAdmissionResource(
-                display_name=display_name.value,
-                lineage_id=lineage.lineage_id.value,
-                catalog_revision_hash=revision.revision_hash.value,
-                revision_number=revision_number,
-            )
-        case CatalogRevisionUnpublished():
-            raise ApiProblem("catalog-revision-unpublished")
-        case CatalogAdmissionUnpublished():
-            raise ApiProblem("catalog-revision-unpublished")
-        case CatalogAdmissionNameHeld():
-            raise ApiProblem("catalog-name-held")
-        case CatalogAdmissionRevisionOwned():
-            raise ApiProblem("catalog-revision-owned")
-        case CatalogAdmissionLineageMissing():
-            raise ApiProblem("catalog-lineage-missing")
-        case CatalogAdmissionRetired():
-            raise ApiProblem("catalog-lineage-retired")
-        case (
-            CatalogAuthoredNameRestated()
-            | CatalogExplicitNameRequired()
-            | CatalogDisplayNameInvalid()
-        ):
-            raise ApiProblem("invalid-request")
-        case CatalogAdmissionKindMismatch() | CatalogLineageIdMismatch():
-            raise ApiProblem("durable-state-corrupt")
-        case DurableStateCorrupt():
-            raise ApiProblem("durable-state-corrupt")
-        case ProjectionTooLarge():
-            raise ApiProblem("durable-projection-unrepresentable")
-        case WriteUnavailable():
-            raise ApiProblem("temporarily-unavailable")
-        case _:
-            raise ApiProblem("internal-error")
+    return catalog_admission_resource(result)
 
 
 @router.get(

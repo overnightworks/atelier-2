@@ -19,9 +19,6 @@ from atelier2.contracts.agent_definitions import (
 FRONTMATTER_DELIMITER = "---"
 TOOL_SEPARATOR = ","
 _YAML_TEXT_TAG = "tag:yaml.org,2002:str"
-# A rendered scalar is never folded, because folding rewrites the spacing the
-# author chose and a preview would then show a document nobody wrote.
-_UNFOLDED_LINE_WIDTH = 2**31 - 1
 
 
 def parse_agent_definition(document: bytes) -> AgentDefinition:
@@ -53,45 +50,20 @@ def parse_agent_definition(document: bytes) -> AgentDefinition:
         _authored_model(fields),
         _tool_declaration(fields),
         system_prompt,
+        document,
     )
 
 
 def render_agent_definition(definition: AgentDefinition) -> bytes:
-    """Write the canonical document of one definition.
+    """Return the exact bytes the definition was authored from.
 
-    Reading this back yields the same definition, so a held definition can be
-    shown to the human who authored it without a second, divergent format. The
-    canonical spelling is not the only accepted one: an author may separate
-    tools by comma as they do today, and this writes the sequence that spelling
-    cannot always express.
+    Every key beyond the parsed minimum, the key order, and the file's exact
+    whitespace are opaque to this parser but not lost to it: they live in the
+    document the definition already carries, so reconstruction is that
+    document handed back rather than a second, rebuilt spelling.
     """
 
-    frontmatter: dict[str, str | list[str]] = {
-        AgentDefinitionField.NAME.value: definition.name,
-        AgentDefinitionField.DESCRIPTION.value: definition.description,
-    }
-    if definition.model is not None:
-        frontmatter[AgentDefinitionField.MODEL.value] = definition.model
-    if isinstance(definition.tools, DeclaredTools):
-        # The sequence spelling is the canonical one because it is the only
-        # lossless one: a tool name may itself contain the comma separator, and
-        # the comma spelling would read that single name back as two.
-        frontmatter[AgentDefinitionField.TOOLS.value] = [
-            name.value for name in definition.tools.names
-        ]
-    document = (
-        f"{FRONTMATTER_DELIMITER}\n"
-        + yaml.safe_dump(
-            frontmatter,
-            sort_keys=False,
-            allow_unicode=True,
-            default_flow_style=False,
-            width=_UNFOLDED_LINE_WIDTH,
-        )
-        + f"{FRONTMATTER_DELIMITER}\n"
-        + definition.system_prompt
-    )
-    return document.encode("utf-8")
+    return definition.document
 
 
 def _split_frontmatter(text: str) -> tuple[str, str]:
@@ -105,6 +77,14 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 
 
 def _frontmatter_fields(frontmatter: str) -> dict[str, Node]:
+    """Read the parsed minimum's nodes out of the frontmatter mapping.
+
+    A key outside the parsed minimum is neither read nor refused here: it
+    stays unindexed, opaque, and present only in the document's own bytes,
+    which is where a provider-native key -- and the file's exact spelling --
+    is carried through to reconstruction.
+    """
+
     try:
         root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
     except (yaml.YAMLError, RecursionError) as error:
@@ -125,7 +105,7 @@ def _frontmatter_fields(frontmatter: str) -> dict[str, Node]:
             )
         key = str(key_node.value)
         if key not in known:
-            raise AgentDefinitionRefused(AgentDefinitionRefusal.FIELD_UNKNOWN, key)
+            continue
         if key in fields:
             raise AgentDefinitionRefused(AgentDefinitionRefusal.FIELD_DUPLICATED, key)
         fields[key] = value_node

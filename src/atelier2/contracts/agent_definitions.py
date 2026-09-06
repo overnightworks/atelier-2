@@ -10,7 +10,7 @@ from atelier2.contracts.agents import (
     AgentExecutorRevision,
     AuthProfileRevisionHash,
 )
-from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.hashing import Sha256Hash
 
 MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS = 16 * 1024
 """How long an authored agent-definition file -- frontmatter and prompt
@@ -27,10 +27,11 @@ MAXIMUM_AGENT_DEFINITION_TOOL_COUNT = 128
 
 
 class AgentDefinitionField(StrEnum):
-    """Every frontmatter key an authored agent definition may carry.
+    """The frontmatter minimum this contract parses and types.
 
-    The set is closed: a key outside it is refused by its own name rather than
-    guessed at, so nothing an author writes is silently dropped.
+    A key outside this set is not refused: it stays in the definition's own
+    document bytes, opaque to this contract, so a provider-native key it does
+    not model is neither guessed at nor dropped.
     """
 
     NAME = "name"
@@ -53,7 +54,6 @@ class AgentDefinitionRefusal(StrEnum):
     FRONTMATTER_UNTERMINATED = "frontmatter-unterminated"
     FRONTMATTER_UNPARSABLE = "frontmatter-unparsable"
     FRONTMATTER_NOT_A_MAPPING = "frontmatter-not-a-mapping"
-    FIELD_UNKNOWN = "field-unknown"
     FIELD_MISSING = "field-missing"
     FIELD_DUPLICATED = "field-duplicated"
     FIELD_TYPE_UNEXPECTED = "field-type-unexpected"
@@ -82,7 +82,13 @@ class AgentDefinitionRefused(ValueError):
 
 
 class AgentDefinitionHash(Sha256Hash):
-    """Identity of one exact authored agent definition."""
+    """Identity of one exact authored agent definition: the hash of its bytes.
+
+    Two files that parse to the same name, description, model and tools but
+    differ in a byte the parsed minimum does not read -- an opaque key, its
+    order, a trailing newline -- are two different definitions with two
+    different hashes; ADR 0007 decision 4 owns this for every catalog kind.
+    """
 
 
 def _require_authored_text(value: str, field_name: AgentDefinitionField) -> None:
@@ -121,8 +127,9 @@ class UnrestrictedTools:
 class DeclaredTools:
     """A `tools` field: exactly these tools and no other.
 
-    Tools are a set, so the order an author types them in is not part of the
-    declaration and cannot change the definition's identity.
+    Tools are a set, so the order an author types them in does not change
+    which tools are declared, even though it does change the definition's
+    identity: that identity is the file's own bytes, order included.
     """
 
     names: tuple[AgentToolName, ...]
@@ -147,22 +154,19 @@ class DeclaredTools:
 type AgentToolDeclaration = UnrestrictedTools | DeclaredTools
 
 
-def _tool_declaration_frame(tools: AgentToolDeclaration) -> bytes:
-    if isinstance(tools, UnrestrictedTools):
-        return frame("agent-tool-declaration/unrestricted/v1")
-    return frame(
-        "agent-tool-declaration/declared/v1",
-        *(name.value.encode("utf-8") for name in tools.names),
-    )
-
-
 @dataclass(frozen=True)
 class AgentDefinition:
     """One agent exactly as a human authored it.
 
-    An absent model means the deployment's model: what the file does not spell
-    is not the file's decision. An absent tool declaration means every tool,
-    because a restriction is only ever explicit.
+    Name, description, model and tools are this contract's parsed minimum. An
+    absent model means the deployment's model: what the file does not spell is
+    not the file's decision. An absent tool declaration means every tool,
+    because a restriction is only ever explicit. Every other frontmatter key
+    an author wrote never reaches a field of its own here: it stays in
+    `document`, byte for byte, which is also where the definition's identity
+    comes from -- comparing the parsed fields (`==`) answers whether two files
+    say the same thing, while `definition_hash` answers whether they are the
+    same file.
     """
 
     name: str
@@ -170,7 +174,8 @@ class AgentDefinition:
     model: str | None
     tools: AgentToolDeclaration
     system_prompt: str
-    definition_hash: AgentDefinitionHash = field(init=False)
+    document: bytes = field(compare=False)
+    definition_hash: AgentDefinitionHash = field(init=False, compare=False)
 
     def __post_init__(self) -> None:
         _require_authored_text(self.name, AgentDefinitionField.NAME)
@@ -182,18 +187,7 @@ class AgentDefinition:
         if not self.system_prompt.strip():
             raise AgentDefinitionRefused(AgentDefinitionRefusal.SYSTEM_PROMPT_MISSING)
         object.__setattr__(
-            self,
-            "definition_hash",
-            AgentDefinitionHash.of(
-                frame(
-                    "agent-definition/v1",
-                    self.name.encode("utf-8"),
-                    self.description.encode("utf-8"),
-                    b"" if self.model is None else self.model.encode("utf-8"),
-                    _tool_declaration_frame(self.tools),
-                    self.system_prompt.encode("utf-8"),
-                )
-            ),
+            self, "definition_hash", AgentDefinitionHash.of(self.document)
         )
 
 

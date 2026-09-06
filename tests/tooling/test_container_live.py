@@ -566,7 +566,8 @@ def test_install_publishes_private_exact_identity_before_handoff(
     assert (directory.stat().st_mode & 0o777) == 0o700
     for filename in ("lifecycle.lock", "installation.state", "compose.yaml"):
         path = directory / filename
-        assert path.is_file() and not path.is_symlink()
+        assert path.is_file()
+        assert not path.is_symlink()
         assert (path.stat().st_mode & 0o777) == 0o600
     assert not list(directory.glob(".*.??????"))
     assert not list(tmp_path.glob("atelier2-live.*"))

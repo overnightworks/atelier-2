@@ -1461,7 +1461,8 @@ def test_partial_v2_open_failure_closes_prior_executor_and_releases_owner(
         _runtime_with_v2(tmp_path, (failing, opened))
 
     assert lifecycle == ["open:anthropic", "open:openai", "close:anthropic"]
-    assert opened.opened is not None and opened.opened.closes == 1
+    assert opened.opened is not None
+    assert opened.opened.closes == 1
     recovered = _runtime_with_v2(tmp_path, ())
     recovered.close()
 
@@ -1486,7 +1487,8 @@ def test_v2_base_exception_open_closes_prior_executor_and_releases_owner(
 
     assert captured.value is failure
     assert lifecycle == ["open:alpha", "open:beta", "close:alpha"]
-    assert opened.opened is not None and opened.opened.closes == 1
+    assert opened.opened is not None
+    assert opened.opened.closes == 1
     recovered = _runtime_with_v2(tmp_path, (), application_version="recovered")
     recovered.close()
 

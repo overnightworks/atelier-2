@@ -12,8 +12,8 @@ id = "a-markdown-file-becomes-a-published-configuration-revision"
 text = "A markdown file with frontmatter and a prompt body becomes a published agent-configuration revision deterministically, over the existing catalog API and without a new schema."
 
 [[sentence]]
-id = "missing-or-unknown-frontmatter-is-refused-by-name"
-text = "A missing or unknown frontmatter field is refused by name in a typed refusal, and nothing about the authored agent is guessed."
+id = "missing-frontmatter-minimum-is-refused-unknown-keys-are-carried"
+text = "A missing minimum frontmatter field (name, description) is refused by name in a typed refusal; a frontmatter key the atelier does not model is never guessed at or dropped, and is instead carried through opaquely in the definition's own bytes."
 
 [[sentence]]
 id = "an-absent-tool-declaration-leaves-every-tool-and-a-declared-one-is-exact"

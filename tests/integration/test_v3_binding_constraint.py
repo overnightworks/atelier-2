@@ -199,7 +199,8 @@ def test_the_public_start_names_both_nodes_when_occupation_collides(
     assert refused.status_code == 422
     problem = refused.json()
     assert problem["type"].endswith(":binding-constraint-refused")
-    assert "merge" in problem["detail"] and "implement" in problem["detail"]
+    assert "merge" in problem["detail"]
+    assert "implement" in problem["detail"]
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
