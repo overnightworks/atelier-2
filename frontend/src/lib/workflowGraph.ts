@@ -36,7 +36,7 @@ export function layerWorkflowGraph<T extends GraphLayerNode>(nodes: readonly T[]
     const ready = [...remaining]
       .filter((id) => {
         const node = byId.get(id);
-        return node !== undefined && node.depends_on.every((dependency) => !remaining.has(dependency));
+        return node?.depends_on.every((dependency) => !remaining.has(dependency)) ?? false;
       })
       .sort(compareUtf8Identities);
     if (ready.length === 0) {

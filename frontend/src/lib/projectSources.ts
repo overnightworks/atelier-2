@@ -172,7 +172,7 @@ function joinWithAnd(items: readonly string[]): string {
   const first = items[0];
   if (items.length === 0 || first === undefined) return "";
   if (items.length === 1) return first;
-  const last = items[items.length - 1] ?? "";
+  const last = items.at(-1) ?? "";
   if (items.length === 2) return `${first} ${settingsPageCopy.and} ${last}`;
   return `${items.slice(0, -1).join(", ")}, ${settingsPageCopy.and} ${last}`;
 }
