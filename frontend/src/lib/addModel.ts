@@ -43,11 +43,15 @@ export function pickExecutorPin(
   const matchingProfile = sameProvider.filter(
     (item) => item.auth_profile_revision_hash === authProfileRevisionHash
   );
-  const pool = matchingProfile.length > 0 ? matchingProfile : sameProvider;
-  return pool.reduce((best, item) =>
-    item.agent_configuration_revision_hash < best.agent_configuration_revision_hash
-      ? item
-      : best
+  const [firstCandidate, ...remainingCandidates] =
+    matchingProfile.length > 0 ? matchingProfile : sameProvider;
+  if (firstCandidate === undefined) return null;
+  return remainingCandidates.reduce(
+    (best, item) =>
+      item.agent_configuration_revision_hash < best.agent_configuration_revision_hash
+        ? item
+        : best,
+    firstCandidate
   );
 }
 
