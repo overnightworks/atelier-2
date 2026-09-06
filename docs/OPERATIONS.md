@@ -1029,7 +1029,11 @@ run), prints every hit as `severity rule file:line message`, and fails the
 job at one or more. No token: the project is public. Probed 06.09.2026 (#1294):
 `python:S1192` (duplicated string literal) does not fire inside test files, so
 it cannot serve as a red-path probe there; `python:S5778` (two exception-
-raising calls inside one `pytest.raises` block) does.
+raising calls inside one `pytest.raises` block) is silently excluded on
+`tests/**` by this project's own `sonar.issue.ignore.multicriteria` (the rule
+class above), so it never becomes an open finding either -- the probe run
+with it came back green. `python:S9073` (a composite `assert a and b`) is not
+excluded and does fire on test files; it is the reliable red-path probe.
 
 ## Code rules: gates, metrics, audit
 
