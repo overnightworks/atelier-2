@@ -9,15 +9,15 @@ import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { humanMove, standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
-  describeWorkbenchControlFacts,
-  questionForWorkbenchControlFacts,
   workbenchQuestionAttribute,
-  workbenchQuestions,
-  type WorkbenchControlFacts
+  workbenchQuestions
 } from "../../src/lib/workbenchQuestions";
 import {
+  describeWorkbenchControlFacts,
+  questionForWorkbenchControlFacts,
   workbenchInteractiveSelector,
-  workbenchStageSelector
+  workbenchStageSelector,
+  type WorkbenchControlFacts
 } from "../support/workbenchControls";
 import {
   unnamedAxeViolations,

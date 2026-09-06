@@ -12,17 +12,16 @@ import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { readStateCopy } from "../../src/lib/readStateCopy";
-import {
-  cockpitRoute,
-  PUBLIC_REFERENCE_PLACEHOLDER,
-  SERVED_PATHS,
-  WORKFLOW_NAME_PLACEHOLDER,
-  type CockpitRoute
-} from "../../src/lib/route";
+import { cockpitRoute, type CockpitRoute } from "../../src/lib/route";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 import { cockpitApiStub } from "../support/cockpitApi";
+import {
+  PUBLIC_REFERENCE_PLACEHOLDER,
+  SERVED_PATHS,
+  WORKFLOW_NAME_PLACEHOLDER
+} from "../support/servedPaths";
 import { publicReference, startedRun, workflowName, workflowRevision } from "../support/runV3";
 
 /**
