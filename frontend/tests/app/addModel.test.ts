@@ -179,6 +179,10 @@ describe("the executor pin an add copies", () => {
       ])
     ).toBeNull();
   });
+
+  it("returns null for an empty configuration list instead of throwing", () => {
+    expect(pickExecutorPin("anthropic", PROFILE_HASH, [])).toBeNull();
+  });
 });
 
 describe("planning an add", () => {
