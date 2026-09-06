@@ -1005,16 +1005,25 @@ def _unavailable_executor_refusal(
     ).one_or_none()
     if event is None:
         return None
-    return _refusal_word(bytes(event.payload))
+    refusal = AgentExecutionRefusal.named_by(bytes(event.payload))
+    return None if refusal is None else refusal.value
 
 
-def _refusal_word(payload: bytes) -> str | None:
-    """The pre-attempt refusal these exact event bytes name, if they name one."""
+def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None:
+    """Why this failure event says its node ended: its own word, or a receipt's.
 
-    for refusal in AgentExecutionRefusal:
-        if payload == refusal.value.encode("ascii"):
-            return refusal.value
-    return None
+    A pre-attempt refusal is the event's whole payload and carries no receipt;
+    every other failure names an attempt whose stored receipt holds the reason.
+    """
+
+    refusal = AgentExecutionRefusal.named_by(event.payload)
+    if refusal is not None:
+        return refusal.value
+    return _node_receipt_refusal(
+        connection,
+        event.node_execution_id,
+        None if event.attempt_binding is None else event.attempt_binding.attempt_id,
+    )
 
 
 def _node_job_and_refusal(
@@ -2856,22 +2865,9 @@ class DbosQueries:
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
-            _refusal_word(event.payload)
+            _agent_failure_reason(connection, event)
             if event.event_kind is RunEventKind.AGENT_FAILED
-            and _refusal_word(event.payload) is not None
-            else (
-                _node_receipt_refusal(
-                    connection,
-                    event.node_execution_id,
-                    (
-                        None
-                        if event.attempt_binding is None
-                        else event.attempt_binding.attempt_id
-                    ),
-                )
-                if event.event_kind is RunEventKind.AGENT_FAILED
-                else None
-            )
+            else None
         )
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,

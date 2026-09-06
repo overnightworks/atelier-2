@@ -175,7 +175,7 @@ def test_format_3_pre_attempt_executor_refusal_has_no_attempt_failure_shape() ->
     assert "attempt_ordinal" not in dumped
 
 
-def test_every_pre_attempt_refusal_the_contract_owns_reaches_the_wire() -> None:
+def test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift() -> None:
     """A node that never started says why in the vocabulary the API serves.
 
     The wire spells this set out as a Literal, so a refusal the runtime can

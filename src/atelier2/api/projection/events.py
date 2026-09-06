@@ -53,15 +53,6 @@ _NODE_DETAIL_FALLBACK = (
 )
 
 
-def _node_refusal(payload: bytes) -> AgentExecutionRefusal | None:
-    """The pre-attempt refusal these event bytes name, if they name one."""
-
-    for refusal in AgentExecutionRefusal:
-        if payload == refusal.value.encode("ascii"):
-            return refusal
-    return None
-
-
 def _omitted_receipt_reason_summary(projection: PersistedRunEvent) -> str:
     """Name the exact detail door when its identifiers fit the event field."""
 
@@ -130,7 +121,7 @@ def run_event_resource(
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
-        refusal = _node_refusal(event.payload)
+        refusal = AgentExecutionRefusal.named_by(event.payload)
         if refusal is not None:
             if event.attempt_binding is not None:
                 raise ValueError("a pre-attempt refusal event has an attempt binding")

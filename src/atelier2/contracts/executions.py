@@ -124,6 +124,20 @@ class AgentExecutionRefusal(StrEnum):
     WORK_ITEM_CLAIM_REFUSED = "work-item-claim-refused"
     WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE = "work-item-claim-touches-another-lane"
 
+    @classmethod
+    def named_by(cls, payload: bytes) -> AgentExecutionRefusal | None:
+        """The refusal these exact event-payload bytes name, if they name one.
+
+        One owner for the reading, because a failure event's payload is either
+        one of these words or an attempt's own failure code, and two readers
+        that disagreed would answer a run differently in two places.
+        """
+
+        for refusal in cls:
+            if payload == refusal.value.encode("ascii"):
+                return refusal
+        return None
+
 
 class WaitAnswerState(StrEnum):
     PENDING = "PENDING"

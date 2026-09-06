@@ -1248,12 +1248,6 @@ class NodeDetailResource(ApiModel):
     )
 
 
-# The reason vocabulary the wire spells is `RunCancellationRefusal`'s closed set
-# (its owner in `contracts/run_projections.py`), written out here because the
-# wire schema may name no contract enum inline; `api/projection/runs.py` casts
-# the enum's value into it, past pyright, so
-# `test_the_wire_reason_literal_and_the_refusal_enum_cannot_drift` pins the two
-# spellings to set equality and fails the moment either side drifts.
 # The refusal vocabulary the wire spells is `AgentExecutionRefusal`'s closed
 # set (its owner in `contracts/executions.py`), written out here for the same
 # reason as the cancellation names below, and pinned to it by
@@ -1267,6 +1261,12 @@ AgentNodeRefusalName = Literal[
     "work-item-claim-refused",
     "work-item-claim-touches-another-lane",
 ]
+# The reason vocabulary the wire spells is `RunCancellationRefusal`'s closed set
+# (its owner in `contracts/run_projections.py`), written out here because the
+# wire schema may name no contract enum inline; `api/projection/runs.py` casts
+# the enum's value into it, past pyright, so
+# `test_the_wire_reason_literal_and_the_refusal_enum_cannot_drift` pins the two
+# spellings to set equality and fails the moment either side drifts.
 RunNotCancellableReasonName = Literal[
     "between-nodes",
     "waiting-for-you",
