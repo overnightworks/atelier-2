@@ -118,7 +118,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
-from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.pages import require_page_limit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_events import (
@@ -1715,10 +1715,7 @@ class DbosQueries:
     def list_workflow_revisions(
         self, after: WorkflowRevisionHash | None, limit: int
     ) -> ListWorkflowRevisionsResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
-            raise ValueError(
-                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "revision")
         try:
             with self._connection() as connection:
                 statement = sa.select(workflow_revisions.c.revision_hash)
@@ -1757,10 +1754,7 @@ class DbosQueries:
         refused to use, which is the byte cost the budget exists to bound.
         """
 
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
-            raise ValueError(
-                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "revision")
         try:
             with self._connection() as connection:
                 statement = sa.select(
@@ -1954,10 +1948,7 @@ class DbosQueries:
         limit: int,
         state: RunState | None = None,
     ) -> ListRunsResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
-            raise ValueError(
-                f"run page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "run")
         try:
             with self._connection() as connection:
                 statement = _bounded_projection_select(
@@ -2655,10 +2646,7 @@ class DbosQueries:
         after_sequence: int,
         limit: int,
     ) -> ReadRunEventPageResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
-            raise ValueError(
-                f"event page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "event")
         try:
             with self._connection() as connection:
                 run_record = (
@@ -2769,10 +2757,7 @@ class DbosQueries:
         limit: int,
         excluded_identities: tuple[tuple[RunId, int], ...],
     ) -> ReadAttentionEventPageResult:
-        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
-            raise ValueError(
-                f"event page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
-            )
+        require_page_limit(limit, "event")
         try:
             with self._connection() as connection:
                 return load_attention_event_page(

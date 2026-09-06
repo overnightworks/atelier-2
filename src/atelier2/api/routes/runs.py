@@ -10,7 +10,6 @@ from atelier2.api._support import (
     decode_base64,
     decode_public_reference,
     load_run_resource,
-    parse_limit,
     require_field,
     require_fields,
     require_json_media_dependency,
@@ -30,7 +29,14 @@ from atelier2.api.projection.runs import (
     node_detail_resource,
     run_list_row_resource,
 )
-from atelier2.api.references import encode_public_run_reference, parse_revision_hash
+from atelier2.api.references import (
+    AgentAttemptIdPath,
+    PageLimitQuery,
+    PublicRunReferencePath,
+    PublicRunReferenceQuery,
+    encode_public_run_reference,
+    parse_revision_hash,
+)
 from atelier2.api.wire.requests import (
     AnswerWaitRequestResource,
     AnyStartRunOrderResource,
@@ -162,6 +168,7 @@ from atelier2.contracts.orders import (
     InlineOrderValue,
     WorkItemOrderValue,
 )
+from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.run_projections import RunProjection
@@ -323,15 +330,14 @@ async def start_run_route(
 
 @router.get(API_PREFIX + "/runs", response_model=VersionedRunPageResource)
 async def list_runs(
-    after: str | None = None,
-    limit: str = "50",
+    after: PublicRunReferenceQuery | None = None,
+    limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
     state: str | None = None,
     context: ApiContext = api_context_dependency,
 ) -> VersionedRunPageResource:
     boundary = None
     if after is not None:
         boundary = decode_public_reference(after, context.limits)
-    parsed_limit = parse_limit(limit)
     parsed_state = None
     if state is not None:
         try:
@@ -348,7 +354,7 @@ async def list_runs(
             ) from None
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_runs(boundary, parsed_limit, parsed_state),
+        lambda: context.use_cases.list_runs(boundary, limit, parsed_state),
     )
     match result:
         case RunsListed(runs, next_after):
@@ -376,7 +382,7 @@ async def list_runs(
 
 @router.get(API_PREFIX + "/runs/{public_ref}", response_model=RunResourceV3)
 async def get_run_route(
-    public_ref: str, context: ApiContext = api_context_dependency
+    public_ref: PublicRunReferencePath, context: ApiContext = api_context_dependency
 ) -> RunResourceV3:
     return await _run_resource_of(
         decode_public_reference(public_ref, context.limits), context
@@ -390,7 +396,7 @@ async def get_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def fork_run_route(
-    public_ref: str,
+    public_ref: PublicRunReferencePath,
     body: ForkRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -437,7 +443,9 @@ async def fork_run_route(
     response_model=NodeDetailResource,
 )
 async def get_node_detail_route(
-    public_ref: str, node_id: str, context: ApiContext = api_context_dependency
+    public_ref: PublicRunReferencePath,
+    node_id: str,
+    context: ApiContext = api_context_dependency,
 ) -> NodeDetailResource:
     """What one node was asked, what it answered, who did it, and what stops it.
 
@@ -479,8 +487,8 @@ async def get_node_detail_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_agent_attempt_route(
-    public_ref: str,
-    attempt_id: str,
+    public_ref: PublicRunReferencePath,
+    attempt_id: AgentAttemptIdPath,
     body: CancelAgentAttemptRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -550,7 +558,7 @@ async def cancel_agent_attempt_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def answer_run_route(
-    public_ref: str,
+    public_ref: PublicRunReferencePath,
     body: AnswerWaitRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -613,7 +621,7 @@ async def answer_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def reconcile_run_route(
-    public_ref: str,
+    public_ref: PublicRunReferencePath,
     body: ReconcileRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
@@ -683,7 +691,7 @@ async def reconcile_run_route(
     responses={HTTPStatus.OK: {"model": RunResourceV3}},
 )
 async def cancel_run_route(
-    public_ref: str,
+    public_ref: PublicRunReferencePath,
     body: CancelRunRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),

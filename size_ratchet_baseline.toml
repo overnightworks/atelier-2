@@ -290,10 +290,6 @@ qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_described_work
 lines = 77
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_runs"
-lines = 62
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.prepare_run_event_stream"
 lines = 84
 
@@ -472,14 +468,6 @@ lines = 354
 [[function]]
 qualified_name = "atelier2.api.app.create_app"
 lines = 100
-
-[[function]]
-qualified_name = "atelier2.api.openapi._install_event_components"
-lines = 61
-
-[[function]]
-qualified_name = "atelier2.api.openapi._install_parameter_contracts"
-lines = 131
 
 [[function]]
 qualified_name = "atelier2.api.openapi._install_problem_components"
