@@ -21,8 +21,10 @@ const widths = [
  * cockpit): the harness's graceful shutdown only disables
  * keep-alive on an in-flight connection, it never closes one still
  * streaming, so an open `EventSource` at the moment of the restart would
- * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
- * scope), so it is both the surface the issue names and a safe one.
+ * hang `/__e2e/recompose` forever. The restart itself is asked for over HTTP
+ * and the harness drops its sockets after a one-second grace
+ * (`RESTART_CONNECTION_GRACE_SECONDS`), so the Workbench's own attention
+ * stream cannot wedge it (#1114).
  *
  * The Workbench no longer speaks its own connection state -- its ear became
  * the terminal seat (#1099) -- so the one restart line is the shell's own

@@ -156,6 +156,21 @@ def test_a_declared_seat_without_its_project_refuses_the_serve(tmp_path: Path) -
         served_settings(tmp_path, terminal_seat=declared_seat(tmp_path))
 
 
+def test_a_seat_is_never_served_where_the_api_answers_off_loopback(
+    tmp_path: Path,
+) -> None:
+    """The door hands out an unauthenticated shell's address; it stays here."""
+
+    with pytest.raises(ValueError, match="loopback bind"):
+        served_settings(
+            tmp_path,
+            terminal_seat=declared_seat(tmp_path),
+            project_id=PROJECT,
+            project_root=tmp_path / "project",
+            host="0.0.0.0",
+        )
+
+
 def test_stopping_the_seat_ends_the_session_the_serve_left_running(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

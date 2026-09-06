@@ -64,7 +64,12 @@ test("the workbench seats the operator at a terminal, and a reload reattaches to
   expect(await seatSessionLine(page)).toBe(session);
 });
 
-test("a run started while the seat is on screen appears as an ordinary run row (#1099 line 8)", async ({
+// Not #1099 line 8: this run is started through the API beside the seat, not
+// typed into the terminal through the atelier's MCP door. That half of the
+// line is deferred to the operator's live proof (#1099); what stands here is
+// the cockpit half -- a run that arrives while the terminal is on screen is
+// an ordinary row, and the seat neither swallows it nor marks it.
+test("a run that arrives while the seat is on screen is an ordinary row beside it", async ({
   page
 }) => {
   await page.setViewportSize(WIDE);
@@ -108,6 +113,30 @@ test("a run started while the seat is on screen appears as an ordinary run row (
     page.getByRole("heading", { name: "Did this run arrive on the shelf?" })
   ).toBeVisible({ timeout: 20_000 });
   await expect(page.locator(".seat-terminal")).toHaveCount(1);
+});
+
+test("a terminal that stopped answering leaves one refusal with the way out, and the room working (#1099 lines 9, 10, 11)", async ({
+  page
+}) => {
+  const missing = await page.request.post("/__e2e/seat-terminal?state=missing");
+  expect(missing.ok()).toBeTruthy();
+  try {
+    await page.setViewportSize(WIDE);
+    await openWorkbench(page);
+
+    const seat = page.getByRole("region", { name: seatCopy.regionLabel });
+    await expect(seat.getByText(seatCopy.unreachableTitle)).toBeVisible();
+    await expect(seat.getByText(seatCopy.unreachableDetail)).toBeVisible();
+    await expect(page.locator(".seat-terminal")).toHaveCount(0);
+    // The refusal takes nothing else down with it, and it is one sentence in
+    // one place -- never a second copy of itself.
+    await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
+    await expect(seat.getByText(seatCopy.unreachableTitle)).toHaveCount(1);
+    await expect(seat.getByText(seatCopy.trustBoundary)).toBeVisible();
+  } finally {
+    const answering = await page.request.post("/__e2e/seat-terminal?state=answering");
+    expect(answering.ok()).toBeTruthy();
+  }
 });
 
 test.describe("on a phone", () => {

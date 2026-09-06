@@ -217,11 +217,15 @@ class TerminalSeat:
         systemctl = self.host.locate_executable(SYSTEMCTL_PROGRAM)
         if systemd_run is None or systemctl is None:
             return TerminalSeatOutcome.REFUSED_SYSTEMD_MISSING
-        if not self.host.loopback_port_is_free(self.settings.port):
-            return TerminalSeatOutcome.REFUSED_PORT_BUSY
         session, scope = self._established_presence(systemctl)
         if session is SeatPresence.ALIVE:
+            # The session is the seat; the port only carries a terminal to it.
+            # Judging the port first refused a living seat whenever an
+            # unclean serve death left its own ttyd holding the port -- the
+            # one case re-attaching exists for.
             return TerminalSeatOutcome.ALREADY_RUNNING
+        if not self.host.loopback_port_is_free(self.settings.port):
+            return TerminalSeatOutcome.REFUSED_PORT_BUSY
         orphaned_scope = scope is SeatPresence.ALIVE
         if orphaned_scope:
             self._stop_scope(systemctl)

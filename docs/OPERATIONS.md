@@ -235,6 +235,64 @@ to a remote such as GitHub -- finish; cutting it mid-flight is acceptable
 because the redeploy that triggers this grace already checked for running
 runs before it started, and a cut connect is simply retried by the operator.
 
+### The Workbench's terminal seat
+
+The Workbench shows a terminal, not a chat: one tmux session with the agent CLI
+in it, reached through a ttyd child on loopback. Three flags declare it on
+`serve`, beside the `--claude-executable` the seat runs:
+
+```bash
+--seat-tmux-executable /usr/bin/tmux \
+--seat-ttyd-executable "$HOME/.local/bin/ttyd" \
+--seat-port 7681
+```
+
+Both paths are named together or not at all, and a declared seat needs
+`--project-id` and `--project-root`: a seat belongs to one project, opened
+where that project lies. A named path that is not an executable file refuses
+the start rather than sending the serve looking for one somewhere else.
+
+The session is deliberately not the serve's child. `serve` creates it inside a
+transient systemd user scope (`systemd-run --user --scope --collect`), so
+stopping `atelier2-serve.service` — every redeploy does — takes the ttyd child
+with the unit's control group but leaves the session and the agent running.
+The next start finds that session again and draws a **fresh** address for it,
+so a tab open across a redeploy reconnects on its next read; MCP calls made
+from the seat fail visibly during the restart minute and work again after it.
+Socket, session and scope carry one digest over the store path and the project
+id, so two deployments on this machine (the live one and a test one) never
+meet.
+
+The seat is reached only over loopback, under a base path drawn fresh at every
+serve start and told to nobody but the cockpit. There is no login: a pty is a
+shell, so the seat has exactly the trust boundary the loopback serve has —
+this machine, one user (#82 is open). The page says so beneath the terminal.
+Nothing of the terminal is collected: no `pipe-pane`, no capture, no seat bytes
+in the journal, in events or in receipts.
+
+The MCP configuration the seat's agent is started with is written beside the
+store, under `terminal-seat/mcp.json` in the store's own directory, never into
+the operator's project tree. It names this deployment's own loopback door and
+carries no credential.
+
+Only this ends a seat — the serve never does, and neither does closing the tab:
+
+```bash
+uv run --locked python -m atelier2 seat stop \
+  --database "$STORE/atelier.sqlite" \
+  --project-id atelier-2 \
+  --project-root "$CHECKOUT" \
+  --claude-executable "$(command -v claude)" \
+  --seat-tmux-executable /usr/bin/tmux \
+  --seat-ttyd-executable "$HOME/.local/bin/ttyd"
+```
+
+It names the seat exactly as the serve named it, because the identity is drawn
+from those values. It prints `terminal seat stopped`, or `no terminal seat was
+running` when there was none. A forgotten stop leaves a tmux server with the
+agent in it running under the operator's own session, which is what
+`systemctl --user list-units 'atelier2-seat-*'` shows.
+
 ### Auto-redeploy watcher
 
 **Auto-redeploy is the deploy path for the loopback host Serve above: a green
@@ -670,8 +728,9 @@ and only one of them is a builder.
   so it is the only one a node that pins `run-project-verification` or
   `push-atelier-commit` can be cast onto.
 * `--claude-atelier-doors` arms `claude-atelier-doors/v1`. Its tools are the
-  atelier's own API doors and it removes every built-in with `--tools=`; it is
-  the conductor's executor and touches no file of the project.
+  atelier's own API doors and it removes every built-in with `--tools=`, so a
+  node cast onto it can choose, start and watch catalog runs while touching no
+  file of the project.
 
 None of the three hands Anthropic the output schema its node declared. The API
 refuses a schema whose root is an `allOf`, `anyOf` or `oneOf` as a tool's input

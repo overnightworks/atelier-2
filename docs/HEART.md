@@ -13,13 +13,11 @@ held out to you, or the quiet knowledge that nothing needs you.
 
 The Workbench owns what wants you now and what is still moving; History owns
 what already happened. A run lives in exactly one of the two at any moment and
-crosses from Workbench to History once, at the instant it turns terminal. The
-conversation may still quote a finished run — as the conductor's words, never
-as a second shelf.
+crosses from Workbench to History once, at the instant it turns terminal.
 
 The Catalog owns the library and starting: everything this workshop has ever
 been given, with where it came from, whether it may yet be started — and the
-one door to start it by hand. The ear starts everything else.
+one door to start it by hand. The terminal starts everything else.
 
 ## One thing alive
 
@@ -60,12 +58,13 @@ shown, never restated: where colour, shape or placeholder already says it, no
 sentence repeats it. A label you need only once lives in one help place, not
 on every wall. If you cannot say what a line is for, the line goes.
 
-## The ear
+## The seat
 
-You speak to the workshop, you do not visit a chat page. The ear is always
-within reach, and until the conductor is connected its placeholder says so —
-in the field itself, without a sentence beneath and without a button that
-duplicates a door.
+You speak to the workshop, you do not visit a chat page. Your own terminal is
+always within reach on the Workbench — the agent CLI in it, the workshop
+around it — and while it cannot be reached the room says so in one sentence
+that names the way out, without a button that duplicates a door. What is said
+in the terminal is yours: the workshop frames it and never reads it.
 
 ## Love is in the leftovers
 

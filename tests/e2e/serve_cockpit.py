@@ -268,6 +268,7 @@ E2E_SEAT_ANNOUNCEMENT = (
     f"{E2E_SEAT_PATH} -- no real seat binaries are driven here"
 )
 E2E_SEAT_PROJECT_ID = "e2e-workshop"
+E2E_SEAT_TERMINAL_PATH = "/__e2e/seat-terminal"
 
 # The fake conductor's fixed round report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
@@ -923,13 +924,7 @@ class BrowserProofHarness:
         # One session marker for this harness process: a reload reaches the
         # same terminal, exactly as reattaching to a living session does.
         self.terminal_page = _fixture_terminal_page(secrets.token_hex(4))
-        self.seat_answer = json.dumps(
-            {
-                "state": "ALIVE",
-                "url": f"{E2E_SEAT_PATH}/",
-                "project_id": E2E_SEAT_PROJECT_ID,
-            }
-        ).encode()
+        self.seat_terminal_answers = True
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.stream_counts: dict[str, int] = {}
 
@@ -1010,6 +1005,24 @@ class BrowserProofHarness:
             return
         if (
             scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and path == E2E_SEAT_TERMINAL_PATH
+        ):
+            # How a browser proof reaches the state a machine whose terminal
+            # died is in, and back again -- the spec that turns it off turns it
+            # on again, so the shared server is left as every other spec
+            # expects it (#742).
+            self.seat_terminal_answers = (
+                parse_qs(scope.get("query_string", b"").decode()).get(
+                    "state", ["answering"]
+                )[0]
+                != "missing"
+            )
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if (
+            scope["type"] == "http"
             and scope.get("method") == "GET"
             and path == SEAT_PATH
         ):
@@ -1020,7 +1033,7 @@ class BrowserProofHarness:
                     "headers": [(b"content-type", b"application/json")],
                 }
             )
-            await send({"type": "http.response.body", "body": self.seat_answer})
+            await send({"type": "http.response.body", "body": self.seat_answer()})
             return
         if (
             scope["type"] == "http"
@@ -1082,6 +1095,21 @@ class BrowserProofHarness:
             await send(message)
 
         await self.app(scope, receive, proof_send)
+
+    def seat_answer(self) -> bytes:
+        """What the seat door says: this harness's fixture terminal, or none."""
+
+        if not self.seat_terminal_answers:
+            return json.dumps(
+                {"state": "FAILED", "url": None, "project_id": None}
+            ).encode()
+        return json.dumps(
+            {
+                "state": "ALIVE",
+                "url": f"{E2E_SEAT_PATH}/",
+                "project_id": E2E_SEAT_PROJECT_ID,
+            }
+        ).encode()
 
     def current_wait_execution(self, public_run_reference: str) -> bytes | None:
         if not isinstance(self.app, FastAPI):

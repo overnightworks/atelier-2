@@ -150,9 +150,18 @@ def test_the_terminal_answers_at_the_address_the_seat_drew(
     assert _terminal_answers(address)
 
 
-def test_stopping_the_serve_leaves_the_session_and_its_agent_running(
+def test_closing_the_terminal_leaves_the_session_and_its_agent_running(
     opened: OpenedSeat,
 ) -> None:
+    """What a serve shutdown does to the seat, minus the unit stop itself.
+
+    This closes the terminal the serve owns, which is what the ASGI lifespan
+    does. Whether the transient scope really survives
+    `systemctl --user stop atelier2-serve.service` -- ruling B -- is a fact
+    about that unit's control group and is measured on the live host, not
+    here; it stays deferred against #1099.
+    """
+
     opened.served.close()
 
     assert _session_lives(opened.settings)

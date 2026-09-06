@@ -539,7 +539,15 @@
     {#if seat.kind === "reading"}
       <p class="seat-connecting" role="status">{wrapDisplayCopy(seatCopy.connecting)}</p>
     {:else if seatSource !== null}
-      <iframe class="seat-terminal" title={wrapDisplayCopy(seatCopy.terminalTitle)} src={seatSource}></iframe>
+      <!-- A terminal that stopped answering leaves the frame refusing to
+           load; the room asks the door again rather than framing a dead
+           address, and shows whatever it then says. -->
+      <iframe
+        class="seat-terminal"
+        title={wrapDisplayCopy(seatCopy.terminalTitle)}
+        src={seatSource}
+        onerror={() => { void readSeat(); }}
+      ></iframe>
     {:else}
       <ProblemNotice
         title={wrapDisplayCopy(seatCopy.unreachableTitle)}
@@ -553,11 +561,10 @@
 </section>
 
 <style>
-  /* The pinned region and the ear are the two fixtures of the Workbench: they
-     hold to the top and bottom of the stage while the conversation scrolls
-     between them, so an open decision never leaves the screen (issue #580). The
-     stage's own ground shows through, so each fixture wears it to occlude the
-     lines sliding under its edge. */
+  /* The pinned region holds to the top of the stage while the shelf and the
+     terminal beneath it move, so an open decision never leaves the screen
+     (issue #580). The stage's own ground shows through, so it wears it to
+     occlude the rows sliding under its edge. */
   .needs-you {
     position: sticky;
     top: 0;
@@ -565,9 +572,9 @@
     display: grid;
     gap: var(--space-3);
     min-height: 0;
-    /* One expanded stage and about three compact decisions keep the ear and
-       conversation in the 390px room; more remains reachable by this stack's
-       own scroll, whose fade is the promised affordance. */
+    /* One expanded stage and about three compact decisions leave the shelf and
+       the terminal room at 390px; more remains reachable by this stack's own
+       scroll, whose fade is the promised affordance. */
     max-height: calc(var(--tap) * 7 + var(--space-3) * 3);
     overflow-y: auto;
     mask-image: linear-gradient(to bottom, var(--mask-opaque) calc(100% - var(--space-3)), transparent);

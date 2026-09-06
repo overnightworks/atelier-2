@@ -139,6 +139,7 @@ from atelier2.host.served_seat import (
     LocalSeatMachine,
     SeatDeclaration,
     ServedSeat,
+    refuse_unservable_seat,
     seat_lifespan,
     seat_settings,
 )
@@ -437,13 +438,12 @@ class HostSettings:
                 "serving the Grok workspace-tool executor needs the Grok "
                 "deployment it is a second executor of"
             )
-        if self.terminal_seat is not None and (
-            self.project_id is None or self.project_root is None
-        ):
-            raise ValueError(
-                "a terminal seat is one project's seat, opened where that "
-                "project lies, so it needs --project-id and --project-root"
-            )
+        refuse_unservable_seat(
+            self.terminal_seat,
+            project_id=self.project_id,
+            project_root=self.project_root,
+            api_host=self.host,
+        )
         if self.agent_scratch_root is not None and not billed:
             raise ValueError(
                 "a scratch root without a provider executor serves nothing"

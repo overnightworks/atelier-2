@@ -31,7 +31,7 @@ from starlette.types import Lifespan
 from atelier2.adapters.claude_executable import ClaudeExecutable
 from atelier2.api.seat import SeatReading, SeatState
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.host.address import DEFAULT_HOST
+from atelier2.host.address import DEFAULT_HOST, is_loopback_host
 from atelier2.host.mcp_command import stdio_door_command
 from atelier2.host.mcp_tools import MCP_SERVER_NAME
 from atelier2.host.terminal_seat import (
@@ -178,6 +178,36 @@ class ServedSeat:
         """Say once, where the serve is read, why this seat has no terminal."""
 
         logging.getLogger("atelier2").error("atelier2 terminal seat: %s", reason)
+
+
+def refuse_unservable_seat(
+    declaration: SeatDeclaration | None,
+    *,
+    project_id: ProjectId | None,
+    project_root: Path | None,
+    api_host: str,
+) -> None:
+    """Refuse a declared seat this deployment must not open, before it opens.
+
+    A seat is one project's, opened where that project lies. And it is a shell
+    without a login: its door hands out the address and the drawn path that are
+    all a browser needs, so a deployment that answers off loopback would be
+    publishing them to the network.
+    """
+
+    if declaration is None:
+        return
+    if project_id is None or project_root is None:
+        raise ValueError(
+            "a terminal seat is one project's seat, opened where that project "
+            "lies, so it needs --project-id and --project-root"
+        )
+    if not is_loopback_host(api_host):
+        raise ValueError(
+            f"serving a terminal seat requires a loopback bind, not "
+            f"{api_host!r}: the seat's door hands out the address and the drawn "
+            "path of a shell that asks for no password"
+        )
 
 
 def seat_mcp_document(service_url: str) -> SeatMcpDocument:
