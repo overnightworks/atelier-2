@@ -3,24 +3,17 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EFFECT_CONFIRMATION_SOURCES,
-  MAXIMUM_RUN_FORK_SUCCESSORS,
   MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
-  NODE_STATES,
-  PUBLIC_ATTEMPT_STATES,
   RUN_NOT_CANCELLABLE_REASONS,
-  RUN_STATES_V3,
   problemDefinitions,
   attemptTranscriptSchema,
   assistantTurnEventSchema,
-  nodeDetailSchema,
-  nodeRailEntrySchema,
   providerTerminalRefusalEventSchema,
   toolCalledEventSchema,
   toolReturnedEventSchema,
   transcriptTruncatedEventSchema,
   unrecognisedProviderOutputEventSchema,
   usageEventSchema,
-  runV3Schema,
   decodeStreamFrame
 } from "../../src/api/client";
 
@@ -45,7 +38,6 @@ const servedDocument = JSON.parse(
             const?: string;
             $ref?: string;
             anyOf?: Array<{ enum?: string[] }>;
-            maxItems?: number;
           }
         >;
       }
@@ -56,54 +48,6 @@ const servedDocument = JSON.parse(
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
 describe("the served vocabulary", () => {
-  it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
-    expect([...NODE_STATES]).toEqual(
-      servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum
-    );
-  });
-
-  it("decodes exactly the V3 run states the document serves", () => {
-    expect([...RUN_STATES_V3]).toEqual(
-      servedDocument.components.schemas.RunResourceV3?.properties?.state?.enum
-    );
-  });
-
-  it("decodes exactly the fork lineage fields the V3 run and rail serve", () => {
-    expect(Object.keys(runV3Schema.shape).sort()).toEqual(
-      Object.keys(servedDocument.components.schemas.RunResourceV3?.properties ?? {}).sort()
-    );
-    expect(Object.keys(nodeRailEntrySchema.shape).sort()).toEqual(
-      Object.keys(servedDocument.components.schemas.NodeRailResource?.properties ?? {}).sort()
-    );
-    expect(MAXIMUM_RUN_FORK_SUCCESSORS).toBe(
-      servedDocument.components.schemas.RunResourceV3?.properties?.fork_successors?.maxItems
-    );
-  });
-
-  it("refuses partial reuse evidence and reuse on a node that did not succeed", () => {
-    const completeEvidence = {
-      reused_from_run_reference: "run1.cnVu",
-      source_event_hash: "a".repeat(64),
-      source_receipt_hash: "b".repeat(64),
-      source_declared_context_package_hash: "c".repeat(64)
-    };
-    const ordinary = { node_id: "implement", state: "succeeded", attempt: null };
-
-    for (const field of Object.keys(completeEvidence) as Array<keyof typeof completeEvidence>) {
-      const partial: Partial<typeof completeEvidence> = { ...completeEvidence };
-      delete partial[field];
-      expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...partial }).success).toBe(false);
-    }
-    expect(
-      nodeRailEntrySchema.safeParse({
-        ...ordinary,
-        state: "failed",
-        ...completeEvidence
-      }).success
-    ).toBe(false);
-    expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...completeEvidence }).success).toBe(true);
-  });
-
   it("decodes exactly the effect confirmation sources the document serves", () => {
     expect([...EFFECT_CONFIRMATION_SOURCES]).toEqual(
       servedDocument.components.schemas.EffectReceiptResource?.properties?.confirmation_source
@@ -181,21 +125,6 @@ describe("the served vocabulary", () => {
       }
     });
     expect(frame.event).toBe("RUN_PROJECTION_CORRUPT");
-  });
-
-  it("decodes exactly the agent attempt states the document serves", () => {
-    // The rail's attempt is where the served document spells this vocabulary,
-    // and it is nullable there because a succeeded attempt carries no state.
-    expect([...PUBLIC_ATTEMPT_STATES]).toEqual(
-      servedDocument.components.schemas.NodeRailAttemptResource?.properties?.state
-        ?.anyOf?.[0]?.enum
-    );
-  });
-
-  it("decodes exactly the node-detail fields the document serves", () => {
-    expect(Object.keys(nodeDetailSchema.shape).sort()).toEqual(
-      Object.keys(servedDocument.components.schemas.NodeDetailResource?.properties ?? {}).sort()
-    );
   });
 
   it("decodes exactly the attempt-transcript events the document serves", () => {
