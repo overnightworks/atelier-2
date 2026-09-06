@@ -554,10 +554,8 @@ class DbosQueueProjectionStore:
                     return DurableStateCorrupt()
                 snapshot = _snapshot_from_record(connection, record)
                 blockers = list(snapshot.blockers)
-                policy = self._current_policy(
-                    connection, snapshot.item_reference.project
-                )
                 project = snapshot.item_reference.project
+                policy = self._current_policy(connection, project)
                 if (
                     policy is not None
                     and active_launch_count(connection, project)
