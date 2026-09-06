@@ -473,7 +473,8 @@ def test_provider_stream_error_deregisters_the_descriptor(
             {"type": "STARTED"}
         )
         process = watchdog._process
-        assert process is not None and process.stdout is not None
+        assert process is not None
+        assert process.stdout is not None
         stdout_fd = process.stdout.fileno()
         assert stdout_fd in spy.registered_events
 
