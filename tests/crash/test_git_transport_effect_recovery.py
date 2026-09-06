@@ -15,6 +15,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
+from atelier2.adapters.dbos import work_item_claims as claim_module
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.names import RESOLVE_STEP_NAME
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -34,6 +35,7 @@ from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
+    EffectIntent,
     EffectIntentStateVersion,
     EffectReceipt,
     EffectUnknownOutcome,
@@ -75,6 +77,10 @@ from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_reconcile_command
+from tests.scenarios.work_item_claims import (
+    claimed_ledger,
+    fake_agent_claim_executable,
+)
 
 CRASHED = 86
 APPLICATION_VERSION = "git-transport-crash-test"
@@ -251,6 +257,7 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
             agent_scratch_root=agent_scratch_root(root),
             project_id=PROJECT,
             bootstrap_project_root=root / "project",
+            agent_claim_executable=fake_agent_claim_executable(root),
         ),
         registry,
         (executor,),
@@ -265,7 +272,7 @@ def _seed_public_run(root: Path) -> None:
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement P3.",
+            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
             WorkItemChangeMarker("issue-642-crash-v1"),
             RecordedAt("2026-08-27T12:00:00Z"),
         )
@@ -347,8 +354,38 @@ def _child(root: Path, command: str, *, expected: int = 0) -> None:
     assert result.returncode == expected, result.stderr
 
 
+def _crash_before_the_claim_receipt() -> None:
+    """Die the moment the ledger has answered the claim and nothing records it.
+
+    The one durable step that asks the ledger is still open here: the intent
+    stands PREPARED, the ledger already holds the claim, and nothing durable
+    says so yet -- neither the step's own record nor the receipt.
+    """
+
+    hold = claim_module.hold_prepared_claim
+
+    def hold_then_die(
+        intent: EffectIntent, ledger: claim_module.WorkItemClaimLedger
+    ) -> claim_module.WorkItemClaimOutcome:
+        hold(intent, ledger)
+        os._exit(CRASHED)
+
+    claim_module.hold_prepared_claim = hold_then_die
+
+
 def _launch_child(command: str, root: Path) -> None:
     push_attempts = root / "push-attempts"
+    if command == "claim-crash":
+        _crash_before_the_claim_receipt()
+        runtime = _runtime(root, PushAttemptRecordingRunner(push_attempts))
+        try:
+            runtime.launch()
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                time.sleep(0.025)
+            raise AssertionError("runtime did not crash before the claim receipt")
+        finally:
+            runtime.close()
     if command == "crash":
         runner: SubprocessGitCommandRunner = CrashProcessAfterAcceptedPush(
             push_attempts, root / "accepted"
@@ -373,6 +410,46 @@ def _launch_child(command: str, root: Path) -> None:
         wait_for_run_state(runtime.engine, RUN, expected)
     finally:
         runtime.close()
+
+
+def test_a_claim_posted_before_the_crash_is_read_back_and_never_taken_twice(
+    tmp_path: Path,
+) -> None:
+    """Decision 0001 for the lane claim, proven across a real process death.
+
+    The run posts its claim, the process dies before the receipt is written,
+    and the restart finds the intent PREPARED. Recovery replays the node: it
+    reads the ledger back under the run's own claim id, records that claim as
+    the intent's receipt -- under `ADAPTER_READBACK`, because a read and not a
+    command established it -- and the ledger still holds exactly one claim.
+    """
+
+    _project, _remote, _base = _public_repositories(tmp_path)
+    _seed_public_run(tmp_path)
+
+    _child(tmp_path, "claim-crash", expected=CRASHED)
+
+    posted = claimed_ledger(tmp_path / "agent-claim")
+    assert [request.item for request in posted] == [642]
+    with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
+        assert connection.execute(
+            "SELECT state FROM effect_intents WHERE operation_name=?",
+            (AdapterOperationName.CLAIM_WORK_ITEM.value,),
+        ).fetchall() == [("PREPARED",)]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM effect_receipts WHERE operation_name=?",
+            (AdapterOperationName.CLAIM_WORK_ITEM.value,),
+        ).fetchone() == (0,)
+
+    _child(tmp_path, "resolve")
+
+    assert claimed_ledger(tmp_path / "agent-claim") == posted
+    with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
+        assert connection.execute(
+            "SELECT effect_id,confirmation_source FROM effect_receipts "
+            "WHERE operation_name=?",
+            (AdapterOperationName.CLAIM_WORK_ITEM.value,),
+        ).fetchall() == [(posted[0].claim_id, "ADAPTER_READBACK")]
 
 
 def test_runtime_resolve_retries_an_accepted_push_without_sending_again(

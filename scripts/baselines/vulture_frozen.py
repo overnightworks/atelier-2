@@ -17,18 +17,6 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
-            "ports/work_item_claims.py:WorkItemClaims",
-            "adapters/agent_claim_cli.py:AgentClaimCli",
-        ),
-        "why": (
-            "The typed claim port and its agent-claim 0.12.0 adapter await "
-            "#1271 slice 3, which acquires the run claim before builder work "
-            "and fences the push."
-        ),
-        "item": "#1271 slice 3 (pre-build claim and push fence)",
-    },
-    {
-        "names": (
             "ports/agent_executions.py:terminal_outcome",
             "adapters/agent_client_protocol.py:AgentClientProtocolConversation",
         ),
@@ -135,17 +123,6 @@ WAITING_FOR_A_CALLER = (
             "ADR."
         ),
         "item": "#1168 Befund 7 (test-only-lebendig, Owner beim Dispatch)",
-    },
-    {
-        "names": ("adapters/attempt_workspace_files.py:AttemptWorkspaceFileAccess",),
-        "why": (
-            "The descriptor-fenced ProviderFilesystemAccess adapter for one "
-            "attempt's own workspace: it answers both READ and staged WRITE "
-            "inside the lease, but nothing binds it into "
-            "`ProviderConversationBinding.files` yet -- that overwrite is "
-            "`execute_agent_attempt`'s own job."
-        ),
-        "item": "#1177 Zeile 23 (2-C2c Receipts + Bindung im Dispatch)",
     },
     {
         "names": (

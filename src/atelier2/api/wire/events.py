@@ -15,6 +15,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire.resources import (
     AgentAttemptFailureCodeName,
+    AgentNodeRefusalName,
     ApiModel,
     CancellationDispositionName,
     EffectReceiptResource,
@@ -66,10 +67,17 @@ class AgentFailedEventResourceV3(RunEventBaseResourceV3):
 
 
 class AgentExecutorBindingUnavailableEventResourceV3(RunEventBaseResourceV3):
-    """An Agent node stopped before any provider attempt could be claimed."""
+    """An Agent node stopped before any provider attempt could be claimed.
+
+    `reason` is `AgentExecutionRefusal`'s closed set -- an executor nothing can
+    bind, and the lane claim a node must hold before it works -- written out
+    here because a wire schema may name no contract enum inline;
+    `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the
+    two spellings to set equality.
+    """
 
     event: Literal["AGENT_FAILED"]
-    reason: Literal["agent-executor-binding-unavailable"]
+    reason: AgentNodeRefusalName
 
 
 class AgentCancelRequestedEventResourceV3(RunEventBaseResourceV3):

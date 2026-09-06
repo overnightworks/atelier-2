@@ -115,6 +115,7 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineages,
     context_packages_v3,
     effect_intents,
+    effect_receipts,
     event_instants,
     host_model_registry_entries,
     host_model_registry_revisions,
@@ -549,15 +550,49 @@ def _restore_v50_permission_ledger_predecessor(
     connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
 
 
+def _restore_v53_effect_operation_vocabulary(connection: sqlite3.Connection) -> None:
+    """Take back the effect operation V54 added, keeping every stored effect.
+
+    A store at V53 or earlier admits two effect operations where today's
+    declaration admits three. Rebuilding both tables in the shape V53 published
+    is the same rebuild the hop performs, run the other way -- the receipt
+    first, so the child is rebuilt against the parent it keeps.
+    """
+
+    for table, parked, triggers in (
+        (
+            effect_receipts,
+            "effect_receipts_after_claim_work_item",
+            ("effect_receipts_no_update", "effect_receipts_no_delete"),
+        ),
+        (
+            effect_intents,
+            "effect_intents_after_claim_work_item",
+            (
+                "effect_intents_binding_no_update",
+                "effect_intents_no_delete",
+                "effect_intents_abandonment",
+                "effect_intents_no_abandoned_insert",
+            ),
+        ),
+    ):
+        schema_module._rebuild_product_table(
+            connection, table, parked, triggers, SCHEMA_VERSION, 53
+        )
+
+
 def _restore_v52_attempt_failure_vocabulary(connection: sqlite3.Connection) -> None:
     """Take back the failure code V53 added, keeping every stored attempt.
 
     A store at V52 or earlier admits eight attempt failure codes where today's
     declaration admits nine, in the table's own CHECK and in its transition
     trigger alike. Rebuilding it in the shape V52 published is the same rebuild
-    the hop performs, run the other way.
+    the hop performs, run the other way. It goes back past the effect
+    vocabulary V54 added as well, which a V52 store predates just as a V53 one
+    does.
     """
 
+    _restore_v53_effect_operation_vocabulary(connection)
     schema_module._rebuild_product_table(
         connection,
         agent_attempts,
@@ -6532,6 +6567,107 @@ def test_every_failed_transition_admits_the_refused_value_only_after_the_v53_hop
             "FAILED",
             AgentAttemptFailureCode.PRODUCED_VALUE_REFUSED.value,
         )
+
+
+_V53_EFFECT_REVISION = "5c" * 32
+_V53_EFFECT_REQUEST_HASH = "5d" * 32
+_V53_EFFECT_RESULT_HASH = "5e" * 32
+_CLAIM_INTENT = (
+    "INSERT INTO effect_intents VALUES ('v53-claim', 'v53-run', ?, ?, ?, "
+    "'agent-claim-cli/0.12.0', '/checkout', '/usr/bin/agent-claim', "
+    "'claim-work-item', 'PREPARED', 0, NULL)"
+)
+
+
+def _populated_v53_store(database_path: Path) -> tuple[object, ...]:
+    """A published V53 store holding one confirmed open-pr effect."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_revisions VALUES (?, ?)",
+            (_V53_EFFECT_REVISION, b"name: v53\nsteps: []\n"),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence) VALUES "
+            "('v53-run', 'v53-bootstrap', ?, 1, 'effect', 1, 'STARTED', 1, 0)",
+            (_V53_EFFECT_REVISION,),
+        )
+        binding = (
+            "v53-effect",
+            "v53-run",
+            b"request",
+            _V53_EFFECT_REQUEST_HASH,
+            _V53_EFFECT_REVISION,
+            "adapter-v1",
+            "github",
+            "github:owner/repository",
+        )
+        connection.execute(
+            "INSERT INTO effect_intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+            "'open-pr', 'CONFIRMED', 1, NULL)",
+            binding,
+        )
+        connection.execute(
+            "INSERT INTO effect_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+            "'open-pr', 'pr/1', X'01', ?, 'ADAPTER_EXECUTION', NULL, NULL, NULL, "
+            "NULL, NULL)",
+            (*binding, _V53_EFFECT_RESULT_HASH),
+        )
+        _restore_v53_effect_operation_vocabulary(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 53")
+        connection.commit()
+        _require_product_shape(connection, 53)
+        standing = connection.execute(
+            "SELECT * FROM effect_receipts WHERE logical_key = 'v53-effect'"
+        ).fetchone()
+    assert standing is not None
+    return standing
+
+
+def test_the_effect_ledger_admits_a_work_item_claim_only_after_the_v54_hop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The claim a run holds is an effect, so its operation is the ledger's word.
+
+    A store that took a claim intent under a vocabulary its own CHECK does not
+    name would hold a coordination fact no reader can trust, so the hop is what
+    admits it -- and the effects already recorded cross it byte for byte.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    standing_receipt = _populated_v53_store(database_path)
+    claim_request = (b"claim request", _V53_EFFECT_REQUEST_HASH, _V53_EFFECT_REVISION)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        connection.execute(_CLAIM_INTENT, claim_request)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(_CLAIM_INTENT, claim_request)
+        connection.commit()
+        assert connection.execute(
+            "SELECT operation_name, state FROM effect_intents "
+            "WHERE logical_key = 'v53-claim'"
+        ).fetchone() == (AdapterOperationName.CLAIM_WORK_ITEM.value, "PREPARED")
+        assert (
+            connection.execute(
+                "SELECT * FROM effect_receipts WHERE logical_key = 'v53-effect'"
+            ).fetchone()
+            == standing_receipt
+        )
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
 
 
 def _populated_v50_store_with(database_path: Path) -> None:

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -29,8 +30,10 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     effect_intents,
     effect_receipts,
+    run_events,
     run_inputs_v3,
 )
 from atelier2.adapters.dbos.starter import (
@@ -75,6 +78,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
 )
+from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import InlineOrderValue, ObservedWorkItemOrderValue
@@ -115,6 +119,7 @@ from tests.scenarios.api import durable_api_client
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PROJECT = ProjectId("p3-public")
@@ -408,11 +413,21 @@ nodes:
     )
 
 
-@pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
-def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
+def _public_runtime(
     tmp_path: Path,
-) -> None:
-    project, remote, base = _repositories(tmp_path)
+    project: Path,
+    remote: Path,
+    *,
+    claims: str | None = "grant",
+    claim_root: Path | None = None,
+) -> tuple[DbosRuntime, GitHubEffectAdapterFactory]:
+    """The served instance this proof drives: both effects, and its claim ledger.
+
+    `claims` is what that ledger answers a claim -- or `None` for an operator
+    who served the project without a claim command at all, which is what the
+    unconfigured refusal is about.
+    """
+
     github = GitHubEffectAdapterFactory(
         tmp_path / "github.sqlite",
         AdapterRevision("github-open-pr-v1"),
@@ -451,46 +466,172 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
+            agent_claim_executable=(
+                None
+                if claims is None
+                else fake_agent_claim_executable(claim_root or tmp_path, claims)
+            ),
         ),
         registry,
         (executor,),
     )
     runtime.initialize_storage()
-    try:
-        workflow, bindings = _publish(runtime)
-        item = ObservedWorkItemRevision(
-            ITEM,
-            WorkItemKind.ISSUE,
+    return runtime, github
+
+
+def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
+    """Start the shipped line on one issue whose body says exactly this."""
+
+    workflow, bindings = _publish(runtime)
+    item = ObservedWorkItemRevision(
+        ITEM,
+        WorkItemKind.ISSUE,
+        body,
+        WorkItemChangeMarker("issue-642-v1"),
+        RecordedAt("2026-08-27T12:00:00Z"),
+    )
+    binding = bindings.bindings[0]
+    client = durable_api_client(
+        runtime,
+        served_project_id=PROJECT,
+        tracker_item_source=FakeTrackerItemSource(
+            snapshot_answer=WorkItemRevisionObserved(item),
+            expected_snapshot_reference=item.item,
+        ),
+    )
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": RUN.value,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "work_item": ITEM.value}],
+        },
+    )
+
+
+_SCOPED_ITEM = b"Implement P3.\n\n## Dateien\n`one.txt`\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "claims", "refusal", "receipts"),
+    (
+        pytest.param(
             b"Implement P3.",
-            WorkItemChangeMarker("issue-642-v1"),
-            RecordedAt("2026-08-27T12:00:00Z"),
-        )
-        binding = bindings.bindings[0]
-        client = durable_api_client(
-            runtime,
-            served_project_id=PROJECT,
-            tracker_item_source=FakeTrackerItemSource(
-                snapshot_answer=WorkItemRevisionObserved(item),
-                expected_snapshot_reference=item.item,
-            ),
-        )
-        response = client.post(
-            API_PREFIX + "/runs",
-            json={
-                "workflow_format_version": 3,
-                "run_id": RUN.value,
-                "workflow_revision_hash": workflow.revision_hash.value,
-                "agent_bindings": [
-                    {
-                        "role": binding.role.value,
-                        "agent_configuration_revision_hash": (
-                            binding.agent_configuration_revision_hash.value
-                        ),
-                    }
-                ],
-                "orders": [{"name": ORDER_NAME, "work_item": ITEM.value}],
-            },
-        )
+            "grant",
+            AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE,
+            0,
+            id="the-item-names-no-scope",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            None,
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED,
+            0,
+            id="this-instance-holds-no-claim-command",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "priority",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY,
+            0,
+            id="the-ledger-refuses-on-priority",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "unknown",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+            0,
+            id="the-ledger-refuses-without-a-reason-this-reader-knows",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
+            "touches",
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+            1,
+            id="the-claim-touches-another-lane",
+        ),
+    ),
+)
+def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
+    tmp_path: Path,
+    body: bytes,
+    claims: str | None,
+    refusal: AgentExecutionRefusal,
+    receipts: int,
+) -> None:
+    """A claim this run cannot hold ends it where it stands, and nothing ran.
+
+    The scope is the item's own `## Dateien` and a wide claim is not this
+    runtime's to invent; an instance serving without a claim command holds no
+    lane at all; and the ledger itself may refuse, or grant a claim over paths
+    another lane already holds. Every one of them ends the node under its own
+    word before an attempt of it exists -- which is what proves no workspace
+    was leased, no provider started and nothing was pushed. A grant that did
+    happen is receipted all the same.
+    """
+
+    project, remote, _base = _repositories(tmp_path)
+    runtime, github = _public_runtime(tmp_path, project, remote, claims=claims)
+    try:
+        assert _start_public_run(runtime, body).status_code == 201
+        runtime.launch()
+        wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
+
+        with runtime.engine.connect() as connection:
+            failures = connection.execute(
+                sa.select(run_events.c.payload, run_events.c.agent_attempt_id).where(
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value
+                )
+            ).all()
+            attempts = connection.execute(
+                sa.select(sa.func.count()).select_from(agent_attempts)
+            ).scalar()
+            confirmed = connection.execute(
+                sa.select(sa.func.count()).select_from(effect_receipts)
+            ).scalar()
+        assert failures == [(refusal.value.encode("ascii"), None)]
+        assert (attempts, confirmed) == (0, receipts)
+        assert github.recorded_pull_requests() == ()
+        assert _git(remote, "branch", "--list", "atelier2/*") == ""
+    finally:
+        runtime.close()
+
+    _restarts_without_an_open_binding(tmp_path, project, remote)
+
+
+def _restarts_without_an_open_binding(
+    tmp_path: Path, project: Path, remote: Path
+) -> None:
+    """A finished run leaves no effect intent a differing identity must answer for.
+
+    The claim's binding names the command this instance was served with, so an
+    instance serving the same project with another one is refused at start
+    while any claim intent of a finished run still counts as open (#1218).
+    """
+
+    moved = tmp_path / "moved-claim-command"
+    moved.mkdir(exist_ok=True)
+    restarted, _github = _public_runtime(tmp_path, project, remote, claim_root=moved)
+    restarted.close()
+
+
+@pytest.mark.proves("an-authorised-candidate-is-pushed-before-its-pr-opens")
+def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
+    tmp_path: Path,
+) -> None:
+    project, remote, base = _repositories(tmp_path)
+    runtime, github = _public_runtime(tmp_path, project, remote)
+    try:
+        response = _start_public_run(runtime, _SCOPED_ITEM)
         assert response.status_code == 201, response.text
         runtime.launch()
         wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
@@ -523,21 +664,27 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
                     effect_receipts.c.result,
                 ).order_by(sa.literal_column("rowid"))
             ).all()
+        # The lane claim is the run's first effect: it is held before the
+        # builder works, and its receipt stands beside the push and the PR.
         assert [intent.binding.operation_name for intent in intents] == [
+            AdapterOperationName.CLAIM_WORK_ITEM,
             AdapterOperationName.PUSH_ATELIER_COMMIT,
             AdapterOperationName.OPEN_PR,
         ]
         assert [row.operation_name for row in receipts] == [
+            AdapterOperationName.CLAIM_WORK_ITEM.value,
             AdapterOperationName.PUSH_ATELIER_COMMIT.value,
             AdapterOperationName.OPEN_PR.value,
         ]
-        push_receipt = json.loads(bytes(receipts[0].result).decode("utf-8"))
+        push_receipt = json.loads(bytes(receipts[1].result).decode("utf-8"))
         assert push_receipt["commit_oid"] == commit
         assert push_receipt["candidate_tree"] == pushed_tree
-        open_request = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
+        open_request = OpenPullRequest.from_canonical_bytes(intents[2].request.payload)
         assert open_request.head_branch.value == branch
     finally:
         runtime.close()
+
+    _restarts_without_an_open_binding(tmp_path, project, remote)
 
 
 class _CrashAfterDocumentationPush(RuntimeError):

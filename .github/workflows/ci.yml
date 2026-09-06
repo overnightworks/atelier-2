@@ -712,11 +712,20 @@ jobs:
 
       # The scan step above blocks on the analysis (sonar.qualitygate.wait=true
       # in sonar-project.properties), so the report this reads is already
-      # final. The quality gate itself passes on ratings (A/B/C), not on "0
-      # open findings" (#1294, following #1203's measurement: three green
-      # landings still carried 16 new findings); this queries the public API
-      # directly for that stronger bar and fails loud, with the list, when it
-      # is not met. No token: the project is public.
+      # final -- when the scan published one. That step is continue-on-error,
+      # so a scan that failed to publish is a reachable state, not a
+      # hypothetical; this step is what turns that silent failure into a red
+      # pull request. The quality gate itself passes on ratings (A/B/C), not
+      # on "0 open findings" (#1294, following #1203's measurement: three
+      # green landings still carried 16 new findings); this queries the
+      # public API directly for that stronger bar and fails loud, with the
+      # list, when it is not met. It reads the component with the same scope
+      # as the count first, and fails loud, with a distinct message, whether
+      # the component is unreadable (private, no permission) or simply has no
+      # published analysis for that scope yet -- instead of trusting an empty
+      # search result as "zero findings" (#1368: an anonymous query against a
+      # component that turned private, or a pull request scope SonarCloud
+      # never analyzed, both answer 200 with total 0 on api/issues/search).
       #
       # main already carries #1203's pre-existing backlog (318 open findings,
       # measured 06.09.2026), so a push to main only reports that count; only
@@ -726,6 +735,7 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           set -euo pipefail
           component_key="$(sed -n 's/^sonar\.projectKey=//p' sonar-project.properties)"
@@ -756,19 +766,71 @@ jobs:
               ;;
           esac
           python3 - "${component_key}" "${scope_query}" "${gate}" <<'PYTHON'
+          import base64
           import json
+          import os
           import sys
+          import urllib.error
           import urllib.request
 
           component_key, scope_query, gate = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+          sonar_token = os.environ.get("SONAR_TOKEN") or None
+
+          def fetch(url: str, token: str | None) -> dict:
+              request = urllib.request.Request(url)
+              if token:
+                  credentials = base64.b64encode(f"{token}:".encode()).decode("ascii")
+                  request.add_header("Authorization", f"Basic {credentials}")
+              with urllib.request.urlopen(request) as response:
+                  return json.load(response)
+
+          # "readable", "not_published" (SonarCloud has no analysis for this
+          # exact scope -- 404), or "not_readable" (any other failure, e.g. a
+          # private component without permission).
+          def probe_component(token: str | None) -> str:
+              url = f"https://sonarcloud.io/api/navigation/component?component={component_key}&{scope_query}"
+              try:
+                  component = fetch(url, token)
+              except urllib.error.HTTPError as error:
+                  return "not_published" if error.code == 404 else "not_readable"
+              except urllib.error.URLError:
+                  return "not_readable"
+              return "readable" if component.get("key") else "not_readable"
+
+          auth_token = None
+          status = probe_component(None)
+          if status != "readable" and sonar_token:
+              status = probe_component(sonar_token)
+              if status == "readable":
+                  auth_token = sonar_token
+
+          if status == "not_published":
+              print(
+                  f"::error::SonarCloud has no published analysis for '{component_key}' with scope "
+                  f"'{scope_query}' (never analyzed, or the scan step failed silently -- it runs "
+                  "continue-on-error)",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if status != "readable":
+              reason = (
+                  "no SONAR_TOKEN is configured"
+                  if not sonar_token
+                  else "it stays unreadable even with SONAR_TOKEN"
+              )
+              print(
+                  f"::error::SonarCloud component '{component_key}' is not readable anonymously and {reason}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
 
           def fetch_page(page: int) -> dict:
               url = (
                   "https://sonarcloud.io/api/issues/search"
-                  f"?componentKeys={component_key}&{scope_query}&statuses=OPEN&ps=500&p={page}"
+                  f"?componentKeys={component_key}&{scope_query}"
+                  f"&issueStatuses=OPEN,CONFIRMED,ACCEPTED,FALSE_POSITIVE&ps=500&p={page}"
               )
-              with urllib.request.urlopen(url) as response:
-                  return json.load(response)
+              return fetch(url, auth_token)
 
           if not gate:
               total = fetch_page(1)["total"]

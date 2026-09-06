@@ -88,6 +88,7 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
     refusing,
     runtime_workspace_owner,
+    workspace_files_nobody_opens,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.projects import git_project
@@ -596,6 +597,7 @@ def main(root: Path, mode: str) -> None:
                 runtime_workspace_owner(lease),
                 replace(project, candidates=DiesOnceTheWorkIsKept(project.candidates)),
                 permissions=GRANTS_NOTHING,
+                workspace_files=workspace_files_nobody_opens,
             )
             raise AssertionError("the kept candidate was supposed to end this process")
         if mode == "read-candidate":
@@ -614,6 +616,7 @@ def main(root: Path, mode: str) -> None:
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
                 permissions=GRANTS_NOTHING,
+                workspace_files=workspace_files_nobody_opens,
             )
             found = durable_queries(lease.engine).get_run(exact_request.run_id)
             if isinstance(found, RunFound):

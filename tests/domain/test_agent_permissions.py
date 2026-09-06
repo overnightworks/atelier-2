@@ -26,6 +26,7 @@ from atelier2.contracts.agent_permissions import (
     PermissionScope,
     PermissionScopeKind,
     decide,
+    refuse,
 )
 from atelier2.contracts.when import RecordedAt
 from tests.scenarios.agents import agent_attempt_execution, agent_execution_request_v2
@@ -118,6 +119,37 @@ def test_each_call_of_one_attempt_is_its_own_question() -> None:
     assert PermissionCorrelationId.for_call(
         attempt_id, 1
     ) != PermissionCorrelationId.for_call(attempt_id, 2)
+
+
+def test_the_first_file_request_and_the_first_question_are_two_questions() -> None:
+    """A conversation counts file requests apart from permission questions, so
+    the two families are framed apart: one attempt's first file request never
+    lands on the row its first permission question wrote."""
+
+    attempt_id = an_attempt_id()
+
+    first_construction = PermissionCorrelationId.for_file_call(attempt_id, 1)
+    second_construction = PermissionCorrelationId.for_file_call(attempt_id, 1)
+
+    assert first_construction == second_construction
+    assert first_construction != PermissionCorrelationId.for_call(attempt_id, 1)
+    assert first_construction != PermissionCorrelationId.for_file_call(attempt_id, 2)
+
+
+def test_a_question_refused_unasked_names_the_revision_it_ran_under() -> None:
+    """The fence, not the policy, found the path was never the workspace: the
+    policy that grants the workspace is not asked, yet the refusal still stands
+    on that revision's hash, because every receipt of one execution does."""
+
+    question = a_question(PermissionEffect.WORKSPACE_READ, THE_LEASE)
+
+    withheld = refuse(MAY_READ_THE_LEASE, question)
+
+    assert decide(MAY_READ_THE_LEASE, question).granted is True
+    assert withheld.granted is False
+    assert withheld.correlation_id == question.correlation_id
+    assert withheld.policy_revision_hash == MAY_READ_THE_LEASE.revision_hash
+    assert withheld.authority is PermissionAuthority.POLICY
 
 
 def test_the_same_call_of_two_attempts_are_two_questions() -> None:

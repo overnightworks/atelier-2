@@ -38,8 +38,21 @@ boundary, a hard link, a non-regular file, a lease or a resolved file
 changing identity underneath this call, a file wider than the injected
 ceiling, a write naming a protected path, a write whose parent directory does
 not exist, a write onto a name that is itself a symlink, or an unclassified
-I/O fault -- is a typed member of `AttemptWorkspaceFileRefusal`, carried on
-the outcome `describe` returns.
+I/O fault -- is a typed member of `ProviderFilesystemRefusal`, carried on the
+reply. The one exception is the authorisation ledger itself: a receipt that
+cannot be kept is raised, exactly as a permission answer's is, because an
+effect whose only record died with the process is the thing ADR 0020 §2
+forbids.
+
+Every request is one question of the bound `ProviderFilesystemAuthority`, put
+at the seam between the fence and the effect. A path the fence confirms as
+the workspace is decided there -- the policy answers, the answer is kept,
+and only a grant goes on to move a byte. A path the fence refuses is kept as
+a refusal without the policy being asked, since the policy grants the
+workspace and this path was never it. A failure after the grant -- a file
+that changed identity or grew past the ceiling under the read, a write that
+faulted mid-stage -- is refused on the reply and leaves the one receipt the
+question already has.
 
 A write is staged, never opened onto its final name directly. Its content is
 checked against the same ceiling before anything is created; its parent
@@ -66,18 +79,25 @@ import secrets
 import stat
 from contextlib import suppress
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 from atelier2.adapters.leased_directory import (
     LeasedDirectoryChanged,
     entered_leased_directory,
 )
+from atelier2.contracts.agent_permissions import (
+    ATTEMPT_WORKSPACE,
+    PermissionCorrelationId,
+    PermissionEffect,
+    PermissionRequest,
+)
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.provider_conversations import (
     ProviderFilesystemAnswer,
+    ProviderFilesystemAuthority,
     ProviderFilesystemEffect,
+    ProviderFilesystemRefusal,
     ProviderFilesystemReply,
     ProviderFilesystemRequest,
     ProviderFilesystemRequestId,
@@ -169,29 +189,14 @@ def _openat2_directory_descriptor(dir_fd: int, relative_path: str) -> int:
     return _openat2_descriptor(dir_fd, relative_path, os.O_PATH | os.O_DIRECTORY)
 
 
-class AttemptWorkspaceFileRefusal(StrEnum):
-    """Why one filesystem request inside an attempt's lease was not granted."""
-
-    PATH_LEFT_THE_LEASE = "path-left-the-lease"
-    PATH_NOT_ENCODABLE = "path-not-encodable"
-    PATH_NAMED_A_SYMLINK = "path-named-a-symlink"
-    PATH_CROSSED_A_MOUNT = "path-crossed-a-mount"
-    FILE_NOT_FOUND = "file-not-found"
-    ACCESS_DENIED = "access-denied"
-    FILE_IS_HARD_LINKED = "file-is-hard-linked"
-    NOT_A_REGULAR_FILE = "not-a-regular-file"
-    LEASED_DIRECTORY_CHANGED = "leased-directory-changed"
-    RESOLVED_FILE_CHANGED_IDENTITY = "resolved-file-changed-identity"
-    FILE_EXCEEDS_THE_CEILING = "file-exceeds-the-ceiling"
-    PROTECTED_PATH = "protected-path"
-    PARENT_MISSING = "parent-missing"
-    TARGET_IS_SYMLINK = "target-is-symlink"
-    WORKSPACE_IO_FAILED = "workspace-io-failed"
-
+_PERMISSION_EFFECT_OF = {
+    ProviderFilesystemEffect.READ: PermissionEffect.WORKSPACE_READ,
+    ProviderFilesystemEffect.WRITE: PermissionEffect.WORKSPACE_WRITE,
+}
 
 # `openat2`'s own errno already names most refusals; `ENOSYS`/`EINVAL` (no
 # kernel support) and anything else unclassified are left to the outer I/O
-# boundary in `describe` rather than guessed at here.
+# boundary in `answer` rather than guessed at here.
 #
 # `ENOENT`/`ENOTDIR` name a plain missing path, and `EACCES` names an
 # ordinary permission refusal -- neither is an escape, so neither shares
@@ -201,22 +206,22 @@ class AttemptWorkspaceFileRefusal(StrEnum):
 # call is ever made, so an `EXDEV` this classifier can actually observe is a
 # mount crossing, never a `RESOLVE_BENEATH` escape the lexical fence let
 # through -- `PATH_LEFT_THE_LEASE` stays reserved for that fence itself.
-_OPENAT2_ERRNO_REFUSALS: dict[int, AttemptWorkspaceFileRefusal] = {
-    errno.ELOOP: AttemptWorkspaceFileRefusal.PATH_NAMED_A_SYMLINK,
-    errno.EXDEV: AttemptWorkspaceFileRefusal.PATH_CROSSED_A_MOUNT,
-    errno.EACCES: AttemptWorkspaceFileRefusal.ACCESS_DENIED,
-    errno.ENOENT: AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
-    errno.ENOTDIR: AttemptWorkspaceFileRefusal.FILE_NOT_FOUND,
+_OPENAT2_ERRNO_REFUSALS: dict[int, ProviderFilesystemRefusal] = {
+    errno.ELOOP: ProviderFilesystemRefusal.PATH_NAMED_A_SYMLINK,
+    errno.EXDEV: ProviderFilesystemRefusal.PATH_CROSSED_A_MOUNT,
+    errno.EACCES: ProviderFilesystemRefusal.ACCESS_DENIED,
+    errno.ENOENT: ProviderFilesystemRefusal.FILE_NOT_FOUND,
+    errno.ENOTDIR: ProviderFilesystemRefusal.FILE_NOT_FOUND,
 }
 
 # Resolving a write's parent directory reuses the same fenced walk and the
 # same errno vocabulary, except a missing or non-directory parent asks a
 # different question of a caller than a missing file does, so it keeps its
 # own name (`PARENT_MISSING`) rather than sharing `FILE_NOT_FOUND`.
-_PARENT_OPENAT2_ERRNO_REFUSALS: dict[int, AttemptWorkspaceFileRefusal] = {
+_PARENT_OPENAT2_ERRNO_REFUSALS: dict[int, ProviderFilesystemRefusal] = {
     **_OPENAT2_ERRNO_REFUSALS,
-    errno.ENOENT: AttemptWorkspaceFileRefusal.PARENT_MISSING,
-    errno.ENOTDIR: AttemptWorkspaceFileRefusal.PARENT_MISSING,
+    errno.ENOENT: ProviderFilesystemRefusal.PARENT_MISSING,
+    errno.ENOTDIR: ProviderFilesystemRefusal.PARENT_MISSING,
 }
 
 # Product-owned names, not the CLI-specific globs a provider's own tooling
@@ -285,45 +290,45 @@ def _has_unencodable_component(parts: tuple[str, ...]) -> bool:
     return False
 
 
-@dataclass(frozen=True, slots=True)
-class AttemptWorkspaceFileOutcome:
-    """One request's reply, and the refusal it carries when it was not answered.
+@dataclass(eq=False)
+class _FileQuestion:
+    """One request's permission question, put to the authority at most once.
 
-    `detail` exists for exactly one refusal: an unclassified `OSError` names
-    its errno here so the failure stays diagnosable, never the host path a
-    caller must not learn.
+    The fence and the effect are separated by exactly this: `granted` is asked
+    where the next step would move a byte, and a refusal reached before that
+    is kept through `refused_unasked` -- so every request leaves one receipt,
+    and no receipt says the policy granted a path that was never the workspace.
     """
 
-    reply: ProviderFilesystemReply
-    refusal: AttemptWorkspaceFileRefusal | None = None
-    detail: str = ""
+    authority: ProviderFilesystemAuthority
+    request: PermissionRequest
+    asked: bool = False
 
-    def __post_init__(self) -> None:
-        answered = self.reply.answer is ProviderFilesystemAnswer.ANSWERED
-        if answered and self.refusal is not None:
-            raise ValueError("an answered file request carries no refusal")
-        if not answered and self.refusal is None:
-            raise ValueError("a refused file request names why")
-        if (
-            self.detail
-            and self.refusal is not AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED
-        ):
-            raise ValueError("only a workspace I/O failure names its errno")
+    def granted(self) -> bool:
+        self.asked = True
+        return self.authority.decide(self.request).granted
+
+    def refused_unasked(self) -> None:
+        self.authority.refuse(self.request)
 
 
 class AttemptWorkspaceFileAccess:
     """The one place a running provider's file requests reach real disk.
 
-    Bound to exactly one attempt's lease and to the largest file this
-    conversation's reply can afford. Given the same lease, it grants exactly
-    what that attempt's own workspace holds -- symlinks, mount boundaries,
-    hard links, escapes and a lease whose directory was swapped underneath it
-    are refused the same way an oversize file is: as data on the outcome,
-    never as an exception.
+    Bound to exactly one attempt's lease, to the largest file this
+    conversation's reply can afford, and to the authority that keeps every
+    answer before it is given. Given the same lease, it grants exactly what
+    that attempt's own workspace holds -- symlinks, mount boundaries, hard
+    links, escapes and a lease whose directory was swapped underneath it are
+    refused the same way an oversize file is: as data on the reply, never as
+    an exception.
     """
 
     def __init__(
-        self, lease: AgentAttemptWorkspaceLease, maximum_read_bytes: int
+        self,
+        lease: AgentAttemptWorkspaceLease,
+        maximum_read_bytes: int,
+        authority: ProviderFilesystemAuthority,
     ) -> None:
         if not isinstance(lease, AgentAttemptWorkspaceLease):
             raise TypeError("attempt workspace file access needs a typed lease")
@@ -338,37 +343,47 @@ class AttemptWorkspaceFileAccess:
             )
         self._lease = lease
         self._maximum_read_bytes = maximum_read_bytes
+        self._authority = authority
 
     def answer(self, request: ProviderFilesystemRequest) -> ProviderFilesystemReply:
-        """Do exactly this to exactly that file, or refuse it."""
+        """Do exactly this to exactly that file, or refuse it -- receipted either way."""
 
-        return self.describe(request).reply
+        question = _FileQuestion(
+            self._authority,
+            PermissionRequest(
+                _PERMISSION_EFFECT_OF[request.effect],
+                ATTEMPT_WORKSPACE,
+                PermissionCorrelationId.for_file_call(
+                    self._lease.attempt_id, request.request_id.call_ordinal
+                ),
+            ),
+        )
+        reply = self._reached(request, question)
+        if reply.answer is ProviderFilesystemAnswer.REFUSED and not question.asked:
+            question.refused_unasked()
+        return reply
 
-    def describe(
-        self, request: ProviderFilesystemRequest
-    ) -> AttemptWorkspaceFileOutcome:
-        """The full outcome of one request, refusal included, for a caller
-        that wants to know why -- `answer` keeps only what the port promises.
-        """
-
+    def _reached(
+        self, request: ProviderFilesystemRequest, question: _FileQuestion
+    ) -> ProviderFilesystemReply:
         parts = _leased_relative_parts(request.path, self._lease.working_directory)
         if parts is None:
             return _refused(
-                request.request_id, AttemptWorkspaceFileRefusal.PATH_LEFT_THE_LEASE
+                request.request_id, ProviderFilesystemRefusal.PATH_LEFT_THE_LEASE
             )
         if _has_unencodable_component(parts):
             return _refused(
-                request.request_id, AttemptWorkspaceFileRefusal.PATH_NOT_ENCODABLE
+                request.request_id, ProviderFilesystemRefusal.PATH_NOT_ENCODABLE
             )
         if request.effect is ProviderFilesystemEffect.WRITE:
             if _names_a_protected_path(parts):
                 return _refused(
-                    request.request_id, AttemptWorkspaceFileRefusal.PROTECTED_PATH
+                    request.request_id, ProviderFilesystemRefusal.PROTECTED_PATH
                 )
             if len(request.content) > self._maximum_read_bytes:
                 return _refused(
                     request.request_id,
-                    AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING,
+                    ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING,
                 )
         try:
             with entered_leased_directory(
@@ -376,12 +391,12 @@ class AttemptWorkspaceFileAccess:
             ) as (_entry, root_fd):
                 if request.effect is ProviderFilesystemEffect.WRITE:
                     return self._write_within(
-                        request.request_id, root_fd, parts, request.content
+                        request.request_id, root_fd, parts, request.content, question
                     )
-                return self._read_within(request.request_id, root_fd, parts)
+                return self._read_within(request.request_id, root_fd, parts, question)
         except LeasedDirectoryChanged:
             return _refused(
-                request.request_id, AttemptWorkspaceFileRefusal.LEASED_DIRECTORY_CHANGED
+                request.request_id, ProviderFilesystemRefusal.LEASED_DIRECTORY_CHANGED
             )
         except OSError as error:
             return _workspace_io_failure(request.request_id, error)
@@ -391,7 +406,8 @@ class AttemptWorkspaceFileAccess:
         request_id: ProviderFilesystemRequestId,
         root_fd: int,
         parts: tuple[str, ...],
-    ) -> AttemptWorkspaceFileOutcome:
+        question: _FileQuestion,
+    ) -> ProviderFilesystemReply:
         try:
             path_fd = _openat2_path_descriptor(root_fd, "/".join(parts))
         except OSError as error:
@@ -407,15 +423,19 @@ class AttemptWorkspaceFileAccess:
             probed = os.fstat(path_fd)
             if not stat.S_ISREG(probed.st_mode):
                 return _refused(
-                    request_id, AttemptWorkspaceFileRefusal.NOT_A_REGULAR_FILE
+                    request_id, ProviderFilesystemRefusal.NOT_A_REGULAR_FILE
                 )
             if probed.st_nlink > 1:
                 return _refused(
-                    request_id, AttemptWorkspaceFileRefusal.FILE_IS_HARD_LINKED
+                    request_id, ProviderFilesystemRefusal.FILE_IS_HARD_LINKED
                 )
             if probed.st_size > self._maximum_read_bytes:
                 return _refused(
-                    request_id, AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+                    request_id, ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING
+                )
+            if not question.granted():
+                return _refused(
+                    request_id, ProviderFilesystemRefusal.PERMISSION_REFUSED
                 )
             data_fd = os.open(f"/proc/self/fd/{path_fd}", os.O_RDONLY | os.O_CLOEXEC)
         finally:
@@ -425,17 +445,15 @@ class AttemptWorkspaceFileAccess:
             if (resolved.st_dev, resolved.st_ino) != (probed.st_dev, probed.st_ino):
                 return _refused(
                     request_id,
-                    AttemptWorkspaceFileRefusal.RESOLVED_FILE_CHANGED_IDENTITY,
+                    ProviderFilesystemRefusal.RESOLVED_FILE_CHANGED_IDENTITY,
                 )
             content = _bounded_read(data_fd, self._maximum_read_bytes)
             if content is None:
                 return _refused(
-                    request_id, AttemptWorkspaceFileRefusal.FILE_EXCEEDS_THE_CEILING
+                    request_id, ProviderFilesystemRefusal.FILE_EXCEEDS_THE_CEILING
                 )
-            return AttemptWorkspaceFileOutcome(
-                ProviderFilesystemReply(
-                    request_id, ProviderFilesystemAnswer.ANSWERED, content
-                )
+            return ProviderFilesystemReply(
+                request_id, ProviderFilesystemAnswer.ANSWERED, content
             )
         finally:
             os.close(data_fd)
@@ -446,10 +464,11 @@ class AttemptWorkspaceFileAccess:
         root_fd: int,
         parts: tuple[str, ...],
         content: bytes,
-    ) -> AttemptWorkspaceFileOutcome:
+        question: _FileQuestion,
+    ) -> ProviderFilesystemReply:
         parent_parts, final_name = parts[:-1], parts[-1]
         if not parent_parts:
-            return self._stage_write(request_id, root_fd, final_name, content)
+            return self._stage_write(request_id, root_fd, final_name, content, question)
         try:
             parent_fd = _openat2_directory_descriptor(root_fd, "/".join(parent_parts))
         except OSError as error:
@@ -462,7 +481,9 @@ class AttemptWorkspaceFileAccess:
                 raise
             return _refused(request_id, refusal)
         try:
-            return self._stage_write(request_id, parent_fd, final_name, content)
+            return self._stage_write(
+                request_id, parent_fd, final_name, content, question
+            )
         finally:
             os.close(parent_fd)
 
@@ -472,7 +493,8 @@ class AttemptWorkspaceFileAccess:
         parent_fd: int,
         final_name: str,
         content: bytes,
-    ) -> AttemptWorkspaceFileOutcome:
+        question: _FileQuestion,
+    ) -> ProviderFilesystemReply:
         """Write `content` beside `final_name` and move it on, or leave nothing durable.
 
         `os.replace` is a `rename(2)`, which never follows a symlink at its
@@ -492,9 +514,9 @@ class AttemptWorkspaceFileAccess:
             pass
         else:
             if stat.S_ISLNK(target.st_mode):
-                return _refused(
-                    request_id, AttemptWorkspaceFileRefusal.TARGET_IS_SYMLINK
-                )
+                return _refused(request_id, ProviderFilesystemRefusal.TARGET_IS_SYMLINK)
+        if not question.granted():
+            return _refused(request_id, ProviderFilesystemRefusal.PERMISSION_REFUSED)
 
         try:
             staged_name, descriptor = _create_staged_sibling(parent_fd, final_name)
@@ -518,9 +540,7 @@ class AttemptWorkspaceFileAccess:
             if staged_exists:
                 with suppress(FileNotFoundError):
                     os.unlink(staged_name, dir_fd=parent_fd)
-        return AttemptWorkspaceFileOutcome(
-            ProviderFilesystemReply(request_id, ProviderFilesystemAnswer.ANSWERED)
-        )
+        return ProviderFilesystemReply(request_id, ProviderFilesystemAnswer.ANSWERED)
 
 
 def _create_staged_sibling(parent_fd: int, final_name: str) -> tuple[str, int]:
@@ -622,19 +642,17 @@ def _is_forbidden_component(part: str) -> bool:
 
 def _refused(
     request_id: ProviderFilesystemRequestId,
-    refusal: AttemptWorkspaceFileRefusal,
+    refusal: ProviderFilesystemRefusal,
     detail: str = "",
-) -> AttemptWorkspaceFileOutcome:
-    return AttemptWorkspaceFileOutcome(
-        ProviderFilesystemReply(request_id, ProviderFilesystemAnswer.REFUSED),
-        refusal,
-        detail,
+) -> ProviderFilesystemReply:
+    return ProviderFilesystemReply(
+        request_id, ProviderFilesystemAnswer.REFUSED, refusal=refusal, detail=detail
     )
 
 
 def _workspace_io_failure(
     request_id: ProviderFilesystemRequestId, error: OSError
-) -> AttemptWorkspaceFileOutcome:
+) -> ProviderFilesystemReply:
     return _refused(
-        request_id, AttemptWorkspaceFileRefusal.WORKSPACE_IO_FAILED, _errno_name(error)
+        request_id, ProviderFilesystemRefusal.WORKSPACE_IO_FAILED, _errno_name(error)
     )

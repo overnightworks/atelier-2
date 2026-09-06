@@ -15,6 +15,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agent_permissions import (
+    ATTEMPT_WORKSPACE,
     GRANTS_NOTHING,
     PermissionAuthority,
     PermissionCorrelationId,
@@ -22,6 +23,7 @@ from atelier2.contracts.agent_permissions import (
     PermissionEffect,
     PermissionPolicyRevision,
     PermissionReceipt,
+    PermissionRequest,
     PermissionScope,
     PermissionScopeKind,
 )
@@ -46,14 +48,25 @@ from atelier2.ports.agent_executions import (
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
-    PrintModeExecutor,
+    ProviderConversationBinding,
+)
+from atelier2.ports.provider_conversations import (
+    ProviderFilesystemAccess,
+    ProviderFilesystemAnswer,
+    ProviderFilesystemAuthority,
+    ProviderFilesystemEffect,
+    ProviderFilesystemReply,
+    ProviderFilesystemRequest,
+    ProviderFilesystemRequestId,
 )
 from tests.scenarios.agents import (
     FakeAgentSession,
     agent_attempt_execution,
     agent_execution_request_v2,
+    conversation_nobody_drives,
     leased_directory_identity,
     prepared_agent_attempt,
+    workspace_files_nobody_opens,
 )
 
 
@@ -104,10 +117,19 @@ class _StoreThatCannotKeepAReceipt(_ClaimingStore):
         raise _TheReceiptCouldNotBeKept("durable state is unavailable")
 
 
-class _TranscriptExecutor(PrintModeExecutor):
+class _TranscriptExecutor:
     def prepare_process(self, request: object) -> AgentProcessCommand:
         del request
         return AgentProcessCommand(("/bin/true",), standard_output_frame_bytes=1)
+
+    def open_conversation(
+        self,
+        request: object,
+        command: AgentProcessCommand,
+        lease: AgentAttemptWorkspaceLease,
+    ) -> ProviderConversationBinding | None:
+        del request, command, lease
+        return None
 
     def decode_process_completion(
         self,
@@ -124,6 +146,47 @@ class _TranscriptExecutor(PrintModeExecutor):
 
     def close(self) -> None:
         return None
+
+
+class _ConversingExecutor(_TranscriptExecutor):
+    def open_conversation(
+        self,
+        request: object,
+        command: AgentProcessCommand,
+        lease: AgentAttemptWorkspaceLease,
+    ) -> ProviderConversationBinding:
+        del request, command, lease
+        return conversation_nobody_drives()
+
+
+@dataclass
+class _Bound:
+    """What the dispatch handed the opener, and what the access it got answered."""
+
+    lease: AgentAttemptWorkspaceLease
+    maximum_read_bytes: int
+    authority: ProviderFilesystemAuthority
+    answered: list[ProviderFilesystemRequest] = field(default_factory=list)
+
+    def answer(self, request: ProviderFilesystemRequest) -> ProviderFilesystemReply:
+        self.answered.append(request)
+        return ProviderFilesystemReply(
+            request.request_id, ProviderFilesystemAnswer.ANSWERED, b"bound"
+        )
+
+
+@dataclass
+class _RecordingOpener:
+    bound: list[_Bound] = field(default_factory=list)
+
+    def __call__(
+        self,
+        lease: AgentAttemptWorkspaceLease,
+        maximum_read_bytes: int,
+        authority: ProviderFilesystemAuthority,
+    ) -> ProviderFilesystemAccess:
+        self.bound.append(_Bound(lease, maximum_read_bytes, authority))
+        return self.bound[-1]
 
 
 @dataclass
@@ -156,6 +219,7 @@ def test_proves_every_transcript_event_carries_its_moment_when_recorded(
         _Workspaces(tmp_path / "workspace"),
         clock=lambda: recording_moment,
         permissions=GRANTS_NOTHING,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert store.completed_result is not None
@@ -224,6 +288,7 @@ def test_a_question_the_dispatched_policy_never_granted_is_refused(
         session,
         _Workspaces(tmp_path / "workspace"),
         permissions=may_reach_one_host,
+        workspace_files=workspace_files_nobody_opens,
     )
 
     assert may_reach_one_host.revision_hash != GRANTS_NOTHING.revision_hash
@@ -270,9 +335,133 @@ def test_a_decision_that_cannot_be_kept_is_never_given_to_the_provider(
             session,
             _Workspaces(tmp_path / "workspace"),
             permissions=GRANTS_NOTHING,
+            workspace_files=workspace_files_nobody_opens,
         )
 
     assert session.answers == []
     assert store.completed_result is None
     assert store.attempt is not None
     assert store.attempt.state is AgentAttemptState.LAUNCH_ARMED
+
+
+def test_a_conversing_provider_reaches_files_only_through_the_lease_bound_access(
+    tmp_path: Path,
+) -> None:
+    """The executor's own access is replaced, never consulted: the dispatch binds
+    the deployment's opener to the lease it acquired and to the driver's reply
+    bound, and every file request the session relays lands there."""
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    opener = _RecordingOpener()
+    read = ProviderFilesystemRequest(
+        ProviderFilesystemEffect.READ, Path("notes.md"), ProviderFilesystemRequestId(1)
+    )
+    session = FakeAgentSession(
+        AgentProcessCompletion(0, b'"done"', b""), file_requests=(read,)
+    )
+
+    execute_agent_attempt(
+        execution,
+        _ConversingExecutor(),
+        cast(AgentAttemptStore, _ClaimingStore()),
+        session,
+        _Workspaces(tmp_path / "workspace"),
+        permissions=GRANTS_NOTHING,
+        workspace_files=opener,
+    )
+
+    (bound,) = opener.bound
+    assert bound.lease == leased_directory_identity(
+        execution.attempt_id, tmp_path / "workspace"
+    )
+    assert (
+        bound.maximum_read_bytes
+        == conversation_nobody_drives().driver.bounds.maximum_reply_bytes
+    )
+    assert bound.answered == [read]
+    assert session.file_replies == [
+        ProviderFilesystemReply(
+            ProviderFilesystemRequestId(1), ProviderFilesystemAnswer.ANSWERED, b"bound"
+        )
+    ]
+
+
+def test_the_authority_bound_to_the_files_keeps_every_answer_before_giving_it(
+    tmp_path: Path,
+) -> None:
+    """Both answers the access can ask for are receipts under the dispatched
+    revision: a decision the policy made, and a refusal the fence made without
+    the policy being asked -- refused, though this revision grants the workspace."""
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    store = _ClaimingStore()
+    opener = _RecordingOpener()
+    recording_moment = RecordedAt("2026-09-06T12:00:00Z")
+    grants_the_workspace = PermissionPolicyRevision(
+        frozenset({(PermissionEffect.WORKSPACE_READ, ATTEMPT_WORKSPACE)})
+    )
+    execute_agent_attempt(
+        execution,
+        _ConversingExecutor(),
+        cast(AgentAttemptStore, store),
+        FakeAgentSession(AgentProcessCompletion(0, b'"done"', b"")),
+        _Workspaces(tmp_path / "workspace"),
+        clock=lambda: recording_moment,
+        permissions=grants_the_workspace,
+        workspace_files=opener,
+    )
+    (bound,) = opener.bound
+    decided_question = PermissionRequest(
+        PermissionEffect.WORKSPACE_READ,
+        ATTEMPT_WORKSPACE,
+        PermissionCorrelationId.for_file_call(execution.attempt_id, 1),
+    )
+    refused_question = PermissionRequest(
+        PermissionEffect.WORKSPACE_READ,
+        ATTEMPT_WORKSPACE,
+        PermissionCorrelationId.for_file_call(execution.attempt_id, 2),
+    )
+
+    decided = bound.authority.decide(decided_question)
+    refused = bound.authority.refuse(refused_question)
+
+    assert (decided.granted, refused.granted) == (True, False)
+    assert store.receipts == [
+        PermissionReceipt.of(
+            execution.attempt_id, decided_question, decided, recording_moment
+        ),
+        PermissionReceipt.of(
+            execution.attempt_id, refused_question, refused, recording_moment
+        ),
+    ]
+    assert all(
+        receipt.policy_revision_hash == grants_the_workspace.revision_hash
+        for receipt in store.receipts
+    )
+
+
+def test_a_file_receipt_that_cannot_be_kept_is_never_answered(tmp_path: Path) -> None:
+    """The same order as a permission: no receipt, no answer, no effect."""
+
+    execution = agent_attempt_execution(agent_execution_request_v2())
+    store = _StoreThatCannotKeepAReceipt()
+    opener = _RecordingOpener()
+    execute_agent_attempt(
+        execution,
+        _ConversingExecutor(),
+        cast(AgentAttemptStore, store),
+        FakeAgentSession(AgentProcessCompletion(0, b'"done"', b"")),
+        _Workspaces(tmp_path / "workspace"),
+        permissions=GRANTS_NOTHING,
+        workspace_files=opener,
+    )
+    (bound,) = opener.bound
+
+    with pytest.raises(_TheReceiptCouldNotBeKept):
+        bound.authority.refuse(
+            PermissionRequest(
+                PermissionEffect.WORKSPACE_READ,
+                ATTEMPT_WORKSPACE,
+                PermissionCorrelationId.for_file_call(execution.attempt_id, 1),
+            )
+        )

@@ -592,6 +592,67 @@ CREATE TABLE effect_receipts (
 """The effect receipt table V42 published with a closed operation name."""
 
 
+_AGENT_ATTEMPTS_WITH_PRODUCED_VALUE_REFUSED = """
+
+CREATE TABLE agent_attempts (
+	attempt_id TEXT NOT NULL,\x20
+	node_execution_id TEXT NOT NULL,\x20
+	request_hash TEXT NOT NULL,\x20
+	executor_operational_identity TEXT NOT NULL,\x20
+	run_id TEXT NOT NULL,\x20
+	workflow_revision_hash TEXT NOT NULL,\x20
+	node_id TEXT NOT NULL,\x20
+	attempt_ordinal INTEGER NOT NULL,\x20
+	state TEXT NOT NULL,\x20
+	state_version INTEGER NOT NULL,\x20
+	process_phase TEXT NOT NULL,\x20
+	process_owner_id TEXT,\x20
+	watchdog_generation_id TEXT,\x20
+	cancellation_command_id TEXT,\x20
+	cancellation_expected_state_version INTEGER,\x20
+	replacement TEXT,\x20
+	redrive_state TEXT,\x20
+	cancellation_disposition TEXT,\x20
+	cancellation_workflow_id TEXT,\x20
+	failure_code TEXT,\x20
+	receipt_hash TEXT,\x20
+	runner_manifest_id TEXT,\x20
+	runner_generation_id TEXT,\x20
+	runner_invocation_id TEXT,\x20
+	runner_terminal_evidence_hash TEXT,\x20
+	runner_evidence_acceptance_phase TEXT NOT NULL,\x20
+	transcript_artifact_hash TEXT,\x20
+	PRIMARY KEY (attempt_id),\x20
+	UNIQUE (node_execution_id, attempt_ordinal),\x20
+	FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash),\x20
+	CHECK (length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'),\x20
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),\x20
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),\x20
+	CHECK (length(executor_operational_identity) BETWEEN 1 AND 1024),\x20
+	CHECK (length(run_id) > 0),\x20
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),\x20
+	CHECK (length(node_id) BETWEEN 1 AND 1024),\x20
+	CHECK (attempt_ordinal IN (1, 2)),\x20
+	CHECK (transcript_artifact_hash IS NULL OR (length(transcript_artifact_hash) = 64 AND transcript_artifact_hash NOT GLOB '*[^0-9a-f]*' AND state IN ('SUCCEEDED', 'FAILED'))),\x20
+	CHECK (process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')),\x20
+	CHECK ((process_phase = 'NONE' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase = 'CLEANUP_ATTESTED' AND cancellation_disposition = 'NEVER_LAUNCHED' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL) OR (process_phase <> 'NONE' AND length(process_owner_id) BETWEEN 1 AND 1024 AND length(watchdog_generation_id) BETWEEN 1 AND 1024)),\x20
+	CHECK ((runner_manifest_id IS NULL AND runner_generation_id IS NULL) OR (length(runner_manifest_id) = 64 AND runner_manifest_id NOT GLOB '*[^0-9a-f]*' AND length(runner_generation_id) BETWEEN 1 AND 1024)),\x20
+	CHECK (runner_invocation_id IS NULL OR (runner_manifest_id IS NOT NULL AND length(runner_invocation_id) BETWEEN 1 AND 1024)),\x20
+	CHECK ((runner_evidence_acceptance_phase = 'NONE' AND runner_terminal_evidence_hash IS NULL) OR (runner_evidence_acceptance_phase IN ('CORE_COMMITTED', 'ACKNOWLEDGED') AND length(runner_terminal_evidence_hash) = 64 AND runner_terminal_evidence_hash NOT GLOB '*[^0-9a-f]*')),\x20
+	CHECK (runner_evidence_acceptance_phase = 'NONE' OR runner_invocation_id IS NOT NULL OR state = 'PREPARED'),\x20
+	CHECK (runner_manifest_id IS NULL OR (process_phase = 'NONE' AND process_owner_id IS NULL AND watchdog_generation_id IS NULL)),\x20
+	CHECK ((cancellation_command_id IS NULL AND cancellation_expected_state_version IS NULL AND replacement IS NULL AND redrive_state IS NULL AND cancellation_disposition IS NULL AND cancellation_workflow_id IS NULL) OR (length(cancellation_command_id) BETWEEN 1 AND 1024 AND cancellation_expected_state_version >= 0 AND replacement IN ('NONE', 'ONE') AND redrive_state IN ('PENDING', 'OWNER_NOT_LOCAL', 'CLEANUP_ATTESTED') AND length(cancellation_workflow_id) > 0 AND ((redrive_state = 'CLEANUP_ATTESTED' AND cancellation_disposition IN ('NEVER_LAUNCHED', 'EXITED_BEFORE_SIGNAL', 'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL', 'OWNER_LOST_AFTER_PARENT_DEATH')) OR (redrive_state <> 'CLEANUP_ATTESTED' AND cancellation_disposition IS NULL)))),\x20
+	CHECK ((state = 'PREPARED' AND state_version = 0 AND process_phase = 'NONE' AND runner_manifest_id IS NULL AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'PREPARED' AND state_version = 1 AND process_phase = 'WATCHDOG_READY' AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'PREPARED' AND state_version >= 1 AND process_phase = 'NONE' AND runner_manifest_id IS NOT NULL AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version = 1 AND process_phase IN ('NONE', 'LAUNCH_AUTHORIZED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'LAUNCH_ARMED' AND state_version >= 2 AND process_phase IN ('NONE', 'LAUNCH_AUTHORIZED', 'PROCESS_OBSERVED') AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'CANCEL_REQUESTED' AND state_version >= 1 AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state IN ('CANCELLED', 'INTERRUPTED') AND state_version >= 2 AND (process_phase = 'CLEANUP_ATTESTED' OR (process_phase = 'NONE' AND runner_manifest_id IS NOT NULL)) AND cancellation_command_id IS NOT NULL AND cancellation_disposition IS NOT NULL AND failure_code IS NULL AND receipt_hash IS NULL) OR (state = 'SUCCEEDED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code IS NULL AND receipt_hash IS NOT NULL) OR (state = 'FAILED' AND state_version >= 2 AND cancellation_command_id IS NULL AND failure_code IN ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED', 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED', 'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED', 'CANDIDATE_CAPTURE_FAILED', 'CANDIDATE_UNCHANGED', 'PRODUCED_VALUE_REFUSED') AND receipt_hash IS NULL)),\x20
+	UNIQUE (cancellation_workflow_id),\x20
+	UNIQUE (receipt_hash),\x20
+	FOREIGN KEY(receipt_hash) REFERENCES agent_receipts_v2 (receipt_hash) ON DELETE RESTRICT,\x20
+	FOREIGN KEY(transcript_artifact_hash) REFERENCES artifacts (artifact_hash) ON DELETE RESTRICT
+)
+
+"""
+"""What V53 published: the attempt table before any later hop moved it."""
+
+
 _AGENT_ATTEMPTS_WITH_CANDIDATE_UNCHANGED = """
 CREATE TABLE agent_attempts (
 	attempt_id TEXT NOT NULL,\x20
@@ -696,6 +757,10 @@ PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,
     (42, "effect_intents"): _EFFECT_INTENTS_WITH_OPERATION,
     (42, "effect_receipts"): _EFFECT_RECEIPTS_WITH_OPERATION,
+    # V54 widens the operation vocabulary of both tables and moves nothing
+    # else, so V43 to V53 published exactly the shape V42 did.
+    (53, "effect_intents"): _EFFECT_INTENTS_WITH_OPERATION,
+    (53, "effect_receipts"): _EFFECT_RECEIPTS_WITH_OPERATION,
     (26, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
     (26, "host_occupancy_bindings"): _HOST_OCCUPANCY_BINDINGS,
     (39, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
@@ -1310,6 +1375,9 @@ CREATE TABLE run_events (
     # V53 widens the vocabulary again and moves no table, so V51 and V52
     # published the same shape V50 did.
     (52, "agent_attempts"): _AGENT_ATTEMPTS_WITH_CANDIDATE_UNCHANGED,
+    # The hop onto V53 must still materialise the shape V53 published, which
+    # the declaration stopped speaking for the moment V54 became current.
+    (53, "agent_attempts"): _AGENT_ATTEMPTS_WITH_PRODUCED_VALUE_REFUSED,
     (39, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_ATTEMPT,
     # V15 introduced the table in this shape and no hop before V39 moved it,
     # so the step that adds it builds the record rather than today's table.

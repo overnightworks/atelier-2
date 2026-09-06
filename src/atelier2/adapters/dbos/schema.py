@@ -91,10 +91,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 52 admits PRODUCED_VALUE_REFUSED as an attempt failure code, so a value
-# the atelier composed and this node's own schema refuses ends under its own
-# word instead of under the provider's (#1235).
-_HOP_PREDECESSOR_VERSION = 52
+# Hop 53 admits `claim-work-item` as an effect operation, so the lane claim a
+# run holds before it works is a prepared intent and a confirmed receipt in the
+# one effect ledger rather than a second record beside it.
+_HOP_PREDECESSOR_VERSION = 53
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -141,6 +141,7 @@ _VERSION_FIFTY = 50
 _VERSION_FIFTY_ONE = 51
 _VERSION_FIFTY_TWO = 52
 _VERSION_FIFTY_THREE = 53
+_VERSION_FIFTY_FOUR = 54
 # docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -368,6 +369,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     51: "2b0be085b59e160db8b9d925bbb889205b32a2bbd45fcad673277b2b229fd622",
     52: "6121453b26de9913e212d726b95d74def93c0a754e25eadfadbe77f7c7c432e2",
     53: "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881",
+    54: "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -775,7 +777,9 @@ effect_intents = sa.Table(
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
-    sa.CheckConstraint("operation_name IN ('open-pr', 'push-atelier-commit')"),
+    sa.CheckConstraint(
+        "operation_name IN ('open-pr', 'push-atelier-commit', 'claim-work-item')"
+    ),
     sa.CheckConstraint(
         "state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', "
         "'CONFIRMED', 'ABANDONED')"
@@ -899,7 +903,9 @@ effect_receipts = sa.Table(
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
-    sa.CheckConstraint("operation_name IN ('open-pr', 'push-atelier-commit')"),
+    sa.CheckConstraint(
+        "operation_name IN ('open-pr', 'push-atelier-commit', 'claim-work-item')"
+    ),
     sa.CheckConstraint("length(effect_id) > 0"),
     sa.CheckConstraint(
         "length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*'"
@@ -3650,6 +3656,11 @@ _V27_ACCESS_TRIGGER_NAMES = (
 )
 
 
+_VERSIONS_WITH_TODAYS_TABLES = frozenset(
+    (SCHEMA_VERSION, _VERSION_FIFTY_THREE, _VERSION_FIFTY_TWO, _VERSION_FIFTY_ONE)
+)
+
+
 def _table_names_for_version(version: int) -> frozenset[str]:
     definition_source_tables = {
         host_definition_source_revisions.name,
@@ -3689,12 +3700,11 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V53 widened one table's failure-code vocabulary and V52 two queue tables,
-    # neither adding a table, so V51 holds exactly today's set. V51 adds the
-    # authorisation ledger; V50 widened one table's failure-code vocabulary and
-    # added no table, so V49 and V50 hold the same set: today's without that
-    # ledger.
-    if version in {SCHEMA_VERSION, _VERSION_FIFTY_TWO, _VERSION_FIFTY_ONE}:
+    # V52 to V54 widened vocabularies and added no table, so V51 -- which adds
+    # the authorisation ledger -- holds exactly today's set. V50 widened one
+    # table's failure-code vocabulary and added no table either, so V49 and V50
+    # hold the same set: today's without that ledger.
+    if version in _VERSIONS_WITH_TODAYS_TABLES:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
         return before_permission_receipts
@@ -6235,6 +6245,46 @@ def _apply_v52_to_v53(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE)
 
 
+_V53_EFFECT_INTENTS = "effect_intents_before_claim_work_item"
+_V53_EFFECT_RECEIPTS = "effect_receipts_before_claim_work_item"
+
+
+def _apply_v53_to_v54(connection: sqlite3.Connection) -> None:
+    """Admit `claim-work-item`, and keep every stored intent and receipt.
+
+    A vocabulary hop and nothing else: every stored effect names `open-pr` or
+    `push-atelier-commit`, which the widened constraint still admits, so no
+    recorded effect changes meaning. Nothing is backfilled -- a run that worked
+    before this word existed held no claim, and writing one now would put a
+    coordination fact into the record that never happened. The receipts are
+    rebuilt before the intents they hang from, so the child's foreign key is
+    written against the parent it will keep.
+    """
+
+    _rebuild_product_table(
+        connection,
+        effect_receipts,
+        _V53_EFFECT_RECEIPTS,
+        _EFFECT_RECEIPTS_TRIGGERS,
+        _VERSION_FIFTY_THREE,
+        _VERSION_FIFTY_FOUR,
+    )
+    _rebuild_product_table(
+        connection,
+        effect_intents,
+        _V53_EFFECT_INTENTS,
+        (
+            "effect_intents_binding_no_update",
+            "effect_intents_no_delete",
+            "effect_intents_abandonment",
+            "effect_intents_no_abandoned_insert",
+        ),
+        _VERSION_FIFTY_THREE,
+        _VERSION_FIFTY_FOUR,
+    )
+    _raise_declared_version(connection, _VERSION_FIFTY_THREE, _VERSION_FIFTY_FOUR)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6415,6 +6465,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FIFTY, _VERSION_FIFTY_ONE, _apply_v50_to_v51),
     _SchemaMigrationStep(_VERSION_FIFTY_ONE, _VERSION_FIFTY_TWO, _apply_v51_to_v52),
     _SchemaMigrationStep(_VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE, _apply_v52_to_v53),
+    _SchemaMigrationStep(_VERSION_FIFTY_THREE, _VERSION_FIFTY_FOUR, _apply_v53_to_v54),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
