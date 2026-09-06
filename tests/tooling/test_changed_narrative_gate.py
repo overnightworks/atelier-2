@@ -188,3 +188,18 @@ def test_replaced_and_an_unrelated_later_with_is_allowed(tmp_path: Path) -> None
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_trailing_comment_after_a_one_line_docstring_is_rejected(
+    tmp_path: Path,
+) -> None:
+    project = scratch_repository(tmp_path)
+    write_source(project, "value = 1\n")
+    base = commit(project, "base")
+    write_source(project, '"""ok"""  # Follow-up #1305\nvalue = 1\n')
+    commit(project, "head")
+
+    result = run_gate(project, base)
+
+    assert result.returncode == 1
+    assert 'src/example.py:1: """ok"""  # Follow-up #1305' in result.stdout

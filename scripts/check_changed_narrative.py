@@ -169,9 +169,19 @@ def _docstring_texts(source_lines: list[str], tree: ast.AST) -> dict[int, str]:
 
 
 def _narrative_texts(source: str) -> dict[int, str]:
+    """A line can carry both a docstring slice and a trailing comment (a
+    one-line docstring followed by `# ...`); search both, never let one
+    overwrite the other."""
+
     tree = ast.parse(source)
-    texts = _comment_texts(source)
-    texts.update(_docstring_texts(source.splitlines(), tree))
+    texts = dict(_docstring_texts(source.splitlines(), tree))
+    for line_number, comment_text in _comment_texts(source).items():
+        docstring_text = texts.get(line_number)
+        texts[line_number] = (
+            comment_text
+            if docstring_text is None
+            else f"{docstring_text}\n{comment_text}"
+        )
     return texts
 
 
