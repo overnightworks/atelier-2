@@ -1589,7 +1589,8 @@ describe("the click into a node", () => {
 
     // The facts line under the node's title carries duration now, replacing
     // the "Done" chip -- one grammar for every tab, not an Evidence-only fact.
-    await screen.findByText(/started .* · ended .* · duration 5 min/);
+    const factsLine = await screen.findByText(/started .* · ended .* · duration 5 min/);
+    expect(factsLine.isConnected).toBe(true);
   });
 
   it("a done wait node says it was answered instead of claiming nothing was written", async () => {
