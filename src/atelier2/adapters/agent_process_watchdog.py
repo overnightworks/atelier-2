@@ -1061,11 +1061,8 @@ def _decode_launch_request(
         or any(type(value) is not str or not value for value in arguments_value)
     ):
         raise ValueError("launch arguments are malformed")
-    working_directory_value = request["working_directory"]
-    if (
-        type(working_directory_value) is not str
-        or not Path(working_directory_value).is_absolute()
-    ):
+    working_directory = request["working_directory"]
+    if type(working_directory) is not str or not Path(working_directory).is_absolute():
         raise ValueError("launch working directory is malformed")
     identity_value = request["working_directory_identity"]
     if (
@@ -1089,7 +1086,7 @@ def _decode_launch_request(
         raise ValueError("launch conversation flag is malformed")
     return (
         tuple(arguments_value),
-        working_directory_value,
+        working_directory,
         (identity_value[0], identity_value[1]),
         environment,
         standard_input,
@@ -1099,22 +1096,21 @@ def _decode_launch_request(
 
 
 def _launch_environment(value: object) -> dict[str, str]:
-    listed = value if isinstance(value, list) else None
-    if listed is None:
-        raise ValueError("launch environment is malformed")
-    for pair in listed:
-        if (
-            type(pair) is not list
-            or len(pair) != 2
-            or type(pair[0]) is not str
-            or not pair[0]
-            or type(pair[1]) is not str
-        ):
-            raise ValueError("launch environment is malformed")
-    environment = {pair[0]: pair[1] for pair in listed}
-    if len(environment) != len(listed):
-        raise ValueError("launch environment names are duplicated")
-    return environment
+    if isinstance(value, list):
+        pairs = [_environment_pair(pair) for pair in value]
+        environment = dict(pairs)
+        if len(environment) != len(pairs):
+            raise ValueError("launch environment names are duplicated")
+        return environment
+    raise ValueError("launch environment is malformed")
+
+
+def _environment_pair(pair: object) -> tuple[str, str]:
+    if isinstance(pair, list) and len(pair) == 2:
+        name, content = pair
+        if isinstance(name, str) and name and isinstance(content, str):
+            return (name, content)
+    raise ValueError("launch environment is malformed")
 
 
 def _decode_exchange_request(
