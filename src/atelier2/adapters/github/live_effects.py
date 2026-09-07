@@ -288,6 +288,11 @@ class _ListedPullRequestPage:
     def ends_the_listing(self) -> bool:
         return len(self.pull_requests) < PULL_REQUESTS_PER_LISTING_PAGE
 
+    def unknown_outcome(self, detail: str) -> UnknownOutcomeReason:
+        return UnknownOutcomeReason(
+            self.status_code, self.duration_milliseconds, detail
+        )
+
 
 def _list_head_branch_page(
     client: githubkit.GitHub[githubkit.TokenAuthStrategy],
@@ -324,6 +329,42 @@ def _list_head_branch_page(
             UnknownOutcomeReason(raw_response.status_code, elapsed, raw_response.text)
         )
     return _ListedPullRequestPage(tuple(answered), raw_response.status_code, elapsed)
+
+
+def _marked_pull_request(
+    page: _ListedPullRequestPage, branch: str, request_hash: str
+) -> _RecordedPullRequest | None:
+    for listed in page.pull_requests:
+        body = listed.get("body")
+        if isinstance(body, str) and body_carries_request_hash(body, request_hash):
+            number = _integer_field(listed, "number", "pull request search result")
+            return _RecordedPullRequest(branch, number, body)
+    return None
+
+
+def _reviewing_state(
+    pull_request: dict[str, object], page: _ListedPullRequestPage
+) -> PullRequestOpenOnHeadBranch | HeadBranchPullRequestsUnreadable | None:
+    """Open, unreadable, or nothing to say: what one listed pull request means."""
+    state = pull_request.get("state")
+    if state == _OPEN_PULL_REQUEST_STATE:
+        number = pull_request.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            return HeadBranchPullRequestsUnreadable(
+                page.unknown_outcome(
+                    "an open pull request on this head branch names "
+                    f"no integer 'number' field: {number!r}"
+                )
+            )
+        return PullRequestOpenOnHeadBranch(number)
+    if state != _CLOSED_PULL_REQUEST_STATE:
+        return HeadBranchPullRequestsUnreadable(
+            page.unknown_outcome(
+                "a pull request on this head branch names no state "
+                f"this adapter reads: {state!r}"
+            )
+        )
+    return None
 
 
 def _listing_did_not_end(started: float) -> UnknownOutcomeReason:
@@ -643,25 +684,18 @@ class LiveGitHubEffectAdapter:
             if isinstance(page, _PullRequestSearchFailed):
                 return page
             listed_any = listed_any or bool(page.pull_requests)
-            for pull_request in page.pull_requests:
-                body = pull_request.get("body")
-                body = body if isinstance(body, str) else ""
-                if body_carries_request_hash(body, request_hash):
-                    number = _integer_field(
-                        pull_request, "number", "pull request search result"
-                    )
-                    return _RecordedPullRequest(branch, number, body)
+            recorded = _marked_pull_request(page, branch, request_hash)
+            if recorded is not None:
+                return recorded
             if page.ends_the_listing:
                 if not listed_any:
                     return _NoPullRequestOnBranch(
                         page.status_code, page.duration_milliseconds
                     )
                 return _PullRequestSearchFailed(
-                    UnknownOutcomeReason(
-                        page.status_code,
-                        page.duration_milliseconds,
+                    page.unknown_outcome(
                         "the head branch carries pull requests, "
-                        "none of them this request's",
+                        "none of them this request's"
                     )
                 )
         return _PullRequestSearchFailed(_listing_did_not_end(started))
@@ -757,28 +791,9 @@ class LiveGitHubHeadBranchPullRequests:
             if isinstance(page, _PullRequestSearchFailed):
                 return HeadBranchPullRequestsUnreadable(page.reason)
             for pull_request in page.pull_requests:
-                state = pull_request.get("state")
-                if state == _OPEN_PULL_REQUEST_STATE:
-                    number = pull_request.get("number")
-                    if not isinstance(number, int) or isinstance(number, bool):
-                        return HeadBranchPullRequestsUnreadable(
-                            UnknownOutcomeReason(
-                                page.status_code,
-                                page.duration_milliseconds,
-                                "an open pull request on this head branch names "
-                                f"no integer 'number' field: {number!r}",
-                            )
-                        )
-                    return PullRequestOpenOnHeadBranch(number)
-                if state != _CLOSED_PULL_REQUEST_STATE:
-                    return HeadBranchPullRequestsUnreadable(
-                        UnknownOutcomeReason(
-                            page.status_code,
-                            page.duration_milliseconds,
-                            "a pull request on this head branch names no state "
-                            f"this adapter reads: {state!r}",
-                        )
-                    )
+                reviewing = _reviewing_state(pull_request, page)
+                if reviewing is not None:
+                    return reviewing
             if page.ends_the_listing:
                 return NoPullRequestOpenOnHeadBranch()
         return HeadBranchPullRequestsUnreadable(_listing_did_not_end(started))

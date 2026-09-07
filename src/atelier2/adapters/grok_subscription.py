@@ -595,19 +595,17 @@ def _discovered_surfaces(
         discovered.append(_EXTERNAL_COMPATIBILITY_FIELD)
     agents = inspected.get(_AGENTS_FIELD)
     if isinstance(agents, list):
-        for agent in agents:
-            if not isinstance(agent, dict):
-                discovered.append(_AGENTS_FIELD)
-                continue
-            source = agent.get(_AGENT_SOURCE_FIELD)
-            kind = (
-                source.get(_AGENT_SOURCE_TYPE_FIELD)
-                if isinstance(source, dict)
-                else None
-            )
-            if kind != _BUILTIN_AGENT_SOURCE:
-                discovered.append(f"{_AGENTS_FIELD}:{kind}")
+        discovered.extend(filter(None, map(_agent_discovery, agents)))
     return tuple(discovered)
+
+
+def _agent_discovery(agent: object) -> str | None:
+    """The surface one reported agent loads; nothing for a built-in one."""
+    if not isinstance(agent, dict):
+        return _AGENTS_FIELD
+    source = agent.get(_AGENT_SOURCE_FIELD)
+    kind = source.get(_AGENT_SOURCE_TYPE_FIELD) if isinstance(source, dict) else None
+    return None if kind == _BUILTIN_AGENT_SOURCE else f"{_AGENTS_FIELD}:{kind}"
 
 
 def attest_grok_containment(
@@ -939,32 +937,35 @@ def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
     executor never saw keeps the id instead of borrowing another tool's name.
     """
 
-    if isinstance(block, dict):
-        shape = block.get(_LINE_TYPE_FIELD)
-        if shape == _TEXT_BLOCK_TYPE:
-            spoken = block.get(_TEXT_FIELD)
-            if isinstance(spoken, str):
-                return AssistantTurn(spoken)
-        elif shape == _THINKING_BLOCK_TYPE:
-            thought = block.get(_THINKING_FIELD)
-            if isinstance(thought, str):
-                return AssistantTurn(thought)
-        elif shape == _TOOL_USE_BLOCK_TYPE:
-            name = block.get(_TOOL_NAME_FIELD)
-            if isinstance(name, str):
-                called_id = block.get(_TOOL_USE_ID_FIELD)
-                if isinstance(called_id, str):
-                    tool_names[called_id] = name
-                return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
-        elif shape == _TOOL_RESULT_BLOCK_TYPE:
-            answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
-            if isinstance(answered_id, str):
-                answer = block.get(_CONTENT_FIELD)
-                return ToolReturned(
-                    tool_names.get(answered_id, answered_id),
-                    answer if isinstance(answer, str) else _canonical_json(answer),
-                )
-    return UnrecognisedProviderOutput(_canonical_json(block))
+    if not isinstance(block, dict):
+        return UnrecognisedProviderOutput(_canonical_json(block))
+    shape = block.get(_LINE_TYPE_FIELD)
+    step: TranscriptEvent | None = None
+    if shape == _TEXT_BLOCK_TYPE:
+        spoken = block.get(_TEXT_FIELD)
+        step = AssistantTurn(spoken) if isinstance(spoken, str) else None
+    elif shape == _THINKING_BLOCK_TYPE:
+        thought = block.get(_THINKING_FIELD)
+        step = AssistantTurn(thought) if isinstance(thought, str) else None
+    elif shape == _TOOL_USE_BLOCK_TYPE:
+        name = block.get(_TOOL_NAME_FIELD)
+        if isinstance(name, str):
+            called_id = block.get(_TOOL_USE_ID_FIELD)
+            if isinstance(called_id, str):
+                tool_names[called_id] = name
+            step = ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
+    elif shape == _TOOL_RESULT_BLOCK_TYPE:
+        step = _reply(block, tool_names)
+    return UnrecognisedProviderOutput(_canonical_json(block)) if step is None else step
+
+
+def _reply(block: dict[str, object], tool_names: dict[str, str]) -> ToolReturned | None:
+    answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
+    if not isinstance(answered_id, str):
+        return None
+    content = block.get(_CONTENT_FIELD)
+    shown = content if isinstance(content, str) else _canonical_json(content)
+    return ToolReturned(tool_names.get(answered_id, answered_id), shown)
 
 
 def _session_header_step(entry: dict[str, object]) -> UnrecognisedProviderOutput:
