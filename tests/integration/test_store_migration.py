@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
@@ -3222,11 +3223,10 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
     assert (V27_SCHEMA_HANDOFF.version, agent_attempts.name) in PUBLISHED_TABLE_SHAPES
-    runtime = attempt_runtime(tmp_path)
-    runtime.initialize_storage()
-    request = attempt_request(runtime, "migration/v26-populated")
-    DbosAgentAttemptStore(runtime.engine).prepare(agent_attempt_execution(request))
-    runtime.close()
+    with closing(attempt_runtime(tmp_path)) as runtime:
+        runtime.initialize_storage()
+        request = attempt_request(runtime, "migration/v26-populated")
+        DbosAgentAttemptStore(runtime.engine).prepare(agent_attempt_execution(request))
 
     with sqlite3.connect(database_path) as connection:
         _restore_v39_configuration_tables(connection)
@@ -3744,26 +3744,27 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
     stay) survives the V32 trigger swap untouched, same as any other row."""
 
     database_path = tmp_path / "atelier.sqlite"
-    runtime = attempt_runtime(tmp_path)
-    runtime.initialize_storage()
-    request = attempt_request(runtime, "migration/v31-runner-attempt")
-    execution = agent_attempt_execution(request)
-    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    prepared = store.prepare(execution)
-    with runtime.engine.begin() as connection:
-        connection.execute(
-            agent_attempts.update()
-            .where(agent_attempts.c.attempt_id == execution.attempt_id.value)
-            .values(
-                state_version=prepared.state_version + 1,
-                runner_manifest_id="a" * 64,
-                runner_generation_id="runner-generation-1",
-            )
+    with closing(attempt_runtime(tmp_path)) as runtime:
+        runtime.initialize_storage()
+        request = attempt_request(runtime, "migration/v31-runner-attempt")
+        execution = agent_attempt_execution(request)
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
         )
-    durable = store.load(execution.attempt_id)
-    assert durable.runner_manifest_id is not None
-    assert durable.runner_invocation_id is None
-    runtime.close()
+        prepared = store.prepare(execution)
+        with runtime.engine.begin() as connection:
+            connection.execute(
+                agent_attempts.update()
+                .where(agent_attempts.c.attempt_id == execution.attempt_id.value)
+                .values(
+                    state_version=prepared.state_version + 1,
+                    runner_manifest_id="a" * 64,
+                    runner_generation_id="runner-generation-1",
+                )
+            )
+        durable = store.load(execution.attempt_id)
+        assert durable.runner_manifest_id is not None
+        assert durable.runner_invocation_id is None
 
     with sqlite3.connect(database_path) as connection:
         _restore_v39_configuration_tables(connection)
@@ -4261,9 +4262,8 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
     recording = recording_provider()
-    runtime = wait_runtime_over(tmp_path, recording)
-    runtime.initialize_storage()
-    try:
+    with closing(wait_runtime_over(tmp_path, recording)) as runtime:
+        runtime.initialize_storage()
         workflow = start_and_launch(runtime, WAIT_IN_THE_MIDDLE)
         wait_for_state(runtime, RunState.WAITING_INPUT)
         accepted = answer_wait_result(
@@ -4276,8 +4276,6 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
             DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
         )
         assert isinstance(accepted, AnswerAcceptedPending), accepted
-    finally:
-        runtime.close()
 
     with sqlite3.connect(database_path) as connection:
         _restore_v45_answer_attribution_predecessors(connection)
@@ -4320,8 +4318,7 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute("UPDATE wait_answers SET actor = 'operator'")
 
-    recovered = wait_runtime_over(tmp_path, recording)
-    try:
+    with closing(wait_runtime_over(tmp_path, recording)) as recovered:
         recovered.launch()
         wait_for_state(recovered, RunState.COMPLETED)
         found = durable_queries(recovered.engine).get_run(RUN)
@@ -4358,8 +4355,6 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
             "LEGACY_UNATTRIBUTED",
             WaitAnswerState.APPLIED.value,
         )
-    finally:
-        recovered.close()
 
     replay = migrate_store(database_path)
     assert (replay.source_version, replay.target_version) == (
@@ -4459,14 +4454,11 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
 
     database_path = tmp_path / "atelier.sqlite"
     recording = recording_provider()
-    paused = wait_runtime_over(tmp_path, recording)
-    paused.initialize_storage()
-    try:
+    with closing(wait_runtime_over(tmp_path, recording)) as paused:
+        paused.initialize_storage()
         workflow = start_and_launch(paused, WAIT_IN_THE_MIDDLE)
         wait_for_state(paused, RunState.WAITING_INPUT)
         application_version = paused.settings.application_version
-    finally:
-        paused.close()
 
     execution_id = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
     _enqueue_a_three_argument_answer_workflow(
@@ -4506,8 +4498,7 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
 
-    recovered = wait_runtime_over(tmp_path, recording)
-    try:
+    with closing(wait_runtime_over(tmp_path, recording)) as recovered:
         recovered.launch()
         wait_for_state(recovered, RunState.COMPLETED)
         with recovered.engine.connect() as connection:
@@ -4526,8 +4517,6 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
                 .scalars()
                 .all()
             )
-    finally:
-        recovered.close()
 
     assert str(stored["state"]) == WaitAnswerState.APPLIED.value
     assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
