@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.effect_store import (
     receipt_from_record,
 )
 from atelier2.adapters.dbos.run_fork_store import (
+    _one_record,
     _stored_fork_for_command,
     validate_stored_fork,
 )
@@ -278,43 +279,8 @@ _RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
     # reach a public route.
     runs.c.run_configuration_revision_hash,
 )
-_RUN_FIELD_COLUMNS = frozenset(("run_id", "current_node_id"))
-_REVISION_DOCUMENT_COLUMNS = frozenset(("document",))
-_INTENT_PAYLOAD_COLUMNS = frozenset(("canonical_request",))
-_INTENT_FIELD_COLUMNS = frozenset(
-    (
-        "logical_key",
-        "run_id",
-        "adapter_revision",
-        "destination_identity",
-        "adapter_operational_identity",
-        "reconciliation_owner_command_id",
-    )
-)
-_COMMAND_PAYLOAD_COLUMNS = frozenset(("found_result",))
-_COMMAND_FIELD_COLUMNS = frozenset(
-    ("command_id", "logical_key", "actor", "evidence", "found_effect_id")
-)
 _EVENT_PAYLOAD_COLUMNS = frozenset(("payload",))
 _EVENT_FIELD_COLUMNS = frozenset(("run_id", "node_id", "receipt_logical_key"))
-_ATTEMPT_FIELD_COLUMNS = frozenset(
-    ("executor_operational_identity", "run_id", "node_id")
-)
-_RECEIPT_PAYLOAD_COLUMNS = frozenset(("canonical_request", "result"))
-_RECEIPT_FIELD_COLUMNS = frozenset(
-    (
-        "logical_key",
-        "run_id",
-        "adapter_revision",
-        "destination_identity",
-        "adapter_operational_identity",
-        "effect_id",
-        "reconcile_command_id",
-    )
-)
-_RUN_FORK_FIELD_COLUMNS = frozenset(
-    ("origin_run_id", "successor_run_id", "restart_from_node_id")
-)
 
 _FIRST_INTAKE_OF_ITS_REVISION = 1
 _INTAKE_RANK = "intake_rank"
@@ -484,6 +450,131 @@ def _validate_bounded_record(
                 "durable text exceeds its response allocation limit"
             )
         projection_limit.validate_field_length(len(str(value)))
+
+
+@dataclass(frozen=True)
+class _BoundedTable:
+    """One table's projection-limit contract: which columns are bounded, and how."""
+
+    table: sa.Table
+    columns: tuple[sa.Column[Any], ...] | None = None
+    document_columns: frozenset[str] = frozenset()
+    payload_columns: frozenset[str] = frozenset()
+    field_columns: frozenset[str] = frozenset()
+
+    def select(self, projection_limit: DurableProjectionLimit) -> sa.Select[Any]:
+        return _bounded_projection_select(
+            self.table,
+            projection_limit,
+            columns=self.columns,
+            document_columns=self.document_columns,
+            payload_columns=self.payload_columns,
+            field_columns=self.field_columns,
+        )
+
+    def validate(
+        self, record: Mapping[Any, Any], projection_limit: DurableProjectionLimit
+    ) -> None:
+        _validate_bounded_record(
+            record,
+            projection_limit,
+            document_columns=self.document_columns,
+            payload_columns=self.payload_columns,
+            field_columns=self.field_columns,
+        )
+
+    def validated(
+        self,
+        connection: Connection,
+        projection_limit: DurableProjectionLimit,
+        statement: sa.Select[Any],
+    ) -> tuple[RowMapping, ...]:
+        records = tuple(connection.execute(statement).mappings())
+        for record in records:
+            self.validate(record, projection_limit)
+        return records
+
+    def records(
+        self,
+        connection: Connection,
+        projection_limit: DurableProjectionLimit,
+        *where: sa.ColumnElement[bool],
+    ) -> tuple[RowMapping, ...]:
+        return self.validated(
+            connection, projection_limit, self.select(projection_limit).where(*where)
+        )
+
+    def record(
+        self,
+        connection: Connection,
+        projection_limit: DurableProjectionLimit,
+        *where: sa.ColumnElement[bool],
+    ) -> RowMapping | None:
+        record = _one_record(connection, self.select(projection_limit).where(*where))
+        if record is not None:
+            self.validate(record, projection_limit)
+        return record
+
+
+_BOUNDED_RUNS = _BoundedTable(
+    runs,
+    columns=_RUN_PROJECTION_COLUMNS,
+    field_columns=frozenset(("run_id", "current_node_id")),
+)
+_BOUNDED_REVISIONS = _BoundedTable(
+    workflow_revisions, document_columns=frozenset(("document",))
+)
+_BOUNDED_INTENTS = _BoundedTable(
+    effect_intents,
+    payload_columns=frozenset(("canonical_request",)),
+    field_columns=frozenset(
+        (
+            "logical_key",
+            "run_id",
+            "adapter_revision",
+            "destination_identity",
+            "adapter_operational_identity",
+            "reconciliation_owner_command_id",
+        )
+    ),
+)
+_BOUNDED_COMMANDS = _BoundedTable(
+    reconcile_commands,
+    payload_columns=frozenset(("found_result",)),
+    field_columns=frozenset(
+        ("command_id", "logical_key", "actor", "evidence", "found_effect_id")
+    ),
+)
+_BOUNDED_EVENTS = _BoundedTable(
+    run_events,
+    payload_columns=_EVENT_PAYLOAD_COLUMNS,
+    field_columns=_EVENT_FIELD_COLUMNS,
+)
+_BOUNDED_ATTEMPTS = _BoundedTable(
+    agent_attempts,
+    field_columns=frozenset(("executor_operational_identity", "run_id", "node_id")),
+)
+_BOUNDED_RECEIPTS = _BoundedTable(
+    effect_receipts,
+    payload_columns=frozenset(("canonical_request", "result")),
+    field_columns=frozenset(
+        (
+            "logical_key",
+            "run_id",
+            "adapter_revision",
+            "destination_identity",
+            "adapter_operational_identity",
+            "effect_id",
+            "reconcile_command_id",
+        )
+    ),
+)
+_BOUNDED_FORKS = _BoundedTable(
+    run_forks,
+    field_columns=frozenset(
+        ("origin_run_id", "successor_run_id", "restart_from_node_id")
+    ),
+)
 
 
 _LOG = logging.getLogger("atelier2")
@@ -691,13 +782,10 @@ def _exact_current_attempt_request(
     binding: ResolvedAgentBinding,
     execution_id: NodeExecutionId,
 ) -> AgentExecutionRequestV2:
-    """The request this attempt was armed from, recomputed exactly.
-
-    Recomputed through the one composition owner, with everything that owner
-    is given: the orders the run was started with and the work earlier nodes
-    handed on. A recomputation that knew only part of it would answer a run
-    that really was a chain with a conflict about its own identity.
-    """
+    """The request this attempt was armed from, recomputed through the one
+    composition owner with everything it is given -- run orders and earlier
+    nodes' work -- since a partial recomputation would answer a chain with a
+    conflict about its own identity."""
     operational_identity = str(record["executor_operational_identity"])
     ordinal = int(record["attempt_ordinal"])
     output_schema = _declared_output_schema_document(session, node)
@@ -741,16 +829,16 @@ def _exact_current_attempt_request(
     )
 
 
-def _refuse_current_attempt_binding_disagreement(
+def _verified_current_attempt_identity(
     record: Mapping[Any, Any],
-    *,
     run: RunV2 | RunV3,
     execution_id: NodeExecutionId,
-    attempt_id: AgentAttemptId,
-    request_hash: AgentExecutionRequestHash,
-    ordinal: int,
     exact_request: AgentExecutionRequestV2,
-) -> None:
+) -> tuple[AgentAttemptId, AgentExecutionRequestHash, int]:
+    """The durable row's attempt id, request hash and ordinal, proven bound."""
+    request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    ordinal = int(record["attempt_ordinal"])
+    attempt_id = AgentAttemptId(str(record["attempt_id"]))
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )
@@ -777,6 +865,7 @@ def _refuse_current_attempt_binding_disagreement(
             f"workflow_revision_hash durable={str(record['workflow_revision_hash'])!r} "
             f"expected={run.revision_hash.value!r}"
         )
+    return attempt_id, request_hash, ordinal
 
 
 def _attempt_cancellation_projection(
@@ -812,9 +901,6 @@ def _current_attempt_projection(
     if binding is None:
         raise RunTransitionConflict("current agent has no exact durable binding")
     execution_id = _node_execution_id(run, graph, run.current_node_id)
-    request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
-    ordinal = int(record["attempt_ordinal"])
-    attempt_id = AgentAttemptId(str(record["attempt_id"]))
     exact_request = _exact_current_attempt_request(
         session,
         record,
@@ -824,14 +910,8 @@ def _current_attempt_projection(
         binding=binding,
         execution_id=execution_id,
     )
-    _refuse_current_attempt_binding_disagreement(
-        record,
-        run=run,
-        execution_id=execution_id,
-        attempt_id=attempt_id,
-        request_hash=request_hash,
-        ordinal=ordinal,
-        exact_request=exact_request,
+    attempt_id, request_hash, ordinal = _verified_current_attempt_identity(
+        record, run, execution_id, exact_request
     )
     durable_state = _durable_attempt_state(record["state"])
     public_state = public_agent_attempt_state(
@@ -867,19 +947,16 @@ def _attempt_output_schema_refusal(
     execution_id: NodeExecutionId,
     attempt_id: AgentAttemptId | None = None,
 ) -> OutputSchemaRefusalReceipt | None:
-    attempt_record = (
-        connection.execute(
-            sa.select(agent_attempts).where(
-                agent_attempts.c.node_execution_id == execution_id.value,
-                (
-                    agent_attempts.c.attempt_id == attempt_id.value
-                    if attempt_id is not None
-                    else agent_attempts.c.attempt_ordinal == 1
-                ),
-            )
-        )
-        .mappings()
-        .one_or_none()
+    attempt_record = _one_record(
+        connection,
+        sa.select(agent_attempts).where(
+            agent_attempts.c.node_execution_id == execution_id.value,
+            (
+                agent_attempts.c.attempt_id == attempt_id.value
+                if attempt_id is not None
+                else agent_attempts.c.attempt_ordinal == 1
+            ),
+        ),
     )
     if attempt_record is None:
         return None
@@ -895,6 +972,17 @@ def _attempt_output_schema_refusal(
         expected_attempt_ordinal=attempt.attempt_ordinal,
         expected_schema_revision=PublishedRevisionHash(
             node.outputs[0].schema_reference.revision
+        ),
+    )
+
+
+def _terminal_receipt_record(
+    connection: Connection, execution_id: NodeExecutionId
+) -> RowMapping | None:
+    return _one_record(
+        connection,
+        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
+            node_receipts_v3.c.node_execution_id == execution_id.value
         ),
     )
 
@@ -920,19 +1008,15 @@ def _node_receipt_refusal(
         )
         if exact_refusal is not None:
             return exact_refusal.reason
-    record = connection.execute(
-        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
-            node_receipts_v3.c.node_execution_id == execution_id.value
-        )
-    ).one_or_none()
+    record = _terminal_receipt_record(connection, execution_id)
     if record is None:
         refusal = _attempt_output_schema_refusal(connection, execution_id)
         return None if refusal is None else refusal.reason
-    disposition = PersistedReceiptDisposition(str(record.disposition))
+    disposition = PersistedReceiptDisposition(str(record["disposition"]))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
         return None
     reason, _schema_revision, _value_hash = read_stored_node_receipt_reason(
-        str(record.reason)
+        str(record["reason"])
     )
     return reason
 
@@ -943,34 +1027,24 @@ def _node_receipt_refusal_output(
 ) -> NodeAnswer | None:
     """A redacted presentation of what a schema owner judged and refused.
 
-    A terminal ordinal-two refusal names its value hash in `node-receipt/v3`;
-    before that terminal row exists, ordinal one's immutable Attempt receipt
-    names the same evidence for its nonterminal repair event. A plain reason,
-    an unjudged failure, or absence from both receipt families has nothing to
-    resolve and reads honestly absent. Where either receipt names a hash, its
-    failure transaction also published these exact bytes as an artifact under
-    that same address, read back through the one content-addressed store
-    every other artifact uses and redacted at this read boundary: a provider's
-    refused output is untrusted text on its way to a browser, and a schema
-    refusal is exactly the shape of episode where a provider might have
-    echoed a credential it was handed. Bytes that do not decode as UTF-8
-    cannot be scanned for a credential shape at all, so the durable read
-    fails loud instead of hiding or exposing them.
+    The terminal `node-receipt/v3` names the refused value's hash; before it
+    exists, ordinal one's immutable Attempt receipt does. Redaction happens
+    here, at the read boundary: a schema refusal is exactly the episode where
+    a provider may have echoed a credential it was handed.
     """
-    record = (
-        connection.execute(
-            sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
-                node_receipts_v3.c.node_execution_id == execution_id.value
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
+    record = _terminal_receipt_record(connection, execution_id)
     if record is not None:
         address = _receipt_refusal_address(record)
     else:
         refusal = _attempt_output_schema_refusal(connection, execution_id)
-        address = None if refusal is None else _RefusedValueAddress.of(refusal)
+        address = (
+            None
+            if refusal is None
+            else _RefusedValueAddress(
+                refusal.value_hash,
+                None if refusal.artifact_hash is None else refusal.artifact_hash.value,
+            )
+        )
     if address is None:
         return None
     return address.answer(_refused_artifacts(connection, (address,)))
@@ -1098,26 +1172,11 @@ def _event_receipt(
     logical_key = event.receipt_logical_key
     if logical_key is None:
         raise RunTransitionConflict("receipt event has no logical key")
-    receipt_record = (
-        connection.execute(
-            _bounded_projection_select(
-                effect_receipts,
-                projection_limit,
-                payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
-                field_columns=_RECEIPT_FIELD_COLUMNS,
-            ).where(effect_receipts.c.logical_key == logical_key.value)
-        )
-        .mappings()
-        .one_or_none()
+    receipt_record = _BOUNDED_RECEIPTS.record(
+        connection, projection_limit, effect_receipts.c.logical_key == logical_key.value
     )
     if receipt_record is None:
         raise RunTransitionConflict("receipt event has no durable receipt")
-    _validate_bounded_record(
-        receipt_record,
-        projection_limit,
-        payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
-        field_columns=_RECEIPT_FIELD_COLUMNS,
-    )
     receipt = receipt_from_record(receipt_record)
     if (
         receipt.intent.binding.run_id != event.run_id
@@ -1247,15 +1306,12 @@ def _waiting_input_event(
     connection: Connection, execution_id: NodeExecutionId
 ) -> RunEvent | None:
     """The exact durable pause for this Wait execution, integrity-checked."""
-    record = (
-        connection.execute(
-            sa.select(run_events).where(
-                run_events.c.node_execution_id == execution_id.value,
-                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    record = _one_record(
+        connection,
+        sa.select(run_events).where(
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+        ),
     )
     return None if record is None else event_from_record(record)
 
@@ -1301,20 +1357,17 @@ def _node_detail_execution(
     ):
         return current_round, current_execution
 
-    record = (
-        connection.execute(
-            sa.select(run_events)
-            .where(
-                run_events.c.run_id == run.run_id.value,
-                run_events.c.revision_hash == run.revision_hash.value,
-                run_events.c.node_id == node_id,
-                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
-            )
-            .order_by(run_events.c.event_sequence.desc())
-            .limit(1)
+    record = _one_record(
+        connection,
+        sa.select(run_events)
+        .where(
+            run_events.c.run_id == run.run_id.value,
+            run_events.c.revision_hash == run.revision_hash.value,
+            run_events.c.node_id == node_id,
+            run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
         )
-        .mappings()
-        .one_or_none()
+        .order_by(run_events.c.event_sequence.desc())
+        .limit(1),
     )
     if record is None:
         return current_round, current_execution
@@ -1461,9 +1514,6 @@ def _node_answer(
     return answers.get(execution_id.value)
 
 
-_OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING = "output-schema refusal artifact is missing"
-
-
 @dataclass(frozen=True)
 class _RefusedValueAddress:
     """Where a refused terminal value's bytes are, once the page's artifacts are read.
@@ -1473,16 +1523,7 @@ class _RefusedValueAddress:
 
     value_hash: Sha256Hash
     artifact_hash: str | None
-    missing_artifact_message: str
-
-    @classmethod
-    def of(cls, refusal: OutputSchemaRefusalReceipt) -> _RefusedValueAddress:
-        artifact_hash = refusal.artifact_hash
-        return cls(
-            refusal.value_hash,
-            None if artifact_hash is None else artifact_hash.value,
-            _OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING,
-        )
+    missing_artifact_message: str = "output-schema refusal artifact is missing"
 
     def answer(self, artifacts_by_hash: Mapping[str, Artifact]) -> NodeAnswer:
         if self.artifact_hash is None:
@@ -1534,13 +1575,12 @@ def _attempt_receipt_refusal_address(
     """The refused value an ordinal-one attempt's own receipt names."""
     artifact_hash = attempt_receipt["artifact_hash"]
     value_hash = str(attempt_receipt["value_hash"])
-    missing = _OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING
     if artifact_hash is None:
         if value_hash != Sha256Hash.of(b"").value:
             raise RunTransitionConflict(
                 "nonempty output-schema refusal has no artifact"
             )
-        return _RefusedValueAddress(Sha256Hash(value_hash), None, missing)
+        return _RefusedValueAddress(Sha256Hash(value_hash), None)
     # The mirror of `load_output_schema_refusal_receipt`'s own check
     # (agent_attempt_store.py): the artifact an attempt names is always
     # addressed by the same hash it judged, so the two disagreeing is the
@@ -1549,22 +1589,15 @@ def _attempt_receipt_refusal_address(
         raise RunTransitionConflict(
             "output-schema refusal artifact differs from its value hash"
         )
-    return _RefusedValueAddress(Sha256Hash(value_hash), str(artifact_hash), missing)
+    return _RefusedValueAddress(Sha256Hash(value_hash), str(artifact_hash))
 
 
 def _terminal_answers(
     connection: Connection,
     answer_kinds_by_execution: Mapping[str, tuple[RunEventKind, RunEventKind | None]],
 ) -> dict[str, NodeAnswer]:
-    """Every listed execution's own answer, read once for the whole page.
-
-    Each answer is matched against its node's own declared completion kind:
-    an execution may also carry its one recognized embedded platform-effect
-    confirmation (`_embedded_platform_effect_kind`), which is skipped, while
-    any other second answer-bearing event -- or a second of its own kind --
-    is durable state disagreeing with itself and refuses loudly rather than
-    a dict silently keeping the last one seen.
-    """
+    """Each execution's own answer; a second one refuses, the embedded
+    platform-effect confirmation (`_embedded_platform_effect_kind`) is skipped."""
     answers_by_execution: dict[str, NodeAnswer] = {}
     for record in connection.execute(
         sa.select(
@@ -1598,11 +1631,7 @@ def _ordinal_one_attempt_receipts(
     ended_runs: Sequence[RunV3],
     graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
 ) -> dict[str, Mapping[Any, Any]]:
-    """Each receiptless agent execution's own `agent_attempt_receipts_v3` row.
-
-    Only agent nodes ever write one; the node kind is read from `graphs`,
-    already parsed for this same page, never a second workflow-revision read.
-    """
+    """Each receiptless agent execution's own `agent_attempt_receipts_v3` row."""
     if not receiptless_execution_values:
         return {}
     run_by_id = {run.run_id.value: run for run in ended_runs}
@@ -1647,16 +1676,11 @@ def _run_terminal_results(
     ended_runs: Sequence[RunV3],
     graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
 ) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
-    """Every ended run's own terminal answer and refusal, batched once per page.
+    """Every ended run's terminal answer and refusal, each source read once.
 
-    An ended run's terminal execution id is the deterministic identity
-    `current_node_execution_id` already names on the wire, so every source is
-    read once for the whole page, keyed by that identity, and assembled per
-    run afterward with no further query. The attempt receipt's schema
-    revision and receipt hash are not re-verified here as
+    The attempt receipt's schema revision and hash are not re-verified as
     `load_output_schema_refusal_receipt` does: that defends the live repair
-    path; this read shows what a finished run already wrote, and the artifact
-    bytes hashing to their address is still checked by `read_stored_artifacts`.
+    path, while this read shows what a finished run already wrote.
     """
     if not ended_runs:
         return {}
@@ -1725,14 +1749,11 @@ def _node_provenance(
 ) -> NodeProvenance | None:
     """Which agent produced this node's answer, as its receipt recorded it."""
 
-    record = (
-        connection.execute(
-            sa.select(agent_receipts_v2).where(
-                agent_receipts_v2.c.node_execution_id == execution_id.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    record = _one_record(
+        connection,
+        sa.select(agent_receipts_v2).where(
+            agent_receipts_v2.c.node_execution_id == execution_id.value,
+        ),
     )
     if record is None:
         return None
@@ -1757,40 +1778,8 @@ def _run_row_id(row: RunProjection | DefectiveRunProjection) -> RunId:
     return row.run_id if isinstance(row, DefectiveRunProjection) else row.run.run_id
 
 
-def _bounded_records(
-    connection: Connection,
-    table: sa.Table,
-    projection_limit: DurableProjectionLimit,
-    where: sa.ColumnElement[bool],
-    *,
-    document_columns: frozenset[str] = frozenset(),
-    payload_columns: frozenset[str] = frozenset(),
-    field_columns: frozenset[str] = frozenset(),
-) -> tuple[RowMapping, ...]:
-    """Every row the clause admits, each proven inside the projection limit."""
-    statement = _bounded_projection_select(
-        table,
-        projection_limit,
-        document_columns=document_columns,
-        payload_columns=payload_columns,
-        field_columns=field_columns,
-    ).where(where)
-    records = tuple(connection.execute(statement).mappings())
-    for record in records:
-        _validate_bounded_record(
-            record,
-            projection_limit,
-            document_columns=document_columns,
-            payload_columns=payload_columns,
-            field_columns=field_columns,
-        )
-    return records
-
-
 @dataclass(frozen=True)
 class _PageForks:
-    """What the page's runs are to the forks that name them."""
-
     origin_by_successor: Mapping[str, RunForkOriginProjection]
     successors_by_origin: Mapping[str, Sequence[RunForkSuccessorProjection]]
     reused_by_successor: Mapping[str, Sequence[ReusedNodeProjection]]
@@ -1801,14 +1790,8 @@ def _fork_records(
     projection_limit: DurableProjectionLimit,
     run_ids: Sequence[str],
 ) -> tuple[RowMapping, ...]:
-    """Every fork naming a page run as successor or origin, once per command.
-
-    An origin's successors are bounded by `MAXIMUM_RUN_FORK_SUCCESSORS`, so
-    the page reads one row past the bound it admits and refuses beyond it.
-    """
-    fork_select = _bounded_projection_select(
-        run_forks, projection_limit, field_columns=_RUN_FORK_FIELD_COLUMNS
-    )
+    """Every fork naming a page run as successor or origin, once per command."""
+    fork_select = _BOUNDED_FORKS.select(projection_limit)
     successor_fork_records = tuple(
         connection.execute(
             fork_select.where(run_forks.c.successor_run_id.in_(run_ids))
@@ -1839,9 +1822,7 @@ def _fork_records(
         }.values()
     )
     for fork_record in fork_records:
-        _validate_bounded_record(
-            fork_record, projection_limit, field_columns=_RUN_FORK_FIELD_COLUMNS
-        )
+        _BOUNDED_FORKS.validate(fork_record, projection_limit)
     return fork_records
 
 
@@ -1852,16 +1833,10 @@ def _page_forks(
 ) -> _PageForks:
     stored_forks = []
     for record in _fork_records(connection, projection_limit, run_ids):
-        # A same-snapshot invariant check, not a live race: `record` was
-        # read from `run_forks` under this call's one SQLite snapshot
-        # (`_connection` opens one `BEGIN DEFERRED` transaction for the
-        # whole read), and `_stored_fork_for_command` re-reads the exact
-        # same table under that unchanged snapshot -- so this branch
-        # should be unreachable today. It stays as a guard rather than an
-        # assumption, and if that snapshot guarantee is ever weakened, the
-        # honest response is retrying the read, not treating the row as
-        # permanently corrupt: nothing here proves the fork is gone, only
-        # that this one read could not see it.
+        # A same-snapshot re-read (`_connection` holds one `BEGIN DEFERRED`
+        # transaction), so the guard below should be unreachable; were that
+        # snapshot guarantee weakened, the honest answer is retrying the
+        # read, not calling the row corrupt: nothing proves the fork is gone.
         fork = _stored_fork_for_command(
             connection, RunForkCommandId(str(record["command_id"]))
         )
@@ -1914,14 +1889,12 @@ def _page_graphs(
     revision_hashes = {run.revision_hash for run in loaded_runs}
     revision_records = {
         WorkflowRevisionHash(str(record["revision_hash"])): bytes(record["document"])
-        for record in _bounded_records(
+        for record in _BOUNDED_REVISIONS.records(
             connection,
-            workflow_revisions,
             projection_limit,
             workflow_revisions.c.revision_hash.in_(
                 tuple(value.value for value in revision_hashes)
             ),
-            document_columns=_REVISION_DOCUMENT_COLUMNS,
         )
     }
     if set(revision_records) != revision_hashes:
@@ -1955,12 +1928,10 @@ def _current_attempt_records(
     if not execution_values:
         return {}
     attempt_records: dict[str, list[RowMapping]] = {}
-    for record in _bounded_records(
+    for record in _BOUNDED_ATTEMPTS.records(
         connection,
-        agent_attempts,
         projection_limit,
         agent_attempts.c.node_execution_id.in_(execution_values),
-        field_columns=_ATTEMPT_FIELD_COLUMNS,
     ):
         attempt_records.setdefault(str(record["node_execution_id"]), []).append(record)
     for records_for_execution in attempt_records.values():
@@ -1977,23 +1948,25 @@ def _intent_records(
     connection: Connection,
     projection_limit: DurableProjectionLimit,
     logical_keys: Iterable[LogicalEffectKey],
+    waiting_keys: Iterable[LogicalEffectKey],
 ) -> dict[str, RowMapping]:
+    """Each key's intent row; a waiting run's key must name one."""
     key_values = tuple(key.value for key in logical_keys)
-    if not key_values:
-        return {}
+    records = ()
+    if key_values:
+        records = _BOUNDED_INTENTS.records(
+            connection, projection_limit, effect_intents.c.logical_key.in_(key_values)
+        )
     intent_records: dict[str, RowMapping] = {}
-    for record in _bounded_records(
-        connection,
-        effect_intents,
-        projection_limit,
-        effect_intents.c.logical_key.in_(key_values),
-        payload_columns=_INTENT_PAYLOAD_COLUMNS,
-        field_columns=_INTENT_FIELD_COLUMNS,
-    ):
+    for record in records:
         key = str(record["logical_key"])
         if key in intent_records:
             raise RunTransitionConflict("durable intent primary key repeated")
         intent_records[key] = record
+    if {key.value for key in waiting_keys} - set(intent_records):
+        raise RunTransitionConflict(
+            "WAITING_RECONCILIATION run has no exact durable intent"
+        )
     return intent_records
 
 
@@ -2011,13 +1984,8 @@ def _reconciling_command_records(
         return {}
     command_records = {
         str(record["command_id"]): record
-        for record in _bounded_records(
-            connection,
-            reconcile_commands,
-            projection_limit,
-            reconcile_commands.c.command_id.in_(owner_ids),
-            payload_columns=_COMMAND_PAYLOAD_COLUMNS,
-            field_columns=_COMMAND_FIELD_COLUMNS,
+        for record in _BOUNDED_COMMANDS.records(
+            connection, projection_limit, reconcile_commands.c.command_id.in_(owner_ids)
         )
     }
     if set(command_records) != set(owner_ids):
@@ -2030,16 +1998,31 @@ def _run_instants(
 ) -> dict[str, tuple[RecordedAt, RecordedAt | None]]:
     if not run_ids:
         return {}
-    instants: dict[str, tuple[RecordedAt, RecordedAt | None]] = {}
-    for record in connection.execute(
-        sa.select(run_instants).where(run_instants.c.run_id.in_(run_ids))
-    ).mappings():
-        ended = record["ended_at"]
-        instants[str(record["run_id"])] = (
+    return {
+        str(record["run_id"]): (
             RecordedAt(str(record["started_at"])),
-            None if ended is None else RecordedAt(str(ended)),
+            None if record["ended_at"] is None else RecordedAt(str(record["ended_at"])),
         )
-    return instants
+        for record in connection.execute(
+            sa.select(run_instants).where(run_instants.c.run_id.in_(run_ids))
+        ).mappings()
+    }
+
+
+def _event_stream_run_record(
+    connection: Connection, run_id: RunId
+) -> RowMapping | None:
+    return _one_record(
+        connection,
+        sa.select(
+            runs.c.state,
+            runs.c.last_event_sequence,
+            runs.c.workflow_format_version,
+            runs.c.revision_hash,
+            runs.c.current_node_id,
+            runs.c.current_round_ordinal,
+        ).where(runs.c.run_id == run_id.value),
+    )
 
 
 def _bound_intent_snapshot(
@@ -2132,14 +2115,10 @@ def _current_attempt_projections(
     if not isinstance(run, (RunV2, RunV3)):
         raise RunTransitionConflict("agent node belongs to a V1 run")
     records_for_execution = attempt_records.get(execution.value, ())
-    # A succeeded attempt has no public state unless the run
-    # parks on its node's effect, so projecting it would refuse
-    # the read. COMPLETED is that case. FAILED is not: the attempt
-    # is still the current one, and the rail needs it so a list
-    # read does not pose the node as working.
-    # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
-    # is control evidence for an attempt-less refusal, not the
-    # public node ending.
+    # A succeeded attempt has no public state unless the run parks on its
+    # node's effect, so COMPLETED projects none. FAILED keeps its current
+    # attempt so a list read does not pose the node as working -- minus a
+    # NEVER_LAUNCHED cleanup, control evidence for an attempt-less refusal.
     if not records_for_execution or run.state is RunState.COMPLETED:
         return ()
     effect_awaits_reconciliation = execution_awaits_effect_reconciliation(
@@ -2226,29 +2205,16 @@ class DbosQueries:
     ) -> GetWorkflowRevisionResult:
         try:
             with self._connection() as connection:
-                record = (
-                    connection.execute(
-                        _bounded_projection_select(
-                            workflow_revisions,
-                            self._projection_limit,
-                            document_columns=_REVISION_DOCUMENT_COLUMNS,
-                        )
-                        .add_columns(*_REVISION_PROVENANCE_COLUMNS)
-                        .select_from(_workflow_revisions_with_provenance())
-                        .where(
-                            workflow_revisions.c.revision_hash == revision_hash.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                record = _one_record(
+                    connection,
+                    _BOUNDED_REVISIONS.select(self._projection_limit)
+                    .add_columns(*_REVISION_PROVENANCE_COLUMNS)
+                    .select_from(_workflow_revisions_with_provenance())
+                    .where(workflow_revisions.c.revision_hash == revision_hash.value),
                 )
                 if record is None:
                     return WorkflowRevisionMissing()
-                _validate_bounded_record(
-                    record,
-                    self._projection_limit,
-                    document_columns=_REVISION_DOCUMENT_COLUMNS,
-                )
+                _BOUNDED_REVISIONS.validate(record, self._projection_limit)
                 document_bytes = bytes(record["document"])
                 self._projection_limit.validate_document(document_bytes)
                 revision = WorkflowRevision(document_bytes)
@@ -2464,25 +2430,11 @@ class DbosQueries:
     ) -> GetRunResult:
         try:
             with self._connection() as connection:
-                record = (
-                    connection.execute(
-                        _bounded_projection_select(
-                            runs,
-                            self._projection_limit,
-                            columns=_RUN_PROJECTION_COLUMNS,
-                            field_columns=_RUN_FIELD_COLUMNS,
-                        ).where(runs.c.run_id == run_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
+                record = _BOUNDED_RUNS.record(
+                    connection, self._projection_limit, runs.c.run_id == run_id.value
                 )
                 if record is None:
                     return RunQueryMissing()
-                _validate_bounded_record(
-                    record,
-                    self._projection_limit,
-                    field_columns=_RUN_FIELD_COLUMNS,
-                )
                 return RunFound(self._run_projections(connection, (record,))[0])
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
@@ -2510,12 +2462,7 @@ class DbosQueries:
         require_page_limit(limit, "run")
         try:
             with self._connection() as connection:
-                statement = _bounded_projection_select(
-                    runs,
-                    self._projection_limit,
-                    columns=_RUN_PROJECTION_COLUMNS,
-                    field_columns=_RUN_FIELD_COLUMNS,
-                )
+                statement = _BOUNDED_RUNS.select(self._projection_limit)
                 if after is not None:
                     statement = statement.where(runs.c.run_id > after.value)
                 if state is not None:
@@ -2528,11 +2475,7 @@ class DbosQueries:
                 has_more = len(records) > limit
                 item_records = records[:limit]
                 for record in item_records:
-                    _validate_bounded_record(
-                        record,
-                        self._projection_limit,
-                        field_columns=_RUN_FIELD_COLUMNS,
-                    )
+                    _BOUNDED_RUNS.validate(record, self._projection_limit)
                 ordered_bytes = tuple(
                     str(record["run_id"]).encode("utf-8") for record in item_records
                 )
@@ -2573,49 +2516,20 @@ class DbosQueries:
                 )
                 if run_exists is None:
                     return RunQueryMissing()
-                command_record = (
-                    connection.execute(
-                        _bounded_projection_select(
-                            reconcile_commands,
-                            self._projection_limit,
-                            payload_columns=_COMMAND_PAYLOAD_COLUMNS,
-                            field_columns=_COMMAND_FIELD_COLUMNS,
-                        ).where(reconcile_commands.c.command_id == command_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
+                command_record = _BOUNDED_COMMANDS.record(
+                    connection,
+                    self._projection_limit,
+                    reconcile_commands.c.command_id == command_id.value,
                 )
                 if command_record is None:
                     return ReconciliationRetryTargetMissing()
-                _validate_bounded_record(
-                    command_record,
+                intent_record = _BOUNDED_INTENTS.record(
+                    connection,
                     self._projection_limit,
-                    payload_columns=_COMMAND_PAYLOAD_COLUMNS,
-                    field_columns=_COMMAND_FIELD_COLUMNS,
-                )
-                intent_record = (
-                    connection.execute(
-                        _bounded_projection_select(
-                            effect_intents,
-                            self._projection_limit,
-                            payload_columns=_INTENT_PAYLOAD_COLUMNS,
-                            field_columns=_INTENT_FIELD_COLUMNS,
-                        ).where(
-                            effect_intents.c.logical_key
-                            == command_record["logical_key"]
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                    effect_intents.c.logical_key == command_record["logical_key"],
                 )
                 if intent_record is None:
                     return QueryDurableStateCorrupt()
-                _validate_bounded_record(
-                    intent_record,
-                    self._projection_limit,
-                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
-                    field_columns=_INTENT_FIELD_COLUMNS,
-                )
                 intent = intent_snapshot_from_record(intent_record)
                 if intent.intent.binding.run_id != run_id:
                     return ReconciliationRetryCommandConflict()
@@ -2699,15 +2613,16 @@ class DbosQueries:
         run_ids = tuple(run.run_id.value for run in loaded_runs)
         forks = _page_forks(connection, limit, run_ids)
         graphs = _page_graphs(connection, limit, loaded_runs)
+        current_nodes = {
+            run.run_id: graphs[run.revision_hash].node(run.current_node_id)
+            for run in loaded_runs
+        }
         current_agent_executions = {
             run.run_id: _node_execution_id(
                 run, graphs[run.revision_hash], run.current_node_id
             )
             for run in loaded_runs
-            if isinstance(
-                graphs[run.revision_hash].node(run.current_node_id),
-                AgentNodeV3,
-            )
+            if isinstance(current_nodes[run.run_id], AgentNodeV3)
         }
         attempt_records = _current_attempt_records(
             connection, limit, current_agent_executions.values()
@@ -2719,10 +2634,7 @@ class DbosQueries:
             run
             for run in loaded_runs
             if run.state in {RunState.FAILED, RunState.CANCELLED, RunState.COMPLETED}
-            and isinstance(
-                graphs[run.revision_hash].node(run.current_node_id),
-                ActionNodeV3,
-            )
+            and isinstance(current_nodes[run.run_id], ActionNodeV3)
         )
         logical_keys_by_run = {
             run.run_id: logical_effect_key_for_node(
@@ -2738,15 +2650,11 @@ class DbosQueries:
             for run in waiting_runs + ended_action_runs
         }
         intent_records = _intent_records(
-            connection, limit, logical_keys_by_run.values()
+            connection,
+            limit,
+            logical_keys_by_run.values(),
+            (logical_keys_by_run[run.run_id] for run in waiting_runs),
         )
-        waiting_key_values = {
-            logical_keys_by_run[run.run_id].value for run in waiting_runs
-        }
-        if waiting_key_values - set(intent_records):
-            raise RunTransitionConflict(
-                "WAITING_RECONCILIATION run has no exact durable intent"
-            )
         command_records = _reconciling_command_records(
             connection, limit, intent_records
         )
@@ -2805,20 +2713,7 @@ class DbosQueries:
             return EventHistoryCorrupt()
         try:
             with self._connection() as connection:
-                record = (
-                    connection.execute(
-                        sa.select(
-                            runs.c.state,
-                            runs.c.last_event_sequence,
-                            runs.c.workflow_format_version,
-                            runs.c.revision_hash,
-                            runs.c.current_node_id,
-                            runs.c.current_round_ordinal,
-                        ).where(runs.c.run_id == run_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                record = _event_stream_run_record(connection, run_id)
                 if record is None:
                     return RunQueryMissing()
                 head = int(record["last_event_sequence"])
@@ -2892,50 +2787,23 @@ class DbosQueries:
         require_page_limit(limit, "event")
         try:
             with self._connection() as connection:
-                run_record = (
-                    connection.execute(
-                        sa.select(
-                            runs.c.state,
-                            runs.c.last_event_sequence,
-                            runs.c.workflow_format_version,
-                            runs.c.revision_hash,
-                            runs.c.current_node_id,
-                            runs.c.current_round_ordinal,
-                        ).where(runs.c.run_id == run_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                run_record = _event_stream_run_record(connection, run_id)
                 if run_record is None:
                     return QueryDurableStateCorrupt()
                 head = int(run_record["last_event_sequence"])
                 if after_sequence < 0 or after_sequence > head:
                     return EventHistoryCorrupt()
-                records = tuple(
-                    connection.execute(
-                        _bounded_projection_select(
-                            run_events,
-                            self._projection_limit,
-                            payload_columns=_EVENT_PAYLOAD_COLUMNS,
-                            field_columns=_EVENT_FIELD_COLUMNS,
-                        )
-                        .where(
-                            run_events.c.run_id == run_id.value,
-                            run_events.c.event_sequence > after_sequence,
-                        )
-                        .order_by(run_events.c.event_sequence)
-                        .limit(limit)
+                records = _BOUNDED_EVENTS.validated(
+                    connection,
+                    self._projection_limit,
+                    _BOUNDED_EVENTS.select(self._projection_limit)
+                    .where(
+                        run_events.c.run_id == run_id.value,
+                        run_events.c.event_sequence > after_sequence,
                     )
-                    .mappings()
-                    .all()
+                    .order_by(run_events.c.event_sequence)
+                    .limit(limit),
                 )
-                for record in records:
-                    _validate_bounded_record(
-                        record,
-                        self._projection_limit,
-                        payload_columns=_EVENT_PAYLOAD_COLUMNS,
-                        field_columns=_EVENT_FIELD_COLUMNS,
-                    )
                 sequences = tuple(int(record["event_sequence"]) for record in records)
                 expected_sequences = tuple(
                     range(after_sequence + 1, min(head, after_sequence + limit) + 1)
