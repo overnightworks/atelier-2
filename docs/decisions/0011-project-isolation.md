@@ -201,7 +201,9 @@ path a project's runtime opens is derived from that project's root, so the
 installation can be read whole and no byte of A found outside A. That is what makes
 deletion complete (decision 3), what makes a bad store one project's outage instead
 of the installation's (decision 5), and it is provable by a canary read rather than
-argued.
+argued. The project's source checkout is read, plus worktree administration for
+claim checkouts (`.git/worktrees/`, lane-branch refs): the claim door holds its
+claim from a linked worktree of that checkout, removed again with the claim.
 
 **What the root is not.** The root is not an access-control boundary, and this
 record refuses to claim it is one. A directory does not stop a process: an attempt
