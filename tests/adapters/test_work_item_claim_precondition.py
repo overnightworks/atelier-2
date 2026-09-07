@@ -51,7 +51,11 @@ from atelier2.contracts.effects import (
     EffectIntent,
     LogicalEffectKey,
 )
-from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
+    RunEventKind,
+)
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.queue_projection import (
@@ -98,7 +102,11 @@ from tests.acceptance.test_v3_push_before_open_pr import (
 from tests.acceptance.test_v3_push_before_open_pr import (
     ITEM as PUBLIC_ITEM,
 )
-from tests.integration.test_claim_checkouts import tracked_files, worktree_facts
+from tests.integration.test_claim_checkouts import (
+    snapshot,
+    tracked_files,
+    worktree_facts,
+)
 from tests.scenarios.catalog_lineages import found_lineage
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
@@ -109,6 +117,7 @@ from tests.scenarios.work_item_claims import (
 
 ITEM = 1320
 RUN_ID = RunId("run-claim-before-build")
+SECOND_RUN = RunId("v3/push-before-open-pr-again")
 REVISION = WorkflowRevisionHash("c" * 64)
 BRANCH = HeadBranch("atelier2/work-item/claim-before-build")
 SCOPE = ("src/atelier2/adapters/dbos/work_item_claims.py", "tests")
@@ -408,6 +417,7 @@ class _StartedBuilderNode:
     binding: AgentNodeBindingV2
     project: Path
     checkouts: LocalClaimCheckouts
+    run_id: RunId = RUN
 
     def ledger(self, claims: WorkItemClaims) -> WorkItemClaimLedger:
         """`claims` as this runtime's ledger, reading its own queue policy and
@@ -437,7 +447,7 @@ class _StartedBuilderNode:
             ledger,
             PROJECT,
             self.binding,
-            RUN,
+            self.run_id,
             self.revision_hash,
             "implement",
         )
@@ -447,7 +457,7 @@ class _StartedBuilderNode:
 
         with self.runtime.engine.connect() as connection:
             state = connection.execute(
-                sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+                sa.select(runs.c.state).where(runs.c.run_id == self.run_id.value)
             ).scalar_one()
             receipts = connection.execute(
                 sa.select(sa.func.count()).select_from(effect_receipts)
@@ -478,20 +488,24 @@ def started_node(
 
 
 def _started_node(
-    runtime: DbosRuntime, project: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+    runtime: DbosRuntime,
+    project: Path,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch | None,
+    run_id: RunId = RUN,
 ) -> _StartedBuilderNode:
-    assert _start_public_run(runtime, _SCOPED_ITEM).status_code == 201
+    assert _start_public_run(runtime, _SCOPED_ITEM, run_id).status_code == 201
     with runtime.engine.connect() as connection:
         revision_hash = WorkflowRevisionHash(
             connection.execute(
-                sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
+                sa.select(runs.c.revision_hash).where(runs.c.run_id == run_id.value)
             ).scalar_one()
         )
     binding = decode_node_binding(
         dict(
             _node_binding(
                 runtime.datasource,
-                RUN,
+                run_id,
                 revision_hash,
                 "implement",
                 runtime.declared_project,
@@ -499,17 +513,19 @@ def _started_node(
         )
     )
     assert isinstance(binding, AgentNodeBindingV2)
-    monkeypatch.setattr(
-        runtime.datasource,
-        "run_tx_step",
-        _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
-    )
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            runtime.datasource,
+            "run_tx_step",
+            _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+        )
     return _StartedBuilderNode(
         runtime,
         revision_hash,
         binding,
         project,
         LocalClaimCheckouts(project, root / "door-checkouts"),
+        run_id,
     )
 
 
@@ -725,3 +741,54 @@ def test_a_replay_that_finds_its_claim_checkout_gone_makes_it_again_without_the_
     assert started_node.claim_checkout() == first
     _five_facts(started_node, first)
     assert ledger_invocations(executable) == ("status", "claim")
+
+
+def test_a_standing_claim_checkout_refuses_the_next_run_of_the_same_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane branch one run still holds refuses the next run of the same item.
+
+    Opening the claim checkout is no durable step. When git refuses because
+    an earlier run's checkout still holds the branch, the later node ends
+    AGENT_FAILED with that sentence, no exception escapes, and the occupant's
+    checkout is not touched. A replay whose hold is already that refusal still
+    takes the refuse step.
+    """
+
+    project, remote, _base = _repositories(tmp_path)
+    runtime, _github = _public_runtime(tmp_path, project, remote)
+    try:
+        first = _started_node(runtime, project, tmp_path, None)
+        second = _started_node(runtime, project, tmp_path, None, SECOND_RUN)
+        executable = fake_agent_claim_executable(tmp_path)
+        assert first.hold(first.ledger(AgentClaimCli(executable, tmp_path))) is None
+        held = first.claim_checkout()
+        assert held is not None
+        before = (worktree_facts(held), snapshot(held))
+        monkeypatch.setattr(
+            runtime.datasource,
+            "run_tx_step",
+            _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+        )
+        ledger = second.ledger(AgentClaimCli(executable, tmp_path))
+
+        first_drive = second.hold(ledger)
+        replay = second.hold(ledger)
+
+        assert (first_drive, replay) == (RunState.FAILED.value, RunState.FAILED.value)
+        with runtime.engine.connect() as connection:
+            payload = connection.execute(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == SECOND_RUN.value,
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+                )
+            ).scalar_one()
+        record = AgentNodeRefusalRecord.decode(bytes(payload))
+        assert record is not None
+        assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+        assert record.detail
+        assert _LANE_BRANCH.value in record.detail
+        assert (worktree_facts(held), snapshot(held)) == before
+        assert first.claim_checkout() == held
+    finally:
+        runtime.close()

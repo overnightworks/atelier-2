@@ -77,7 +77,11 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
-from atelier2.ports.claim_checkouts import ClaimCheckouts
+from atelier2.ports.claim_checkouts import (
+    ClaimCheckoutRefused,
+    ClaimCheckouts,
+    ClaimCheckoutUnavailable,
+)
 from atelier2.ports.queue_projection import QueuePolicyReader
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -436,9 +440,48 @@ def hold_work_item_claim(
         raise RunBindingConflict(
             "a prepared work-item claim requires the ledger that bound it"
         )
-    checkout = _opened_claim_checkout(ledger, binding, run_id, prepared)
+    return _drive_prepared_claim(
+        datasource,
+        ledger,
+        binding,
+        run_id,
+        revision_hash,
+        node_id,
+        round_ordinal,
+        prepared,
+    )
+
+
+def _drive_prepared_claim(
+    datasource: SQLAlchemyDatasource,
+    ledger: WorkItemClaimLedger,
+    binding: AgentNodeBindingV2,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    prepared: dict[str, str],
+) -> str | None:
+    """Open this run's checkout, take the memoized hold, and refuse when it cannot.
+
+    Opening is no durable step. A typed checkout failure is recorded as this
+    hold's own refusal so a replay that cannot open still consumes the hold
+    step, then takes the refuse step, instead of raising out of the node.
+    """
+
     logical_key = prepared[LOGICAL_KEY_FIELD]
-    outcome = _held_claim(datasource, ledger, logical_key, revision_hash, checkout)
+    checkout: Path | None
+    unavailable: BaseException | None
+    try:
+        checkout = _opened_claim_checkout(ledger, binding, run_id, prepared)
+    except (ClaimCheckoutUnavailable, ClaimCheckoutRefused) as error:
+        checkout = None
+        unavailable = error
+    else:
+        unavailable = None
+    outcome = _held_claim(
+        datasource, ledger, logical_key, revision_hash, checkout, unavailable
+    )
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
     if isinstance(outcome, WorkItemClaimHeld):
         return None
@@ -498,7 +541,8 @@ def _held_claim(
     ledger: WorkItemClaimLedger,
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
-    checkout: Path,
+    checkout: Path | None,
+    unavailable: BaseException | None,
 ) -> WorkItemClaimOutcome:
     """Ask the ledger once, inside the one durable step that records its answer.
 
@@ -507,18 +551,26 @@ def _held_claim(
     stays held while the attempt runs, and a refusal stays the one refusal the
     node ended on. Only a drive that dies before the step is recorded asks
     again, and then it reads its own claim back rather than taking a second.
+
+    A checkout that could not be opened is that refusal: the step records it
+    without asking the ledger, so a replay whose `open` fails still consumes
+    this step and can take the refuse step that ends the node.
     """
+
+    def take() -> WorkItemClaimOutcome:
+        if checkout is None:
+            return WorkItemClaimRefused(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, str(unavailable)
+            )
+        return hold_prepared_claim(
+            load_intent(datasource.sql_session(), logical_key, revision_hash.value),
+            ledger,
+            checkout,
+        )
 
     return cast(
         WorkItemClaimOutcome,
-        datasource.run_tx_step(
-            {"name": WORK_ITEM_CLAIM_HOLD_STEP_NAME},
-            lambda: hold_prepared_claim(
-                load_intent(datasource.sql_session(), logical_key, revision_hash.value),
-                ledger,
-                checkout,
-            ),
-        ),
+        datasource.run_tx_step({"name": WORK_ITEM_CLAIM_HOLD_STEP_NAME}, take),
     )
 
 

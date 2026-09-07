@@ -99,7 +99,9 @@ from atelier2.contracts.work_items import (
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
     AuthProfileRevisionCreated,
+    AuthProfileRevisionExisting,
 )
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
@@ -375,7 +377,8 @@ def _publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     )
     auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
     assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        catalog.publish_auth_profile_revision(auth),
+        (AuthProfileRevisionCreated, AuthProfileRevisionExisting),
     )
     configuration = AgentConfigurationRevision(
         "opus",
@@ -386,7 +389,7 @@ def _publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     )
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
+        (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
     )
     publish_checked_model_registry(
         runtime.engine, ProviderId("exact"), (configuration,)
@@ -497,7 +500,9 @@ def _public_runtime(
     return runtime, github
 
 
-def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
+def _start_public_run(
+    runtime: DbosRuntime, body: bytes, run_id: RunId = RUN
+) -> httpx.Response:
     """Start the shipped line on one issue whose body says exactly this."""
 
     workflow, bindings = _publish(runtime)
@@ -521,7 +526,7 @@ def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 3,
-            "run_id": RUN.value,
+            "run_id": run_id.value,
             "workflow_revision_hash": workflow.revision_hash.value,
             "agent_bindings": [
                 {
