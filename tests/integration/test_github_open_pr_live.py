@@ -1034,7 +1034,7 @@ def test_execute_neutralizes_a_candidates_own_closing_keyword_and_no_item_label(
     """A candidate's own prose cannot close or reclassify another issue.
 
     GitHub retires an issue on `close|fix|resolve` plus a reference anywhere on
-    a line, case-insensitively, exactly as `agent-claim`'s own
+    a line, case-insensitively, exactly as `aco`'s own
     `closing_references` scans; neither keyword form nor the `No-Item:` label a
     candidate writes may survive rendering, so only this adapter's own
     `Work-Item`/`Closes` lines for the run's real item remain live.

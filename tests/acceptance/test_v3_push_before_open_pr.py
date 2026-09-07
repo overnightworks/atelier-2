@@ -487,7 +487,7 @@ def _public_runtime(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
-            agent_claim_executable=(
+            aco_executable=(
                 None
                 if claims is None
                 else fake_agent_claim_executable(claim_root or tmp_path, claims)

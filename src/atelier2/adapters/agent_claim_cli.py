@@ -1,4 +1,4 @@
-"""The pinned ``agent-claim`` 0.12.0 JSON command adapter."""
+"""The pinned ``aco`` 1.0.0 JSON command adapter."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from atelier2.ports.work_item_claims import (
     Merged,
 )
 
-AGENT_CLAIM_ADAPTER_REVISION = "agent-claim-cli/0.12.0"
+AGENT_CLAIM_ADAPTER_REVISION = "agent-claim-cli/1.0.0"
 """Which command contract this adapter speaks, as the revision an intent binds."""
 
 AGENT_CLAIM_TIMEOUT_SECONDS = 30.0
@@ -38,7 +38,6 @@ _CLAIM_FIELDS = frozenset(
         "issue",
         "lane",
         "claim_id",
-        "url",
         "agent",
         "role",
         "base",
@@ -54,7 +53,7 @@ _CLAIM_FIELDS = frozenset(
     }
 )
 _CLAIM_REFUSAL_FIELDS = frozenset({"refused", "issue", "checks"})
-_STATUS_FIELDS = frozenset({"ledger", "issue", "state", "claims", "unreadable"})
+_STATUS_FIELDS = frozenset({"issue", "state", "claims"})
 _STATUS_CLAIM_FIELDS = frozenset(
     {
         "issue",
@@ -73,7 +72,6 @@ _STATUS_CLAIM_FIELDS = frozenset(
         "old",
     }
 )
-_STATUS_UNREADABLE_FIELDS = frozenset({"claim_id", "comment_url", "fields", "note"})
 _TOUCH_FIELDS = frozenset({"issue", "lane", "claim_id", "agent", "scope"})
 _OVERLAP_FIELDS = frozenset({"issue", "lane", "claim_id", "agent"})
 _CHECK_FIELDS = frozenset({"level", "check", "text", "slice", "issue"})
@@ -84,7 +82,7 @@ _RELEASE_FIELDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class _ClaimPeer:
-    """A claim the ledger names as overlapping another, without its scope."""
+    """A claim the store names as overlapping another, without its scope."""
 
     item: int | None
     claim_id: str
@@ -102,7 +100,7 @@ class _SliceCheck:
 
 @dataclass(frozen=True, slots=True)
 class _StandingClaim:
-    """One live claim of the ledger, read back in full."""
+    """One live claim of the store, read back in full."""
 
     item: int | None
     claim_id: str
@@ -115,7 +113,7 @@ class _StandingClaim:
 class AgentClaimCli:
     """Runs the claim command in the run's claim checkout.
 
-    `working_directory` is the project checkout whose ledger the command owns;
+    `working_directory` is the project checkout whose store the command owns;
     a release runs there, a claim and its read-back in the checkout they are
     given.
     """
@@ -175,7 +173,7 @@ class AgentClaimCli:
         ):
             return ClaimRefusal(
                 ClaimRefusalReason.UNKNOWN,
-                "agent-claim posted a claim other than the one requested",
+                "aco posted a claim other than the one requested",
             )
         return acquired
 
@@ -185,28 +183,19 @@ class AgentClaimCli:
             return _diagnostic_refusal(diagnostics)
         try:
             _require_fields(payload, _STATUS_FIELDS)
-            _integer(payload["ledger"])
             if payload["issue"] is not None:
                 _integer(payload["issue"])
             _text(payload["state"])
             claims = tuple(_status_claim(value) for value in _list(payload["claims"]))
-            unreadable = _list(payload["unreadable"])
-            for value in unreadable:
-                _unreadable(value)
         except (TypeError, ValueError) as violation:
             return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
-        if unreadable:
-            return ClaimRefusal(
-                ClaimRefusalReason.LEDGER_UNREADABLE,
-                f"{len(unreadable)} claim(s) in the ledger are unreadable to this tool",
-            )
         held = tuple(claim for claim in claims if claim.claim_id == claim_id)
         if not held:
             return ClaimAbsent()
         if len(held) != 1 or held[0].item != item:
             return ClaimRefusal(
                 ClaimRefusalReason.UNKNOWN,
-                "the ledger holds this claim id under another item or more than once",
+                "the store holds this claim id under another item or more than once",
             )
         standing = held[0]
         scopes = {claim.claim_id: claim for claim in claims}
@@ -247,7 +236,7 @@ class AgentClaimCli:
             return _diagnostic_refusal(diagnostics)
         other_release = ClaimRefusal(
             ClaimRefusalReason.UNKNOWN,
-            "agent-claim released a claim other than the one requested",
+            "aco released a claim other than the one requested",
         )
         try:
             _require_fields(payload, _RELEASE_FIELDS)
@@ -296,16 +285,15 @@ class AgentClaimCli:
 
 
 def _acquired_claim(payload: dict[str, object]) -> ClaimReceipt:
-    """The claim `agent-claim claim --json` says it posted, read in full."""
+    """The claim `aco claim --json` says it posted, read in full."""
 
     _require_fields(payload, _CLAIM_FIELDS)
     item = _integer(payload["issue"])
     claim_id = _text(payload["claim_id"])
     branch = HeadBranch(_text(payload["branch"]))
-    _text(payload["url"])
     agent = _text(payload["agent"])
     if _text(payload["role"]) != _BUILDER_ROLE:
-        raise ValueError("agent-claim posted a claim under another role")
+        raise ValueError("aco posted a claim under another role")
     _text(payload["base"])
     scope = _scope(payload["scope"])
     _identity(payload["issue"], payload["lane"])
@@ -325,19 +313,19 @@ def _agent_name(agent: RunId) -> str:
 
 def _object(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
-        raise TypeError("agent-claim returned a non-object JSON value")
+        raise TypeError("aco returned a non-object JSON value")
     return value
 
 
 def _list(value: object) -> list[object]:
     if not isinstance(value, list):
-        raise TypeError("agent-claim returned a non-list JSON field")
+        raise TypeError("aco returned a non-list JSON field")
     return value
 
 
 def _text(value: object) -> str:
     if not isinstance(value, str) or not value:
-        raise TypeError("agent-claim returned a nonempty text field")
+        raise TypeError("aco returned a nonempty text field")
     return value
 
 
@@ -357,24 +345,24 @@ def _resource(resource: object, resource_value: object) -> None:
     name = _optional_text(resource)
     value = _optional_integer(resource_value)
     if (name is None) != (value is None) or (value is not None and value <= 0):
-        raise ValueError("agent-claim returned an invalid resource pair")
+        raise ValueError("aco returned an invalid resource pair")
 
 
 def _integer(value: object) -> int:
     if type(value) is not int:
-        raise TypeError("agent-claim returned an integer field")
+        raise TypeError("aco returned an integer field")
     return value
 
 
 def _number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError("agent-claim returned a numeric field")
+        raise TypeError("aco returned a numeric field")
     return float(value)
 
 
 def _require_fields(value: dict[str, object], expected: frozenset[str]) -> None:
     if frozenset(value) != expected:
-        raise ValueError("agent-claim returned fields outside its pinned contract")
+        raise ValueError("aco returned fields outside its pinned contract")
 
 
 def _scope(value: object) -> tuple[PurePosixPath, ...]:
@@ -385,10 +373,10 @@ def _scope(value: object) -> tuple[PurePosixPath, ...]:
 def _identity(issue: object, lane: object) -> int | None:
     if issue is not None:
         if lane is not None:
-            raise TypeError("agent-claim returned an invalid claim identity")
+            raise TypeError("aco returned an invalid claim identity")
         return _integer(issue)
     if lane is not True:
-        raise TypeError("agent-claim returned an invalid claim identity")
+        raise TypeError("aco returned an invalid claim identity")
     return None
 
 
@@ -411,12 +399,9 @@ def _is_claim_refusal(value: dict[str, object]) -> bool:
 def _diagnostic_refusal(diagnostics: str) -> ClaimRefusal:
     """The refusal a command that printed no JSON left on its standard error.
 
-    agent-claim 0.12.0 raises `ClaimError` before any `--json` payload exists
-    -- for an unreadable ledger, and for every checkout precondition a claim
-    fails -- and its top-level handler prints that one sentence under an
-    `ERROR:` banner instead. The last such line is the refusal's own detail;
-    an unreadable ledger is recognised by the sentence's documented fragment
-    (its `_reject_unreadable_claims`), every other sentence stays unknown.
+    Checkout preconditions fail as `ClaimError` before any `--json` payload
+    exists, and the top-level handler prints that one sentence under an
+    `ERROR:` banner. The last such line is the refusal's own detail.
     """
 
     error_lines = [
@@ -425,8 +410,6 @@ def _diagnostic_refusal(diagnostics: str) -> ClaimRefusal:
         if line.startswith(_ERROR_LINE_BANNER)
     ]
     detail = error_lines[-1] if error_lines else ""
-    if "unreadable" in diagnostics or "upgrade the installed tool" in diagnostics:
-        return ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, detail)
     return ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
@@ -448,21 +431,17 @@ def _claim_refusal(value: dict[str, object]) -> ClaimRefusal:
         return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
     failed = [check.text for check in checks if check.level == _ERROR_CHECK_LEVEL]
     detail = failed[0] if failed else ""
-    # agent-claim 0.12.0 names the out-of-order slice rule with the structured
-    # check id "out-of-order" (cli.py `_out_of_order_check`); a ledger-unreadable
-    # claim refusal never reaches this JSON payload -- it fails before one
-    # exists (see `_diagnostic_refusal`).
     if any(check.name == _OUT_OF_ORDER_CHECK for check in checks):
         return ClaimRefusal(ClaimRefusalReason.PRIORITY, detail)
     return ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
 def _status_claim(value: object) -> _StandingClaim:
-    """One live ledger claim as `agent-claim status --json` states it."""
+    """One live store claim as `aco status --json` states it."""
     claim = _object(value)
     fields = frozenset(claim)
     if fields not in (_STATUS_CLAIM_FIELDS, _STATUS_CLAIM_FIELDS | {"whole"}):
-        raise ValueError("agent-claim returned fields outside its pinned contract")
+        raise ValueError("aco returned fields outside its pinned contract")
     item = _identity(claim["issue"], claim["lane"])
     branch = HeadBranch(_text(claim["branch"]))
     agent = _text(claim["agent"])
@@ -486,15 +465,14 @@ def _status_claim(value: object) -> _StandingClaim:
         )
     _text(claim["age"])
     if type(claim["old"]) is not bool:
-        raise TypeError("agent-claim returned an invalid old marker")
+        raise TypeError("aco returned an invalid old marker")
     _text(claim["state"])
     return _StandingClaim(item, claim_id, agent, branch, scope, tuple(overlaps))
 
 
 def _check(value: object) -> _SliceCheck:
-    """Validate one ``SliceCheck`` of agent-claim 0.12.0's structured refusal
-    fields; `name` and `level` are what a reader decides on, `text` is what it
-    shows."""
+    """Validate one structured refusal finding; `name` and `level` are what a
+    reader decides on, `text` is what it shows."""
     check = _object(value)
     _require_fields(check, _CHECK_FIELDS)
     slice_check = _SliceCheck(
@@ -505,14 +483,3 @@ def _check(value: object) -> _SliceCheck:
     if check["issue"] is not None:
         _integer(check["issue"])
     return slice_check
-
-
-def _unreadable(value: object) -> None:
-    unreadable = _object(value)
-    _require_fields(unreadable, _STATUS_UNREADABLE_FIELDS)
-    if unreadable["claim_id"] is not None:
-        _text(unreadable["claim_id"])
-    _text(unreadable["comment_url"])
-    for field in _list(unreadable["fields"]):
-        _text(field)
-    _text(unreadable["note"])

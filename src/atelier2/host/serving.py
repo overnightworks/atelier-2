@@ -279,8 +279,8 @@ class HostSettings:
     agent_scratch_root: Path | None = None
     project_id: ProjectId | None = None
     project_root: Path | None = None
-    agent_claim_executable: Path | None = None
-    """The `agent-claim` command a run holds its work item's lane claim with.
+    aco_executable: Path | None = None
+    """The `aco` command a run holds its work item's lane claim with.
 
     Without it a node that would change the project refuses instead of building
     unclaimed: the claim is a precondition of the work, not a decoration on it.
@@ -364,7 +364,7 @@ class HostSettings:
             agent_scratch_root=self.agent_scratch_root,
             project_id=self.project_id,
             bootstrap_project_root=self.project_root,
-            agent_claim_executable=self.agent_claim_executable,
+            aco_executable=self.aco_executable,
             agent_termination_grace_seconds=self.agent_termination_grace_seconds,
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
             provider_probe_receipt_directory=(

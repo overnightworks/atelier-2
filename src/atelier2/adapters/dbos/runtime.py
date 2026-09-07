@@ -202,7 +202,7 @@ class DbosRuntimeSettings:
     agent_scratch_root: Path | None = None
     project_id: ProjectId | None = None
     bootstrap_project_root: Path | None = None
-    agent_claim_executable: Path | None = None
+    aco_executable: Path | None = None
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
     # The receipt gate (`#1013`): declared together or not at all -- a
@@ -749,7 +749,7 @@ def _open_binding(
             project_checkout, settings.database_path
         )
         work_item_claims = _work_item_claim_ledger(
-            settings.agent_claim_executable,
+            settings.aco_executable,
             project_checkout,
             settings.agent_scratch_root,
             engine,

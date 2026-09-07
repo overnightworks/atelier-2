@@ -248,7 +248,7 @@ def _runtime(
             agent_scratch_root=agent_scratch_root(tmp_path),
             project_id=PROJECT,
             bootstrap_project_root=project,
-            agent_claim_executable=fake_agent_claim_executable(tmp_path),
+            aco_executable=fake_agent_claim_executable(tmp_path),
         ),
         EffectAdapterRegistry(
             (

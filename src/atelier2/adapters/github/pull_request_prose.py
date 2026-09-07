@@ -6,7 +6,7 @@ acceptance line, the effect-request marker, and (#1290) the `Work-Item`/
 changed-paths listing. That candidate text is provider output this adapter
 does not own the intent of: it must not be able to fake a control line, nor
 close or (mis)classify an issue the way GitHub's own merge-time keyword scan
-would otherwise read it (`agent-claim`'s `closing_references` scans the same
+would otherwise read it (`aco`'s `closing_references` scans the same
 keywords, case-insensitively, anywhere on a line). Every such token found in
 candidate prose is broken here, before the adapter's own control lines and
 classification are appended around it.

@@ -10,7 +10,10 @@ from pathlib import Path, PurePosixPath
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.agent_claim_cli import AgentClaimCli
+from atelier2.adapters.agent_claim_cli import (
+    AGENT_CLAIM_ADAPTER_REVISION,
+    AgentClaimCli,
+)
 from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
 from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
@@ -132,9 +135,9 @@ REASONS = ClaimReasons(
     "admitted by the operator through the queue label `bereit`",
 )
 LEDGER_BINDING = EffectAdapterBinding(
-    AdapterRevision("agent-claim-cli/0.12.0"),
+    AdapterRevision(AGENT_CLAIM_ADAPTER_REVISION),
     EffectDestination("/checkout"),
-    AdapterOperationalIdentity("/usr/bin/agent-claim"),
+    AdapterOperationalIdentity("/usr/bin/aco"),
     AdapterOperationName.CLAIM_WORK_ITEM,
 )
 

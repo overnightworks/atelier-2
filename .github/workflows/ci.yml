@@ -614,7 +614,7 @@ jobs:
 
   # Every pull request against the default branch carries a typed
   # `Work-Item:`/`Closes:` or `No-Item:` line so a merge can never leave its
-  # own item open; `agent-claim pr-check` owns that semantics (its README's
+  # own item open; `aco check` owns that semantics (its README's
   # "Landing classification" section). `merge_group` carries no pull request
   # number, so the candidate cannot re-run the check here -- it already ran on
   # the `pull_request` event that armed the candidate -- and this branch only
@@ -628,7 +628,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      # pr-check reads `.agent-claim/board.toml` under the git toplevel and
+      # check reads `.agent-claim/board.toml` under the git toplevel and
       # fetches the coordination store `refs/aco/state` from the checkout's
       # origin with the checkout's credentials, so this job keeps them.
       - name: Check out the event commit
@@ -639,7 +639,7 @@ jobs:
 
       - name: Install uv
         if: ${{ github.event_name == 'pull_request' }}
-        # No python-version pin here: this job runs agent-claim's own tool
+        # No python-version pin here: this job runs aco's own tool
         # environment via uvx, not this repository's pinned interpreter.
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -650,7 +650,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@24598455006880fbb96bfead4de02339cd7f8a4f agent-claim pr-check --pr ${{ github.event.pull_request.number }}
+        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@v1.0.0 aco --repo ${{ github.repository }} check ${{ github.event.pull_request.number }}
 
       - name: Hold the required check name for the merge queue
         if: ${{ github.event_name == 'merge_group' }}

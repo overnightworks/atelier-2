@@ -230,8 +230,8 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     ),
     "adapters/agent_claim_cli.py::AGENT_CLAIM_TIMEOUT_SECONDS": SpelledValue(
         1,
-        "stable slice invariant: a bound against a hung agent-claim process, "
-        "not an operator's patience -- the CLI answers within seconds (#1299)",
+        "stable slice invariant: a bound against a hung aco process, "
+        "not an operator's patience -- the CLI answers within seconds",
     ),
     "adapters/attempt_workspace_files.py::_STAGED_WRITE_NAME_ATTEMPTS": SpelledValue(
         1,
