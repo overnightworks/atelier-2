@@ -99,6 +99,13 @@ def _option(arguments: list[str], name: str) -> str:
 
 def _claim(arguments: list[str]) -> int:
     scripted = _scripted()
+    if scripted == "checkout-refused":
+        branch = _option(arguments, "--branch")
+        print(
+            f"ERROR: claim branch '{branch}' does not match checkout branch 'main'",
+            file=sys.stderr,
+        )
+        return 2
     if scripted == "priority":
         json.dump(
             {
@@ -225,8 +232,10 @@ def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
 
     `answer` scripts what the ledger says to a claim: `grant` posts it,
     `priority` refuses it with the tool's own out-of-order check, `unknown`
-    refuses it without one, and `touches` grants it while naming a foreign
-    lane on the same paths.
+    refuses it without one, `checkout-refused` refuses it before any JSON
+    exists with one `ERROR:` line on standard error, as the tool does for a
+    checkout that fails its preconditions, and `touches` grants it while
+    naming a foreign lane on the same paths.
     """
 
     executable = root / "agent-claim"

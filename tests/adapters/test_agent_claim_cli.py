@@ -10,7 +10,9 @@ import pytest
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
 from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.work_item_claims import (
+    MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES,
     Abandoned,
     ClaimAbsent,
     ClaimReceipt,
@@ -242,22 +244,33 @@ def test_adapter_forwards_the_out_of_order_reason_to_argv(
     )
 
 
+PINNED_CONTRACT_VIOLATION = "agent-claim returned fields outside its pinned contract"
+
+
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "detail"),
     (
-        lambda: _claim_payload().replace(b'"claim_id"', b'"receipt_id"'),
-        lambda: _claim_payload()[:-1] + b', "new_field": true}',
-        lambda: b"not json",
+        (
+            lambda: _claim_payload().replace(b'"claim_id"', b'"receipt_id"'),
+            PINNED_CONTRACT_VIOLATION,
+        ),
+        (
+            lambda: _claim_payload()[:-1] + b', "new_field": true}',
+            PINNED_CONTRACT_VIOLATION,
+        ),
+        (lambda: b"not json", ""),
     ),
 )
 def test_adapter_refuses_claim_output_outside_the_pinned_json_contract(
-    recorded_process: RecordedProcess, payload: Callable[[], bytes]
+    recorded_process: RecordedProcess, payload: Callable[[], bytes], detail: str
 ) -> None:
+    """A contract violation is refused, and the refusal says which one."""
+
     recorded_process.outputs.append(payload())
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
 @pytest.mark.parametrize(
@@ -273,9 +286,10 @@ def test_adapter_refuses_read_back_output_outside_the_pinned_json_contract(
 ) -> None:
     recorded_process.outputs.append(payload())
 
-    assert _adapter().read_back(ITEM, CLAIM_ID) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN
-    )
+    refused = _adapter().read_back(ITEM, CLAIM_ID)
+
+    assert isinstance(refused, ClaimRefusal)
+    assert refused.reason is ClaimRefusalReason.UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -294,9 +308,10 @@ def test_adapter_refuses_a_malformed_foreign_claim_it_reads_past(
 
     recorded_process.outputs.append(payload())
 
-    assert _adapter().read_back(ITEM, CLAIM_ID) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN
-    )
+    refused = _adapter().read_back(ITEM, CLAIM_ID)
+
+    assert isinstance(refused, ClaimRefusal)
+    assert refused.reason is ClaimRefusalReason.UNKNOWN
 
 
 def test_adapter_reads_back_the_claim_this_run_already_holds(
@@ -363,7 +378,8 @@ def test_adapter_reads_back_an_unreadable_ledger_as_its_own_refusal(
     )
 
     assert _adapter().read_back(ITEM, CLAIM_ID) == ClaimRefusal(
-        ClaimRefusalReason.LEDGER_UNREADABLE
+        ClaimRefusalReason.LEDGER_UNREADABLE,
+        "1 claim(s) in the ledger are unreadable to this tool",
     )
 
 
@@ -380,9 +396,10 @@ def test_adapter_refuses_release_output_outside_the_pinned_json_contract(
 ) -> None:
     recorded_process.outputs.append(payload())
 
-    assert _adapter().release(ITEM, RUN_ID, CLAIM_ID, Merged(44)) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN
-    )
+    refused = _adapter().release(ITEM, RUN_ID, CLAIM_ID, Merged(44))
+
+    assert refused is not None
+    assert refused.reason is ClaimRefusalReason.UNKNOWN
 
 
 def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> None:
@@ -412,7 +429,11 @@ def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> N
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == ClaimRefusal(ClaimRefusalReason.PRIORITY)
+    ) == ClaimRefusal(
+        ClaimRefusalReason.PRIORITY,
+        "higher-priority actionable item #42 (score 7) is free: fix the flake; "
+        "use --out-of-order REASON to proceed",
+    )
 
 
 def test_adapter_maps_a_ledger_unreadable_diagnostic_refusal(
@@ -423,17 +444,65 @@ def test_adapter_maps_a_ledger_unreadable_diagnostic_refusal(
     # raises before one exists, and the top-level `ClaimError` handler
     # (cli.py:1990-1992) prints this documented sentence to stderr instead,
     # with empty stdout.
+    sentence = (
+        "claim refused: claim 'claim-1' at https://example.invalid/claims/1 is "
+        "unreadable (unknown fields: extra); upgrade the installed tool before "
+        "claiming a scope that could overlap it"
+    )
+    recorded_process.outputs.append(b"")
+    recorded_process.errors.append(f"ERROR: {sentence}\n".encode())
+
+    assert _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+    ) == ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, sentence)
+
+
+def test_a_checkout_precondition_the_tool_refuses_names_its_sentence(
+    recorded_process: RecordedProcess,
+) -> None:
+    """The one line the tool printed is the refusal's detail; nothing else is.
+
+    agent-claim checks the checkout before it reads any board, and every
+    check it fails ends as one `ERROR:` sentence on standard error with no
+    JSON at all. The progress lines it printed before are not the reason.
+    """
+
     recorded_process.outputs.append(b"")
     recorded_process.errors.append(
-        b"ERROR: claim refused: claim 'claim-1' at "
-        b"https://example.invalid/claims/1 is unreadable (unknown fields: "
-        b"extra); upgrade the installed tool before claiming a scope that "
-        b"could overlap it\n"
+        b"checking checkout /workspace\n"
+        b"ERROR: claim branch 'x' does not match checkout branch 'main'\n"
     )
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE)
+    ) == ClaimRefusal(
+        ClaimRefusalReason.UNKNOWN,
+        "claim branch 'x' does not match checkout branch 'main'",
+    )
+
+
+def test_a_refusal_detail_carries_no_credential_and_stays_bounded(
+    recorded_process: RecordedProcess,
+) -> None:
+    """A token the tool echoed never reaches durable state, and a sentence
+    longer than a refusal keeps is cut after it was scrubbed."""
+
+    token = "ghp_" + "a" * 36
+    recorded_process.outputs.extend((b"", b""))
+    recorded_process.errors.extend(
+        (
+            f"ERROR: origin refused the token {token}\n".encode(),
+            b"ERROR: " + b"x" * (2 * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES) + b"\n",
+        )
+    )
+
+    scrubbed = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+    cut = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+
+    assert isinstance(scrubbed, ClaimRefusal)
+    assert scrubbed.detail == f"origin refused the token {REDACTION_MARKER}"
+    assert isinstance(cut, ClaimRefusal)
+    assert cut.detail == "x" * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
 
 
 def test_adapter_accepts_the_optional_wide_claim_reason_in_a_read_back(
@@ -476,28 +545,36 @@ def test_adapter_refuses_infeasible_resource_pairs(
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+    ) == ClaimRefusal(
+        ClaimRefusalReason.UNKNOWN, "agent-claim returned an invalid resource pair"
+    )
     assert _adapter().read_back(ITEM, CLAIM_ID) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN
+        ClaimRefusalReason.UNKNOWN, "agent-claim returned an invalid resource pair"
     )
 
 
+ANOTHER_CLAIM_POSTED = "agent-claim posted a claim other than the one requested"
+
+
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "detail"),
     (
-        lambda: _claim_payload(agent="atelier2 run other"),
-        lambda: _claim_payload(role="reviewer"),
-        lambda: _claim_payload(claim_id="another-claim"),
+        (lambda: _claim_payload(agent="atelier2 run other"), ANOTHER_CLAIM_POSTED),
+        (
+            lambda: _claim_payload(role="reviewer"),
+            "agent-claim posted a claim under another role",
+        ),
+        (lambda: _claim_payload(claim_id="another-claim"), ANOTHER_CLAIM_POSTED),
     ),
 )
 def test_adapter_refuses_claim_receipts_that_do_not_match_the_request(
-    recorded_process: RecordedProcess, payload: Callable[[], bytes]
+    recorded_process: RecordedProcess, payload: Callable[[], bytes], detail: str
 ) -> None:
     recorded_process.outputs.append(payload())
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
 @pytest.mark.parametrize(
@@ -513,7 +590,8 @@ def test_adapter_refuses_release_receipts_that_do_not_match_the_request(
     recorded_process.outputs.append(payload())
 
     assert _adapter().release(ITEM, RUN_ID, CLAIM_ID, Merged(44)) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN
+        ClaimRefusalReason.UNKNOWN,
+        "agent-claim released a claim other than the one requested",
     )
 
 
@@ -604,6 +682,20 @@ def test_fake_and_adapter_meet_the_same_port_expectations(
     assert fake.release(
         ITEM, RUN_ID, CLAIM_ID, Abandoned("no longer needed")
     ) is _adapter().release(ITEM, RUN_ID, CLAIM_ID, Abandoned("no longer needed"))
+
+    refused = ClaimRefusal(
+        ClaimRefusalReason.UNKNOWN,
+        "claim branch 'x' does not match checkout branch 'main'",
+    )
+    refusing = FakeWorkItemClaims(claim_answer=refused)
+    recorded_process.outputs.append(b"")
+    recorded_process.errors.append(
+        b"ERROR: claim branch 'x' does not match checkout branch 'main'\n"
+    )
+
+    assert refusing.claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+    ) == _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
 
 
 def test_adapter_builds_an_abandon_release(recorded_process: RecordedProcess) -> None:
