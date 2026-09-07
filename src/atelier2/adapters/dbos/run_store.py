@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine, Row, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -127,7 +128,6 @@ from atelier2.contracts.workflows_v3 import (
 from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
-    DurableAnswerNodeMissing,
     DurableAnswerNotAdmitted,
     DurableAnswerResult,
     DurableAnswerRevisionConflict,
@@ -146,6 +146,42 @@ class AgentReceiptConflict(RunTransitionConflict):
 
 class ToolRedemptionConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable tool redemption."""
+
+
+def _one_record(session: Any, statement: sa.Select[Any]) -> RowMapping | None:
+    return session.execute(statement).mappings().one_or_none()
+
+
+def _records(session: Any, statement: sa.Select[Any]) -> tuple[RowMapping, ...]:
+    return tuple(session.execute(statement).mappings())
+
+
+def _run_input_from_record(record: Row[Any]) -> RunInput:
+    return RunInput(
+        str(record.name),
+        PublishedRevisionHash(str(record.schema_revision_hash)),
+        bytes(record.value),
+    )
+
+
+@dataclass(frozen=True)
+class _Continuation:
+    state: RunState
+    node_id: str
+    round_ordinal: int
+    terminal: bool
+
+
+def _continuation_after(
+    graph: AnyWorkflowDocument, node_id: str, round_ordinal: int
+) -> _Continuation:
+    match completion_after_node(graph, node_id, round_ordinal):
+        case RunContinues(successor, successor_round):
+            return _Continuation(RunState.STARTED, successor, successor_round, False)
+        case RunCompletes():
+            return _Continuation(RunState.COMPLETED, node_id, round_ordinal, True)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def load_run_inputs(
@@ -179,11 +215,7 @@ def load_run_inputs(
     if not read:
         return ()
     stored = {
-        str(record.name): RunInput(
-            str(record.name),
-            PublishedRevisionHash(str(record.schema_revision_hash)),
-            bytes(record.value),
-        )
+        str(record.name): _run_input_from_record(record)
         for record in session.execute(
             sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
         ).all()
@@ -215,13 +247,7 @@ def load_run_orders(
         .where(run_inputs_v3.c.run_id.in_(run_ids))
         .order_by(run_inputs_v3.c.run_id, run_inputs_v3.c.name)
     ).all():
-        by_run[str(record.run_id)].append(
-            RunInput(
-                str(record.name),
-                PublishedRevisionHash(str(record.schema_revision_hash)),
-                bytes(record.value),
-            )
-        )
+        by_run[str(record.run_id)].append(_run_input_from_record(record))
     return {run_id: tuple(orders) for run_id, orders in by_run.items()}
 
 
@@ -256,12 +282,9 @@ def bootstrap_node_for_snapshot(
         or run.current_round_ordinal != FIRST_ROUND_ORDINAL
     ):
         raise RunTransitionConflict("bootstrap requires its exact new durable run")
-    fork = (
-        session.execute(
-            sa.select(run_forks).where(run_forks.c.successor_run_id == run.run_id.value)
-        )
-        .mappings()
-        .one_or_none()
+    fork = _one_record(
+        session,
+        sa.select(run_forks).where(run_forks.c.successor_run_id == run.run_id.value),
     )
     if fork is None:
         entry = entry_node_of(graph)
@@ -270,14 +293,11 @@ def bootstrap_node_for_snapshot(
         return entry
     if not isinstance(run, RunV3) or not isinstance(graph, WorkflowGraphV3):
         raise RunTransitionConflict("only a V3 run may carry fork lineage")
-    origin = (
-        session.execute(
-            sa.select(runs.c.terminal_hash, runs.c.revision_hash).where(
-                runs.c.run_id == str(fork["origin_run_id"])
-            )
-        )
-        .mappings()
-        .one_or_none()
+    origin = _one_record(
+        session,
+        sa.select(runs.c.terminal_hash, runs.c.revision_hash).where(
+            runs.c.run_id == str(fork["origin_run_id"])
+        ),
     )
     if (
         str(fork["workflow_revision_hash"]) != run.revision_hash.value
@@ -310,31 +330,25 @@ def load_node_output_payload(
     execution_id = NodeExecutionId.for_node(
         run_id, revision_hash, producer_id, round_ordinal
     )
-    local = (
-        session.execute(
-            sa.select(run_events).where(
-                run_events.c.run_id == run_id.value,
-                run_events.c.revision_hash == revision_hash.value,
-                run_events.c.node_execution_id == execution_id.value,
-                run_events.c.event_kind == event_carrying_the_output_of(producer).value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    local = _one_record(
+        session,
+        sa.select(run_events).where(
+            run_events.c.run_id == run_id.value,
+            run_events.c.revision_hash == revision_hash.value,
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == event_carrying_the_output_of(producer).value,
+        ),
     )
     if local is not None:
         return event_from_record(local).payload
 
-    reference = (
-        session.execute(
-            sa.select(run_fork_reused_nodes).where(
-                run_fork_reused_nodes.c.successor_run_id == run_id.value,
-                run_fork_reused_nodes.c.node_id == producer_id,
-                run_fork_reused_nodes.c.round_ordinal == round_ordinal,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    reference = _one_record(
+        session,
+        sa.select(run_fork_reused_nodes).where(
+            run_fork_reused_nodes.c.successor_run_id == run_id.value,
+            run_fork_reused_nodes.c.node_id == producer_id,
+            run_fork_reused_nodes.c.round_ordinal == round_ordinal,
+        ),
     )
     if reference is None:
         raise NodeOutputNotWritten(
@@ -349,37 +363,27 @@ def load_node_output_payload(
     )
     if source_execution.value != str(reference["source_node_execution_id"]):
         raise RunTransitionConflict("fork output reference execution disagrees")
-    source_event_record = (
-        session.execute(
-            sa.select(run_events).where(
-                run_events.c.event_hash == str(reference["source_event_hash"]),
-                run_events.c.run_id == source_run_id.value,
-                run_events.c.revision_hash == source_revision.value,
-                run_events.c.node_execution_id == source_execution.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    source_event_record = _one_record(
+        session,
+        sa.select(run_events).where(
+            run_events.c.event_hash == str(reference["source_event_hash"]),
+            run_events.c.run_id == source_run_id.value,
+            run_events.c.revision_hash == source_revision.value,
+            run_events.c.node_execution_id == source_execution.value,
+        ),
     )
-    receipt_record = (
-        session.execute(
-            sa.select(node_receipts_v3).where(
-                node_receipts_v3.c.node_execution_id == source_execution.value,
-                node_receipts_v3.c.receipt_hash
-                == str(reference["source_receipt_hash"]),
-            )
-        )
-        .mappings()
-        .one_or_none()
+    receipt_record = _one_record(
+        session,
+        sa.select(node_receipts_v3).where(
+            node_receipts_v3.c.node_execution_id == source_execution.value,
+            node_receipts_v3.c.receipt_hash == str(reference["source_receipt_hash"]),
+        ),
     )
-    request_record = (
-        session.execute(
-            sa.select(node_execution_requests_v3).where(
-                node_execution_requests_v3.c.node_execution_id == source_execution.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    request_record = _one_record(
+        session,
+        sa.select(node_execution_requests_v3).where(
+            node_execution_requests_v3.c.node_execution_id == source_execution.value
+        ),
     )
     manifest = session.scalar(
         sa.select(context_packages_v3.c.manifest).where(
@@ -783,23 +787,17 @@ def _tool_redemption_from_record(record: Mapping[Any, Any]) -> ToolRedemptionRec
 def commit_confirmed_effect(
     session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
 ) -> TransitionSnapshot:
-    intent_record = (
-        session.execute(
-            sa.select(effect_intents).where(
-                effect_intents.c.logical_key == logical_key.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    intent_record = _one_record(
+        session,
+        sa.select(effect_intents).where(
+            effect_intents.c.logical_key == logical_key.value
+        ),
     )
-    receipt_record = (
-        session.execute(
-            sa.select(effect_receipts).where(
-                effect_receipts.c.logical_key == logical_key.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    receipt_record = _one_record(
+        session,
+        sa.select(effect_receipts).where(
+            effect_receipts.c.logical_key == logical_key.value
+        ),
     )
     if intent_record is None or receipt_record is None:
         raise RunTransitionConflict("confirmed effect requires its intent and receipt")
@@ -807,10 +805,8 @@ def commit_confirmed_effect(
     receipt = receipt_from_record(receipt_record)
     run_id = intent.binding.run_id
     graph = load_graph(session, revision_hash)
-    run_record = (
-        session.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
-        .mappings()
-        .one_or_none()
+    run_record = _one_record(
+        session, sa.select(runs).where(runs.c.run_id == run_id.value)
     )
     if run_record is None:
         raise RunTransitionConflict("confirmed effect has no durable run")
@@ -837,19 +833,7 @@ def commit_confirmed_effect(
             PersistedReceiptDisposition.SUCCEEDED,
             node_receipt_reason(NodeReceiptReason.EFFECT_CONFIRMED),
         )
-    match completion_after_node(graph, node.id, run.current_round_ordinal):
-        case RunContinues(successor, successor_round):
-            target_state = RunState.STARTED
-            target_node_id = successor
-            target_round_ordinal = successor_round
-            terminal = False
-        case RunCompletes():
-            target_state = RunState.COMPLETED
-            target_node_id = node.id
-            target_round_ordinal = run.current_round_ordinal
-            terminal = True
-        case _ as unreachable:
-            assert_never(unreachable)
+    continuation = _continuation_after(graph, node.id, run.current_round_ordinal)
     return _commit_event(
         session,
         run_id,
@@ -858,13 +842,13 @@ def commit_confirmed_effect(
         RunEventKind.ACTION_COMPLETED,
         receipt.result.payload,
         RunState.STARTED,
-        target_state,
-        target_node_id,
+        continuation.state,
+        continuation.node_id,
         logical_key,
         receipt.result.payload_hash,
-        terminal=terminal,
+        terminal=continuation.terminal,
         round_ordinal=run.current_round_ordinal,
-        target_round_ordinal=target_round_ordinal,
+        target_round_ordinal=continuation.round_ordinal,
     )
 
 
@@ -876,10 +860,9 @@ def commit_action_completed(
 
 
 def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot:
-    record = _wait_answer_record(session, answer.node_execution_id)
-    if record is None:
+    durable = _wait_answer_snapshot_at(session, answer.node_execution_id)
+    if durable is None:
         raise RunTransitionConflict("answer workflow has no durable answer")
-    durable = wait_answer_snapshot_from_record(record)
     if durable.answer != answer:
         raise RunTransitionConflict("answer workflow binding differs")
     graph = load_graph(session, answer.revision_hash)
@@ -905,19 +888,7 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
     # Wait node standing last carries its own run to COMPLETED instead of handing
     # on to a successor no document names. It is asked in the answer's own round,
     # because a loop's last node hands back to the round's first one.
-    match completion_after_node(graph, answer.node_id, answer.round_ordinal):
-        case RunContinues(successor, target_round):
-            target_state = RunState.STARTED
-            target_node_id = successor
-            target_round_ordinal = target_round
-            terminal = False
-        case RunCompletes():
-            target_state = RunState.COMPLETED
-            target_node_id = answer.node_id
-            target_round_ordinal = answer.round_ordinal
-            terminal = True
-        case _ as unreachable:
-            assert_never(unreachable)
+    continuation = _continuation_after(graph, answer.node_id, answer.round_ordinal)
     transition = _commit_event(
         session,
         answer.run_id,
@@ -926,11 +897,11 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         RunEventKind.WAIT_ANSWERED,
         answer.answer_bytes,
         RunState.WAITING_INPUT,
-        target_state,
-        target_node_id,
-        terminal=terminal,
+        continuation.state,
+        continuation.node_id,
+        terminal=continuation.terminal,
         round_ordinal=answer.round_ordinal,
-        target_round_ordinal=target_round_ordinal,
+        target_round_ordinal=continuation.round_ordinal,
     )
     if durable.state is WaitAnswerState.PENDING:
         updated = session.execute(
@@ -1040,25 +1011,24 @@ class WaitAnswerStateCorrupt(RuntimeError):
     """Durable wait-answer rows contradict their one-execution identity."""
 
 
-def _wait_answer_record(
+def _wait_answer_snapshot_at(
     session: Any, node_execution_id: NodeExecutionId
-) -> Mapping[Any, Any] | None:
+) -> WaitAnswerSnapshot | None:
     """The one stored answer of this exact execution, or nothing where none is.
 
     Every reader asks by execution identity because that is the row's own key:
     a node a loop turns holds one answer per round, and asking by node alone
     would answer with whichever round happens to come first.
     """
-    records = tuple(
-        session.execute(
-            sa.select(wait_answers).where(
-                wait_answers.c.node_execution_id == node_execution_id.value
-            )
-        ).mappings()
+    records = _records(
+        session,
+        sa.select(wait_answers).where(
+            wait_answers.c.node_execution_id == node_execution_id.value
+        ),
     )
     if len(records) > 1:
         raise WaitAnswerStateCorrupt("wait execution has duplicate durable answers")
-    return records[0] if records else None
+    return wait_answer_snapshot_from_record(records[0]) if records else None
 
 
 def load_wait_answer(
@@ -1068,55 +1038,43 @@ def load_wait_answer(
     node_id: str,
     round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> WaitAnswerSnapshot:
-    record = _wait_answer_record(
+    snapshot = _wait_answer_snapshot_at(
         session,
         NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
     )
-    if record is None:
+    if snapshot is None:
         raise RunTransitionConflict("wait answer does not exist")
-    return wait_answer_snapshot_from_record(record)
+    return snapshot
 
 
 def _events_for_wait_execution(
     session: Any, node_execution_id: NodeExecutionId
 ) -> tuple[RunEvent, ...]:
-    return tuple(
-        event_from_record(record)
-        for record in session.execute(
-            sa.select(run_events).where(
-                run_events.c.node_execution_id == node_execution_id.value
-            )
-        ).mappings()
+    records = _records(
+        session,
+        sa.select(run_events).where(
+            run_events.c.node_execution_id == node_execution_id.value
+        ),
     )
+    return tuple(event_from_record(record) for record in records)
 
 
-def _wait_answer_binds_request(
-    snapshot: WaitAnswerSnapshot, request: SubmitWaitAnswerRequest
+def _events_of_kind(
+    events: tuple[RunEvent, ...], kind: RunEventKind
+) -> tuple[RunEvent, ...]:
+    return tuple(event for event in events if event.event_kind is kind)
+
+
+def _wait_answer_binds_current_execution(
+    snapshot: WaitAnswerSnapshot, run: AnyRun, node_execution_id: NodeExecutionId
 ) -> bool:
     answer = snapshot.answer
     return (
-        answer.run_id == request.run_id
-        and answer.revision_hash == request.revision_hash
-        and answer.node_id == request.node_id
-        and answer.node_execution_id == request.expected_node_execution_id
-    )
-
-
-def _wait_answer_binds_execution(
-    snapshot: WaitAnswerSnapshot,
-    run_id: RunId,
-    revision_hash: WorkflowRevisionHash,
-    node_id: str,
-    node_execution_id: NodeExecutionId,
-    round_ordinal: int,
-) -> bool:
-    answer = snapshot.answer
-    return (
-        answer.run_id == run_id
-        and answer.revision_hash == revision_hash
-        and answer.node_id == node_id
+        answer.run_id == run.run_id
+        and answer.revision_hash == run.revision_hash
+        and answer.node_id == run.current_node_id
         and answer.node_execution_id == node_execution_id
-        and answer.round_ordinal == round_ordinal
+        and answer.round_ordinal == run.current_round_ordinal
     )
 
 
@@ -1125,9 +1083,7 @@ def _applied_answer_matches_event(
     events: tuple[RunEvent, ...],
     request_actor: WaitAnswerActor,
 ) -> bool:
-    answered = tuple(
-        event for event in events if event.event_kind is RunEventKind.WAIT_ANSWERED
-    )
+    answered = _events_of_kind(events, RunEventKind.WAIT_ANSWERED)
     if len(answered) != 1:
         return False
     event = answered[0]
@@ -1182,305 +1138,251 @@ def _run_stands_on_its_head_event(
     return completion == RunContinues(run.current_node_id, run.current_round_ordinal)
 
 
+@dataclass(frozen=True)
+class _PreparedRevision:
+    """The revision bytes read before the transaction, and the graph they parse to."""
+
+    document: bytes
+    graph: AnyWorkflowDocument
+
+
+@dataclass(frozen=True)
+class _AnsweredRun:
+    """Where the run stands inside the transaction, once its head is proven whole."""
+
+    run: AnyRun
+    current_node: WorkflowNodeV3
+    current_execution_id: NodeExecutionId
+    head_event: RunEvent
+    current_answer: WaitAnswerSnapshot | None
+
+
+def _revision_document(
+    session: Any, revision_hash: WorkflowRevisionHash
+) -> bytes | None:
+    document = session.scalar(
+        sa.select(workflow_revisions.c.document).where(
+            workflow_revisions.c.revision_hash == revision_hash.value
+        )
+    )
+    return None if document is None else bytes(document)
+
+
+def _head_event_of(
+    session: Any, run: AnyRun, graph: AnyWorkflowDocument
+) -> RunEvent | DurableStateCorrupt:
+    head_records = _records(
+        session,
+        sa.select(run_events).where(
+            run_events.c.run_id == run.run_id.value,
+            run_events.c.event_sequence == run.last_event_sequence,
+        ),
+    )
+    if len(head_records) != 1:
+        return DurableStateCorrupt()
+    head_event = event_from_record(head_records[0])
+    if not _run_stands_on_its_head_event(graph, run, head_event):
+        return DurableStateCorrupt()
+    return head_event
+
+
+def _pause_agrees_with_answer(
+    run: AnyRun,
+    current_node: WorkflowNodeV3,
+    head_event: RunEvent,
+    current_answer: WaitAnswerSnapshot | None,
+) -> bool:
+    applied = (
+        current_answer is not None and current_answer.state is WaitAnswerState.APPLIED
+    )
+    if run.state is RunState.WAITING_INPUT:
+        return (
+            isinstance(current_node, WaitNodeV3)
+            and head_event.event_kind is RunEventKind.WAITING_INPUT
+            and not applied
+        )
+    return current_answer is None or (
+        applied and head_event.event_kind is RunEventKind.WAIT_ANSWERED
+    )
+
+
+def _run_standing_at(
+    session: Any,
+    request: SubmitWaitAnswerRequest,
+    prepared: _PreparedRevision | None,
+) -> (
+    _AnsweredRun
+    | DurableAnswerRunMissing
+    | DurableAnswerRevisionConflict
+    | DurableStateCorrupt
+):
+    """The run the request answers into, or the first refusal about its state.
+
+    In order: run missing, run on another revision, revision bytes disagree,
+    current node absent, head event not stood on, current answer bound to
+    another execution, pause contradicted by its answer or head event.
+    """
+    run_record = _one_record(
+        session, sa.select(runs).where(runs.c.run_id == request.run_id.value)
+    )
+    if run_record is None:
+        return DurableAnswerRunMissing()
+    run = run_from_record_with_bindings(session, run_record)
+    if run.revision_hash != request.revision_hash:
+        return DurableAnswerRevisionConflict()
+    stored_document = _revision_document(session, request.revision_hash)
+    if (
+        prepared is None
+        or stored_document is None
+        or stored_document != prepared.document
+        or WorkflowRevision(stored_document).revision_hash != request.revision_hash
+    ):
+        return DurableStateCorrupt()
+    try:
+        current_node = prepared.graph.node(run.current_node_id)
+    except KeyError:
+        return DurableStateCorrupt()
+    head_event = _head_event_of(session, run, prepared.graph)
+    if isinstance(head_event, DurableStateCorrupt):
+        return head_event
+    current_execution_id = NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, run.current_node_id, run.current_round_ordinal
+    )
+    current_answer = _wait_answer_snapshot_at(session, current_execution_id)
+    if current_answer is not None and not _wait_answer_binds_current_execution(
+        current_answer, run, current_execution_id
+    ):
+        return DurableStateCorrupt()
+    if not _pause_agrees_with_answer(run, current_node, head_event, current_answer):
+        return DurableStateCorrupt()
+    return _AnsweredRun(
+        run, current_node, current_execution_id, head_event, current_answer
+    )
+
+
+def _event_belongs_to_request(
+    event: RunEvent, request: SubmitWaitAnswerRequest
+) -> bool:
+    return (
+        event.run_id == request.run_id
+        and event.revision_hash == request.revision_hash
+        and event.node_id == request.node_id
+        and event.node_execution_id
+        == NodeExecutionId.for_node(
+            event.run_id, event.revision_hash, event.node_id, event.round_ordinal
+        )
+    )
+
+
+def _events_of_requested_execution(
+    session: Any,
+    request: SubmitWaitAnswerRequest,
+    answer: WaitAnswerSnapshot | None,
+) -> tuple[RunEvent, ...] | DurableStateCorrupt:
+    """Corrupt where the named execution's rows contradict one pause and one answer."""
+    events = _events_for_wait_execution(session, request.expected_node_execution_id)
+    if any(not _event_belongs_to_request(event, request) for event in events):
+        return DurableStateCorrupt()
+    if len(_events_of_kind(events, RunEventKind.WAITING_INPUT)) > 1:
+        return DurableStateCorrupt()
+    answered_events = _events_of_kind(events, RunEventKind.WAIT_ANSWERED)
+    if len(answered_events) > 1 or (answered_events and answer is None):
+        return DurableStateCorrupt()
+    return events
+
+
+def _standing_answer_result(
+    standing: _AnsweredRun,
+    answer: WaitAnswerSnapshot,
+    events: tuple[RunEvent, ...],
+    request: SubmitWaitAnswerRequest,
+) -> DurableAnswerResult:
+    """What a request means where its execution already holds an answer.
+
+    Bound elsewhere, by another actor, or without one pause is corrupt; other
+    bytes contradict; an applied answer is the existing one where its event
+    agrees; a pending one only while the run still pauses on it for this actor.
+    """
+    if (
+        answer.answer.run_id != request.run_id
+        or answer.answer.revision_hash != request.revision_hash
+        or answer.answer.node_id != request.node_id
+        or answer.answer.node_execution_id != request.expected_node_execution_id
+        or (
+            isinstance(answer.answer.actor, WaitAnswerActor)
+            and answer.answer.actor != request.actor
+        )
+        or len(_events_of_kind(events, RunEventKind.WAITING_INPUT)) != 1
+    ):
+        return DurableStateCorrupt()
+    if answer.answer.answer_bytes != request.answer_bytes:
+        return DurableAnswerRoundAnswered()
+    if answer.state is WaitAnswerState.APPLIED:
+        if not _applied_answer_matches_event(answer, events, request.actor):
+            return DurableStateCorrupt()
+        return DurableAnswerExisting(answer)
+    if _events_of_kind(events, RunEventKind.WAIT_ANSWERED):
+        return DurableStateCorrupt()
+    if (
+        request.expected_node_execution_id != standing.current_execution_id
+        or standing.run.state is not RunState.WAITING_INPUT
+        or standing.head_event.event_kind is not RunEventKind.WAITING_INPUT
+        or standing.head_event.wait_answer_actor != request.actor
+    ):
+        return DurableStateCorrupt()
+    return DurableAnswerExisting(answer)
+
+
+def _waiting_node_for_fresh_answer(
+    standing: _AnsweredRun,
+    events: tuple[RunEvent, ...],
+    request: SubmitWaitAnswerRequest,
+) -> WaitNodeV3 | DurableAnswerResult:
+    """The node a first answer is for, or why the request cannot give one.
+
+    Another execution is stale where it wrote events and corrupt where it never
+    existed; a run not pausing is a state conflict; then the current node must
+    be the wait node the request names.
+    """
+    if request.expected_node_execution_id != standing.current_execution_id:
+        return DurableAnswerStale() if events else DurableStateCorrupt()
+    if standing.run.state is not RunState.WAITING_INPUT:
+        return DurableAnswerStateConflict()
+    if not isinstance(standing.current_node, WaitNodeV3):
+        return DurableStateCorrupt()
+    if request.node_id != standing.run.current_node_id:
+        return DurableStateCorrupt()
+    return standing.current_node
+
+
 class DbosWaitAnswerer:
     def __init__(self, engine: Engine, application_version: str) -> None:
         self._engine = engine
         self._application_version = application_version
 
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
-        try:
-            with self._engine.connect() as read_connection:
-                document = read_connection.scalar(
-                    sa.select(workflow_revisions.c.document).where(
-                        workflow_revisions.c.revision_hash
-                        == request.revision_hash.value
-                    )
-                )
-            if document is None:
-                prepared_document = None
-                graph = None
-            else:
-                prepared_document = bytes(document)
-                graph = graph_from_document(request.revision_hash, prepared_document)
-        except (OperationalError, PoolTimeoutError):
-            return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
-            return DurableStateCorrupt()
-
         client: DBOSClient | None = None
         try:
+            prepared = self._prepared_revision(request.revision_hash)
             client = DBOSClient(
                 system_database_engine=self._engine, use_listen_notify=False
             )
             with self._engine.connect() as connection:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
-                    run_record = (
-                        connection.execute(
-                            sa.select(runs).where(runs.c.run_id == request.run_id.value)
-                        )
-                        .mappings()
-                        .one_or_none()
+                    result = self._answer_in_transaction(
+                        connection, client, request, prepared
                     )
-                    if run_record is None:
-                        connection.rollback()
-                        return DurableAnswerRunMissing()
-                    run = run_from_record_with_bindings(connection, run_record)
-                    if run.revision_hash != request.revision_hash:
-                        connection.rollback()
-                        return DurableAnswerRevisionConflict()
-                    stored_document = connection.scalar(
-                        sa.select(workflow_revisions.c.document).where(
-                            workflow_revisions.c.revision_hash
-                            == request.revision_hash.value
-                        )
-                    )
-                    if (
-                        prepared_document is None
-                        or graph is None
-                        or stored_document is None
-                        or bytes(stored_document) != prepared_document
+                    if isinstance(
+                        result, (DurableAnswerCreated, DurableAnswerExisting)
                     ):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    stored_revision = WorkflowRevision(bytes(stored_document))
-                    if stored_revision.revision_hash != request.revision_hash:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    try:
-                        current_node = graph.node(run.current_node_id)
-                    except KeyError:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    current_execution_id = NodeExecutionId.for_node(
-                        run.run_id,
-                        run.revision_hash,
-                        run.current_node_id,
-                        run.current_round_ordinal,
-                    )
-                    head_records = tuple(
-                        connection.execute(
-                            sa.select(run_events).where(
-                                run_events.c.run_id == run.run_id.value,
-                                run_events.c.event_sequence == run.last_event_sequence,
-                            )
-                        ).mappings()
-                    )
-                    if len(head_records) != 1:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    head_event = event_from_record(head_records[0])
-                    if not _run_stands_on_its_head_event(graph, run, head_event):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    current_record = _wait_answer_record(
-                        connection, current_execution_id
-                    )
-                    current_snapshot = (
-                        None
-                        if current_record is None
-                        else wait_answer_snapshot_from_record(current_record)
-                    )
-                    if (
-                        current_snapshot is not None
-                        and not _wait_answer_binds_execution(
-                            current_snapshot,
-                            run.run_id,
-                            run.revision_hash,
-                            run.current_node_id,
-                            current_execution_id,
-                            run.current_round_ordinal,
-                        )
-                    ):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    if run.state is RunState.WAITING_INPUT:
-                        if (
-                            not isinstance(current_node, WaitNodeV3)
-                            or head_event.event_kind is not RunEventKind.WAITING_INPUT
-                            or (
-                                current_snapshot is not None
-                                and current_snapshot.state is WaitAnswerState.APPLIED
-                            )
-                        ):
-                            connection.rollback()
-                            return DurableStateCorrupt()
-                    elif current_snapshot is not None and (
-                        current_snapshot.state is not WaitAnswerState.APPLIED
-                        or head_event.event_kind is not RunEventKind.WAIT_ANSWERED
-                    ):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    requested_record = _wait_answer_record(
-                        connection, request.expected_node_execution_id
-                    )
-                    requested_snapshot = (
-                        None
-                        if requested_record is None
-                        else wait_answer_snapshot_from_record(requested_record)
-                    )
-                    expected_events = _events_for_wait_execution(
-                        connection, request.expected_node_execution_id
-                    )
-                    if expected_events and any(
-                        event.run_id != request.run_id
-                        or event.revision_hash != request.revision_hash
-                        or event.node_id != request.node_id
-                        or event.node_execution_id
-                        != NodeExecutionId.for_node(
-                            event.run_id,
-                            event.revision_hash,
-                            event.node_id,
-                            event.round_ordinal,
-                        )
-                        for event in expected_events
-                    ):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    waiting_events = tuple(
-                        event
-                        for event in expected_events
-                        if event.event_kind is RunEventKind.WAITING_INPUT
-                    )
-                    if len(waiting_events) > 1:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    answered_events = tuple(
-                        event
-                        for event in expected_events
-                        if event.event_kind is RunEventKind.WAIT_ANSWERED
-                    )
-                    if len(answered_events) > 1 or (
-                        answered_events and requested_snapshot is None
-                    ):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    if requested_snapshot is not None:
-                        if (
-                            not _wait_answer_binds_request(requested_snapshot, request)
-                            or (
-                                isinstance(
-                                    requested_snapshot.answer.actor, WaitAnswerActor
-                                )
-                                and requested_snapshot.answer.actor != request.actor
-                            )
-                            or len(waiting_events) != 1
-                        ):
-                            connection.rollback()
-                            return DurableStateCorrupt()
-                        if (
-                            requested_snapshot.answer.answer_bytes
-                            != request.answer_bytes
-                        ):
-                            connection.rollback()
-                            return DurableAnswerRoundAnswered()
-                        if requested_snapshot.state is WaitAnswerState.APPLIED:
-                            if not _applied_answer_matches_event(
-                                requested_snapshot, expected_events, request.actor
-                            ):
-                                connection.rollback()
-                                return DurableStateCorrupt()
-                            connection.rollback()
-                            return DurableAnswerExisting(requested_snapshot)
-                        if answered_events:
-                            connection.rollback()
-                            return DurableStateCorrupt()
-                        if (
-                            request.expected_node_execution_id != current_execution_id
-                            or run.state is not RunState.WAITING_INPUT
-                            or head_event.event_kind is not RunEventKind.WAITING_INPUT
-                            or head_event.wait_answer_actor != request.actor
-                        ):
-                            connection.rollback()
-                            return DurableStateCorrupt()
                         connection.commit()
-                        return DurableAnswerExisting(requested_snapshot)
-                    if request.expected_node_execution_id != current_execution_id:
-                        if not expected_events:
-                            connection.rollback()
-                            return DurableStateCorrupt()
+                    else:
                         connection.rollback()
-                        return DurableAnswerStale()
-                    if run.state is not RunState.WAITING_INPUT:
-                        connection.rollback()
-                        return DurableAnswerStateConflict()
-                    if not isinstance(current_node, WaitNodeV3):
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    if request.node_id != run.current_node_id:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    try:
-                        node = graph.node(request.node_id)
-                    except KeyError:
-                        connection.rollback()
-                        return DurableAnswerNodeMissing()
-                    if node != current_node:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    round_ordinal = run.current_round_ordinal
-                    execution_id = current_execution_id
-                    answer = WaitAnswer(
-                        request.run_id,
-                        request.revision_hash,
-                        request.node_id,
-                        execution_id,
-                        request.actor,
-                        request.answer_bytes,
-                        round_ordinal,
-                    )
-                    answer_workflow_id = answer_workflow_id_for(execution_id)
-                    connection.execute(
-                        wait_answers.insert().values(
-                            run_id=answer.run_id.value,
-                            revision_hash=answer.revision_hash.value,
-                            node_id=answer.node_id,
-                            node_execution_id=answer.node_execution_id.value,
-                            round_ordinal=answer.round_ordinal,
-                            actor=request.actor.value,
-                            actor_attribution_kind=(
-                                WaitAnswerAttributionKind.RECORDED.value
-                            ),
-                            answer_bytes=answer.answer_bytes,
-                            answer_hash=answer.answer_hash.value,
-                            answer_workflow_id=answer_workflow_id,
-                            state=WaitAnswerState.PENDING.value,
-                            state_version=0,
-                        )
-                    )
-                    stored_record = _wait_answer_record(connection, execution_id)
-                    if stored_record is None:
-                        connection.rollback()
-                        return DurableStateCorrupt()
-                    snapshot = wait_answer_snapshot_from_record(stored_record)
-                    unanswerable = why_a_wait_node_does_not_admit_an_answer(
-                        connection, current_node, request.answer_bytes
-                    )
-                    if unanswerable is not None:
-                        connection.rollback()
-                        return DurableAnswerNotAdmitted(unanswerable)
-                    options: EnqueueOptions = {
-                        "workflow_name": ANSWER_WORKFLOW_NAME,
-                        "queue_name": QUEUE_NAME,
-                        "workflow_id": answer_workflow_id,
-                        "app_version": self._application_version,
-                    }
-                    client.enqueue_in_transaction(
-                        connection,
-                        options,
-                        answer.run_id.value,
-                        answer.revision_hash.value,
-                        answer.node_id,
-                        answer.round_ordinal,
-                    )
-                    connection.commit()
-                    return DurableAnswerCreated(snapshot)
-                except (OperationalError, PoolTimeoutError):
+                except (PoolTimeoutError, ValueError, RuntimeError, DatabaseError):
                     connection.rollback()
-                    return DurableWriteUnavailable()
-                except (ValueError, RuntimeError, DatabaseError):
-                    connection.rollback()
-                    return DurableStateCorrupt()
+                    raise
+                return result
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -1488,3 +1390,96 @@ class DbosWaitAnswerer:
         finally:
             if client is not None:
                 client.destroy()
+
+    def _prepared_revision(
+        self, revision_hash: WorkflowRevisionHash
+    ) -> _PreparedRevision | None:
+        with self._engine.connect() as read_connection:
+            document = _revision_document(read_connection, revision_hash)
+        if document is None:
+            return None
+        return _PreparedRevision(document, graph_from_document(revision_hash, document))
+
+    def _answer_in_transaction(
+        self,
+        connection: Connection,
+        client: DBOSClient,
+        request: SubmitWaitAnswerRequest,
+        prepared: _PreparedRevision | None,
+    ) -> DurableAnswerResult:
+        """Judge the run, then the named execution, then admit or refuse the answer."""
+        standing = _run_standing_at(connection, request, prepared)
+        if not isinstance(standing, _AnsweredRun):
+            return standing
+        answer = _wait_answer_snapshot_at(
+            connection, request.expected_node_execution_id
+        )
+        events = _events_of_requested_execution(connection, request, answer)
+        if isinstance(events, DurableStateCorrupt):
+            return events
+        if answer is not None:
+            return _standing_answer_result(standing, answer, events, request)
+        waiting_node = _waiting_node_for_fresh_answer(standing, events, request)
+        if not isinstance(waiting_node, WaitNodeV3):
+            return waiting_node
+        return self._record_pending_answer(
+            connection, client, standing, waiting_node, request
+        )
+
+    def _record_pending_answer(
+        self,
+        connection: Connection,
+        client: DBOSClient,
+        standing: _AnsweredRun,
+        waiting_node: WaitNodeV3,
+        request: SubmitWaitAnswerRequest,
+    ) -> DurableAnswerResult:
+        answer = WaitAnswer(
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+            standing.current_execution_id,
+            request.actor,
+            request.answer_bytes,
+            standing.run.current_round_ordinal,
+        )
+        answer_workflow_id = answer_workflow_id_for(answer.node_execution_id)
+        connection.execute(
+            wait_answers.insert().values(
+                run_id=answer.run_id.value,
+                revision_hash=answer.revision_hash.value,
+                node_id=answer.node_id,
+                node_execution_id=answer.node_execution_id.value,
+                round_ordinal=answer.round_ordinal,
+                actor=request.actor.value,
+                actor_attribution_kind=WaitAnswerAttributionKind.RECORDED.value,
+                answer_bytes=answer.answer_bytes,
+                answer_hash=answer.answer_hash.value,
+                answer_workflow_id=answer_workflow_id,
+                state=WaitAnswerState.PENDING.value,
+                state_version=0,
+            )
+        )
+        snapshot = _wait_answer_snapshot_at(connection, answer.node_execution_id)
+        if snapshot is None:
+            return DurableStateCorrupt()
+        unanswerable = why_a_wait_node_does_not_admit_an_answer(
+            connection, waiting_node, request.answer_bytes
+        )
+        if unanswerable is not None:
+            return DurableAnswerNotAdmitted(unanswerable)
+        options: EnqueueOptions = {
+            "workflow_name": ANSWER_WORKFLOW_NAME,
+            "queue_name": QUEUE_NAME,
+            "workflow_id": answer_workflow_id,
+            "app_version": self._application_version,
+        }
+        client.enqueue_in_transaction(
+            connection,
+            options,
+            answer.run_id.value,
+            answer.revision_hash.value,
+            answer.node_id,
+            answer.round_ordinal,
+        )
+        return DurableAnswerCreated(snapshot)
