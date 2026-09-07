@@ -11,7 +11,7 @@ live here with the reads that raise them.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cached_property
 from typing import assert_never
 
@@ -88,20 +88,14 @@ def projected_items(
 
 
 def validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
-    """Re-run the snapshot's own validation without silently dropping a field.
-
-    `dataclasses.replace` reads every field `QueueItemSnapshot` declares --
-    including one a later change adds -- rather than a fixed positional list
-    that would carry on quietly forgetting it.
-    """
+    """Re-run the snapshot's own validation, translating a refusal to the sweep's."""
 
     try:
-        validated: QueueItemSnapshot = replace(item)
+        return item.revalidated()
     except (AttributeError, TypeError, ValueError) as error:
         raise QueueAdvanceCorrupt(
             "the queue projection returned an inconsistent item"
         ) from error
-    return validated
 
 
 @dataclass(frozen=True)

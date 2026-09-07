@@ -8,7 +8,7 @@ twice.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Final
 
@@ -603,6 +603,19 @@ class QueueItemSnapshot:
                 raise ValueError("a launch binding must name its queue item")
             if self.launch_binding.proposal_revision != admission.proposal_revision:
                 raise ValueError("a launch binding must name the admitted proposal")
+
+    def revalidated(self) -> QueueItemSnapshot:
+        """This snapshot built again through its own constructor, every field kept.
+
+        `fields()` names every field the class declares -- including one a
+        later change adds -- rather than a fixed positional list that would
+        carry on quietly forgetting it, so the constructor's validation runs
+        over exactly what this instance holds.
+        """
+
+        return QueueItemSnapshot(
+            **{member.name: getattr(self, member.name) for member in fields(self)}
+        )
 
     def plan(self, command: PlanQueueItem) -> QueueProposalOutcome:
         if command.item_reference != self.item_reference:
