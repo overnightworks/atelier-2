@@ -50,6 +50,7 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
 )
 from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.queue_projection import (
     ConfirmQueueProposal,
@@ -72,6 +73,7 @@ from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
     QueueLaunchReserved,
     QueueProjectPolicyPublished,
+    ReadQueueProjectPolicyResult,
 )
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -79,6 +81,7 @@ from atelier2.ports.work_item_claims import (
     ClaimRefusal,
     ClaimRefusalReason,
     ClaimTouch,
+    WorkItemClaims,
 )
 from tests.acceptance.test_v3_push_before_open_pr import (
     _SCOPED_ITEM,
@@ -91,7 +94,7 @@ from tests.acceptance.test_v3_push_before_open_pr import (
 from tests.acceptance.test_v3_push_before_open_pr import (
     ITEM as PUBLIC_ITEM,
 )
-from tests.integration.test_phase_d_admission import _found_lineage
+from tests.scenarios.catalog_lineages import found_lineage
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
     claimed_ledger,
@@ -149,8 +152,21 @@ def _receipt(
     )
 
 
+class _PolicyNeverRead:
+    """The queue policy of a ledger whose claim is already prepared.
+
+    Holding a prepared claim sends the reasons the intent carries; a hold that
+    asked the policy again would compose a sentence from later state.
+    """
+
+    def current_policy(self, project: ProjectId) -> ReadQueueProjectPolicyResult:
+        raise AssertionError("holding a prepared claim never reads the queue policy")
+
+
 def _held(claims: FakeWorkItemClaims) -> WorkItemClaimHeld | WorkItemClaimRefused:
-    return hold_prepared_claim(_intent(), WorkItemClaimLedger(claims, LEDGER_BINDING))
+    return hold_prepared_claim(
+        _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
+    )
 
 
 def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() -> None:
@@ -307,7 +323,9 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     """
 
     executable = fake_agent_claim_executable(tmp_path)
-    ledger = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    ledger = WorkItemClaimLedger(
+        AgentClaimCli(executable, tmp_path), LEDGER_BINDING, _PolicyNeverRead()
+    )
     intent = _intent()
 
     first = hold_prepared_claim(intent, ledger)
@@ -329,7 +347,9 @@ def test_a_ledger_holding_nothing_yet_is_claimed_once(tmp_path: Path) -> None:
 
     assert claims.read_back(ITEM, CLAIM_ID) == ClaimAbsent()
     assert isinstance(
-        hold_prepared_claim(_intent(), WorkItemClaimLedger(claims, LEDGER_BINDING)),
+        hold_prepared_claim(
+            _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
+        ),
         WorkItemClaimHeld,
     )
     assert claimed_ledger(executable)[0].scope == tuple(
@@ -365,6 +385,13 @@ class _StartedBuilderNode:
     runtime: DbosRuntime
     revision_hash: WorkflowRevisionHash
     binding: AgentNodeBindingV2
+
+    def ledger(self, claims: WorkItemClaims) -> WorkItemClaimLedger:
+        """`claims` as this runtime's ledger, reading its own queue policy."""
+
+        return WorkItemClaimLedger(
+            claims, LEDGER_BINDING, DbosQueueProjectionStore(self.runtime.engine)
+        )
 
     def hold(self, ledger: WorkItemClaimLedger) -> str | None:
         return hold_work_item_claim(
@@ -447,7 +474,7 @@ def _launched_from_the_queue(runtime: DbosRuntime, label: str | None) -> None:
     naming `label` -- the durable trace that says the operator admitted it."""
 
     queue = DbosQueueProjectionStore(runtime.engine)
-    lineage_id, revision_hash = _found_lineage(runtime.engine)
+    lineage_id, revision_hash = found_lineage(runtime.engine)
     assert isinstance(
         queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, label), 0),
         QueueProjectPolicyPublished,
@@ -524,7 +551,7 @@ def test_the_claim_waives_board_order_only_for_a_run_the_queue_admitted(
     if queue_launched:
         _launched_from_the_queue(started_node.runtime, label)
     executable = fake_agent_claim_executable(tmp_path)
-    ledger = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    ledger = started_node.ledger(AgentClaimCli(executable, tmp_path))
 
     assert started_node.hold(ledger) is None
 
@@ -552,15 +579,13 @@ def test_a_recovery_replays_the_held_claim_without_asking_the_ledger_again(
     """
 
     executable = fake_agent_claim_executable(tmp_path)
-    first_drive = WorkItemClaimLedger(
-        AgentClaimCli(executable, tmp_path), LEDGER_BINDING
-    )
+    first_drive = started_node.ledger(AgentClaimCli(executable, tmp_path))
     assert started_node.hold(first_drive) is None
     assert len(claimed_ledger(executable)) == 1
     held = started_node.standing()
 
     replay = _refusing_everything()
-    assert started_node.hold(WorkItemClaimLedger(replay, LEDGER_BINDING)) is None
+    assert started_node.hold(started_node.ledger(replay)) is None
 
     assert (replay.read_back_requests, replay.claim_requests) == ([], [])
     assert held == (RunState.STARTED.value, 1, 0, 0)
@@ -577,15 +602,14 @@ def test_a_recovery_after_a_refusal_refuses_once_and_builds_on_no_later_grant(
     same terminal word -- so no attempt is started on a run already FAILED.
     """
 
-    first_drive = WorkItemClaimLedger(
-        FakeWorkItemClaims(claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY)),
-        LEDGER_BINDING,
+    first_drive = started_node.ledger(
+        FakeWorkItemClaims(claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY))
     )
     assert started_node.hold(first_drive) == RunState.FAILED.value
     refused = started_node.standing()
 
     executable = fake_agent_claim_executable(tmp_path)
-    replay = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    replay = started_node.ledger(AgentClaimCli(executable, tmp_path))
     assert started_node.hold(replay) == RunState.FAILED.value
 
     assert claimed_ledger(executable) == ()

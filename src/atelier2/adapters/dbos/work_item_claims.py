@@ -41,7 +41,6 @@ from atelier2.adapters.dbos.names import (
     WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
 )
 from atelier2.adapters.dbos.queue_launch_runs import launch_binding_of_run
-from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.run_transitions import _commit_event, load_graph
 from atelier2.adapters.dbos.work_item_intents import (
     head_branch_for_work_item,
@@ -120,10 +119,12 @@ _REFUSAL_WORDS = {
 
 @dataclass(frozen=True, slots=True)
 class WorkItemClaimLedger:
-    """The claim boundary this runtime holds, and the binding it records with."""
+    """The claim boundary this runtime holds, the binding it records with, and
+    the queue policy that says which label admits a run out of board order."""
 
     claims: WorkItemClaims
     binding: EffectAdapterBinding
+    policy: QueuePolicyReader
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,9 +176,8 @@ def prepare_work_item_claim(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int,
-    ledger_binding: EffectAdapterBinding | None,
+    ledger: WorkItemClaimLedger | None,
     project_id: ProjectId | None,
-    queue: QueuePolicyReader,
 ) -> dict[str, str] | None:
     """Record the claim this node owes before any command runs, or name why not.
 
@@ -185,8 +185,7 @@ def prepare_work_item_claim(
     pinned grant publishes a commit holds its item's claim. Otherwise it
     answers the claim already receipted for this execution, the prepared
     intent's logical key, or the refusal word this node ends on -- a runtime
-    that cannot claim never quietly builds unclaimed. `queue` is the one
-    policy owner the sweep reads too; it says which label admitted the run.
+    that cannot claim never quietly builds unclaimed.
     """
 
     node = load_graph(session, revision_hash).node(node_id)
@@ -198,9 +197,9 @@ def prepare_work_item_claim(
     )
     if effect_receipt_exists(session, logical_key.value):
         return {HELD_FIELD: logical_key.value}
-    if ledger_binding is None or project_id is None:
+    if ledger is None or project_id is None:
         return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
-    request = _requested_claim(session, run_id, project_id, queue)
+    request = _requested_claim(session, run_id, project_id, ledger.policy)
     if isinstance(request, AgentExecutionRefusal):
         return {REFUSAL_FIELD: request.value}
     # The claim's own binding is held beside the graph's effect adapters rather
@@ -210,9 +209,9 @@ def prepare_work_item_claim(
         logical_key,
         run_id,
         revision_hash,
-        ledger_binding.adapter_revision,
-        ledger_binding.destination,
-        ledger_binding.operational_identity,
+        ledger.binding.adapter_revision,
+        ledger.binding.destination,
+        ledger.binding.operational_identity,
         AdapterOperationName.CLAIM_WORK_ITEM,
     )
     intent = EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
@@ -453,9 +452,8 @@ def _prepared_claim(
                 revision_hash,
                 node_id,
                 round_ordinal,
-                None if ledger is None else ledger.binding,
+                ledger,
                 project_id,
-                DbosQueueProjectionStore(datasource.engine),
             ),
         ),
     )
