@@ -367,7 +367,8 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
     try:
         serve(settings)
     except KeyboardInterrupt:
-        return 0
+        # The operator's interrupt is how the house stops; it is not a failure.
+        pass
     except ValueError as refusal:
         parser.error(str(refusal))
     except GitHubCredentialUnresolvable as refusal:

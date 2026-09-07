@@ -577,24 +577,29 @@ class AgentClientProtocolConversation:
             self._local_cause = reason
 
     def _charged(self, identifier: str) -> Actions:
-        if identifier in self._tool_calls or self._local_cause is not None:
-            return ()
-        self._tool_calls[identifier] = ""
-        if len(self._tool_calls) <= self.maximum_tool_calls:
-            return ()
-        self._latch(ProviderTerminalReason.BUDGET_EXHAUSTED)
-        return (ProviderCancellationRequest(ProviderCancellationCause.BUDGET),)
+        actions: list[ProviderConversationAction] = []
+        admitted = identifier not in self._tool_calls and self._local_cause is None
+        if admitted:
+            self._tool_calls[identifier] = ""
+            if len(self._tool_calls) > self.maximum_tool_calls:
+                self._latch(ProviderTerminalReason.BUDGET_EXHAUSTED)
+                actions.append(
+                    ProviderCancellationRequest(ProviderCancellationCause.BUDGET)
+                )
+        return tuple(actions)
 
     def _announced(
         self, identifier: str, title: str, locations: tuple[str, ...]
     ) -> Steps:
-        if identifier not in self._tool_calls:
-            return ()
-        already = bool(self._tool_calls[identifier])
-        self._tool_calls[identifier] = title
-        if already:
-            return ()
-        return (ProviderSessionEvent(ToolCalled(title, ", ".join(locations))),)
+        events: list[ProviderSessionEvent] = []
+        if identifier in self._tool_calls:
+            already = bool(self._tool_calls[identifier])
+            self._tool_calls[identifier] = title
+            if not already:
+                events.append(
+                    ProviderSessionEvent(ToolCalled(title, ", ".join(locations)))
+                )
+        return tuple(events)
 
     def _settled(
         self, identifier: str, status: AcpToolCallStatus, content: str
@@ -606,12 +611,15 @@ class AgentClientProtocolConversation:
         outcome without its call reads as a tool nobody called.
         """
 
-        if identifier not in self._tool_calls:
-            return ()
-        answered = f"{status.value}: {content}" if content else status.value
-        return (
-            ProviderSessionEvent(ToolReturned(self._tool_calls[identifier], answered)),
-        )
+        events: list[ProviderSessionEvent] = []
+        if identifier in self._tool_calls:
+            answered = f"{status.value}: {content}" if content else status.value
+            events.append(
+                ProviderSessionEvent(
+                    ToolReturned(self._tool_calls[identifier], answered)
+                )
+            )
+        return tuple(events)
 
     def _spoken(self, text: str) -> Actions:
         self._said += text
@@ -620,10 +628,11 @@ class AgentClientProtocolConversation:
         return self._flushed()
 
     def _flushed(self) -> Steps:
-        if not self._said:
-            return ()
-        said, self._said = self._said, ""
-        return (ProviderSessionEvent(AssistantTurn(said)),)
+        events: list[ProviderSessionEvent] = []
+        if self._said:
+            said, self._said = self._said, ""
+            events.append(ProviderSessionEvent(AssistantTurn(said)))
+        return tuple(events)
 
     def _evidence(self, text: str) -> Steps:
         if self._unrecognised >= MAXIMUM_UNRECOGNISED_UPDATE_STEPS:

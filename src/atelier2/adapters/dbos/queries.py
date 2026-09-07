@@ -616,6 +616,12 @@ def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
         ) from outside_vocabulary
 
 
+def _cancellation_disposition(
+    value: object,
+) -> AgentAttemptCancellationDisposition | None:
+    return None if value is None else AgentAttemptCancellationDisposition(str(value))
+
+
 def _current_attempt_projection(
     record: Mapping[Any, Any],
     *,
@@ -753,6 +759,7 @@ def _current_attempt_projection(
         raise RunTransitionConflict("current agent attempt failure shape disagrees")
     command_id = record["cancellation_command_id"]
     disposition = record["cancellation_disposition"]
+    disposition_value = _cancellation_disposition(disposition)
     cancellation = (
         None
         if command_id is None
@@ -760,11 +767,7 @@ def _current_attempt_projection(
             str(command_id),
             AgentAttemptReplacement(str(record["replacement"])),
             AgentAttemptRedriveState(str(record["redrive_state"])),
-            (
-                None
-                if disposition is None
-                else AgentAttemptCancellationDisposition(str(disposition))
-            ),
+            disposition_value,
         )
     )
     return AgentAttemptProjection(

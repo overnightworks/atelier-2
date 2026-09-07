@@ -68,7 +68,7 @@ import type {
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const recordedAtStamp = z
   .string()
-  .regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/);
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 const standardBase64 = z
   .string()
   .refine(
@@ -2870,19 +2870,18 @@ async function requestJson<T>(
   ).value;
 }
 
-async function requestJsonResult<T>(
+async function fetchWithConnectionSignal(
   fetcher: typeof fetch,
   target: string,
   init: RequestInit,
-  acceptedStatuses: readonly number[],
-  schema: z.ZodType<T>,
-): Promise<HttpResult<T>> {
-  let response: Response;
+): Promise<Response> {
   try {
-    response = await fetcher(target, {
+    const response = await fetcher(target, {
       ...init,
       headers: { accept: "application/json", ...init.headers },
     });
+    reportConnectionRestored();
+    return response;
   } catch (error) {
     // The round trip itself never happened -- a redeploy's outage (#700), not
     // a 4xx/5xx the server actually answered with, so this is the one signal
@@ -2890,55 +2889,82 @@ async function requestJsonResult<T>(
     reportConnectionLost();
     throw new CockpitRequestError(errorMessage(error), null, false, true);
   }
-  reportConnectionRestored();
-  // Disconnect answers 204 with an empty body; JSON parsing would invent a failure.
-  if (response.status === 204) {
-    if (!acceptedStatuses.includes(204)) {
-      throw new CockpitRequestError(
-        `The API returned undocumented HTTP ${response.status}.`,
-      );
-    }
-    try {
-      return { status: 204, value: schema.parse(undefined) };
-    } catch {
-      throw new CockpitRequestError(
-        "The API response did not match the durable wire contract.",
-      );
-    }
-  }
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch {
-    throw new CockpitRequestError("The API response was not valid JSON.");
-  }
-  if (!acceptedStatuses.includes(response.status)) {
-    try {
-      const problem = decodeProblem(value);
-      if (problem.status !== response.status) {
-        throw new CockpitRequestError(
-          "The problem body disagreed with the HTTP status.",
-        );
-      }
-      throw new CockpitRequestError(
-        problem.detail,
-        problem,
-        problem.status < 500 || problem.type.endsWith(":durable-state-corrupt"),
-      );
-    } catch (error) {
-      if (error instanceof CockpitRequestError) throw error;
-      throw new CockpitRequestError(
-        `The API returned undocumented HTTP ${response.status}.`,
-      );
-    }
+}
+
+function parseNoContentResult<T>(
+  acceptedStatuses: readonly number[],
+  schema: z.ZodType<T>,
+): HttpResult<T> {
+  if (!acceptedStatuses.includes(204)) {
+    throw new CockpitRequestError("The API returned undocumented HTTP 204.");
   }
   try {
-    return { status: response.status, value: schema.parse(value) };
+    return { status: 204, value: schema.parse(undefined) };
   } catch {
     throw new CockpitRequestError(
       "The API response did not match the durable wire contract.",
     );
   }
+}
+
+async function parseJsonResponseBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw new CockpitRequestError("The API response was not valid JSON.");
+  }
+}
+
+function rejectUndocumentedStatus(status: number, value: unknown): never {
+  try {
+    const problem = decodeProblem(value);
+    if (problem.status !== status) {
+      throw new CockpitRequestError(
+        "The problem body disagreed with the HTTP status.",
+      );
+    }
+    throw new CockpitRequestError(
+      problem.detail,
+      problem,
+      problem.status < 500 || problem.type.endsWith(":durable-state-corrupt"),
+    );
+  } catch (error) {
+    if (error instanceof CockpitRequestError) throw error;
+    throw new CockpitRequestError(`The API returned undocumented HTTP ${status}.`);
+  }
+}
+
+function parseAcceptedBody<T>(
+  status: number,
+  value: unknown,
+  schema: z.ZodType<T>,
+): HttpResult<T> {
+  try {
+    return { status, value: schema.parse(value) };
+  } catch {
+    throw new CockpitRequestError(
+      "The API response did not match the durable wire contract.",
+    );
+  }
+}
+
+async function requestJsonResult<T>(
+  fetcher: typeof fetch,
+  target: string,
+  init: RequestInit,
+  acceptedStatuses: readonly number[],
+  schema: z.ZodType<T>,
+): Promise<HttpResult<T>> {
+  const response = await fetchWithConnectionSignal(fetcher, target, init);
+  // Disconnect answers 204 with an empty body; JSON parsing would invent a failure.
+  if (response.status === 204) {
+    return parseNoContentResult(acceptedStatuses, schema);
+  }
+  const value = await parseJsonResponseBody(response);
+  if (!acceptedStatuses.includes(response.status)) {
+    rejectUndocumentedStatus(response.status, value);
+  }
+  return parseAcceptedBody(response.status, value, schema);
 }
 
 function exactBody(bodyBase64: string): ArrayBuffer {
@@ -3023,7 +3049,7 @@ export function decodeCanonicalBase64(value: string): Uint8Array | null {
     if (btoa(binary) !== value) {
       return null;
     }
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return Uint8Array.from(binary, (character) => character.codePointAt(0)!);
   } catch {
     return null;
   }
@@ -3041,7 +3067,7 @@ export function decodePublicRunReference(reference: string): string | null {
     const standard = encoded.replaceAll("-", "+").replaceAll("_", "/");
     const binary = atob(standard + "=".repeat((4 - (standard.length % 4)) % 4));
     const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
+      character.codePointAt(0)!,
     );
     const runId = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (runId.length === 0 || encodePublicRunReference(runId) !== reference) {
@@ -3053,16 +3079,25 @@ export function decodePublicRunReference(reference: string): string | null {
   }
 }
 
+function base64PaddingLength(base64: string): number {
+  if (base64.endsWith("==")) return 2;
+  if (base64.endsWith("=")) return 1;
+  return 0;
+}
+
 export function encodePublicRunReference(runId: string): string {
   const bytes = new TextEncoder().encode(runId);
-  const binary = String.fromCharCode(...bytes);
-  return `run1.${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+  const binary = String.fromCodePoint(...bytes);
+  const padded = btoa(binary).replaceAll("+", "-").replaceAll("/", "_");
+  const paddingLength = base64PaddingLength(padded);
+  const unpadded = paddingLength === 0 ? padded : padded.slice(0, -paddingLength);
+  return `run1.${unpadded}`;
 }
 
 export function parseEventCursor(
   cursor: string,
 ): { publicRunReference: string; sequence: number } | null {
-  const match = /^event1\.([A-Za-z0-9_-]+)\.([1-9][0-9]*)$/.exec(cursor);
+  const match = /^event1\.([A-Za-z0-9_-]+)\.([1-9]\d*)$/.exec(cursor);
   if (match === null) {
     return null;
   }

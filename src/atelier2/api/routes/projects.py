@@ -24,7 +24,7 @@ from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 router = APIRouter()
 
 
-@router.get(PROJECTS_PATH, response_model=ProjectListResource)
+@router.get(PROJECTS_PATH)
 async def list_projects_route(
     context: ApiContext = api_context_dependency,
 ) -> ProjectListResource:
@@ -44,7 +44,7 @@ async def list_projects_route(
             assert_never(unreachable)
 
 
-@router.get(PROJECT_PATH, response_model=ProjectResource)
+@router.get(PROJECT_PATH)
 async def get_project_route(
     public_project_reference: PublicProjectReferencePath,
     context: ApiContext = api_context_dependency,

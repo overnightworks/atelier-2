@@ -259,7 +259,7 @@ async def confirm_queue_proposal_route(
     )
 
 
-@router.get(QUEUE_ITEMS_PATH, response_model=QueueItemPageResource)
+@router.get(QUEUE_ITEMS_PATH)
 async def list_queue_items_route(
     after: QueueItemIdQuery | None = None,
     limit: PageLimitQuery = DEFAULT_PAGE_LIMIT,
@@ -285,7 +285,7 @@ async def list_queue_items_route(
             assert_never(unreachable)
 
 
-@router.post(PROJECT_SOURCE_IMPORT_PATH, response_model=ProjectSourceImportResource)
+@router.post(PROJECT_SOURCE_IMPORT_PATH)
 async def import_project_source_issues_route(
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceImportResource:

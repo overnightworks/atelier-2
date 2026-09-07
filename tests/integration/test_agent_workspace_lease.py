@@ -456,6 +456,13 @@ def root_below_a_symlink(root: Path) -> Path:
     return root / "linked" / "scratch"
 
 
+def root_named_through_a_link_and_dot_dot(root: Path) -> Path:
+    real = root / "real"
+    (real / "scratch").mkdir(mode=SCRATCH_ROOT_MODE, parents=True)
+    (root / "linked").symlink_to(real)
+    return root / "linked" / "scratch" / ".." / "scratch"
+
+
 def root_in_a_git_worktree(root: Path) -> Path:
     """A checkout-shaped parent, never the temp root itself.
 
@@ -516,6 +523,11 @@ def absent_root(root: Path) -> Path:
     [
         pytest.param(symlinked_root, "symbolic link", id="the root is a link"),
         pytest.param(root_below_a_symlink, "symbolic link", id="a parent is a link"),
+        pytest.param(
+            root_named_through_a_link_and_dot_dot,
+            "symbolic link",
+            id="the root is named through a link and ..",
+        ),
         pytest.param(root_in_a_git_worktree, "git worktree", id="a parent is a repo"),
         pytest.param(root_beside_a_git_file, "git worktree", id="the root is a repo"),
         pytest.param(group_readable_root, "mode 700", id="the group may read it"),

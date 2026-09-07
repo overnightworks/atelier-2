@@ -42,7 +42,7 @@ def verification_failure_verdict(
     return "; ".join(words)
 
 
-def named_evidence(name: str, kept: KeptEvidence) -> tuple[str, ...]:
+def named_evidence(name: str, kept: KeptEvidence) -> list[str]:
     """Where one piece of this evidence was kept, or why it was not kept at all.
 
     Silence is the honest answer for a piece that never existed -- a check that
@@ -52,14 +52,13 @@ def named_evidence(name: str, kept: KeptEvidence) -> tuple[str, ...]:
     """
 
     if kept.artifact_hash is not None:
-        return (
-            (f"{name} artifact sha256:{kept.artifact_hash.value}", f"{name} redacted")
-            if kept.redacted
-            else (f"{name} artifact sha256:{kept.artifact_hash.value}",)
-        )
+        lines = [f"{name} artifact sha256:{kept.artifact_hash.value}"]
+        if kept.redacted:
+            lines.append(f"{name} redacted")
+        return lines
     if kept.retention_failure is not None:
-        return (f"{name} could not be kept: {kept.retention_failure}",)
-    return ()
+        return [f"{name} could not be kept: {kept.retention_failure}"]
+    return []
 
 
 def bounded_verification_summary(summary_line: str) -> str:

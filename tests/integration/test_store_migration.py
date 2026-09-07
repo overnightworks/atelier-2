@@ -2886,7 +2886,9 @@ def test_populated_v27_with_empty_access_store_migrates_and_reopens(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "27" in shown.out and "28" in shown.out and "29" in shown.out
+    assert "27" in shown.out
+    assert "28" in shown.out
+    assert "29" in shown.out
     assert _v27_living_rows(database_path) == before
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
@@ -2915,7 +2917,8 @@ def test_nonempty_v27_access_store_is_refused_without_mutation(
     assert main(["migrate", "--database", str(database_path)]) == 1
 
     shown = capsys.readouterr()
-    assert "node_receipt_access_v3" in shown.err and "will not alter" in shown.err
+    assert "node_receipt_access_v3" in shown.err
+    assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
 
 
@@ -2952,7 +2955,8 @@ def test_an_exact_v21_store_migrates_to_v22(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "21" in shown.out and "22" in shown.out
+    assert "21" in shown.out
+    assert "22" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -2980,7 +2984,8 @@ def test_an_exact_v22_store_migrates_to_v23(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "22" in shown.out and "23" in shown.out
+    assert "22" in shown.out
+    assert "23" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3006,7 +3011,8 @@ def test_an_exact_v23_store_migrates_to_v24(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "23" in shown.out and "24" in shown.out
+    assert "23" in shown.out
+    assert "24" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3032,7 +3038,8 @@ def test_an_exact_v24_store_migrates_to_v25(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "24" in shown.out and "25" in shown.out
+    assert "24" in shown.out
+    assert "25" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3070,7 +3077,9 @@ def test_an_exact_v28_store_migrates_through_v29_to_v30(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "28" in shown.out and "29" in shown.out and "30" in shown.out
+    assert "28" in shown.out
+    assert "29" in shown.out
+    assert "30" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3099,7 +3108,8 @@ def test_an_exact_v29_store_migrates_to_v30(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "29" in shown.out and "30" in shown.out
+    assert "29" in shown.out
+    assert "30" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3686,7 +3696,8 @@ def test_an_exact_v31_store_migrates_to_v32_by_a_trigger_swap(
             "SELECT sql FROM sqlite_master "
             "WHERE type='trigger' AND name='agent_attempts_state_transition'"
         ).fetchone()
-    assert trigger_before is not None and "NEVER_LAUNCHED" not in trigger_before[0]
+    assert trigger_before is not None
+    assert "NEVER_LAUNCHED" not in trigger_before[0]
 
     engine = create_canonical_engine(database_path)
     with pytest.raises(MigrationRequired, match="schema version 31"):
@@ -3695,7 +3706,8 @@ def test_an_exact_v31_store_migrates_to_v32_by_a_trigger_swap(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "31" in shown.out and "32" in shown.out
+    assert "31" in shown.out
+    assert "32" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -3720,7 +3732,8 @@ def test_an_exact_v31_store_migrates_to_v32_by_a_trigger_swap(
     # the chain does not stop there, so what the attempt table has gained by the
     # end is exactly the one column a later hop appended (#666).
     assert columns_after == (*columns_before, _TRANSCRIPT_POINTER_COLUMN)
-    assert trigger_after is not None and "NEVER_LAUNCHED" in trigger_after[0]
+    assert trigger_after is not None
+    assert "NEVER_LAUNCHED" in trigger_after[0]
 
 
 def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
@@ -3839,7 +3852,8 @@ def test_an_exact_v32_store_migrates_to_v33_by_adding_the_connection_table(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "32" in shown.out and "33" in shown.out
+    assert "32" in shown.out
+    assert "33" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -4071,7 +4085,8 @@ def test_an_exact_v33_store_migrates_to_v34_by_rekeying_the_answer_table(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "33" in shown.out and "34" in shown.out
+    assert "33" in shown.out
+    assert "34" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -4281,7 +4296,8 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
     )
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr().out
-    assert "45" in shown and "46" in shown
+    assert "45" in shown
+    assert "46" in shown
 
     with sqlite3.connect(database_path) as connection:
         _require_product_shape(connection, SCHEMA_VERSION)
@@ -4801,7 +4817,8 @@ def test_an_exact_v34_store_migrates_to_v35_by_widening_the_event_vocabulary(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "34" in shown.out and "35" in shown.out
+    assert "34" in shown.out
+    assert "35" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -5013,7 +5030,8 @@ def test_an_exact_v35_store_migrates_to_v36_by_rescoping_the_event_key(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "35" in shown.out and "36" in shown.out
+    assert "35" in shown.out
+    assert "36" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -5399,7 +5417,8 @@ def test_an_exact_v36_store_migrates_to_v37_by_adding_the_transcript_pointer(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "36" in shown.out and "37" in shown.out
+    assert "36" in shown.out
+    assert "37" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -5882,7 +5901,8 @@ def test_an_exact_v37_store_migrates_to_v38_by_admitting_an_abandoned_intent(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "37" in shown.out and "38" in shown.out
+    assert "37" in shown.out
+    assert "38" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -6197,7 +6217,8 @@ def test_v40_retires_populated_lineage_occupancy_without_inventing_defaults(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "39" in shown.out and "40" in shown.out
+    assert "39" in shown.out
+    assert "40" in shown.out
 
     with sqlite3.connect(database_path) as connection:
         tables = {
@@ -6315,7 +6336,8 @@ def test_an_exact_v38_store_migrates_to_v39_by_admitting_a_lost_candidate(
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     shown = capsys.readouterr()
-    assert "38" in shown.out and "39" in shown.out
+    assert "38" in shown.out
+    assert "39" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
