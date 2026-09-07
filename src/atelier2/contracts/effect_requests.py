@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from atelier2.contracts.queue_projection import TrackerItemReference
 
 _SAFE_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
-# agent-claim 0.12.0 accepts exactly this claim id shape (its
-# `protocol.CLAIM_ID_PATTERN`), so a request it would reject never reaches it.
+# aco accepts exactly this claim id shape (its `protocol.CLAIM_ID_PATTERN`),
+# so a request it would reject never reaches it.
 _CLAIM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _UNSAFE_BRANCH_FRAGMENTS = ("..", "@{", "//")
 

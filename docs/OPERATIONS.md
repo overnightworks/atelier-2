@@ -974,9 +974,9 @@ Every pull request against `main` carries exactly one typed classification
 line in its body: `Work-Item: #n` together with a closing reference for that
 same item (for example `Work-Item: #1267` plus `Closes #1267`), or `No-Item:
 docs` / `No-Item: fix` for a lane that owns no issue. The required `Landing
-classification` check runs `agent-claim pr-check --pr <n>` and refuses the
+classification` check runs `aco check <n>` and refuses the
 merge when the line is missing, malformed, or does not match the pull
-request's active claim; the agent-claim README's "Landing classification"
+request's active claim; the aco README's "Landing classification"
 section owns the full semantics (what counts as a valid line, parentage
 through GitHub's sub-issue relation, and every refusal case).
 
@@ -1106,7 +1106,7 @@ enabled. `sonar` is not a required check.
 
 SonarCloud's own quality gate passes on ratings (A/B/C), not on a count of
 findings: three green landings still carried 16 new open findings past it
-(agent-claim #143, #1203's measurement). A single open finding on new code is
+(aco #143, #1203's measurement). A single open finding on new code is
 therefore its own bar (ruling 06.09.2026, #1294): after the scan step
 (`sonar.qualitygate.wait=true` makes it block until analysis is final), the
 "SonarCloud open findings" step pages
