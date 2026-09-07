@@ -636,16 +636,26 @@ is an operator's handgrip: the cap and the priority still decide what actually
 starts.
 
 What the tick does with an ended run: a run that ended `FAILED` or `CANCELLED`
-gives its item back. The sweep records the ending on the binding, re-issues the
-same proposal one revision on, and the next tick starts the item under a
-differently identified run -- at most twice. Past that the item keeps its last
-ending and is not started again, so a work item that keeps failing stops
-spending money instead of looping. A `COMPLETED` run is the item's answer and
-binds it for good. Nothing here is an operator's handgrip either: an item at
-the cap stays admitted and bound to its last ending, `GET /queue-items` shows
-that binding, and nothing in this build frees it -- an admitted item takes no
-new proposal, so the only way to run that work again today is a fresh tracker
-item.
+gives its item back, but only while the tracker still lists that item open and
+carrying the automation label -- read at the tick, from the same listing the
+admission reads, before anything is written. Under that condition the sweep
+records the ending on the binding, re-issues the same proposal one revision on,
+and the next tick starts the item under a differently identified run -- at
+most twice. Past that the item keeps its last ending and is not started again,
+so a work item that keeps failing stops spending money instead of looping. An
+item whose tracker entry is closed, or has lost the label, is not restarted:
+it keeps its ended run and stays bound to it, and the tick's journal names the
+reason (`queue_restart_withheld`: `TRACKER_ITEM_CLOSED`, `LABEL_REMOVED`); a
+closed item leaves the pullable set at the next `POST /project-sources/import`,
+which retires it, and an open item restarts again once the label is back. A
+tracker that cannot be read restarts nothing that tick
+(`queue_restart_source_unreadable` in the journal), and a project whose policy
+names no label restarts nothing at all. A `COMPLETED` run is the item's answer
+and binds it for good. Nothing here is an operator's handgrip beyond the label:
+an item at the cap stays admitted and bound to its last ending,
+`GET /queue-items` shows that binding, and nothing in this build frees it -- an
+admitted item takes no new proposal, so the only way to run that work again
+today is a fresh tracker item.
 
 ### A red project verification's own output (#1137)
 

@@ -12,6 +12,7 @@ function itself.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Never, cast
@@ -23,6 +24,7 @@ from atelier2.application.advance_queue import (
     QueueItemBlocked,
     QueueItemRestarting,
     QueueItemRestartsExhausted,
+    QueueItemRestartWithheld,
     QueueRunAlreadyActive,
     QueueRunStarted,
     advance_queue,
@@ -44,7 +46,9 @@ from atelier2.contracts.queue_projection import (
     QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyRevision,
     QueueProposal,
+    QueueRestartRefusal,
     ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
@@ -72,7 +76,12 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequest,
     StartPublishedRunRequestV3,
 )
-from atelier2.ports.issue_observation import WorkItemRevisionObserved
+from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
+    OpenTrackerItemsObserved,
+    TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
+)
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
     CatalogRevisionPosition,
@@ -85,7 +94,10 @@ from atelier2.ports.queue_projection import (
     QueueLaunchReserved,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
+    QueueProjectPolicyAbsent,
+    QueueProjectPolicyFound,
     ReadQueueLaunchResult,
+    ReadQueueProjectPolicyResult,
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.workflows import (
@@ -100,6 +112,26 @@ REVISION_HASH = PublishedRevisionHash("c" * 64)
 OTHER_LINEAGE = CatalogLineageId("d" * 64)
 OTHER_REVISION_HASH = PublishedRevisionHash("e" * 64)
 RATIONALE = QueueAdmissionRationale("operator approved the inspected proposal")
+LABEL = "bereit"
+POLICY = QueueProjectPolicyRevision(PROJECT, 1, 5, LABEL)
+
+
+def _tracker_listing(*open_items: tuple[str, bool]) -> FakeTrackerItemSource:
+    """The tracker's open set: each reference, with or without the automation label."""
+
+    return FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            tuple(
+                ObservedOpenTrackerItem(
+                    TrackerItemReference(reference),
+                    f"open item {reference}",
+                    (LABEL,) if labelled else (),
+                )
+                for reference, labelled in open_items
+            )
+        )
+    )
+
 
 WORK_ITEM_WORKFLOW_DOCUMENT = graph_input_wait_line(
     WORK_ITEM_ORDER_SCHEMA_REVISION.value
@@ -184,6 +216,7 @@ class _QueueRecording:
 
     page: QueueItemsPage
     endings: dict[RunId, ReadQueueLaunchResult] = field(default_factory=dict)
+    policy: QueueProjectPolicyRevision | None = POLICY
     reserved: list[QueueLaunchBinding] = field(default_factory=list)
     released: list[ReleaseQueueLaunch] = field(default_factory=list)
 
@@ -223,8 +256,11 @@ class _QueueRecording:
     def put_policy(self, policy: object, expected_revision: object) -> Never:
         raise AssertionError("advance_queue never publishes a policy")
 
-    def current_policy(self, project: object) -> Never:
-        raise AssertionError("advance_queue never reads the policy")
+    def current_policy(self, project: object) -> ReadQueueProjectPolicyResult:
+        assert project == PROJECT
+        if self.policy is None:
+            return QueueProjectPolicyAbsent()
+        return QueueProjectPolicyFound(self.policy)
 
     def reconcile_open_items(
         self, project: object, items: object, observed_at: object
@@ -545,9 +581,24 @@ def test_an_item_whose_run_ended_badly_is_released_and_started_again(
     )
     catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
     starter = _ScriptedStarter([_created])
+    tracker = _tracker_listing(("gh:610", True))
 
-    (released,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
-    (started,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+    (released,) = advance_queue(
+        queue,
+        catalog,
+        starter,
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=tracker,
+    )
+    (started,) = advance_queue(
+        queue,
+        catalog,
+        starter,
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=tracker,
+    )
 
     assert item.launch_binding is not None
     assert released == QueueItemRestarting(
@@ -559,7 +610,11 @@ def test_an_item_whose_run_ended_badly_is_released_and_started_again(
 
 
 def test_a_completed_run_keeps_its_item_bound_and_releases_nothing() -> None:
-    """A completed run is the item's answer; a second one would pay twice."""
+    """A completed run is the item's answer; a second one would pay twice.
+
+    The tracker here has no listing arranged, so asking it would fail: only a
+    launch that could be restarted ever asks the tracker.
+    """
 
     completed = RunId("run-that-answered")
     item = _bound("gh:620", rank=1, run_id=completed)
@@ -584,7 +639,14 @@ def test_a_completed_run_keeps_its_item_bound_and_releases_nothing() -> None:
         ]
     )
 
-    (outcome,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+    (outcome,) = advance_queue(
+        queue,
+        catalog,
+        starter,
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=FakeTrackerItemSource(),
+    )
 
     assert queue.released == []
     assert isinstance(outcome, QueueRunAlreadyActive)
@@ -609,7 +671,12 @@ def test_an_item_is_restarted_up_to_the_cap_and_then_stays_bound(
     catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
 
     (outcome,) = advance_queue(
-        queue, catalog, _ScriptedStarter([]), workflow_document_parser=None
+        queue,
+        catalog,
+        _ScriptedStarter([]),
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=_tracker_listing(("gh:630", True)),
     )
 
     assert bool(queue.released) is releases
@@ -623,3 +690,193 @@ def test_an_item_is_restarted_up_to_the_cap_and_then_stays_bound(
             item.item_reference.item_id, item.launch_binding, RunState.FAILED, spent
         )
     )
+
+
+def _withheld_restart(
+    tracker: FakeTrackerItemSource,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    policy: QueueProjectPolicyRevision | None = POLICY,
+    spent: int = 0,
+) -> tuple[QueueItemSnapshot, _QueueRecording, QueueItemRestartWithheld]:
+    """One sweep over an item whose FAILED run the tracker no longer lets restart."""
+
+    ended = RunId("run-that-ended")
+    item = _bound("gh:640", rank=1, run_id=ended)
+    queue = _QueueRecording(
+        QueueItemsPage((item,), None),
+        endings={ended: QueueLaunchRunEnded(RunState.FAILED, spent)},
+        policy=policy,
+    )
+    starter = _ScriptedStarter([])
+    with caplog.at_level(logging.INFO, logger="atelier2"):
+        (outcome,) = advance_queue(
+            queue,
+            _CatalogResolverStub({LINEAGE: REVISION_HASH}),
+            starter,
+            workflow_document_parser=None,
+            served_project=PROJECT,
+            tracker=tracker,
+        )
+    assert isinstance(outcome, QueueItemRestartWithheld)
+    assert queue.released == []
+    assert starter.asks == []
+    assert queue.page.items == (item,)
+    return item, queue, outcome
+
+
+@pytest.mark.parametrize(
+    ("tracker", "refusal"),
+    [
+        pytest.param(
+            _tracker_listing(),
+            QueueRestartRefusal.TRACKER_ITEM_CLOSED,
+            id="tracker item closed",
+        ),
+        pytest.param(
+            _tracker_listing(("gh:640", False)),
+            QueueRestartRefusal.LABEL_REMOVED,
+            id="label removed",
+        ),
+    ],
+)
+def test_an_ended_run_is_not_restarted_once_the_tracker_withdraws_its_authority(
+    tracker: FakeTrackerItemSource,
+    refusal: QueueRestartRefusal,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Closed, or open without the label: the binding stays as it ended.
+
+    Nothing is written and nothing is started; the item stays admitted and
+    bound to its ended run, and the sweep names why in its outcome and in the
+    journal, the same words for an operator as for the next sweep.
+    """
+
+    item, _queue, outcome = _withheld_restart(tracker, caplog)
+
+    assert item.launch_binding is not None
+    assert outcome == QueueItemRestartWithheld(
+        item.item_reference.item_id, item.launch_binding, RunState.FAILED, refusal
+    )
+    assert [
+        (getattr(record, "item_id", None), getattr(record, "refusal", None))
+        for record in caplog.records
+        if getattr(record, "event", None) == "queue_restart_withheld"
+    ] == [(item.item_reference.item_id.value, refusal.value)]
+
+
+def test_an_unreadable_tracker_restarts_nothing_and_says_so_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Soft, like the admission: no durable row moves, and the journal says why."""
+
+    unreadable = TrackerSourceUnavailable("the tracker refused the listing")
+
+    _item, _queue, outcome = _withheld_restart(
+        FakeTrackerItemSource(open_items_answer=unreadable), caplog
+    )
+
+    assert outcome.refusal is QueueRestartRefusal.TRACKER_UNREADABLE
+    assert [
+        (record.levelno, getattr(record, "detail", None))
+        for record in caplog.records
+        if getattr(record, "event", None) == "queue_restart_source_unreadable"
+    ] == [(logging.WARNING, unreadable.detail)]
+
+
+@pytest.mark.parametrize(
+    ("policy", "tracker"),
+    [
+        pytest.param(None, _tracker_listing(("gh:640", True)), id="no policy"),
+        pytest.param(
+            QueueProjectPolicyRevision(PROJECT, 1, 5, None),
+            _tracker_listing(("gh:640", True)),
+            id="policy names no label",
+        ),
+        pytest.param(POLICY, None, id="no tracker connected"),
+    ],
+)
+def test_an_instance_with_no_label_to_restart_under_restarts_nothing(
+    policy: QueueProjectPolicyRevision | None,
+    tracker: FakeTrackerItemSource | None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Without a label there is no unattended authority to spend on a restart."""
+
+    ended = RunId("run-that-ended")
+    item = _bound("gh:640", rank=1, run_id=ended)
+    queue = _QueueRecording(
+        QueueItemsPage((item,), None),
+        endings={ended: QueueLaunchRunEnded(RunState.FAILED, 0)},
+        policy=policy,
+    )
+
+    (outcome,) = advance_queue(
+        queue,
+        _CatalogResolverStub({LINEAGE: REVISION_HASH}),
+        _ScriptedStarter([]),
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=tracker,
+    )
+
+    assert isinstance(outcome, QueueItemRestartWithheld)
+    assert outcome.refusal is QueueRestartRefusal.AUTOMATION_LABEL_UNSET
+    assert queue.released == []
+
+
+def test_the_tracker_is_asked_before_the_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A closed item at the cap is withheld, not exhausted: the check comes first."""
+
+    _item, _queue, outcome = _withheld_restart(
+        _tracker_listing(), caplog, spent=MAXIMUM_QUEUE_LAUNCH_RESTARTS
+    )
+
+    assert outcome.refusal is QueueRestartRefusal.TRACKER_ITEM_CLOSED
+
+
+def test_one_sweep_reads_the_tracker_once_for_every_ended_launch() -> None:
+    """The listing is one read per sweep, shared by every item that asks."""
+
+    first_ended, second_ended = RunId("first-ended"), RunId("second-ended")
+    first = _bound("gh:650", rank=1, run_id=first_ended)
+    second = _bound("gh:651", rank=2, run_id=second_ended)
+    queue = _QueueRecording(
+        QueueItemsPage((first, second), None),
+        endings={
+            first_ended: QueueLaunchRunEnded(RunState.FAILED, 0),
+            second_ended: QueueLaunchRunEnded(RunState.CANCELLED, 0),
+        },
+    )
+    reads = 0
+
+    class _CountingTracker(FakeTrackerItemSource):
+        def open_items(self) -> OpenTrackerItemsObserved:
+            nonlocal reads
+            reads += 1
+            listing = super().open_items()
+            assert isinstance(listing, OpenTrackerItemsObserved)
+            return listing
+
+    tracker = _CountingTracker(
+        open_items_answer=_tracker_listing(("gh:650", True)).open_items_answer
+    )
+
+    restarted, withheld = advance_queue(
+        queue,
+        _CatalogResolverStub({LINEAGE: REVISION_HASH}),
+        _ScriptedStarter([]),
+        workflow_document_parser=None,
+        served_project=PROJECT,
+        tracker=tracker,
+    )
+
+    assert reads == 1
+    assert isinstance(restarted, QueueItemRestarting)
+    assert isinstance(withheld, QueueItemRestartWithheld)
+    assert withheld.refusal is QueueRestartRefusal.TRACKER_ITEM_CLOSED
+    assert [command.binding.item_id for command in queue.released] == [
+        first.item_reference.item_id
+    ]
