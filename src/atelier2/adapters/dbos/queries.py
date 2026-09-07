@@ -106,7 +106,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
 )
 from atelier2.contracts.executions import (
-    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
     NodeExecutionId,
     RunEvent,
     RunEventKind,
@@ -1008,8 +1008,8 @@ def _unavailable_executor_refusal(
     ).one_or_none()
     if event is None:
         return None
-    refusal = AgentExecutionRefusal.named_by(bytes(event.payload))
-    return None if refusal is None else refusal.value
+    refusal = AgentNodeRefusalRecord.decode(bytes(event.payload))
+    return None if refusal is None else refusal.sentence()
 
 
 def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None:
@@ -1019,9 +1019,9 @@ def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None
     every other failure names an attempt whose stored receipt holds the reason.
     """
 
-    refusal = AgentExecutionRefusal.named_by(event.payload)
+    refusal = AgentNodeRefusalRecord.decode(event.payload)
     if refusal is not None:
-        return refusal.value
+        return refusal.sentence()
     return _node_receipt_refusal(
         connection,
         event.node_execution_id,
@@ -2858,10 +2858,12 @@ class DbosQueries:
             and workflow_format_version not in _AGENT_FAILURE_FORMATS
         ):
             raise RunTransitionConflict("V1 run carries an agent failure event")
-        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
-            *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
-            *(refusal.value.encode("ascii") for refusal in AgentExecutionRefusal),
-        }:
+        if (
+            event.event_kind is RunEventKind.AGENT_FAILED
+            and event.payload
+            not in {code.value.encode("ascii") for code in AgentAttemptFailureCode}
+            and AgentNodeRefusalRecord.decode(event.payload) is None
+        ):
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
             _agent_failure_reason(connection, event)

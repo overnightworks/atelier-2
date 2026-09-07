@@ -78,7 +78,11 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
 )
-from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
+    RunEventKind,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import InlineOrderValue, ObservedWorkItemOrderValue
@@ -109,13 +113,14 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
+from atelier2.ports.run_queries import NodeDetailFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     launching,
     publish_checked_model_registry,
 )
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.run_waiting import wait_for_run_state
@@ -519,6 +524,7 @@ def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
 
 
 _SCOPED_ITEM = b"Implement P3.\n\n## Dateien\n`one.txt`\n"
+_LANE_BRANCH = head_branch_for_queue_item(WorkItemReference(PROJECT, ITEM).item_id)
 
 
 @pytest.mark.parametrize(
@@ -527,35 +533,51 @@ _SCOPED_ITEM = b"Implement P3.\n\n## Dateien\n`one.txt`\n"
         pytest.param(
             b"Implement P3.",
             "grant",
-            AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE,
+            AgentNodeRefusalRecord(AgentExecutionRefusal.WORK_ITEM_NAMES_NO_SCOPE),
             0,
             id="the-item-names-no-scope",
         ),
         pytest.param(
             _SCOPED_ITEM,
             None,
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED,
+            AgentNodeRefusalRecord(AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED),
             0,
             id="this-instance-holds-no-claim-command",
         ),
         pytest.param(
             _SCOPED_ITEM,
             "priority",
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY,
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY,
+                "a higher-priority item is free",
+            ),
             0,
             id="the-ledger-refuses-on-priority",
         ),
         pytest.param(
             _SCOPED_ITEM,
             "unknown",
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+            AgentNodeRefusalRecord(AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED),
             0,
             id="the-ledger-refuses-without-a-reason-this-reader-knows",
         ),
         pytest.param(
             _SCOPED_ITEM,
+            "checkout-refused",
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+                f"claim branch '{_LANE_BRANCH.value}' does not match checkout "
+                "branch 'main'",
+            ),
+            0,
+            id="the-tool-refuses-the-checkout-before-any-json",
+        ),
+        pytest.param(
+            _SCOPED_ITEM,
             "touches",
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+            ),
             1,
             id="the-claim-touches-another-lane",
         ),
@@ -565,7 +587,7 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
     tmp_path: Path,
     body: bytes,
     claims: str | None,
-    refusal: AgentExecutionRefusal,
+    refusal: AgentNodeRefusalRecord,
     receipts: int,
 ) -> None:
     """A claim this run cannot hold ends it where it stands, and nothing ran.
@@ -576,7 +598,8 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
     another lane already holds. Every one of them ends the node under its own
     word before an attempt of it exists -- which is what proves no workspace
     was leased, no provider started and nothing was pushed. A grant that did
-    happen is receipted all the same.
+    happen is receipted all the same. Where the ledger said why, the run's
+    record and the node's own detail carry that sentence verbatim.
     """
 
     project, remote, _base = _repositories(tmp_path)
@@ -598,8 +621,14 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
             confirmed = connection.execute(
                 sa.select(sa.func.count()).select_from(effect_receipts)
             ).scalar()
-        assert failures == [(refusal.value.encode("ascii"), None)]
+        assert [
+            (AgentNodeRefusalRecord.decode(bytes(payload)), attempt)
+            for payload, attempt in failures
+        ] == [(refusal, None)]
         assert (attempts, confirmed) == (0, receipts)
+        node = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+        assert isinstance(node, NodeDetailFound)
+        assert node.detail.refusal == refusal.sentence()
         assert github.recorded_pull_requests() == ()
         assert _git(remote, "branch", "--list", "atelier2/*") == ""
     finally:

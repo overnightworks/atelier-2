@@ -40,7 +40,7 @@ from atelier2.api.wire.resources import (
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
-    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
     RunEvent,
     RunEventCancellationBinding,
     RunEventKind,
@@ -151,13 +151,13 @@ def _agent_failed(
     projection: PersistedRunEvent, common: _CommonEventFields
 ) -> AgentExecutorBindingUnavailableEventResourceV3 | AgentFailedEventResourceV3:
     event = projection.event
-    refusal = AgentExecutionRefusal.named_by(event.payload)
+    refusal = AgentNodeRefusalRecord.decode(event.payload)
     if refusal is not None:
         if event.attempt_binding is not None:
             raise ValueError("a pre-attempt refusal event has an attempt binding")
         return AgentExecutorBindingUnavailableEventResourceV3(
             event="AGENT_FAILED",
-            reason=cast(AgentNodeRefusalName, refusal.value),
+            reason=cast(AgentNodeRefusalName, refusal.refusal.value),
             **common,
         )
     failure_code = event.payload.decode("ascii")
