@@ -310,16 +310,8 @@ qualified_name = "atelier2.adapters.dbos.run_fork_store._validate_reused_source"
 lines = 74
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
-lines = 336
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.run_store.commit_confirmed_effect"
 lines = 86
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.run_store.commit_wait_answered"
-lines = 72
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.run_store.load_node_output_payload"
@@ -612,10 +604,6 @@ complexity = 17
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
 complexity = 30
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
-complexity = 46
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
