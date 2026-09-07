@@ -17,19 +17,6 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
-            "ports/claim_checkouts.py:ClaimCheckouts",
-            "adapters/claim_checkouts.py:LocalClaimCheckouts",
-        ),
-        "why": (
-            "The claim door's own checkout: a linked worktree on the lane branch "
-            "at the run's pin, opened before the claim is held and closed when "
-            "it is refused or released. The build node that orders attest -> "
-            "claim checkout -> claim -> provider is its caller."
-        ),
-        "item": "#1271 Zeile 12 (Scheibe D, Reihenfolge Attest -> Claim-Checkout -> Claim -> Provider)",
-    },
-    {
-        "names": (
             "ports/agent_executions.py:terminal_outcome",
             "adapters/agent_client_protocol.py:AgentClientProtocolConversation",
         ),

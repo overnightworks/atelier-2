@@ -51,48 +51,71 @@ def _marks_a_git_worktree(git_entry: Path) -> bool:
     return (git_entry / "HEAD").exists() or (git_entry / "HEAD").is_symlink()
 
 
-def _attested_directory(scratch_root: Path) -> Path:
+def attested_directory(root: Path) -> Path:
     """Read the named path before it is opened, and answer what it truly names.
 
     The path is followed to the directory it resolves to, and refused unless
     that directory stays beneath the declared root -- which a root can only do
     by resolving to itself: a symbolic link anywhere above it would let whoever
-    controls the link move every attempt's directory somewhere else between two
-    calls. A root inside a git worktree would put provider scratch files into a
-    checkout the operator is working in. Both are refused by name, because
-    whoever first points `--agent-scratch-root` at such a path deserves to read
-    why. The walk only reads: a `.git` marker that was not there before this
-    call is not created by it.
+    controls the link move every child between two calls. A root inside a git
+    worktree would put files into a checkout the operator is working in. Both
+    are refused by name. The walk only reads: a `.git` marker that was not
+    there before this call is not created by it.
     """
 
-    resolved = scratch_root.resolve()
-    if not resolved.is_relative_to(scratch_root):
+    resolved = root.resolve()
+    if not resolved.is_relative_to(root):
         raise AgentScratchRootRefused(
-            f"the agent scratch root must be reached through no symbolic link, "
-            f"but {scratch_root} resolves to {resolved}: a link above the root "
-            "can move every attempt's directory between two calls"
+            f"the root must be reached through no symbolic link, but {root} "
+            f"resolves to {resolved}: a link above the root can move every "
+            "child between two calls"
         )
-    for component in (scratch_root, *scratch_root.parents):
+    for component in (root, *root.parents):
         git_entry = component / _GIT_ENTRY
         if _marks_a_git_worktree(git_entry):
             raise AgentScratchRootRefused(
-                f"the agent scratch root must lie outside every git worktree, but "
-                f"{git_entry} exists: a provider writes into its workspace, so a "
-                "root inside a checkout would write into that checkout"
+                f"the root must lie outside every git worktree, but {git_entry} "
+                "exists: writing under a checkout would write into that checkout"
             )
     return resolved
 
 
-def _open_scratch_root(scratch_root: Path) -> int:
-    attested = _attested_directory(scratch_root)
+def _refuse_unless_this_process_owns(root: Path, status: os.stat_result) -> None:
+    if status.st_uid != os.getuid():
+        raise AgentScratchRootRefused(
+            f"the agent scratch root {root} belongs to another user, so this "
+            "server cannot own the workspaces inside it"
+        )
+    if stat.S_IMODE(status.st_mode) != SCRATCH_ROOT_MODE:
+        raise AgentScratchRootRefused(
+            f"the agent scratch root {root} must carry mode "
+            f"{SCRATCH_ROOT_MODE:o}, not {stat.S_IMODE(status.st_mode):o}: "
+            "group or world access would share every provider's scratch files"
+        )
+
+
+def _open_scratch_root(root: Path) -> int:
+    attested = attested_directory(root)
     try:
         return os.open(attested, _DIRECTORY_FLAGS)
     except OSError as error:
         raise AgentScratchRootRefused(
             f"the agent scratch root must be an existing directory the serving "
-            f"user owns with mode {SCRATCH_ROOT_MODE:o}, but {scratch_root} "
+            f"user owns with mode {SCRATCH_ROOT_MODE:o}, but {root} "
             f"could not be opened: {error}"
         ) from error
+
+
+def open_attested_root(root: Path) -> int:
+    """Open `root` after proving it is this process's own directory at mode 0700."""
+
+    descriptor = _open_scratch_root(root)
+    try:
+        _refuse_unless_this_process_owns(root, os.fstat(descriptor))
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _encode_lease_mark(created: os.stat_result) -> bytes:
@@ -217,7 +240,7 @@ class LocalAgentAttemptWorkspaceOwner:
         # symbolic links the attestation below refuses, and this exact path is
         # what is attested and, once it resolves to itself, what is opened.
         self._scratch_root = Path(os.path.abspath(scratch_root))
-        self._root_fd = _open_scratch_root(self._scratch_root)
+        self._root_fd = open_attested_root(self._scratch_root)
         try:
             self.preflight()
         except BaseException:
@@ -229,18 +252,7 @@ class LocalAgentAttemptWorkspaceOwner:
         return self._scratch_root
 
     def preflight(self) -> None:
-        status = os.fstat(self._root_fd)
-        if status.st_uid != os.getuid():
-            raise AgentScratchRootRefused(
-                f"the agent scratch root {self._scratch_root} belongs to another "
-                "user, so this server cannot own the workspaces inside it"
-            )
-        if stat.S_IMODE(status.st_mode) != SCRATCH_ROOT_MODE:
-            raise AgentScratchRootRefused(
-                f"the agent scratch root {self._scratch_root} must carry mode "
-                f"{SCRATCH_ROOT_MODE:o}, not {stat.S_IMODE(status.st_mode):o}: "
-                "group or world access would share every provider's scratch files"
-            )
+        _refuse_unless_this_process_owns(self._scratch_root, os.fstat(self._root_fd))
         for entry in os.scandir(self._root_fd):
             if not _is_attempt_entry(entry):
                 raise AgentScratchRootRefused(

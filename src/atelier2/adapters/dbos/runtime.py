@@ -22,7 +22,11 @@ from atelier2.adapters.agent_processes import (
     AgentProcessSupervisor,
     delegated_cgroup_root,
 )
-from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
+from atelier2.adapters.agent_workspaces import (
+    LocalAgentAttemptWorkspaceOwner,
+    attested_directory,
+)
+from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -152,6 +156,10 @@ bound here, at the composition root, and handed down as a dispatch parameter,
 because what a deployment permits is the deployment's own fact -- never a
 workflow's to look up.
 """
+
+
+CLAIM_CHECKOUT_ROOT_NAME = "claim-checkouts"
+"""The claim checkouts' root, a sibling of the agent scratch root."""
 
 
 class DbosRuntimeBindingConflict(RuntimeError):
@@ -366,19 +374,23 @@ class _BoundRuntime:
 
 
 def _work_item_claim_ledger(
-    executable: Path | None, project_checkout: Path | None, engine: Engine
+    executable: Path | None,
+    project_checkout: Path | None,
+    scratch_root: Path | None,
+    engine: Engine,
 ) -> WorkItemClaimLedger | None:
-    """The claim boundary this instance holds, where it was given both halves.
+    """The claim boundary this instance holds, where it was given every part.
 
-    The command runs beside the project's own checkout, because the ledger it
-    writes belongs to that repository. Without an executable or without a
-    served project there is no claim boundary at all, and a node that owes a
-    claim then refuses rather than building unclaimed. The queue policy the
-    door reads is the same store the sweep reads, over the one engine.
+    Without an executable or a served project there is no claim boundary.
     """
 
     if executable is None or project_checkout is None:
         return None
+    if scratch_root is None:
+        raise DbosRuntimeBindingConflict(
+            "a claim command requires an agent scratch root, because every "
+            "claim is held from a checkout beside it"
+        )
     return WorkItemClaimLedger(
         AgentClaimCli(executable, project_checkout),
         EffectAdapterBinding(
@@ -388,6 +400,10 @@ def _work_item_claim_ledger(
             AdapterOperationName.CLAIM_WORK_ITEM,
         ),
         DbosQueueProjectionStore(engine),
+        LocalClaimCheckouts(
+            project_checkout,
+            attested_directory(scratch_root.with_name(CLAIM_CHECKOUT_ROOT_NAME)),
+        ),
     )
 
 
@@ -567,9 +583,7 @@ def _node_executions_of(
     return tuple(NodeExecutionId(execution) for execution in sorted(executions))
 
 
-def _still_open_effect_intents(
-    connection: Connection,
-) -> list[sa.Row[Any]]:
+def _still_open_effect_intents(connection: Connection) -> list[sa.Row[Any]]:
     """Every durable effect intent a differing identity still has to answer for.
 
     Ordered by operation and logical key so a refusal names the same intents
@@ -735,7 +749,10 @@ def _open_binding(
             project_checkout, settings.database_path
         )
         work_item_claims = _work_item_claim_ledger(
-            settings.agent_claim_executable, project_checkout, engine
+            settings.agent_claim_executable,
+            project_checkout,
+            settings.agent_scratch_root,
+            engine,
         )
         if work_item_claims is not None:
             effect_bindings = (*effect_bindings, work_item_claims.binding)

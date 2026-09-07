@@ -99,7 +99,9 @@ from atelier2.contracts.work_items import (
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
     AuthProfileRevisionCreated,
+    AuthProfileRevisionExisting,
 )
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
@@ -114,6 +116,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import NodeDetailFound
+from tests.integration.test_claim_checkouts import worktree_facts
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -162,6 +165,17 @@ def _git_bytes(repository: Path, *arguments: str) -> bytes:
         check=True,
     )
     return completed.stdout
+
+
+def linked_worktrees(project: Path) -> tuple[Path, ...]:
+    """Every worktree the project checkout registers beside itself."""
+
+    listed = _git(project, "worktree", "list", "--porcelain")
+    return tuple(
+        Path(line.removeprefix("worktree "))
+        for line in listed.splitlines()
+        if line.startswith("worktree ") and line != f"worktree {project}"
+    )
 
 
 def _repositories(root: Path) -> tuple[Path, Path, str]:
@@ -363,7 +377,8 @@ def _publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     )
     auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
     assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        catalog.publish_auth_profile_revision(auth),
+        (AuthProfileRevisionCreated, AuthProfileRevisionExisting),
     )
     configuration = AgentConfigurationRevision(
         "opus",
@@ -374,7 +389,7 @@ def _publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     )
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
+        (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
     )
     publish_checked_model_registry(
         runtime.engine, ProviderId("exact"), (configuration,)
@@ -423,14 +438,15 @@ def _public_runtime(
     project: Path,
     remote: Path,
     *,
-    claims: str | None = "grant",
+    claims: str | None = "checkout",
     claim_root: Path | None = None,
 ) -> tuple[DbosRuntime, GitHubEffectAdapterFactory]:
     """The served instance this proof drives: both effects, and its claim ledger.
 
-    `claims` is what that ledger answers a claim -- or `None` for an operator
-    who served the project without a claim command at all, which is what the
-    unconfigured refusal is about.
+    `claims` is what that ledger answers a claim -- by default only what a
+    clean linked worktree on the lane branch earns, as the real tool answers;
+    or `None` for an operator who served the project without a claim command
+    at all, which is what the unconfigured refusal is about.
     """
 
     github = GitHubEffectAdapterFactory(
@@ -484,7 +500,9 @@ def _public_runtime(
     return runtime, github
 
 
-def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
+def _start_public_run(
+    runtime: DbosRuntime, body: bytes, run_id: RunId = RUN
+) -> httpx.Response:
     """Start the shipped line on one issue whose body says exactly this."""
 
     workflow, bindings = _publish(runtime)
@@ -508,7 +526,7 @@ def _start_public_run(runtime: DbosRuntime, body: bytes) -> httpx.Response:
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 3,
-            "run_id": RUN.value,
+            "run_id": run_id.value,
             "workflow_revision_hash": workflow.revision_hash.value,
             "agent_bindings": [
                 {
@@ -631,6 +649,7 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
         assert node.detail.refusal == refusal.sentence()
         assert github.recorded_pull_requests() == ()
         assert _git(remote, "branch", "--list", "atelier2/*") == ""
+        assert linked_worktrees(project) == ()
     finally:
         runtime.close()
 
@@ -710,6 +729,17 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         assert push_receipt["candidate_tree"] == pushed_tree
         open_request = OpenPullRequest.from_canonical_bytes(intents[2].request.payload)
         assert open_request.head_branch.value == branch
+        # The claim was held from the run's own checkout, a clean linked
+        # worktree on the lane branch at the base, which the provider never
+        # worked in: its lease went with the attempt, the checkout stands
+        # until the claim is released.
+        (checkout,) = linked_worktrees(project)
+        assert checkout.is_relative_to(tmp_path / "claim-checkouts")
+        facts = worktree_facts(checkout)
+        assert facts["git_dir"] != facts["common_dir"]
+        assert (facts["branch"], facts["head"], facts["status"]) == (branch, base, "")
+        assert not (checkout / "candidate.txt").exists()
+        assert not any(agent_scratch_root(tmp_path).iterdir())
     finally:
         runtime.close()
 

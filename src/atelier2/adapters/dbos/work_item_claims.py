@@ -16,7 +16,7 @@ terminal without a workspace, a provider, or a push.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from dbos import SQLAlchemyDatasource
@@ -47,6 +47,7 @@ from atelier2.adapters.dbos.work_item_intents import (
     issue_work_item_order,
 )
 from atelier2.adapters.github.tracker_reference import github_issue_number_or_none
+from atelier2.application.bind_node import pinned_project
 from atelier2.application.queue_sweep_reads import active_policy
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
@@ -54,6 +55,7 @@ from atelier2.contracts.effect_requests import (
     ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
+    HeadBranch,
     work_item_claim_id,
 )
 from atelier2.contracts.effects import (
@@ -76,6 +78,13 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.ports.claim_checkouts import (
+    ClaimCheckoutRefused,
+    ClaimCheckouts,
+    ClaimCheckoutUnavailable,
+)
+from atelier2.ports.project_source import ProjectSourceUnavailable
+from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.queue_projection import QueuePolicyReader
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -83,9 +92,11 @@ from atelier2.ports.work_item_claims import (
     ClaimRefusal,
     ClaimRefusalReason,
     WorkItemClaims,
+    _bounded_detail,
 )
 
 LOGICAL_KEY_FIELD = "logical_key"
+BRANCH_FIELD = "branch"
 REFUSAL_FIELD = "refusal"
 HELD_FIELD = "held"
 WHOLE_SCOPE_REASON = (
@@ -119,12 +130,14 @@ _REFUSAL_WORDS = {
 
 @dataclass(frozen=True, slots=True)
 class WorkItemClaimLedger:
-    """The claim boundary this runtime holds, the binding it records with, and
-    the queue policy that says which label admits a run out of board order."""
+    """The claim boundary this runtime holds, the binding it records with, the
+    queue policy that says which label admits a run out of board order, and
+    the checkouts the claim is held from."""
 
     claims: WorkItemClaims
     binding: EffectAdapterBinding
     policy: QueuePolicyReader
+    checkouts: ClaimCheckouts
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +229,10 @@ def prepare_work_item_claim(
     )
     intent = EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
     prepared = prepared_effect_intent(session, intent)
-    return {LOGICAL_KEY_FIELD: prepared.intent.binding.logical_key.value}
+    return {
+        LOGICAL_KEY_FIELD: prepared.intent.binding.logical_key.value,
+        BRANCH_FIELD: request.head_branch.value,
+    }
 
 
 def _requested_claim(
@@ -260,19 +276,19 @@ def _admission_reason(
 
 
 def hold_prepared_claim(
-    intent: EffectIntent, ledger: WorkItemClaimLedger
+    intent: EffectIntent, ledger: WorkItemClaimLedger, checkout: Path
 ) -> WorkItemClaimOutcome:
     """Take the prepared claim, reading the ledger back before asking for it.
 
     The claim id is this run's own, so a claim an earlier attempt already
     posted is recognised here instead of being taken twice -- and a ledger that
     answers something other than this exact request is refused rather than
-    built on.
+    built on. Both are asked from `checkout`, the run's own claim checkout.
     """
 
     request = ClaimWorkItem.from_canonical_bytes(intent.request.payload)
     scope = tuple(PurePosixPath(path) for path in request.scope)
-    standing = ledger.claims.read_back(request.item, request.claim_id)
+    standing = ledger.claims.read_back(request.item, request.claim_id, checkout)
     source = ConfirmationSource.ADAPTER_READBACK
     if isinstance(standing, ClaimRefusal):
         return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason], standing.detail)
@@ -285,6 +301,7 @@ def hold_prepared_claim(
             scope,
             request.claim_id,
             request.reasons,
+            checkout,
         )
         if isinstance(standing, ClaimRefusal):
             return WorkItemClaimRefused(
@@ -378,6 +395,42 @@ def _confirmed_claim(receipt: ClaimReceipt) -> ClaimWorkItemReceipt:
     )
 
 
+def refuse_unattested_pin(
+    datasource: SQLAlchemyDatasource,
+    binding: AgentNodeBindingV2,
+    project: DeclaredProject | None,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+) -> str | None:
+    """End the node when the pin it was bound to can no longer be answered for.
+
+    Opening a claim for work this host cannot begin would hold a lane forever.
+    The source's own sentence travels as the refusal detail, through the same
+    scrub and bound every ledger refusal uses; the closed word is the claim
+    door's generic refusal, not a new vocabulary.
+    """
+
+    pinned = pinned_project(binding, project)
+    if pinned is None:
+        return None
+    try:
+        pinned.source.attest(pinned.pin)
+    except ProjectSourceUnavailable as error:
+        return _refuse_claim(
+            datasource,
+            run_id,
+            revision_hash,
+            node_id,
+            binding.round_ordinal,
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+                _bounded_detail(str(error)),
+            ),
+        )
+    return None
+
+
 def hold_work_item_claim(
     datasource: SQLAlchemyDatasource,
     ledger: WorkItemClaimLedger | None,
@@ -396,6 +449,12 @@ def hold_work_item_claim(
     is allowed to begin. A recovery replays the answer that step recorded and
     never asks the ledger again, so it cannot refuse work already under way on
     a newer answer, nor build on a grant the node already ended on.
+
+    The claim is asked from the run's claim checkout on the lane branch at the
+    node's pin. Opening it is no durable step: it is idempotent by run, so a
+    replay finds the checkout again or makes it anew, and the memoized hold
+    still answers without the ledger. A refusal closes it; a held claim keeps
+    it until the claim is released.
 
     Answers `None` where the node may work, and the run's own terminal state
     where it may not.
@@ -421,13 +480,76 @@ def hold_work_item_claim(
         raise RunBindingConflict(
             "a prepared work-item claim requires the ledger that bound it"
         )
+    return _drive_prepared_claim(
+        datasource,
+        ledger,
+        binding,
+        run_id,
+        revision_hash,
+        node_id,
+        round_ordinal,
+        prepared,
+    )
+
+
+def _drive_prepared_claim(
+    datasource: SQLAlchemyDatasource,
+    ledger: WorkItemClaimLedger,
+    binding: AgentNodeBindingV2,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    prepared: dict[str, str],
+) -> str | None:
+    """Open this run's checkout, take the memoized hold, and refuse when it cannot.
+
+    Opening is no durable step. A typed checkout failure is recorded as this
+    hold's own refusal so a replay that cannot open still consumes the hold
+    step, then takes the refuse step, instead of raising out of the node.
+    Closing the checkout on that path is best-effort: a close that cannot
+    finish must not replace the refusal, so the refuse step still runs.
+    """
+
     logical_key = prepared[LOGICAL_KEY_FIELD]
-    outcome = _held_claim(datasource, ledger, logical_key, revision_hash)
+    checkout: Path | None
+    unavailable: BaseException | None
+    try:
+        checkout = _opened_claim_checkout(ledger, binding, run_id, prepared)
+    except (ClaimCheckoutUnavailable, ClaimCheckoutRefused) as error:
+        checkout = None
+        unavailable = error
+    else:
+        unavailable = None
+    outcome = _held_claim(
+        datasource, ledger, logical_key, revision_hash, checkout, unavailable
+    )
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
     if isinstance(outcome, WorkItemClaimHeld):
         return None
+    try:
+        ledger.checkouts.close(run_id)
+    except ClaimCheckoutUnavailable:
+        pass
     return _refuse_claim(
         datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
+    )
+
+
+def _opened_claim_checkout(
+    ledger: WorkItemClaimLedger,
+    binding: AgentNodeBindingV2,
+    run_id: RunId,
+    prepared: dict[str, str],
+) -> Path:
+    """The run's claim checkout on the prepared lane branch at the node's pin."""
+
+    if binding.project_source is None:
+        raise RunBindingConflict(
+            "a prepared work-item claim requires the project pin its node was bound to"
+        )
+    return ledger.checkouts.open(
+        run_id, HeadBranch(prepared[BRANCH_FIELD]), binding.project_source
     )
 
 
@@ -464,6 +586,8 @@ def _held_claim(
     ledger: WorkItemClaimLedger,
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
+    checkout: Path | None,
+    unavailable: BaseException | None,
 ) -> WorkItemClaimOutcome:
     """Ask the ledger once, inside the one durable step that records its answer.
 
@@ -472,17 +596,27 @@ def _held_claim(
     stays held while the attempt runs, and a refusal stays the one refusal the
     node ended on. Only a drive that dies before the step is recorded asks
     again, and then it reads its own claim back rather than taking a second.
+
+    A checkout that could not be opened is that refusal: the step records it
+    without asking the ledger, so a replay whose `open` fails still consumes
+    this step and can take the refuse step that ends the node.
     """
+
+    def take() -> WorkItemClaimOutcome:
+        if checkout is None:
+            return WorkItemClaimRefused(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+                _bounded_detail(str(unavailable)),
+            )
+        return hold_prepared_claim(
+            load_intent(datasource.sql_session(), logical_key, revision_hash.value),
+            ledger,
+            checkout,
+        )
 
     return cast(
         WorkItemClaimOutcome,
-        datasource.run_tx_step(
-            {"name": WORK_ITEM_CLAIM_HOLD_STEP_NAME},
-            lambda: hold_prepared_claim(
-                load_intent(datasource.sql_session(), logical_key, revision_hash.value),
-                ledger,
-            ),
-        ),
+        datasource.run_tx_step({"name": WORK_ITEM_CLAIM_HOLD_STEP_NAME}, take),
     )
 
 

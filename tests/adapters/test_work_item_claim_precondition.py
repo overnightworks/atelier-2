@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -10,6 +11,7 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
+from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
 from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
@@ -49,7 +51,11 @@ from atelier2.contracts.effects import (
     EffectIntent,
     LogicalEffectKey,
 )
-from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
+    RunEventKind,
+)
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.queue_projection import (
@@ -68,7 +74,9 @@ from atelier2.contracts.queue_projection import (
     WorkItemReference,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.contracts.when import RecordedAt
+from atelier2.ports.claim_checkouts import ClaimCheckoutUnavailable
 from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
     QueueLaunchReserved,
@@ -76,6 +84,7 @@ from atelier2.ports.queue_projection import (
     ReadQueueProjectPolicyResult,
 )
 from atelier2.ports.work_item_claims import (
+    MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES,
     ClaimAbsent,
     ClaimReceipt,
     ClaimRefusal,
@@ -84,25 +93,35 @@ from atelier2.ports.work_item_claims import (
     WorkItemClaims,
 )
 from tests.acceptance.test_v3_push_before_open_pr import (
+    _LANE_BRANCH,
     _SCOPED_ITEM,
     PROJECT,
     RUN,
     _public_runtime,
     _repositories,
     _start_public_run,
+    linked_worktrees,
 )
 from tests.acceptance.test_v3_push_before_open_pr import (
     ITEM as PUBLIC_ITEM,
 )
+from tests.integration.test_claim_checkouts import (
+    snapshot,
+    tracked_files,
+    worktree_facts,
+)
 from tests.scenarios.catalog_lineages import found_lineage
+from tests.scenarios.credentials import assembled
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
     claimed_ledger,
     fake_agent_claim_executable,
+    ledger_invocations,
 )
 
 ITEM = 1320
 RUN_ID = RunId("run-claim-before-build")
+SECOND_RUN = RunId("v3/push-before-open-pr-again")
 REVISION = WorkflowRevisionHash("c" * 64)
 BRANCH = HeadBranch("atelier2/work-item/claim-before-build")
 SCOPE = ("src/atelier2/adapters/dbos/work_item_claims.py", "tests")
@@ -163,10 +182,41 @@ class _PolicyNeverRead:
         raise AssertionError("holding a prepared claim never reads the queue policy")
 
 
-def _held(claims: FakeWorkItemClaims) -> WorkItemClaimHeld | WorkItemClaimRefused:
-    return hold_prepared_claim(
-        _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
+class _CheckoutsNeverOpened:
+    """The claim checkouts of a ledger whose claim is held from a given checkout."""
+
+    def open(self, run_id: RunId, branch: HeadBranch, pin: object) -> Path:
+        raise AssertionError("holding a prepared claim opens no checkout of its own")
+
+    def close(self, run_id: RunId) -> None:
+        raise AssertionError("holding a prepared claim closes no checkout")
+
+
+@dataclass(frozen=True)
+class _CheckoutsWhoseOpenAndCloseFail:
+    """Open and close both raise, with distinct sentences."""
+
+    open_sentence: str
+    close_sentence: str
+
+    def open(self, run_id: RunId, branch: HeadBranch, pin: object) -> Path:
+        raise ClaimCheckoutUnavailable(self.open_sentence)
+
+    def close(self, run_id: RunId) -> None:
+        raise ClaimCheckoutUnavailable(self.close_sentence)
+
+
+CHECKOUT = Path("/claim-checkout")
+
+
+def _prepared_ledger(claims: WorkItemClaims) -> WorkItemClaimLedger:
+    return WorkItemClaimLedger(
+        claims, LEDGER_BINDING, _PolicyNeverRead(), _CheckoutsNeverOpened()
     )
+
+
+def _held(claims: FakeWorkItemClaims) -> WorkItemClaimHeld | WorkItemClaimRefused:
+    return hold_prepared_claim(_intent(), _prepared_ledger(claims), CHECKOUT)
 
 
 def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() -> None:
@@ -177,8 +227,8 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() 
 
     outcome = _held(claims)
 
-    assert claims.read_back_requests == [(ITEM, CLAIM_ID)]
-    assert [
+    assert claims.read_back_requests == [(ITEM, CLAIM_ID, CHECKOUT)]
+    asked = [
         (
             request.item,
             request.agent,
@@ -186,9 +236,11 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() 
             request.scope,
             request.claim_id,
             request.reasons,
+            request.checkout,
         )
         for request in claims.claim_requests
-    ] == [
+    ]
+    assert asked == [
         (
             ITEM,
             RUN_ID,
@@ -196,6 +248,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() 
             tuple(PurePosixPath(path) for path in SCOPE),
             CLAIM_ID,
             REASONS,
+            CHECKOUT,
         )
     ]
     assert outcome == WorkItemClaimHeld(
@@ -288,10 +341,14 @@ def test_a_claim_the_ledger_recorded_differently_refuses(answer: ClaimReceipt) -
     assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
     assert outcome.confirmed is not None
     assert outcome.confirmed.receipt.claim_id == CLAIM_ID
-    assert (
+    recorded = (
         outcome.confirmed.receipt.branch,
         outcome.confirmed.receipt.claimed_scope,
-    ) == (answer.branch, tuple(path.as_posix() for path in answer.claimed_scope))
+    )
+    assert recorded == (
+        answer.branch,
+        tuple(path.as_posix() for path in answer.claimed_scope),
+    )
 
 
 def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:
@@ -323,13 +380,11 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     """
 
     executable = fake_agent_claim_executable(tmp_path)
-    ledger = WorkItemClaimLedger(
-        AgentClaimCli(executable, tmp_path), LEDGER_BINDING, _PolicyNeverRead()
-    )
+    ledger = _prepared_ledger(AgentClaimCli(executable, tmp_path))
     intent = _intent()
 
-    first = hold_prepared_claim(intent, ledger)
-    second = hold_prepared_claim(intent, ledger)
+    first = hold_prepared_claim(intent, ledger, tmp_path)
+    second = hold_prepared_claim(intent, ledger, tmp_path)
 
     receipt = ClaimWorkItemReceipt(ITEM, CLAIM_ID, AGENT, BRANCH, SCOPE)
     assert first == WorkItemClaimHeld(
@@ -338,18 +393,17 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     assert second == WorkItemClaimHeld(
         ConfirmedWorkItemClaim(receipt, ConfirmationSource.ADAPTER_READBACK)
     )
-    assert [request.claim_id for request in claimed_ledger(executable)] == [CLAIM_ID]
+    claim_ids = [request.claim_id for request in claimed_ledger(executable)]
+    assert claim_ids == [CLAIM_ID]
 
 
 def test_a_ledger_holding_nothing_yet_is_claimed_once(tmp_path: Path) -> None:
     executable = fake_agent_claim_executable(tmp_path)
     claims = AgentClaimCli(executable, tmp_path)
 
-    assert claims.read_back(ITEM, CLAIM_ID) == ClaimAbsent()
+    assert claims.read_back(ITEM, CLAIM_ID, tmp_path) == ClaimAbsent()
     assert isinstance(
-        hold_prepared_claim(
-            _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
-        ),
+        hold_prepared_claim(_intent(), _prepared_ledger(claims), tmp_path),
         WorkItemClaimHeld,
     )
     assert claimed_ledger(executable)[0].scope == tuple(
@@ -385,13 +439,31 @@ class _StartedBuilderNode:
     runtime: DbosRuntime
     revision_hash: WorkflowRevisionHash
     binding: AgentNodeBindingV2
+    project: Path
+    checkouts: LocalClaimCheckouts
+    run_id: RunId = RUN
 
     def ledger(self, claims: WorkItemClaims) -> WorkItemClaimLedger:
-        """`claims` as this runtime's ledger, reading its own queue policy."""
+        """`claims` as this runtime's ledger, reading its own queue policy and
+        holding the claim from this node's own claim checkouts."""
 
         return WorkItemClaimLedger(
-            claims, LEDGER_BINDING, DbosQueueProjectionStore(self.runtime.engine)
+            claims,
+            LEDGER_BINDING,
+            DbosQueueProjectionStore(self.runtime.engine),
+            self.checkouts,
         )
+
+    def claim_checkout(self) -> Path | None:
+        """The one linked worktree the project checkout registers, or none."""
+
+        linked = linked_worktrees(self.project)
+        assert len(linked) <= 1, linked
+        return linked[0] if linked else None
+
+    def pin_commit(self) -> str:
+        assert self.binding.project_source is not None
+        return self.binding.project_source.commit
 
     def hold(self, ledger: WorkItemClaimLedger) -> str | None:
         return hold_work_item_claim(
@@ -399,7 +471,7 @@ class _StartedBuilderNode:
             ledger,
             PROJECT,
             self.binding,
-            RUN,
+            self.run_id,
             self.revision_hash,
             "implement",
         )
@@ -409,7 +481,7 @@ class _StartedBuilderNode:
 
         with self.runtime.engine.connect() as connection:
             state = connection.execute(
-                sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+                sa.select(runs.c.state).where(runs.c.run_id == self.run_id.value)
             ).scalar_one()
             receipts = connection.execute(
                 sa.select(sa.func.count()).select_from(effect_receipts)
@@ -434,26 +506,30 @@ def started_node(
     project, remote, _base = _repositories(tmp_path)
     runtime, _github = _public_runtime(tmp_path, project, remote)
     try:
-        yield _started_node(runtime, monkeypatch)
+        yield _started_node(runtime, project, tmp_path, monkeypatch)
     finally:
         runtime.close()
 
 
 def _started_node(
-    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: DbosRuntime,
+    project: Path,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch | None,
+    run_id: RunId = RUN,
 ) -> _StartedBuilderNode:
-    assert _start_public_run(runtime, _SCOPED_ITEM).status_code == 201
+    assert _start_public_run(runtime, _SCOPED_ITEM, run_id).status_code == 201
     with runtime.engine.connect() as connection:
         revision_hash = WorkflowRevisionHash(
             connection.execute(
-                sa.select(runs.c.revision_hash).where(runs.c.run_id == RUN.value)
+                sa.select(runs.c.revision_hash).where(runs.c.run_id == run_id.value)
             ).scalar_one()
         )
     binding = decode_node_binding(
         dict(
             _node_binding(
                 runtime.datasource,
-                RUN,
+                run_id,
                 revision_hash,
                 "implement",
                 runtime.declared_project,
@@ -461,12 +537,20 @@ def _started_node(
         )
     )
     assert isinstance(binding, AgentNodeBindingV2)
-    monkeypatch.setattr(
-        runtime.datasource,
-        "run_tx_step",
-        _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            runtime.datasource,
+            "run_tx_step",
+            _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+        )
+    return _StartedBuilderNode(
+        runtime,
+        revision_hash,
+        binding,
+        project,
+        LocalClaimCheckouts(project, root / "door-checkouts"),
+        run_id,
     )
-    return _StartedBuilderNode(runtime, revision_hash, binding)
 
 
 def _launched_from_the_queue(runtime: DbosRuntime, label: str | None) -> None:
@@ -587,7 +671,8 @@ def test_a_recovery_replays_the_held_claim_without_asking_the_ledger_again(
     replay = _refusing_everything()
     assert started_node.hold(started_node.ledger(replay)) is None
 
-    assert (replay.read_back_requests, replay.claim_requests) == ([], [])
+    asked_again = (replay.read_back_requests, replay.claim_requests)
+    assert asked_again == ([], [])
     assert held == (RunState.STARTED.value, 1, 0, 0)
     assert started_node.standing() == held
 
@@ -615,3 +700,168 @@ def test_a_recovery_after_a_refusal_refuses_once_and_builds_on_no_later_grant(
     assert claimed_ledger(executable) == ()
     assert refused == (RunState.FAILED.value, 0, 1, 0)
     assert started_node.standing() == refused
+
+
+def _five_facts(node: _StartedBuilderNode, checkout: Path) -> None:
+    """What the ledger checks before it acts, read back from the checkout itself."""
+
+    facts = worktree_facts(checkout)
+    assert facts["git_dir"] != facts["common_dir"]
+    assert facts["branch"] == _LANE_BRANCH.value
+    assert facts["head"] == node.pin_commit()
+    assert facts["status"] == ""
+    assert tracked_files(checkout)
+
+
+def test_the_builder_node_holds_its_claim_from_a_clean_checkout_on_the_lane_at_the_pin(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """The claim command runs in the run's claim checkout, and that checkout is
+    what the ledger demands: a clean linked worktree on the lane branch at the
+    node's pin with the pinned files in it. The stub refuses anything else."""
+
+    executable = fake_agent_claim_executable(tmp_path, "checkout")
+
+    assert (
+        started_node.hold(started_node.ledger(AgentClaimCli(executable, tmp_path)))
+        is None
+    )
+
+    (claimed,) = claimed_ledger(executable)
+    checkout = started_node.claim_checkout()
+    assert checkout is not None
+    assert claimed.checkout == checkout
+    _five_facts(started_node, checkout)
+    assert ledger_invocations(executable) == ("status", "claim")
+
+
+def test_a_refused_claim_leaves_no_claim_checkout(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    executable = fake_agent_claim_executable(tmp_path, "priority")
+
+    assert started_node.hold(
+        started_node.ledger(AgentClaimCli(executable, tmp_path))
+    ) == (RunState.FAILED.value)
+
+    assert started_node.claim_checkout() is None
+    assert not any((tmp_path / "door-checkouts").iterdir())
+
+
+def test_a_replay_that_finds_its_claim_checkout_gone_makes_it_again_without_the_ledger(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """The checkout is no durable step: a replay after it vanished makes it anew
+    at the same pin and branch, and the memoized hold answers without a command."""
+
+    executable = fake_agent_claim_executable(tmp_path, "checkout")
+    ledger = started_node.ledger(AgentClaimCli(executable, tmp_path))
+    assert started_node.hold(ledger) is None
+    first = started_node.claim_checkout()
+    assert first is not None
+    shutil.rmtree(first)
+
+    assert started_node.hold(ledger) is None
+
+    assert started_node.claim_checkout() == first
+    _five_facts(started_node, first)
+    assert ledger_invocations(executable) == ("status", "claim")
+
+
+def test_a_standing_claim_checkout_refuses_the_next_run_of_the_same_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane branch one run still holds refuses the next run of the same item.
+
+    Opening the claim checkout is no durable step. When git refuses because
+    an earlier run's checkout still holds the branch, the later node ends
+    AGENT_FAILED with that sentence, no exception escapes, and the occupant's
+    checkout is not touched. A replay whose hold is already that refusal still
+    takes the refuse step.
+    """
+
+    project, remote, _base = _repositories(tmp_path)
+    runtime, _github = _public_runtime(tmp_path, project, remote)
+    try:
+        first = _started_node(runtime, project, tmp_path, None)
+        second = _started_node(runtime, project, tmp_path, None, SECOND_RUN)
+        executable = fake_agent_claim_executable(tmp_path)
+        assert first.hold(first.ledger(AgentClaimCli(executable, tmp_path))) is None
+        held = first.claim_checkout()
+        assert held is not None
+        before = (worktree_facts(held), snapshot(held))
+        monkeypatch.setattr(
+            runtime.datasource,
+            "run_tx_step",
+            _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
+        )
+        ledger = second.ledger(AgentClaimCli(executable, tmp_path))
+
+        first_drive = second.hold(ledger)
+        replay = second.hold(ledger)
+
+        answers = (first_drive, replay)
+        assert answers == (RunState.FAILED.value, RunState.FAILED.value)
+        with runtime.engine.connect() as connection:
+            payload = connection.execute(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == SECOND_RUN.value,
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+                )
+            ).scalar_one()
+        record = AgentNodeRefusalRecord.decode(bytes(payload))
+        assert record is not None
+        assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+        assert record.detail
+        assert _LANE_BRANCH.value in record.detail
+        occupant = (worktree_facts(held), snapshot(held))
+        assert occupant == before
+        assert first.claim_checkout() == held
+    finally:
+        runtime.close()
+
+
+def test_a_close_that_fails_during_refuse_keeps_the_git_error_sentence(
+    started_node: _StartedBuilderNode,
+) -> None:
+    """Opening fails with a git error that echoed a remote URL and ran long;
+    close then raises too. The node still ends AGENT_FAILED on the opening
+    sentence, credential-scrubbed and bounded, never on the close error."""
+
+    secret = assembled("notareal", "remotepassword")
+    git_sentence = (
+        "no claim checkout could be made: fatal: unable to access "
+        f"'https://deploy:{secret}@example.invalid/org/repo.git/': "
+        "The requested URL returned error: 403 "
+        + "x"
+        * (2 * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES)
+    )
+    close_sentence = "the claim checkout could not be removed: prune failed"
+    claims = FakeWorkItemClaims(claim_answer=_receipt())
+    ledger = WorkItemClaimLedger(
+        claims,
+        LEDGER_BINDING,
+        DbosQueueProjectionStore(started_node.runtime.engine),
+        _CheckoutsWhoseOpenAndCloseFail(git_sentence, close_sentence),
+    )
+
+    assert started_node.hold(ledger) == RunState.FAILED.value
+
+    assert claims.claim_requests == []
+    assert started_node.standing() == (RunState.FAILED.value, 0, 1, 0)
+    with started_node.runtime.engine.connect() as connection:
+        payload = connection.execute(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == started_node.run_id.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        ).scalar_one()
+    record = AgentNodeRefusalRecord.decode(bytes(payload))
+    assert record is not None
+    assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+    assert "fatal: unable to access" in record.detail
+    assert secret not in record.detail
+    assert REDACTION_MARKER in record.detail
+    assert close_sentence not in record.detail
+    assert len(git_sentence.encode()) > MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
+    assert len(record.detail.encode("utf-8")) <= MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES

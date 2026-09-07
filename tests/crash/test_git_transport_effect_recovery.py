@@ -365,9 +365,9 @@ def _crash_before_the_claim_receipt() -> None:
     hold = claim_module.hold_prepared_claim
 
     def hold_then_die(
-        intent: EffectIntent, ledger: claim_module.WorkItemClaimLedger
+        intent: EffectIntent, ledger: claim_module.WorkItemClaimLedger, checkout: Path
     ) -> claim_module.WorkItemClaimOutcome:
-        hold(intent, ledger)
+        hold(intent, ledger, checkout)
         os._exit(CRASHED)
 
     claim_module.hold_prepared_claim = hold_then_die

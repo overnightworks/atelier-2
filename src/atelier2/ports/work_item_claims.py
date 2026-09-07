@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from atelier2.contracts.effect_requests import ClaimReasons, HeadBranch
@@ -107,7 +107,12 @@ type ClaimReleaseOutcome = Merged | Abandoned
 
 
 class WorkItemClaims(Protocol):
-    """Acquire, inspect, and release the claim owned by one run."""
+    """Acquire, inspect, and release the claim owned by one run.
+
+    `checkout` is the run's claim checkout: the clean linked worktree on the
+    lane branch the ledger reads before it acts, so a claim and its read-back
+    are asked from there and never from the project checkout itself.
+    """
 
     def claim(
         self,
@@ -117,9 +122,10 @@ class WorkItemClaims(Protocol):
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
         reasons: ClaimReasons,
+        checkout: Path,
     ) -> ClaimReceipt | ClaimRefusal: ...
 
-    def read_back(self, item: int, claim_id: str) -> ClaimReadback:
+    def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
         """What the ledger holds under this exact claim id, in full.
 
         A caller asks this before it would claim again: the claim id is minted
