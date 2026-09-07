@@ -123,10 +123,7 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import (
-    AgentAttemptExecution,
-    NodeExecutionId,
-)
+from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
@@ -148,10 +145,7 @@ from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
 )
-from atelier2.contracts.workflows import (
-    RunCompletes,
-    RunContinues,
-)
+from atelier2.contracts.workflows import RunCompletes, RunContinues
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
@@ -197,9 +191,7 @@ def _declared_workspace_owner(
     return owner
 
 
-def _declared_agent_session(
-    session: AgentSession | None,
-) -> AgentSession:
+def _declared_agent_session(session: AgentSession | None) -> AgentSession:
     if session is None:
         raise RunBindingConflict(
             "an agent node requires the declared local agent session"
@@ -665,9 +657,10 @@ def register_durable_run_workflow(
     ) -> str:
         """One Agent node from its preconditions to wherever the run stands next.
 
-        The executor is asked for first: a node no bound executor can start
-        ends on that, and posting a claim for work this host cannot begin
-        would leave a lane held for nothing.
+        The executor is asked for first and the pin attested second, before
+        the claim: a node no bound executor can start ends on that, and a pin
+        the source no longer answers for refuses here, so no lane is ever
+        held for work this host cannot begin.
         """
 
         attempt = agent_node_attempt(
@@ -675,6 +668,9 @@ def register_durable_run_workflow(
         )
         if attempt.executor is None:
             return refuse_unavailable_executor(attempt.execution.request)
+        pinned = pinned_project(binding, project)
+        if pinned is not None:
+            pinned.source.attest(pinned.pin)
         unclaimed = hold_work_item_claim(
             datasource,
             work_item_claims,
