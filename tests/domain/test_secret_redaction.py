@@ -43,6 +43,12 @@ from tests.scenarios.credentials import armoured_key, assembled
             "GOOGLE_APPLICATION_CREDENTIALS_JSON: {secret}",
             id="a provider name whose credential word is not its last segment",
         ),
+        pytest.param(
+            assembled("notareal", "remotepassword"),
+            "fatal: unable to access 'https://deploy:{secret}@example.invalid/"
+            "org/repo.git/': The requested URL returned error: 403",
+            id="a secret inside a remote url a tool echoed",
+        ),
     ],
 )
 def test_a_recognised_credential_is_replaced_where_it_stood(
@@ -68,6 +74,11 @@ def test_a_recognised_credential_is_replaced_where_it_stood(
             f"api_key = {REDACTION_MARKER}",
             id="the field keeps its name",
         ),
+        pytest.param(
+            "https://deploy:{secret}@example.invalid/org/repo.git",
+            f"https://deploy:{REDACTION_MARKER}@example.invalid/org/repo.git",
+            id="the url keeps its user and host",
+        ),
     ],
 )
 def test_the_reader_still_sees_which_credential_was_taken_out(
@@ -84,6 +95,14 @@ def test_the_reader_still_sees_which_credential_was_taken_out(
         pytest.param("The password: yes answer is not a credential.", id="short value"),
         pytest.param("Read the token from the operator's own keyring.", id="no value"),
         pytest.param("git commit -m 'begin private key rotation'", id="prose about it"),
+        pytest.param(
+            "fetch https://github.com/overnightworks/atelier-2.git failed",
+            id="a url without userinfo",
+        ),
+        pytest.param(
+            "ssh://git@github.com:22/overnightworks/atelier-2.git",
+            id="a url whose userinfo names no secret",
+        ),
     ],
 )
 def test_text_carrying_no_credential_is_kept_exactly_and_says_so(prose: str) -> None:

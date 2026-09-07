@@ -39,7 +39,13 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
     CatalogLineageFounded,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -551,6 +557,40 @@ def test_wire_reference_and_cursor_are_bounded_by_their_own_encoding() -> None:
     with pytest.raises(ApiLimitExceeded, match="event cursor"):
         api_limits(maximum_field_characters=len(cursor) - 1).require_event_projection(
             event
+        )
+
+
+def _refused_before_any_attempt(detail: str) -> PersistedRunEvent:
+    revision = WorkflowRevision(workflow_document())
+    run_id = RunId("refused")
+    return PersistedRunEvent(
+        RunEvent(
+            run_id,
+            revision.revision_hash,
+            1,
+            "final",
+            NodeExecutionId.for_node(run_id, revision.revision_hash, "final"),
+            RunEventKind.AGENT_FAILED,
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, detail
+            ).encode(),
+        ),
+        None,
+    )
+
+
+def test_a_pre_attempt_refusal_is_bounded_by_its_sentence_not_read_as_a_code() -> None:
+    """The refusal's sentence is any UTF-8 the ledger printed, and it is the
+    field the bound applies to; only an attempt's payload is an ASCII code."""
+
+    sentence = "claim branch 'x' does not match checkout branch 'Änderung/main'"
+
+    api_limits(maximum_field_characters=len(sentence)).require_event_projection(
+        _refused_before_any_attempt(sentence)
+    )
+    with pytest.raises(ApiLimitExceeded, match="detail"):
+        api_limits(maximum_field_characters=len(sentence) - 1).require_event_projection(
+            _refused_before_any_attempt(sentence)
         )
 
 

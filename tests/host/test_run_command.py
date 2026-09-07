@@ -24,6 +24,7 @@ from atelier2.api.problems import problem_resource
 from atelier2.api.references import encode_canonical_base64
 from atelier2.api.wire.events import (
     AgentCompletedEventResourceV3,
+    AgentExecutorBindingUnavailableEventResourceV3,
     AgentFailedEventResourceV3,
     WaitingInputEventResourceV3,
 )
@@ -394,6 +395,23 @@ def agent_failed() -> str:
     ).model_dump_json()
 
 
+def agent_refused_before_any_attempt(detail: str | None) -> str:
+    return AgentExecutorBindingUnavailableEventResourceV3(
+        workflow_format_version=3,
+        node_rail=node_rail(NodeState.FAILED),
+        cursor=EVENT_CURSOR,
+        sequence=1,
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        node_id=AGENT_NODE_ID,
+        node_execution_id=NODE_EXECUTION_ID,
+        event_hash=EVENT_HASH,
+        event="AGENT_FAILED",
+        reason="work-item-claim-refused",
+        detail=detail,
+    ).model_dump_json()
+
+
 def node_detail(refusal: str | None) -> Answer:
     """The node resource the command asks why a run stopped where it did.
 
@@ -695,6 +713,30 @@ def test_a_failed_attempt_is_reported_with_the_reason_its_node_kept(
     assert exit_code == 1
     assert "PROCESS_EXITED_UNSUCCESSFULLY" in reported
     assert named in reported
+
+
+@pytest.mark.parametrize(
+    "detail",
+    (None, "claim branch 'x' does not match checkout branch 'main'"),
+    ids=("the ledger said nothing more", "the ledger said why"),
+)
+def test_a_node_refused_before_any_attempt_is_reported_with_the_ledgers_sentence(
+    order: list[str], capsysbinary: pytest.CaptureFixture[bytes], detail: str | None
+) -> None:
+    """A claim the run could not hold ends it before any attempt, and the
+    command says so in the ledger's own words rather than passing in silence."""
+
+    with ScriptedService(
+        serving_answers(events=event_stream(agent_refused_before_any_attempt(detail)))
+    ) as service:
+        exit_code = run_command(order, service)
+
+    reported = capsysbinary.readouterr().err.decode()
+    assert exit_code == 1
+    assert "work-item-claim-refused" in reported
+    assert AGENT_NODE_ID in reported
+    if detail is not None:
+        assert detail in reported
 
 
 def agent_failed_v3() -> str:

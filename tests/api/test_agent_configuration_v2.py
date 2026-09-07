@@ -868,8 +868,9 @@ def test_openapi_sse_data_is_the_untagged_served_event_union() -> None:
     assert "discriminator" not in v3
     assert v3["description"] == (
         "The AGENT_FAILED forms are closed by their required shape: an "
-        "attempt failure names failure_code and an attempt; a pre-claim "
-        "executor refusal names only its product reason."
+        "attempt failure names failure_code and an attempt; a pre-attempt "
+        "refusal names its product reason and, as detail, the sentence "
+        "the refusing boundary gave, null where it gave none."
     )
     v3_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v3["oneOf"]}
     assert v3_components == {

@@ -826,6 +826,7 @@ const runEventSchema = z
           "work-item-claim-refused",
           "work-item-claim-touches-another-lane",
         ]),
+        detail: z.string().nullable(),
       })
       .strict(),
     z

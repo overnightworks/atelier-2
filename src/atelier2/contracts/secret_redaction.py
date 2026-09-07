@@ -146,6 +146,21 @@ CREDENTIAL_SHAPES = (
         minimum_replaced_characters=len("eyJ") + 8 + 1 + 8 + 1 + 8,
     ),
     CredentialShape(
+        # The credential inside a URL, between the user's name and the host --
+        # the form a remote tool echoes back in its own error line. Only the
+        # secret is replaced, so the reader still sees which remote refused.
+        # The width floor matches the authorization header's, so this shape
+        # adds nothing to `maximum_redacted_length`; the ASCII userinfo
+        # alphabet keeps that bound's byte arithmetic true.
+        "url-userinfo-secret",
+        re.compile(
+            r"\b[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9._~%!$&'()*+,;=-]+:"
+            rf"(?P<{_MATCHED_VALUE_GROUP}>[A-Za-z0-9._~%!$&'()*+,;=-]{{8,}})@"
+        ),
+        # Only the `value` group is replaced; its own minimum is 8.
+        minimum_replaced_characters=8,
+    ),
+    CredentialShape(
         # The credential in transit, named by the header carrying it.
         "authorization-header",
         re.compile(

@@ -968,8 +968,9 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         ],
         "description": (
             "The AGENT_FAILED forms are closed by their required shape: an "
-            "attempt failure names failure_code and an attempt; a pre-claim "
-            "executor refusal names only its product reason."
+            "attempt failure names failure_code and an attempt; a pre-attempt "
+            "refusal names its product reason and, as detail, the sentence "
+            "the refusing boundary gave, null where it gave none."
         ),
     }
     components["VersionedRunEventResource"] = {

@@ -45,6 +45,7 @@ from atelier2.api.references import decode_canonical_base64
 from atelier2.api.wire.events import (
     ActionReconciliationRequiredEventResourceV3,
     AgentCompletedEventResourceV3,
+    AgentExecutorBindingUnavailableEventResourceV3,
     AgentFailedEventResourceV3,
     WaitingInputEventResourceV3,
 )
@@ -105,10 +106,12 @@ EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 
 RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
+_RUN_ENDED = "; this run has ended; a new run continues the work"
 
 ActedEventResource = (
     AgentCompletedEventResourceV3
     | AgentFailedEventResourceV3
+    | AgentExecutorBindingUnavailableEventResourceV3
     | WaitingInputEventResourceV3
     | ActionReconciliationRequiredEventResourceV3
 )
@@ -761,8 +764,6 @@ def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
                             attempt_id=event.attempt_id,
                         )
                     )
-                case AgentFailedEventResourceV3():
-                    raise _why_the_run_stops(api, public_run_reference, event)
                 case WaitingInputEventResourceV3():
                     # The node's answer schema lives on the workflow revision, not
                     # on the event, so the refusal names the node and stops there.
@@ -770,12 +771,14 @@ def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
                         f"node {event.node_id} is waiting for an answer; this "
                         "command carries no answer"
                     )
-                case _:
+                case ActionReconciliationRequiredEventResourceV3():
                     raise RunNeedsAnotherActor(
                         f"node {event.node_id} reached an unknown outcome; only an "
                         "accountable operator determination resolves it, and this "
                         "command makes none"
                     )
+                case _:
+                    raise _why_the_run_stops(api, public_run_reference, event)
     except AtelierApiTransportFailure as failure:
         raise service_refusal(failure) from failure
     return RunHistory(tuple(outputs), last_cursor)
@@ -784,36 +787,32 @@ def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
 def _why_the_run_stops(
     api: AtelierApi,
     public_run_reference: str,
-    event: AgentFailedEventResourceV3,
+    event: AgentFailedEventResourceV3 | AgentExecutorBindingUnavailableEventResourceV3,
 ) -> RunNeedsAnotherActor:
     """The failure an operator is handed, with the reason read where it lives.
 
-    A failure carries the stored `node-receipt/v3` words on the event itself --
-    the same sentence, not a second vocabulary. An event whose receipt nobody
-    wrote still asks the node resource the console panel reads. An attempt whose
-    reason nothing recorded is reported as exactly that.
+    A refusal before any attempt names its reason and the refusing boundary's
+    sentence on the event; an attempt's failure carries its stored receipt words
+    the same way, or asks the node resource the console panel reads for them.
     """
 
-    if event.reason is not None:
-        named = f"failed with {event.failure_code}: {event.reason}"
+    if isinstance(event, AgentExecutorBindingUnavailableEventResourceV3):
+        said = "" if event.detail is None else f": {event.detail}"
         return RunNeedsAnotherActor(
-            f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
-            "this run has ended; a new run continues the work"
+            f"node {event.node_id} was refused before any attempt: "
+            f"{event.reason}{said}{_RUN_ENDED}"
         )
-    node = quote(event.node_id, safe="")
-    detail = decoded(
-        _node_detail_resource,
-        _get(api, f"{RUN_PATH}/{public_run_reference}/nodes/{node}"),
-        "a node detail",
-    )
-    named = (
-        f"failed with {event.failure_code}, and no reason was recorded"
-        if detail.refusal is None
-        else f"failed with {event.failure_code}: {detail.refusal}"
-    )
+    if (reason := event.reason) is None:
+        node = quote(event.node_id, safe="")
+        reason = decoded(
+            _node_detail_resource,
+            _get(api, f"{RUN_PATH}/{public_run_reference}/nodes/{node}"),
+            "a node detail",
+        ).refusal
+    said = ", and no reason was recorded" if reason is None else f": {reason}"
     return RunNeedsAnotherActor(
-        f"agent attempt {event.attempt_id} of node {event.node_id} {named}; "
-        "this run has ended; a new run continues the work"
+        f"agent attempt {event.attempt_id} of node {event.node_id} failed with "
+        f"{event.failure_code}{said}{_RUN_ENDED}"
     )
 
 

@@ -9207,7 +9207,7 @@
         "type": "object"
       },
       "RunEventResourceV3": {
-        "description": "The AGENT_FAILED forms are closed by their required shape: an attempt failure names failure_code and an attempt; a pre-claim executor refusal names only its product reason.",
+        "description": "The AGENT_FAILED forms are closed by their required shape: an attempt failure names failure_code and an attempt; a pre-attempt refusal names its product reason and, as detail, the sentence the refusing boundary gave, null where it gave none.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/AgentCompletedEventResourceV3"
