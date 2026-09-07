@@ -1,0 +1,7 @@
+claim_id = "96e4e71f440740c488b6d490a034d043"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "d9dcc5083c94bd098d0c1355824f7ee07de74d37"
+branch = "claude/issue-1352-settings-picture"
+scope = ["docs/requirements/0003-ziel-ui-mockup-v8.html", "docs/requirements/0003-ziel-ui-screenshot-reviews.toml"]
+opened_commit = "149b9f0b1d3dcde814a9f0d34fcc5b5507cf6742"
