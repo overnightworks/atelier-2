@@ -102,9 +102,10 @@ _SAMPLE_OUTPUT_SCHEMA = json.dumps(
 def doors_deployment(root: Path, name: str, program: str) -> ClaudeAtelierDoorsSettings:
     """One atelier-doors deployment composed the way the serving host does.
 
-    The server name and door tools come from the conductor contract's typed
-    owners, and the door command launches this test's interpreter as the stdio
-    door -- the same shape `_atelier_doors_settings` composes in production.
+    The server name is the MCP vocabulary's own (`host.mcp_tools`), the door
+    tools are the composition root's grant (`host.serving`), and the door
+    command launches this test's interpreter as the stdio door -- the same
+    shape `_atelier_doors_settings` composes in production.
     """
 
     directory = root / name
