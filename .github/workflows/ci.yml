@@ -775,22 +775,61 @@ jobs:
           esac
           python3 - "${component_key}" "${scope_query}" "${gate}" <<'PYTHON'
           import base64
+          import http.client
           import json
           import os
           import sys
+          import time
           import urllib.error
           import urllib.request
 
           component_key, scope_query, gate = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
           sonar_token = os.environ.get("SONAR_TOKEN") or None
 
+          # A hung call must not block the job until the job-level timeout,
+          # and a network hiccup (connection reset/refused, DNS, timeout, or
+          # a 5xx) must not turn a clean pull request red -- it is retried
+          # with a growing pause. An answer (401/403/404) is not a hiccup and
+          # stays immediate.
+          REQUEST_TIMEOUT_SECONDS = 30
+          RETRY_DELAYS_SECONDS = (2, 5, 10)
+
+          def _is_transport_failure(error: Exception) -> bool:
+              if isinstance(error, urllib.error.HTTPError):
+                  return 500 <= error.code < 600
+              if isinstance(error, urllib.error.URLError):
+                  return isinstance(error.reason, OSError)
+              return isinstance(error, (http.client.RemoteDisconnected, ConnectionError, TimeoutError))
+
           def fetch(url: str, token: str | None) -> dict:
               request = urllib.request.Request(url)
               if token:
                   credentials = base64.b64encode(f"{token}:".encode()).decode("ascii")
                   request.add_header("Authorization", f"Basic {credentials}")
-              with urllib.request.urlopen(request) as response:
-                  return json.load(response)
+              last_error: Exception | None = None
+              for attempt in range(1, len(RETRY_DELAYS_SECONDS) + 2):
+                  try:
+                      with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                          return json.load(response)
+                  except (urllib.error.URLError, OSError, http.client.RemoteDisconnected, TimeoutError) as error:
+                      if not _is_transport_failure(error):
+                          raise
+                      last_error = error
+                      if attempt > len(RETRY_DELAYS_SECONDS):
+                          break
+                      delay = RETRY_DELAYS_SECONDS[attempt - 1]
+                      print(
+                          f"::notice::SonarCloud request attempt {attempt} hit a transport error "
+                          f"({last_error}); retrying in {delay}s",
+                          file=sys.stderr,
+                      )
+                      time.sleep(delay)
+              print(
+                  f"::error::transport failure calling SonarCloud after {len(RETRY_DELAYS_SECONDS) + 1} "
+                  f"attempts, last reason: {last_error}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
 
           # "readable", "not_published" (SonarCloud has no analysis for this
           # exact scope -- 404), or "not_readable" (any other failure, e.g. a
