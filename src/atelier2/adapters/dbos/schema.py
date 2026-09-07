@@ -548,6 +548,70 @@ PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
 )
+
+# Every table below states its own hex-64 hash columns and simple non-empty
+# columns with the same CHECK text; one constant per column name gives that
+# repeated text a single owner instead of a copy at each table. Some are read
+# by a table declared earlier in this module than the table they name (a
+# SQLAlchemy string-form ForeignKey admits a forward reference), so they are
+# declared once, here, before the table section starts.
+_REVISION_HASH_HEX64_CHECK = (
+    "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_WORKFLOW_REVISION_HASH_HEX64_CHECK = (
+    "length(workflow_revision_hash) = 64 "
+    "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_AGENT_CONFIGURATION_REVISION_HASH_HEX64_CHECK = (
+    "length(agent_configuration_revision_hash) = 64 "
+    "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_REQUEST_HASH_HEX64_CHECK = (
+    "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_NODE_EXECUTION_ID_HEX64_CHECK = (
+    "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
+)
+_RECEIPT_HASH_HEX64_CHECK = (
+    "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_ATTEMPT_ID_HEX64_CHECK = (
+    "length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"
+)
+_VALUE_HASH_HEX64_CHECK = (
+    "length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_SCHEMA_REVISION_HASH_HEX64_CHECK = (
+    "length(schema_revision_hash) = 64 AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
+)
+_RUN_ID_NONEMPTY_CHECK = "length(run_id) > 0"
+_LOGICAL_KEY_NONEMPTY_CHECK = "length(logical_key) > 0"
+_ACTOR_NONEMPTY_CHECK = "length(actor) > 0"
+_NODE_ID_NONEMPTY_CHECK = "length(node_id) > 0"
+_ACTIVATED_AT_NONEMPTY_CHECK = "length(activated_at) > 0"
+_PROVIDER_ID_LOWERCASE_START_CHECK = "provider_id GLOB '[a-z]*'"
+_PROVIDER_ID_ALLOWED_CHARACTERS_CHECK = "provider_id NOT GLOB '*[^a-z0-9._-]*'"
+_POSITION_NONNEGATIVE_CHECK = "position >= 0"
+
+# Table-qualified column names this module's own tables use as string-form
+# foreign key targets from more than one dependent table; one constant per
+# name gives the reference a single owner instead of a copy at each user.
+_WORKFLOW_REVISIONS_REVISION_HASH = "workflow_revisions.revision_hash"
+_RUN_CONFIGURATION_REVISIONS_REVISION_HASH = "run_configuration_revisions.revision_hash"
+_RUNS_REVISION_HASH = "runs.revision_hash"
+_RUNS_RUN_ID = "runs.run_id"
+_AGENT_CONFIGURATION_REVISIONS_REVISION_HASH = (
+    "agent_configuration_revisions.revision_hash"
+)
+_EFFECT_INTENTS_LOGICAL_KEY = "effect_intents.logical_key"
+_EFFECT_RECEIPTS_LOGICAL_KEY = "effect_receipts.logical_key"
+_EFFECT_RECEIPTS_RUN_ID = "effect_receipts.run_id"
+_EFFECT_RECEIPTS_WORKFLOW_REVISION_HASH = "effect_receipts.workflow_revision_hash"
+_EFFECT_RECEIPTS_RESULT_HASH = "effect_receipts.result_hash"
+_AGENT_ATTEMPTS_ATTEMPT_ID = "agent_attempts.attempt_id"
+_CATALOG_LINEAGES_LINEAGE_ID = "catalog_lineages.lineage_id"
+_CONTEXT_PACKAGES_V3_PACKAGE_HASH = "context_packages_v3.package_hash"
+
 atelier_schema_versions = sa.Table(
     "atelier_schema_versions",
     metadata,
@@ -558,9 +622,7 @@ workflow_revisions = sa.Table(
     metadata,
     sa.Column("revision_hash", sa.Text, primary_key=True),
     sa.Column("document", sa.LargeBinary, nullable=False),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
 )
 runs = sa.Table(
     "runs",
@@ -570,7 +632,7 @@ runs = sa.Table(
     sa.Column(
         "revision_hash",
         sa.Text,
-        sa.ForeignKey("workflow_revisions.revision_hash"),
+        sa.ForeignKey(_WORKFLOW_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column("workflow_format_version", sa.Integer, nullable=False),
@@ -584,12 +646,12 @@ runs = sa.Table(
     sa.Column(
         "run_configuration_revision_hash",
         sa.Text,
-        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        sa.ForeignKey(_RUN_CONFIGURATION_REVISIONS_REVISION_HASH),
         nullable=True,
     ),
     sa.UniqueConstraint("run_id", "revision_hash"),
     sa.UniqueConstraint("run_id", "revision_hash", "agent_binding_set_hash"),
-    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
     sa.CheckConstraint("length(current_node_id) > 0"),
     sa.CheckConstraint(f"current_round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
@@ -645,9 +707,7 @@ auth_profile_revisions = sa.Table(
         "provider_id",
         "auth_mode",
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(profile_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
@@ -655,8 +715,8 @@ auth_profile_revisions = sa.Table(
     sa.CheckConstraint(
         f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
     ),
-    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
-    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(_PROVIDER_ID_LOWERCASE_START_CHECK),
+    sa.CheckConstraint(_PROVIDER_ID_ALLOWED_CHARACTERS_CHECK),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
 )
 agent_configuration_revisions = sa.Table(
@@ -687,9 +747,7 @@ agent_configuration_revisions = sa.Table(
         "revision_format_version",
         "requested_capability",
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
         "length(auth_profile_revision_hash) = 64 "
@@ -718,11 +776,11 @@ run_agent_bindings = sa.Table(
     sa.PrimaryKeyConstraint("run_id", "role"),
     sa.ForeignKeyConstraint(
         ("run_id", "revision_hash", "binding_set_hash"),
-        ("runs.run_id", "runs.revision_hash", "runs.agent_binding_set_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH, "runs.agent_binding_set_hash"),
     ),
     sa.ForeignKeyConstraint(
         ("agent_configuration_revision_hash",),
-        ("agent_configuration_revisions.revision_hash",),
+        (_AGENT_CONFIGURATION_REVISIONS_REVISION_HASH,),
     ),
     sa.UniqueConstraint(
         "run_id",
@@ -731,30 +789,25 @@ run_agent_bindings = sa.Table(
         "role",
         "agent_configuration_revision_hash",
     ),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
-    sa.CheckConstraint(
-        "length(agent_configuration_revision_hash) = 64 "
-        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_AGENT_CONFIGURATION_REVISION_HASH_HEX64_CHECK),
 )
 effect_intents = sa.Table(
     "effect_intents",
     metadata,
     sa.Column("logical_key", sa.Text, primary_key=True),
-    sa.Column("run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("run_id", sa.Text, sa.ForeignKey(_RUNS_RUN_ID), nullable=False),
     sa.Column("canonical_request", sa.LargeBinary, nullable=False),
     sa.Column("request_hash", sa.Text, nullable=False),
     sa.Column(
         "workflow_revision_hash",
         sa.Text,
-        sa.ForeignKey("workflow_revisions.revision_hash"),
+        sa.ForeignKey(_WORKFLOW_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column("adapter_revision", sa.Text, nullable=False),
@@ -772,17 +825,12 @@ effect_intents = sa.Table(
     sa.UniqueConstraint("logical_key", "run_id", "workflow_revision_hash"),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
-    sa.CheckConstraint("length(logical_key) > 0"),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_LOGICAL_KEY_NONEMPTY_CHECK),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
@@ -809,7 +857,7 @@ reconcile_commands = sa.Table(
     sa.Column(
         "logical_key",
         sa.Text,
-        sa.ForeignKey("effect_intents.logical_key"),
+        sa.ForeignKey(_EFFECT_INTENTS_LOGICAL_KEY),
         nullable=False,
     ),
     sa.Column("expected_intent_version", sa.Integer, nullable=False),
@@ -821,10 +869,10 @@ reconcile_commands = sa.Table(
     sa.Column("found_result_hash", sa.Text, nullable=True),
     sa.Column("state", sa.Text, nullable=False),
     sa.CheckConstraint("length(command_id) > 0"),
-    sa.CheckConstraint("length(logical_key) > 0"),
+    sa.CheckConstraint(_LOGICAL_KEY_NONEMPTY_CHECK),
     sa.CheckConstraint("expected_intent_version >= 0"),
     sa.CheckConstraint("determination IN ('FOUND', 'AUTHORITATIVE_NOT_FOUND')"),
-    sa.CheckConstraint("length(actor) > 0"),
+    sa.CheckConstraint(_ACTOR_NONEMPTY_CHECK),
     sa.CheckConstraint("length(evidence) > 0"),
     sa.CheckConstraint(
         "(determination = 'FOUND' "
@@ -845,16 +893,16 @@ effect_receipts = sa.Table(
     sa.Column(
         "logical_key",
         sa.Text,
-        sa.ForeignKey("effect_intents.logical_key"),
+        sa.ForeignKey(_EFFECT_INTENTS_LOGICAL_KEY),
         primary_key=True,
     ),
-    sa.Column("run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("run_id", sa.Text, sa.ForeignKey(_RUNS_RUN_ID), nullable=False),
     sa.Column("canonical_request", sa.LargeBinary, nullable=False),
     sa.Column("request_hash", sa.Text, nullable=False),
     sa.Column(
         "workflow_revision_hash",
         sa.Text,
-        sa.ForeignKey("workflow_revisions.revision_hash"),
+        sa.ForeignKey(_WORKFLOW_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column("adapter_revision", sa.Text, nullable=False),
@@ -881,7 +929,7 @@ effect_receipts = sa.Table(
     sa.ForeignKeyConstraint(
         ("logical_key", "run_id", "workflow_revision_hash"),
         (
-            "effect_intents.logical_key",
+            _EFFECT_INTENTS_LOGICAL_KEY,
             "effect_intents.run_id",
             "effect_intents.workflow_revision_hash",
         ),
@@ -894,21 +942,16 @@ effect_receipts = sa.Table(
             "fork_source_result_hash",
         ),
         (
-            "effect_receipts.logical_key",
-            "effect_receipts.run_id",
-            "effect_receipts.workflow_revision_hash",
-            "effect_receipts.result_hash",
+            _EFFECT_RECEIPTS_LOGICAL_KEY,
+            _EFFECT_RECEIPTS_RUN_ID,
+            _EFFECT_RECEIPTS_WORKFLOW_REVISION_HASH,
+            _EFFECT_RECEIPTS_RESULT_HASH,
         ),
     ),
-    sa.CheckConstraint("length(logical_key) > 0"),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_LOGICAL_KEY_NONEMPTY_CHECK),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
@@ -964,28 +1007,19 @@ agent_receipts = sa.Table(
     sa.UniqueConstraint("run_id", "workflow_revision_hash", "node_id"),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
     sa.CheckConstraint("length(executor_adapter_revision) > 0"),
     sa.CheckConstraint("length(executor_operational_identity) > 0"),
     sa.CheckConstraint(
         "length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
 )
 agent_receipts_v2 = sa.Table(
     "agent_receipts_v2",
@@ -1038,7 +1072,7 @@ agent_receipts_v2 = sa.Table(
             "executor_revision",
         ),
         (
-            "agent_configuration_revisions.revision_hash",
+            _AGENT_CONFIGURATION_REVISIONS_REVISION_HASH,
             "agent_configuration_revisions.auth_profile_revision_hash",
             "agent_configuration_revisions.model",
             "agent_configuration_revisions.executor_revision",
@@ -1060,17 +1094,10 @@ agent_receipts_v2 = sa.Table(
             "auth_profile_revisions.auth_mode",
         ),
     ),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
@@ -1078,10 +1105,7 @@ agent_receipts_v2 = sa.Table(
     sa.CheckConstraint(
         "length(binding_set_hash) = 64 AND binding_set_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(
-        "length(agent_configuration_revision_hash) = 64 "
-        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_AGENT_CONFIGURATION_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "length(auth_profile_revision_hash) = 64 "
         "AND auth_profile_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -1093,8 +1117,8 @@ agent_receipts_v2 = sa.Table(
     sa.CheckConstraint(
         f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
     ),
-    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
-    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(_PROVIDER_ID_LOWERCASE_START_CHECK),
+    sa.CheckConstraint(_PROVIDER_ID_ALLOWED_CHARACTERS_CHECK),
     sa.CheckConstraint("auth_mode IN ('subscription', 'api_key')"),
     sa.CheckConstraint(f"length(model) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
     sa.CheckConstraint(
@@ -1109,9 +1133,7 @@ agent_receipts_v2 = sa.Table(
     sa.CheckConstraint(
         "length(output_hash) = 64 AND output_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
 )
 tool_redemptions = sa.Table(
@@ -1130,7 +1152,7 @@ tool_redemptions = sa.Table(
     sa.Column(
         "attempt_id",
         sa.Text,
-        sa.ForeignKey("agent_attempts.attempt_id"),
+        sa.ForeignKey(_AGENT_ATTEMPTS_ATTEMPT_ID),
         primary_key=True,
     ),
     sa.Column("node_execution_id", sa.Text, nullable=False),
@@ -1145,20 +1167,15 @@ tool_redemptions = sa.Table(
     sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
-    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_ATTEMPT_ID_HEX64_CHECK),
     sa.CheckConstraint(
         "length(tool_revision_hash) = 64 AND tool_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1179,9 +1196,7 @@ tool_redemptions = sa.Table(
         "length(standard_output_hash) = 64 "
         "AND standard_output_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
 )
 agent_attempts = sa.Table(
     "agent_attempts",
@@ -1233,23 +1248,16 @@ agent_attempts = sa.Table(
     sa.UniqueConstraint("node_execution_id", "attempt_ordinal"),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
-    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_ATTEMPT_ID_HEX64_CHECK),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(executor_operational_identity) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
-    sa.CheckConstraint("length(run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
@@ -1371,7 +1379,7 @@ agent_attempt_receipts_v3 = sa.Table(
     sa.Column(
         "attempt_id",
         sa.Text,
-        sa.ForeignKey("agent_attempts.attempt_id", ondelete="RESTRICT"),
+        sa.ForeignKey(_AGENT_ATTEMPTS_ATTEMPT_ID, ondelete="RESTRICT"),
         primary_key=True,
     ),
     sa.Column("reason", sa.Text, nullable=False),
@@ -1385,17 +1393,13 @@ agent_attempt_receipts_v3 = sa.Table(
     ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
     sa.CheckConstraint("length(reason) > 0"),
-    sa.CheckConstraint(
-        "length(schema_revision_hash) = 64 AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_SCHEMA_REVISION_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_VALUE_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "artifact_hash IS NULL OR (length(artifact_hash) = 64 "
         "AND artifact_hash NOT GLOB '*[^0-9a-f]*')"
     ),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
 )
 permission_receipts = sa.Table(
     "permission_receipts",
@@ -1410,7 +1414,7 @@ permission_receipts = sa.Table(
     sa.Column(
         "attempt_id",
         sa.Text,
-        sa.ForeignKey("agent_attempts.attempt_id"),
+        sa.ForeignKey(_AGENT_ATTEMPTS_ATTEMPT_ID),
         primary_key=True,
     ),
     sa.Column("correlation_id", sa.Text, primary_key=True),
@@ -1422,7 +1426,7 @@ permission_receipts = sa.Table(
     sa.Column("authority", sa.Text, nullable=False),
     sa.Column("decided_at", sa.Text, nullable=False),
     sa.Column("receipt_hash", sa.Text, nullable=False, unique=True),
-    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_ATTEMPT_ID_HEX64_CHECK),
     sa.CheckConstraint(
         "length(correlation_id) = 64 AND correlation_id NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1438,9 +1442,7 @@ permission_receipts = sa.Table(
     ),
     sa.CheckConstraint(closed_vocabulary_sql("authority", PermissionAuthority)),
     sa.CheckConstraint(rfc3339_utc("decided_at")),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
 )
 run_events = sa.Table(
     "run_events",
@@ -1467,7 +1469,7 @@ run_events = sa.Table(
     sa.Column("agent_receipt_hash", sa.Text, nullable=True),
     sa.PrimaryKeyConstraint("run_id", "event_sequence"),
     sa.ForeignKeyConstraint(
-        ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
+        ("run_id", "revision_hash"), (_RUNS_RUN_ID, _RUNS_REVISION_HASH)
     ),
     sa.ForeignKeyConstraint(
         (
@@ -1477,17 +1479,15 @@ run_events = sa.Table(
             "receipt_result_hash",
         ),
         (
-            "effect_receipts.logical_key",
-            "effect_receipts.run_id",
-            "effect_receipts.workflow_revision_hash",
-            "effect_receipts.result_hash",
+            _EFFECT_RECEIPTS_LOGICAL_KEY,
+            _EFFECT_RECEIPTS_RUN_ID,
+            _EFFECT_RECEIPTS_WORKFLOW_REVISION_HASH,
+            _EFFECT_RECEIPTS_RESULT_HASH,
         ),
     ),
     sa.CheckConstraint("event_sequence > 0"),
-    sa.CheckConstraint("length(node_id) > 0"),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
         "event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', "
@@ -1582,7 +1582,7 @@ run_instants = sa.Table(
     sa.Column("run_id", sa.Text, primary_key=True),
     sa.Column("started_at", sa.Text, nullable=False),
     sa.Column("ended_at", sa.Text, nullable=True),
-    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
     sa.CheckConstraint(rfc3339_utc("started_at")),
     sa.CheckConstraint(rfc3339_utc_or_null("ended_at")),
 )
@@ -1592,7 +1592,7 @@ attempt_instants = sa.Table(
     sa.Column("attempt_id", sa.Text, primary_key=True),
     sa.Column("started_at", sa.Text, nullable=False),
     sa.Column("ended_at", sa.Text, nullable=True),
-    sa.CheckConstraint("length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_ATTEMPT_ID_HEX64_CHECK),
     sa.CheckConstraint(rfc3339_utc("started_at")),
     sa.CheckConstraint(rfc3339_utc_or_null("ended_at")),
 )
@@ -1603,7 +1603,7 @@ event_instants = sa.Table(
     sa.Column("event_sequence", sa.Integer, nullable=False),
     sa.Column("recorded_at", sa.Text, nullable=False),
     sa.PrimaryKeyConstraint("run_id", "event_sequence"),
-    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(_RUN_ID_NONEMPTY_CHECK),
     sa.CheckConstraint("event_sequence > 0"),
     sa.CheckConstraint(rfc3339_utc("recorded_at")),
 )
@@ -1627,17 +1627,15 @@ wait_answers = sa.Table(
     # per run forever.
     sa.PrimaryKeyConstraint("node_execution_id"),
     sa.ForeignKeyConstraint(
-        ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
+        ("run_id", "revision_hash"), (_RUNS_RUN_ID, _RUNS_REVISION_HASH)
     ),
-    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
         "(actor_attribution_kind = 'RECORDED' AND actor IN ('operator')) "
         "OR (actor_attribution_kind = 'LEGACY_UNATTRIBUTED' AND actor IS NULL)"
     ),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
     sa.CheckConstraint(
         "length(answer_hash) = 64 AND answer_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1667,9 +1665,7 @@ published_revisions = sa.Table(
     sa.PrimaryKeyConstraint("kind", "revision_hash"),
     sa.CheckConstraint("length(kind) BETWEEN 1 AND 64"),
     sa.CheckConstraint(_PUBLISHED_REVISION_KIND_SQL),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
 )
 catalog_lineages = sa.Table(
     "catalog_lineages",
@@ -1696,7 +1692,7 @@ catalog_lineage_members = sa.Table(
     sa.Column(
         "lineage_id",
         sa.Text,
-        sa.ForeignKey("catalog_lineages.lineage_id"),
+        sa.ForeignKey(_CATALOG_LINEAGES_LINEAGE_ID),
         nullable=False,
     ),
     sa.Column("revision_number", sa.Integer, nullable=False),
@@ -1704,9 +1700,7 @@ catalog_lineage_members = sa.Table(
     sa.PrimaryKeyConstraint("lineage_id", "revision_number"),
     sa.UniqueConstraint("lineage_id", "revision_hash"),
     sa.CheckConstraint("revision_number >= 1"),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
 )
 catalog_lineage_aliases = sa.Table(
     "catalog_lineage_aliases",
@@ -1714,7 +1708,7 @@ catalog_lineage_aliases = sa.Table(
     sa.Column(
         "lineage_id",
         sa.Text,
-        sa.ForeignKey("catalog_lineages.lineage_id"),
+        sa.ForeignKey(_CATALOG_LINEAGES_LINEAGE_ID),
         nullable=False,
     ),
     sa.Column("activation_number", sa.Integer, nullable=False),
@@ -1728,8 +1722,8 @@ catalog_lineage_aliases = sa.Table(
     ),
     sa.CheckConstraint("name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9._-]*'"),
     sa.CheckConstraint("length(name) <> 64 OR name GLOB '*[^0-9a-f]*'"),
-    sa.CheckConstraint("length(actor) > 0"),
-    sa.CheckConstraint("length(activated_at) > 0"),
+    sa.CheckConstraint(_ACTOR_NONEMPTY_CHECK),
+    sa.CheckConstraint(_ACTIVATED_AT_NONEMPTY_CHECK),
 )
 catalog_lineage_retirements = sa.Table(
     "catalog_lineage_retirements",
@@ -1737,7 +1731,7 @@ catalog_lineage_retirements = sa.Table(
     sa.Column(
         "lineage_id",
         sa.Text,
-        sa.ForeignKey("catalog_lineages.lineage_id"),
+        sa.ForeignKey(_CATALOG_LINEAGES_LINEAGE_ID),
         nullable=False,
     ),
     sa.Column("activation_number", sa.Integer, nullable=False),
@@ -1747,8 +1741,8 @@ catalog_lineage_retirements = sa.Table(
     sa.PrimaryKeyConstraint("lineage_id", "activation_number"),
     sa.CheckConstraint("activation_number >= 1"),
     sa.CheckConstraint("state IN ('retired')"),
-    sa.CheckConstraint("length(actor) > 0"),
-    sa.CheckConstraint("length(activated_at) > 0"),
+    sa.CheckConstraint(_ACTOR_NONEMPTY_CHECK),
+    sa.CheckConstraint(_ACTIVATED_AT_NONEMPTY_CHECK),
 )
 catalog_intakes = sa.Table(
     "catalog_intakes",
@@ -1760,8 +1754,8 @@ catalog_intakes = sa.Table(
     sa.Column("activated_at", sa.Text, nullable=False),
     sa.CheckConstraint("length(intake_id) = 64 AND intake_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint("kind IN ('agent', 'skill', 'workflow')"),
-    sa.CheckConstraint("length(actor) > 0"),
-    sa.CheckConstraint("length(activated_at) > 0"),
+    sa.CheckConstraint(_ACTOR_NONEMPTY_CHECK),
+    sa.CheckConstraint(_ACTIVATED_AT_NONEMPTY_CHECK),
 )
 node_artifacts_v3 = sa.Table(
     "node_artifacts_v3",
@@ -1769,7 +1763,7 @@ node_artifacts_v3 = sa.Table(
     sa.Column(
         "run_id",
         sa.Text,
-        sa.ForeignKey("runs.run_id"),
+        sa.ForeignKey(_RUNS_RUN_ID),
         nullable=False,
     ),
     sa.Column("node_id", sa.Text, nullable=False),
@@ -1786,16 +1780,11 @@ node_artifacts_v3 = sa.Table(
         "schema_revision_hash",
         "value_hash",
     ),
-    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
     sa.CheckConstraint("length(output_name) > 0"),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(schema_revision_hash) = 64 "
-        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_SCHEMA_REVISION_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_VALUE_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "length(artifact_hash) = 64 AND artifact_hash NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1810,27 +1799,21 @@ node_receipts_v3 = sa.Table(
     sa.Column(
         "context_package_hash",
         sa.Text,
-        sa.ForeignKey("context_packages_v3.package_hash"),
+        sa.ForeignKey(_CONTEXT_PACKAGES_V3_PACKAGE_HASH),
         nullable=False,
     ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
     sa.CheckConstraint(
         "disposition IN ('succeeded', 'failed', 'cancelled', 'blocked')"
     ),
     sa.CheckConstraint("length(reason) > 0"),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "length(context_package_hash) = 64 "
         "AND context_package_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(
-        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_RECEIPT_HASH_HEX64_CHECK),
     # The pair is the binding. Each hash alone can name a record that exists
     # while the two together describe a node execution nobody ran -- this
     # execution's receipt pointing at another execution's request -- so the key
@@ -1858,27 +1841,22 @@ artifacts = sa.Table(
 run_inputs_v3 = sa.Table(
     "run_inputs_v3",
     metadata,
-    sa.Column("run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("run_id", sa.Text, sa.ForeignKey(_RUNS_RUN_ID), nullable=False),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("schema_revision_hash", sa.Text, nullable=False),
     sa.Column("value", sa.LargeBinary, nullable=False),
     sa.Column("value_hash", sa.Text, nullable=False),
     sa.PrimaryKeyConstraint("run_id", "name"),
     sa.CheckConstraint("length(name) > 0"),
-    sa.CheckConstraint(
-        "length(schema_revision_hash) = 64 "
-        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_SCHEMA_REVISION_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_VALUE_HASH_HEX64_CHECK),
 )
 run_configuration_revisions = sa.Table(
     "run_configuration_revisions",
     metadata,
     sa.Column("revision_hash", sa.Text, primary_key=True),
     sa.Column("preimage", sa.LargeBinary, nullable=False),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
 )
 node_execution_requests_v3 = sa.Table(
     "node_execution_requests_v3",
@@ -1894,24 +1872,20 @@ node_execution_requests_v3 = sa.Table(
     sa.Column(
         "run_configuration_revision_hash",
         sa.Text,
-        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        sa.ForeignKey(_RUN_CONFIGURATION_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column("context_package_hash", sa.Text, nullable=False),
     sa.Column("preimage", sa.LargeBinary, nullable=False),
     sa.UniqueConstraint("node_execution_id", "request_hash"),
-    sa.CheckConstraint(
-        "length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REQUEST_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
     sa.CheckConstraint(
         "length(context_package_hash) = 64 "
         "AND context_package_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.ForeignKeyConstraint(
-        ("context_package_hash",), ("context_packages_v3.package_hash",)
+        ("context_package_hash",), (_CONTEXT_PACKAGES_V3_PACKAGE_HASH,)
     ),
 )
 context_packages_v3 = sa.Table(
@@ -1927,36 +1901,36 @@ run_forks = sa.Table(
     "run_forks",
     metadata,
     sa.Column("command_id", sa.Text, primary_key=True),
-    sa.Column("origin_run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("origin_run_id", sa.Text, sa.ForeignKey(_RUNS_RUN_ID), nullable=False),
     sa.Column("origin_terminal_hash", sa.Text, nullable=False),
     sa.Column(
         "successor_run_id",
         sa.Text,
-        sa.ForeignKey("runs.run_id"),
+        sa.ForeignKey(_RUNS_RUN_ID),
         unique=True,
         nullable=False,
     ),
     sa.Column(
         "workflow_revision_hash",
         sa.Text,
-        sa.ForeignKey("workflow_revisions.revision_hash"),
+        sa.ForeignKey(_WORKFLOW_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column(
         "run_configuration_revision_hash",
         sa.Text,
-        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        sa.ForeignKey(_RUN_CONFIGURATION_REVISIONS_REVISION_HASH),
         nullable=False,
     ),
     sa.Column("restart_from_node_id", sa.Text, nullable=False),
     sa.Column("fork_hash", sa.Text, unique=True, nullable=False),
     sa.ForeignKeyConstraint(
         ("origin_run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
     sa.ForeignKeyConstraint(
         ("successor_run_id", "workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
     sa.CheckConstraint("length(command_id) = 64 AND command_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint("length(origin_run_id) > 0"),
@@ -1965,10 +1939,7 @@ run_forks = sa.Table(
         "AND origin_terminal_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint("length(successor_run_id) > 0"),
-    sa.CheckConstraint(
-        "length(workflow_revision_hash) = 64 "
-        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_WORKFLOW_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         "length(run_configuration_revision_hash) = 64 "
         "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -2000,7 +1971,7 @@ run_fork_reused_nodes = sa.Table(
     sa.ForeignKeyConstraint(("successor_run_id",), ("run_forks.successor_run_id",)),
     sa.ForeignKeyConstraint(
         ("source_run_id", "source_workflow_revision_hash"),
-        ("runs.run_id", "runs.revision_hash"),
+        (_RUNS_RUN_ID, _RUNS_REVISION_HASH),
     ),
     sa.ForeignKeyConstraint(
         ("source_node_execution_id",),
@@ -2012,10 +1983,10 @@ run_fork_reused_nodes = sa.Table(
     ),
     sa.ForeignKeyConstraint(
         ("source_declared_context_package_hash",),
-        ("context_packages_v3.package_hash",),
+        (_CONTEXT_PACKAGES_V3_PACKAGE_HASH,),
     ),
-    sa.CheckConstraint("position >= 0"),
-    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(_POSITION_NONNEGATIVE_CHECK),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint("length(source_run_id) > 0"),
     sa.CheckConstraint(
@@ -2065,14 +2036,14 @@ run_fork_effect_fences = sa.Table(
             "source_result_hash",
         ),
         (
-            "effect_receipts.logical_key",
-            "effect_receipts.run_id",
-            "effect_receipts.workflow_revision_hash",
-            "effect_receipts.result_hash",
+            _EFFECT_RECEIPTS_LOGICAL_KEY,
+            _EFFECT_RECEIPTS_RUN_ID,
+            _EFFECT_RECEIPTS_WORKFLOW_REVISION_HASH,
+            _EFFECT_RECEIPTS_RESULT_HASH,
         ),
     ),
-    sa.CheckConstraint("position >= 0"),
-    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(_POSITION_NONNEGATIVE_CHECK),
+    sa.CheckConstraint(_NODE_ID_NONEMPTY_CHECK),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint("length(source_logical_key) > 0"),
     sa.CheckConstraint("length(source_run_id) > 0"),
@@ -2113,16 +2084,11 @@ node_receipt_outputs_v3 = sa.Table(
             "node_artifacts_v3.value_hash",
         ),
     ),
-    sa.CheckConstraint("position >= 0"),
+    sa.CheckConstraint(_POSITION_NONNEGATIVE_CHECK),
     sa.CheckConstraint("length(output_name) > 0"),
-    sa.CheckConstraint(
-        "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint(
-        "length(schema_revision_hash) = 64 "
-        "AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
-    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(_NODE_EXECUTION_ID_HEX64_CHECK),
+    sa.CheckConstraint(_SCHEMA_REVISION_HASH_HEX64_CHECK),
+    sa.CheckConstraint(_VALUE_HASH_HEX64_CHECK),
 )
 host_project_root_revisions = sa.Table(
     "host_project_root_revisions",
@@ -2138,9 +2104,7 @@ host_project_root_revisions = sa.Table(
         "revision_number",
         "root_path",
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
     ),
@@ -2162,14 +2126,12 @@ host_model_registry_revisions = sa.Table(
         "revision_number",
     ),
     sa.UniqueConstraint("revision_hash", "provider_id"),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
     ),
-    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
-    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(_PROVIDER_ID_LOWERCASE_START_CHECK),
+    sa.CheckConstraint(_PROVIDER_ID_ALLOWED_CHARACTERS_CHECK),
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
 )
 host_model_registry_entries = sa.Table(
@@ -2197,16 +2159,14 @@ host_model_registry_entries = sa.Table(
     ),
     sa.ForeignKeyConstraint(
         ("agent_configuration_revision_hash",),
-        ("agent_configuration_revisions.revision_hash",),
+        (_AGENT_CONFIGURATION_REVISIONS_REVISION_HASH,),
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
     ),
-    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
-    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(_PROVIDER_ID_LOWERCASE_START_CHECK),
+    sa.CheckConstraint(_PROVIDER_ID_ALLOWED_CHARACTERS_CHECK),
     sa.CheckConstraint(
         f"length(model_id) BETWEEN 1 AND {MAXIMUM_EXACT_MODEL_ID_CHARACTERS}"
     ),
@@ -2214,10 +2174,7 @@ host_model_registry_entries = sa.Table(
         "instr(model_id, ' ') = 0 AND instr(model_id, char(9)) = 0 "
         "AND instr(model_id, char(10)) = 0 AND instr(model_id, char(13)) = 0"
     ),
-    sa.CheckConstraint(
-        "length(agent_configuration_revision_hash) = 64 "
-        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_AGENT_CONFIGURATION_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint("source IN ('discovered', 'operator')"),
     sa.CheckConstraint(
         "provider_check IN ('not-checked', 'checked', 'unknown-at-provider')"
@@ -2235,9 +2192,7 @@ host_project_model_defaults_revisions = sa.Table(
         "project_id",
         "revision_number",
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
     ),
@@ -2272,9 +2227,7 @@ host_project_model_defaults = sa.Table(
             "host_model_registry_entries.agent_configuration_revision_hash",
         ),
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint("difficulty IN (1, 2, 3)"),
     sa.CheckConstraint(
         "length(model_registry_revision_hash) = 64 "
@@ -2290,10 +2243,7 @@ host_project_model_defaults = sa.Table(
         "instr(model_id, ' ') = 0 AND instr(model_id, char(9)) = 0 "
         "AND instr(model_id, char(10)) = 0 AND instr(model_id, char(13)) = 0"
     ),
-    sa.CheckConstraint(
-        "length(agent_configuration_revision_hash) = 64 "
-        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_AGENT_CONFIGURATION_REVISION_HASH_HEX64_CHECK),
 )
 webhook_delivery_cursor = sa.Table(
     "webhook_delivery_cursor",
@@ -2302,7 +2252,7 @@ webhook_delivery_cursor = sa.Table(
     sa.Column(
         "run_id",
         sa.Text,
-        sa.ForeignKey("runs.run_id"),
+        sa.ForeignKey(_RUNS_RUN_ID),
         nullable=True,
     ),
     sa.Column("event_sequence", sa.Integer, nullable=True),
@@ -2334,9 +2284,7 @@ host_project_source_connection_revisions = sa.Table(
         "source_id",
         "revision_number",
     ),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
     ),
@@ -2386,9 +2334,7 @@ host_definition_source_revisions = sa.Table(
     sa.Column("access", sa.Text, nullable=False),
     sa.Column("connected_by", sa.Text, nullable=False),
     sa.UniqueConstraint("source_id", "revision_number"),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint("length(source_id) = 64 AND source_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint(f"source_kind IN ('{DefinitionSourceKind.GIT.value}')"),
@@ -2419,9 +2365,7 @@ host_definition_source_selections = sa.Table(
     sa.Column("revision_kind", sa.Text, nullable=False),
     sa.PrimaryKeyConstraint("revision_hash", "selection_ordinal"),
     sa.UniqueConstraint("revision_hash", "path_pattern"),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"selection_ordinal BETWEEN 1 AND {MAXIMUM_DEFINITION_SOURCE_SELECTIONS}"
     ),
@@ -2452,9 +2396,7 @@ catalog_source_intakes = sa.Table(
     ),
     sa.CheckConstraint(f"intake_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint(_revision_kind_sql("revision_kind")),
-    sa.CheckConstraint(
-        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint(_REVISION_HASH_HEX64_CHECK),
     sa.CheckConstraint(
         f"length(source_commit) BETWEEN {MINIMUM_GIT_OBJECT_NAME_CHARACTERS} AND "
         f"{MAXIMUM_GIT_OBJECT_NAME_CHARACTERS} "
@@ -3997,6 +3939,17 @@ def _raise_declared_version(
         )
 
 
+# Every migration hop below asks sqlite_master the same three questions
+# (does a table exist, does a named object of any kind exist, what kind is a
+# named object) before it changes anything; one constant per question gives
+# that repeated query text a single owner instead of a copy at each hop.
+_SQLITE_MASTER_TABLE_EXISTS_QUERY = (
+    "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+)
+_SQLITE_MASTER_NAME_EXISTS_QUERY = "SELECT name FROM sqlite_master WHERE name=?"
+_SQLITE_MASTER_OBJECT_TYPE_QUERY = "SELECT type FROM sqlite_master WHERE name=?"
+
+
 def _added_table_step(
     table: sa.Table,
     triggers: tuple[str, ...],
@@ -4020,7 +3973,7 @@ def _added_table_step(
 
     def apply(connection: sqlite3.Connection) -> None:
         existing = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            _SQLITE_MASTER_TABLE_EXISTS_QUERY,
             (table.name,),
         ).fetchone()
         if existing is not None:
@@ -4171,9 +4124,7 @@ def _rebuild_product_table(
     # The fingerprint this store was checked against says nothing about objects
     # outside the product schema, so any object holding the parking name is
     # refused before the first statement rather than overwritten.
-    if connection.execute(
-        "SELECT name FROM sqlite_master WHERE name=?", (parked_name,)
-    ).fetchone():
+    if connection.execute(_SQLITE_MASTER_NAME_EXISTS_QUERY, (parked_name,)).fetchone():
         raise StoreMigrationRefused(
             f"schema version {source_version} already has {parked_name}; "
             "this command will not alter it"
@@ -5081,7 +5032,7 @@ def _apply_v21_to_v22(connection: sqlite3.Connection) -> None:
 
     for table in _INSTANT_TABLES:
         existing = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            _SQLITE_MASTER_TABLE_EXISTS_QUERY,
             (table.name,),
         ).fetchone()
         if existing is not None:
@@ -5186,7 +5137,7 @@ def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
 
     for table_name in _OCCUPANCY_TABLE_NAMES:
         existing = connection.execute(
-            "SELECT name FROM sqlite_master WHERE name=?",
+            _SQLITE_MASTER_NAME_EXISTS_QUERY,
             (table_name,),
         ).fetchone()
         if existing is not None:
@@ -5634,7 +5585,7 @@ def _apply_v39_to_v40(connection: sqlite3.Connection) -> None:
         *_MODEL_CONFIGURATION_TRIGGERS,
     ):
         existing = connection.execute(
-            "SELECT type FROM sqlite_master WHERE name=?", (name,)
+            _SQLITE_MASTER_OBJECT_TYPE_QUERY, (name,)
         ).fetchone()
         if existing is not None:
             raise StoreMigrationRefused(
@@ -5681,9 +5632,7 @@ def _apply_v40_to_v41(connection: sqlite3.Connection) -> None:
         _PREDECESSOR_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     ):
         if (
-            connection.execute(
-                "SELECT type FROM sqlite_master WHERE name=?", (name,)
-            ).fetchone()
+            connection.execute(_SQLITE_MASTER_OBJECT_TYPE_QUERY, (name,)).fetchone()
             is not None
         ):
             raise StoreMigrationRefused(
@@ -5798,7 +5747,7 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
 
     for table in _PHASE_D_QUEUE_TABLES:
         existing = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            _SQLITE_MASTER_TABLE_EXISTS_QUERY,
             (table.name,),
         ).fetchone()
         if existing is not None:
@@ -5874,7 +5823,7 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
     """Give the existing connection history identity and lifecycle without loss."""
 
     if connection.execute(
-        "SELECT name FROM sqlite_master WHERE name=?",
+        _SQLITE_MASTER_NAME_EXISTS_QUERY,
         (_V44_PROJECT_SOURCE_CONNECTIONS,),
     ).fetchone():
         raise StoreMigrationRefused(
@@ -6135,9 +6084,7 @@ def _apply_v48_to_v49(connection: sqlite3.Connection) -> None:
         *_DEFINITION_SOURCE_TRIGGERS,
     ):
         if (
-            connection.execute(
-                "SELECT type FROM sqlite_master WHERE name=?", (name,)
-            ).fetchone()
+            connection.execute(_SQLITE_MASTER_OBJECT_TYPE_QUERY, (name,)).fetchone()
             is not None
         ):
             raise StoreMigrationRefused(
