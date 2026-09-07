@@ -158,6 +158,7 @@ def _agent_failed(
         return AgentExecutorBindingUnavailableEventResourceV3(
             event="AGENT_FAILED",
             reason=cast(AgentNodeRefusalName, refusal.refusal.value),
+            detail=refusal.detail or None,
             **common,
         )
     failure_code = event.payload.decode("ascii")

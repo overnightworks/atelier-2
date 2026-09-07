@@ -75,7 +75,11 @@ is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,
 with the snapshot authoritative only until an event overtakes it. A failed
 terminal snapshot names the failed node and the attempt that ended it, so a list
-read matches the event stream. Success carries exactly one name on the wire. Existing
+read matches the event stream. A node refused before any attempt existed -- an
+executor nothing can bind, a work-item claim the ledger would not grant --
+names its closed `reason` and, as `detail`, the sentence the refusing boundary
+gave, so the node detail and the journal say why the door was shut and not only
+that it was. Success carries exactly one name on the wire. Existing
 V1 JSON and OpenAPI component bytes stay pinned so nothing widens them by
 accident — they moved once, deliberately, when every body learned to name a
 value the way the next request writes it — while exact V2 unions expose

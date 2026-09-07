@@ -909,8 +909,8 @@ def test_openapi_sse_data_is_the_untagged_served_event_union() -> None:
     unavailable_v3 = schema["components"]["schemas"][
         "AgentExecutorBindingUnavailableEventResourceV3"
     ]
-    assert set(unavailable_v3["properties"]) == common | {"reason"}
-    assert set(unavailable_v3["required"]) == common | {"reason"}
+    assert set(unavailable_v3["properties"]) == common | {"reason", "detail"}
+    assert set(unavailable_v3["required"]) == common | {"reason", "detail"}
     assert unavailable_v3["additionalProperties"] is False
     assert unavailable_v3["properties"]["workflow_format_version"]["const"] == 3
 
