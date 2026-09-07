@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import assert_never
+from typing import Any, assert_never
 
 import sqlalchemy as sa
-from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Connection, Engine
+from dbos import DBOSClient
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -19,13 +19,15 @@ from atelier2.adapters.dbos.host_configuration import model_configuration_snapsh
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
-from atelier2.adapters.dbos.run_store import entry_node_of
+from atelier2.adapters.dbos.run_store import (
+    entry_node_of,
+    load_published_schema_document,
+)
 from atelier2.adapters.dbos.run_transitions import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_configuration_revisions,
     auth_profile_revisions,
-    published_revisions,
     run_agent_bindings,
     run_configuration_revisions,
     run_inputs_v3,
@@ -70,9 +72,12 @@ from atelier2.contracts.orders import (
     ObservedWorkItemOrderValue,
     WorkItemOrderValue,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
+from atelier2.contracts.run_configuration_v3 import (
+    ResolvedReference,
+    RunConfigurationRevision,
+)
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -306,15 +311,10 @@ def _refused_supplied_order(
             "this input is a work item, so its value is one the start read: "
             "name the item instead of writing its bytes",
         )
-    document = connection.scalar(
-        sa.select(published_revisions.c.document).where(
-            published_revisions.c.kind == RevisionKind.SCHEMA.value,
-            published_revisions.c.revision_hash == order.schema_revision.value,
-        )
-    )
+    document = load_published_schema_document(connection, order.schema_revision.value)
     if document is None:
         raise RuntimeError("a resolved schema revision is absent from the store")
-    match read_schema_document(bytes(document)):
+    match read_schema_document(document):
         case SchemaRefused() as unreadable:
             raise RuntimeError(f"a resolved schema revision is not one: {unreadable}")
         case schema:
@@ -524,33 +524,214 @@ class _TransactionAgentConfigurationReads:
     def agent_configuration_revision(
         self, revision_hash: AgentConfigurationRevisionHash
     ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None:
-        configuration_record = (
-            self.connection.execute(
-                sa.select(agent_configuration_revisions).where(
-                    agent_configuration_revisions.c.revision_hash == revision_hash.value
-                )
-            )
-            .mappings()
-            .one_or_none()
+        configuration_record = _one_record(
+            self.connection,
+            sa.select(agent_configuration_revisions).where(
+                agent_configuration_revisions.c.revision_hash == revision_hash.value
+            ),
         )
         if configuration_record is None:
             return None
         configuration = agent_configuration_from_record(configuration_record)
-        auth_record = (
-            self.connection.execute(
-                sa.select(auth_profile_revisions).where(
-                    auth_profile_revisions.c.revision_hash
-                    == configuration.auth_profile_revision_hash.value
-                )
-            )
-            .mappings()
-            .one_or_none()
+        auth_record = _one_record(
+            self.connection,
+            sa.select(auth_profile_revisions).where(
+                auth_profile_revisions.c.revision_hash
+                == configuration.auth_profile_revision_hash.value
+            ),
         )
         if auth_record is None:
             raise AuthProfileMissingForConfiguration(
                 configuration.auth_profile_revision_hash
             )
         return configuration, auth_profile_from_record(auth_record)
+
+
+@dataclass(frozen=True)
+class _ExecutableRevision:
+    revision: WorkflowRevision
+    graph: WorkflowGraphV3
+    resolutions: tuple[ResolvedReference, ...]
+
+
+@dataclass(frozen=True)
+class _BoundStart:
+    request: StartPublishedRunRequestV2 | StartPublishedRunRequestV3
+    run_configuration: RunConfigurationRevision
+
+
+def _one_record(connection: Connection, statement: sa.Select[Any]) -> RowMapping | None:
+    return connection.execute(statement).mappings().one_or_none()
+
+
+def _published_document(
+    connection: Connection, revision_hash: WorkflowRevisionHash
+) -> bytes | None:
+    document = connection.scalar(
+        sa.select(workflow_revisions.c.document).where(
+            workflow_revisions.c.revision_hash == revision_hash.value
+        )
+    )
+    return None if document is None else bytes(document)
+
+
+def _stored_identity_differs(
+    connection: Connection,
+    existing_record: RowMapping,
+    request: StartPublishedRunRequestV2 | StartPublishedRunRequestV3,
+    graph: WorkflowGraphV3,
+    requested_orders: tuple[tuple[str, str, str], ...],
+) -> bool:
+    return (
+        WorkflowFormatVersion(int(existing_record["workflow_format_version"]))
+        != graph.format_version
+        or str(existing_record["agent_binding_set_hash"])
+        != request.agent_bindings.binding_set_hash.value
+        or _stored_orders(connection, request.run_id) != requested_orders
+    )
+
+
+def _existing_run_or_unread(
+    connection: Connection, bound: _BoundStart, graph: WorkflowGraphV3
+) -> DurablePublishedRunResult | None:
+    """What an existing run under this id answers, or nothing for a fresh start.
+
+    Unread work items are read by the caller, never inside this write. Authored
+    orders are not `run_inputs` yet, so a start carrying them compares after the
+    insert -- unless it still names unread items, answered from what was pinned.
+    """
+    request = bound.request
+    existing_record = _one_record(
+        connection, sa.select(runs).where(runs.c.run_id == request.run_id.value)
+    )
+    unread = _unread_work_items(request)
+    if existing_record is None:
+        return DurableWorkItemOrderUnread() if unread else None
+    if not unread and _authored_orders(request):
+        return None
+    requested_orders = (
+        _unread_order_identities(connection, request, bound.run_configuration)
+        if unread
+        else _requested_orders(_supplied_orders(request))
+    )
+    if requested_orders is None:
+        # Not comparable here, and a guess would answer "conflict" for a
+        # start the ordinary path can refuse by its own name.
+        return DurableWorkItemOrderUnread()
+    if str(
+        existing_record["revision_hash"]
+    ) != request.revision_hash.value or _stored_identity_differs(
+        connection, existing_record, request, graph, requested_orders
+    ):
+        return DurableRunIdentityConflict()
+    return DurableRunExisting(
+        run_from_record_with_bindings(connection, existing_record)
+    )
+
+
+def _admitted_orders(
+    connection: Connection, graph: WorkflowGraphV3, bound: _BoundStart
+) -> tuple[RunInput, ...] | DurableV3StartInputRefused:
+    """The orders this start carries, pinned and judged before the first row."""
+    authored = _authored_orders(bound.request)
+    orders = _supplied_orders(bound.request)
+    if authored and orders:
+        raise RuntimeError("a start names its orders once")
+    if authored:
+        pinned = _pin_authored_orders(
+            connection, graph, bound.run_configuration, authored
+        )
+        if isinstance(pinned, DurableV3StartInputRefused):
+            return pinned
+        orders = pinned
+    refused = _refused_order(connection, graph, bound.run_configuration, orders)
+    return orders if refused is None else refused
+
+
+def _insert_run(
+    connection: Connection, bound: _BoundStart, graph: WorkflowGraphV3, workflow_id: str
+) -> int:
+    request = bound.request
+    connection.execute(
+        run_configuration_revisions.insert()
+        .prefix_with(_OR_IGNORE)
+        .values(
+            revision_hash=bound.run_configuration.revision_hash.value,
+            preimage=bound.run_configuration.preimage,
+        )
+    )
+    return connection.execute(
+        runs.insert()
+        .prefix_with(_OR_IGNORE)
+        .values(
+            run_id=request.run_id.value,
+            bootstrap_workflow_id=workflow_id,
+            revision_hash=request.revision_hash.value,
+            workflow_format_version=graph.format_version,
+            agent_binding_set_hash=request.agent_bindings.binding_set_hash.value,
+            current_node_id=entry_node_of(graph),
+            current_round_ordinal=FIRST_ROUND_ORDINAL,
+            state=RunState.STARTED.value,
+            state_version=0,
+            last_event_sequence=0,
+            terminal_hash=None,
+            run_configuration_revision_hash=bound.run_configuration.revision_hash.value,
+        )
+    ).rowcount
+
+
+def _write_run_members(
+    connection: Connection,
+    bound: _BoundStart,
+    graph: WorkflowGraphV3,
+    orders: tuple[RunInput, ...],
+) -> None:
+    request = bound.request
+    binding_set = request.agent_bindings
+    if binding_set.bindings:
+        connection.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    "run_id": request.run_id.value,
+                    "revision_hash": request.revision_hash.value,
+                    "binding_set_hash": binding_set.binding_set_hash.value,
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+                for binding in binding_set.bindings
+            ],
+        )
+    if orders:
+        # Written beside the run rather than into it: the same published
+        # revision serves every order, so the order belongs to this run and
+        # the document belongs to all of them.
+        connection.execute(
+            run_inputs_v3.insert(),
+            [
+                {
+                    "run_id": request.run_id.value,
+                    "name": order.name,
+                    "schema_revision_hash": order.schema_revision.value,
+                    "value": order.value,
+                    "value_hash": order.value_hash.value,
+                }
+                for order in orders
+            ],
+        )
+    # After the orders, because an order this run carries is a member of the
+    # package that binds it -- the content hash a declared reference cannot
+    # produce and material can.
+    persist_bound_node_executions(
+        connection,
+        request.run_id,
+        WorkflowRevisionHash(request.revision_hash.value),
+        graph,
+        bound.run_configuration,
+        orders,
+    )
 
 
 class DbosDurableRunStarter:
@@ -657,25 +838,20 @@ class DbosDurableRunStarter:
         self,
         request: AnyStartPublishedRunRequest,
     ) -> DurablePublishedRunResult:
+        """Read and judge the revision outside the write, then start under it."""
+        client: DBOSClient | None = None
         try:
             with self._engine.connect() as read_connection:
-                document = read_connection.scalar(
-                    sa.select(workflow_revisions.c.document).where(
-                        workflow_revisions.c.revision_hash
-                        == request.revision_hash.value
-                    )
-                )
+                document = _published_document(read_connection, request.revision_hash)
             if document is None:
                 return DurableRunRevisionMissing()
-            revision_document = bytes(document)
-            revision = WorkflowRevision(revision_document)
+            revision = WorkflowRevision(document)
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_workflow_document(revision.document)
-            executability = evaluate_executability(graph, self._published_revisions)
-            match executability:
-                case ExecutableDocument():
-                    pass
+            match evaluate_executability(graph, self._published_revisions):
+                case ExecutableDocument(resolutions):
+                    read = _ExecutableRevision(revision, graph, resolutions)
                 case DocumentNotExecutable():
                     return DurableRunFormatNotExecutable()
                 case RegistryUnavailable():
@@ -684,296 +860,11 @@ class DbosDurableRunStarter:
                     return DurableStateCorrupt()
                 case _ as unreachable:
                     assert_never(unreachable)
-        except (OperationalError, PoolTimeoutError):
-            return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
-            return DurableStateCorrupt()
-
-        client: DBOSClient | None = None
-        try:
             client = DBOSClient(
                 system_database_engine=self._engine, use_listen_notify=False
             )
             with canonical_write_transaction(self._engine) as connection:
-                stored_document = connection.scalar(
-                    sa.select(workflow_revisions.c.document).where(
-                        workflow_revisions.c.revision_hash
-                        == request.revision_hash.value
-                    )
-                )
-                if (
-                    stored_document is None
-                    or bytes(stored_document) != revision_document
-                ):
-                    raise RuntimeError(
-                        "published revision changed between parse and serialized start"
-                    )
-                stored_revision = WorkflowRevision(bytes(stored_document))
-                if stored_revision.revision_hash != request.revision_hash:
-                    raise RuntimeError(
-                        "published revision bytes disagree with their hash"
-                    )
-                run_configuration: RunConfigurationRevision | None = None
-                if isinstance(graph, WorkflowGraphV3):
-                    cast = self._cast_against_model_configuration(
-                        connection, request, graph
-                    )
-                    if isinstance(
-                        cast, (DurableInvalidAgentBindings, DurableUncastAgentRoles)
-                    ):
-                        return cast
-                    request = cast
-                    if not isinstance(
-                        request,
-                        (StartPublishedRunRequestV2, StartPublishedRunRequestV3),
-                    ):
-                        return DurableInvalidAgentBindings()
-                    run_configuration = RunConfigurationRevision(
-                        WorkflowRevisionHash(revision.revision_hash.value),
-                        request.agent_bindings.binding_set_hash,
-                        executability.resolutions,
-                    )
-                if not isinstance(
-                    request,
-                    (StartPublishedRunRequestV2, StartPublishedRunRequestV3),
-                ):
-                    return DurableInvalidAgentBindings()
-                # The role check runs before the retry check below reads
-                # anything, so a request whose roles are wrong is refused
-                # by that alone -- the same precedence an existing but
-                # mismatched run gets from the retry check that follows.
-                role_refusal = agent_role_completeness_refusal(
-                    graph, request.agent_bindings
-                )
-                if role_refusal is not None:
-                    return role_refusal
-                binding_set: AgentBindingSet = request.agent_bindings
-                existing_record = (
-                    connection.execute(
-                        sa.select(runs).where(runs.c.run_id == request.run_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                unread = _unread_work_items(request)
-                if unread and existing_record is None:
-                    # Nothing durable to answer from, so the caller reads
-                    # the items and starts again. Reading here instead
-                    # would hold this write transaction open across a
-                    # network call.
-                    return DurableWorkItemOrderUnread()
-                # Authored orders are not `run_inputs` yet. Comparing them
-                # here would treat every honest retry as a different order.
-                # Those starts fall through, pin, and use the compare below.
-                # A start still naming unread work items is the exception:
-                # it is answered from what the run pinned, by the items it
-                # names, so a retry never re-reads a moving object.
-                if existing_record is not None and (
-                    unread or not _authored_orders(request)
-                ):
-                    requested_orders = (
-                        _unread_order_identities(connection, request, run_configuration)
-                        if unread
-                        else _requested_orders(_supplied_orders(request))
-                    )
-                    if requested_orders is None:
-                        # Not comparable here, and a guess would answer
-                        # "conflict" for a start the ordinary path can
-                        # refuse by its own name.
-                        return DurableWorkItemOrderUnread()
-                    if (
-                        str(existing_record["revision_hash"])
-                        != request.revision_hash.value
-                        or WorkflowFormatVersion(
-                            int(existing_record["workflow_format_version"])
-                        )
-                        != graph.format_version
-                        or str(existing_record["agent_binding_set_hash"])
-                        != binding_set.binding_set_hash.value
-                        or _stored_orders(connection, request.run_id)
-                        != requested_orders
-                    ):
-                        return DurableRunIdentityConflict()
-                    return DurableRunExisting(
-                        run_from_record_with_bindings(connection, existing_record)
-                    )
-                bindings_result = resolve_start_bindings(
-                    graph,
-                    request.revision_hash,
-                    binding_set,
-                    _TransactionAgentConfigurationReads(connection),
-                    self._agent_executor_registry,
-                )
-                if not isinstance(bindings_result, tuple):
-                    return bindings_result
-                resolved_bindings: tuple[ResolvedAgentBinding, ...] = bindings_result
-
-                authored = _authored_orders(request)
-                stored = _supplied_orders(request)
-                if authored and stored:
-                    raise RuntimeError("a start names its orders once")
-                if (
-                    authored
-                    and run_configuration is not None
-                    and isinstance(graph, WorkflowGraphV3)
-                ):
-                    pinned = _pin_authored_orders(
-                        connection, graph, run_configuration, authored
-                    )
-                    if isinstance(pinned, DurableV3StartInputRefused):
-                        return pinned
-                    orders = pinned
-                else:
-                    orders = stored
-                if run_configuration is not None and isinstance(graph, WorkflowGraphV3):
-                    # Inside the serialized transaction and before the first row,
-                    # so a refused order leaves no run, no configuration and no
-                    # enqueue behind rather than a start to clean up.
-                    refused = _refused_order(
-                        connection, graph, run_configuration, orders
-                    )
-                    if refused is not None:
-                        return refused
-                elif orders:
-                    return DurableInvalidAgentBindings()
-
-                workflow_id = bootstrap_workflow_id_for(request.run_id)
-                if run_configuration is not None:
-                    connection.execute(
-                        run_configuration_revisions.insert()
-                        .prefix_with(_OR_IGNORE)
-                        .values(
-                            revision_hash=run_configuration.revision_hash.value,
-                            preimage=run_configuration.preimage,
-                        )
-                    )
-                inserted = connection.execute(
-                    runs.insert()
-                    .prefix_with(_OR_IGNORE)
-                    .values(
-                        run_id=request.run_id.value,
-                        bootstrap_workflow_id=workflow_id,
-                        revision_hash=request.revision_hash.value,
-                        workflow_format_version=graph.format_version,
-                        agent_binding_set_hash=binding_set.binding_set_hash.value,
-                        current_node_id=entry_node_of(graph),
-                        current_round_ordinal=FIRST_ROUND_ORDINAL,
-                        state=RunState.STARTED.value,
-                        state_version=0,
-                        last_event_sequence=0,
-                        terminal_hash=None,
-                        run_configuration_revision_hash=(
-                            None
-                            if run_configuration is None
-                            else run_configuration.revision_hash.value
-                        ),
-                    )
-                )
-                existing_record = (
-                    connection.execute(
-                        sa.select(runs).where(runs.c.run_id == request.run_id.value)
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if existing_record is None:
-                    raise RuntimeError("inserted run is not readable")
-                if inserted.rowcount == 1:
-                    record_run_started(connection, request.run_id.value)
-                # Built here rather than read back through
-                # `run_from_record_with_bindings`, because the binding rows
-                # below are not written yet.
-                terminal_hash = existing_record["terminal_hash"]
-                head = (
-                    request.run_id,
-                    request.revision_hash,
-                    binding_set.binding_set_hash,
-                    resolved_bindings,
-                    RunState(str(existing_record["state"])),
-                    str(existing_record["current_node_id"]),
-                    int(existing_record["state_version"]),
-                    int(existing_record["last_event_sequence"]),
-                )
-                ended = (
-                    None if terminal_hash is None else Sha256Hash(str(terminal_hash))
-                )
-                # A V3 graph always reaches this seam, so the configuration was
-                # bound above; the type refuses a V3 run without it.
-                assert run_configuration is not None
-                run = RunV3(*head, run_configuration.revision_hash, ended)
-                if inserted.rowcount == 0:
-                    existing_set = existing_record["agent_binding_set_hash"]
-                    requested_set = binding_set.binding_set_hash.value
-                    if (
-                        run.revision_hash != request.revision_hash
-                        or WorkflowFormatVersion(
-                            int(existing_record["workflow_format_version"])
-                        )
-                        != graph.format_version
-                        or existing_set != requested_set
-                        or _stored_orders(connection, request.run_id)
-                        != _requested_orders(orders)
-                    ):
-                        return DurableRunIdentityConflict()
-                    return DurableRunExisting(run)
-                if binding_set.bindings:
-                    connection.execute(
-                        run_agent_bindings.insert(),
-                        [
-                            {
-                                "run_id": request.run_id.value,
-                                "revision_hash": request.revision_hash.value,
-                                "binding_set_hash": binding_set.binding_set_hash.value,
-                                "role": binding.role.value,
-                                "agent_configuration_revision_hash": (
-                                    binding.agent_configuration_revision_hash.value
-                                ),
-                            }
-                            for binding in binding_set.bindings
-                        ],
-                    )
-                if orders:
-                    # Written beside the run rather than into it: the same
-                    # published revision serves every order, so the order belongs
-                    # to this run and the document belongs to all of them.
-                    connection.execute(
-                        run_inputs_v3.insert(),
-                        [
-                            {
-                                "run_id": request.run_id.value,
-                                "name": order.name,
-                                "schema_revision_hash": order.schema_revision.value,
-                                "value": order.value,
-                                "value_hash": order.value_hash.value,
-                            }
-                            for order in orders
-                        ],
-                    )
-                if run_configuration is not None and isinstance(graph, WorkflowGraphV3):
-                    # After the orders, because an order this run carries is a
-                    # member of the package that binds it -- the content hash a
-                    # declared reference cannot produce and material can.
-                    persist_bound_node_executions(
-                        connection,
-                        request.run_id,
-                        WorkflowRevisionHash(request.revision_hash.value),
-                        graph,
-                        run_configuration,
-                        orders,
-                    )
-                options: EnqueueOptions = {
-                    "workflow_name": WORKFLOW_NAME,
-                    "queue_name": QUEUE_NAME,
-                    "workflow_id": workflow_id,
-                    "app_version": self._settings.application_version,
-                }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    request.run_id.value,
-                    request.revision_hash.value,
-                )
-                return DurableRunCreated(run)
+                return self._start_in_transaction(connection, client, request, read)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (
@@ -988,6 +879,115 @@ class DbosDurableRunStarter:
         finally:
             if client is not None:
                 client.destroy()
+
+    def _start_in_transaction(
+        self,
+        connection: Connection,
+        client: DBOSClient,
+        request: AnyStartPublishedRunRequest,
+        read: _ExecutableRevision,
+    ) -> DurablePublishedRunResult:
+        """Refuse a moved revision, bind, answer a retry, resolve, admit, write.
+
+        The role check precedes the retry check, so wrong roles are refused by
+        that alone -- the precedence an existing but mismatched run gets too.
+        """
+        stored_document = _published_document(connection, request.revision_hash)
+        if stored_document is None or stored_document != read.revision.document:
+            raise RuntimeError(
+                "published revision changed between parse and serialized start"
+            )
+        if WorkflowRevision(stored_document).revision_hash != request.revision_hash:
+            raise RuntimeError("published revision bytes disagree with their hash")
+        cast = self._cast_against_model_configuration(connection, request, read.graph)
+        if isinstance(cast, (DurableInvalidAgentBindings, DurableUncastAgentRoles)):
+            return cast
+        if not isinstance(
+            cast, (StartPublishedRunRequestV2, StartPublishedRunRequestV3)
+        ):
+            return DurableInvalidAgentBindings()
+        bound = _BoundStart(
+            cast,
+            RunConfigurationRevision(
+                WorkflowRevisionHash(read.revision.revision_hash.value),
+                cast.agent_bindings.binding_set_hash,
+                read.resolutions,
+            ),
+        )
+        role_refusal = agent_role_completeness_refusal(read.graph, cast.agent_bindings)
+        if role_refusal is not None:
+            return role_refusal
+        existing = _existing_run_or_unread(connection, bound, read.graph)
+        if existing is not None:
+            return existing
+        bindings_result = resolve_start_bindings(
+            read.graph,
+            request.revision_hash,
+            cast.agent_bindings,
+            _TransactionAgentConfigurationReads(connection),
+            self._agent_executor_registry,
+        )
+        if not isinstance(bindings_result, tuple):
+            return bindings_result
+        orders = _admitted_orders(connection, read.graph, bound)
+        if not isinstance(orders, tuple):
+            return orders
+        return self._write_run(
+            connection, client, bound, read.graph, bindings_result, orders
+        )
+
+    def _write_run(
+        self,
+        connection: Connection,
+        client: DBOSClient,
+        bound: _BoundStart,
+        graph: WorkflowGraphV3,
+        resolved_bindings: tuple[ResolvedAgentBinding, ...],
+        orders: tuple[RunInput, ...],
+    ) -> DurablePublishedRunResult:
+        request = bound.request
+        workflow_id = bootstrap_workflow_id_for(request.run_id)
+        inserted_rows = _insert_run(connection, bound, graph, workflow_id)
+        existing_record = _one_record(
+            connection, sa.select(runs).where(runs.c.run_id == request.run_id.value)
+        )
+        if existing_record is None:
+            raise RuntimeError("inserted run is not readable")
+        if inserted_rows == 1:
+            record_run_started(connection, request.run_id.value)
+        # Built by hand because the binding rows below are not written yet.
+        terminal_hash = existing_record["terminal_hash"]
+        run = RunV3(
+            request.run_id,
+            request.revision_hash,
+            request.agent_bindings.binding_set_hash,
+            resolved_bindings,
+            RunState(str(existing_record["state"])),
+            str(existing_record["current_node_id"]),
+            int(existing_record["state_version"]),
+            int(existing_record["last_event_sequence"]),
+            bound.run_configuration.revision_hash,
+            None if terminal_hash is None else Sha256Hash(str(terminal_hash)),
+        )
+        if inserted_rows == 0:
+            if _stored_identity_differs(
+                connection, existing_record, request, graph, _requested_orders(orders)
+            ):
+                return DurableRunIdentityConflict()
+            return DurableRunExisting(run)
+        _write_run_members(connection, bound, graph, orders)
+        client.enqueue_in_transaction(
+            connection,
+            {
+                "workflow_name": WORKFLOW_NAME,
+                "queue_name": QUEUE_NAME,
+                "workflow_id": workflow_id,
+                "app_version": self._settings.application_version,
+            },
+            request.run_id.value,
+            request.revision_hash.value,
+        )
+        return DurableRunCreated(run)
 
 
 class DbosWorkflowRevisionPublisher:

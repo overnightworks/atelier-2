@@ -366,10 +366,6 @@ qualified_name = "atelier2.adapters.dbos.schema.migrate_store"
 lines = 133
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
-lines = 335
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.uncontinuable_runs._attempt_family_target_state"
 lines = 61
 
@@ -608,10 +604,6 @@ complexity = 30
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
 complexity = 27
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
-complexity = 38
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
