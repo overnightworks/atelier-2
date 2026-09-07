@@ -1037,14 +1037,12 @@ def _node_receipt_refusal_output(
         address = _receipt_refusal_address(record)
     else:
         refusal = _attempt_output_schema_refusal(connection, execution_id)
-        address = (
-            None
-            if refusal is None
-            else _RefusedValueAddress(
-                refusal.value_hash,
-                None if refusal.artifact_hash is None else refusal.artifact_hash.value,
-            )
-        )
+        if refusal is None:
+            address = None
+        else:
+            named_artifact = refusal.artifact_hash
+            artifact_hash = None if named_artifact is None else named_artifact.value
+            address = _RefusedValueAddress(refusal.value_hash, artifact_hash)
     if address is None:
         return None
     return address.answer(_refused_artifacts(connection, (address,)))
