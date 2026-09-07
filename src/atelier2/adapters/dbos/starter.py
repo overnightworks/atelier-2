@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, assert_never
+from typing import assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient
@@ -14,6 +14,7 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
+from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import model_configuration_snapshot
 from atelier2.adapters.dbos.instants import record_run_started
@@ -524,7 +525,7 @@ class _TransactionAgentConfigurationReads:
     def agent_configuration_revision(
         self, revision_hash: AgentConfigurationRevisionHash
     ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None:
-        configuration_record = _one_record(
+        configuration_record = one_record(
             self.connection,
             sa.select(agent_configuration_revisions).where(
                 agent_configuration_revisions.c.revision_hash == revision_hash.value
@@ -533,7 +534,7 @@ class _TransactionAgentConfigurationReads:
         if configuration_record is None:
             return None
         configuration = agent_configuration_from_record(configuration_record)
-        auth_record = _one_record(
+        auth_record = one_record(
             self.connection,
             sa.select(auth_profile_revisions).where(
                 auth_profile_revisions.c.revision_hash
@@ -558,10 +559,6 @@ class _ExecutableRevision:
 class _BoundStart:
     request: StartPublishedRunRequestV2 | StartPublishedRunRequestV3
     run_configuration: RunConfigurationRevision
-
-
-def _one_record(connection: Connection, statement: sa.Select[Any]) -> RowMapping | None:
-    return connection.execute(statement).mappings().one_or_none()
 
 
 def _published_document(
@@ -601,7 +598,7 @@ def _existing_run_or_unread(
     insert -- unless it still names unread items, answered from what was pinned.
     """
     request = bound.request
-    existing_record = _one_record(
+    existing_record = one_record(
         connection, sa.select(runs).where(runs.c.run_id == request.run_id.value)
     )
     unread = _unread_work_items(request)
@@ -948,7 +945,7 @@ class DbosDurableRunStarter:
         request = bound.request
         workflow_id = bootstrap_workflow_id_for(request.run_id)
         inserted_rows = _insert_run(connection, bound, graph, workflow_id)
-        existing_record = _one_record(
+        existing_record = one_record(
             connection, sa.select(runs).where(runs.c.run_id == request.run_id.value)
         )
         if existing_record is None:

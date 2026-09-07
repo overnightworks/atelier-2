@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection, Engine, Row, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
@@ -148,10 +149,6 @@ class ToolRedemptionConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable tool redemption."""
 
 
-def _one_record(session: Any, statement: sa.Select[Any]) -> RowMapping | None:
-    return session.execute(statement).mappings().one_or_none()
-
-
 def _records(session: Any, statement: sa.Select[Any]) -> tuple[RowMapping, ...]:
     return tuple(session.execute(statement).mappings())
 
@@ -282,7 +279,7 @@ def bootstrap_node_for_snapshot(
         or run.current_round_ordinal != FIRST_ROUND_ORDINAL
     ):
         raise RunTransitionConflict("bootstrap requires its exact new durable run")
-    fork = _one_record(
+    fork = one_record(
         session,
         sa.select(run_forks).where(run_forks.c.successor_run_id == run.run_id.value),
     )
@@ -293,7 +290,7 @@ def bootstrap_node_for_snapshot(
         return entry
     if not isinstance(run, RunV3) or not isinstance(graph, WorkflowGraphV3):
         raise RunTransitionConflict("only a V3 run may carry fork lineage")
-    origin = _one_record(
+    origin = one_record(
         session,
         sa.select(runs.c.terminal_hash, runs.c.revision_hash).where(
             runs.c.run_id == str(fork["origin_run_id"])
@@ -330,7 +327,7 @@ def load_node_output_payload(
     execution_id = NodeExecutionId.for_node(
         run_id, revision_hash, producer_id, round_ordinal
     )
-    local = _one_record(
+    local = one_record(
         session,
         sa.select(run_events).where(
             run_events.c.run_id == run_id.value,
@@ -342,7 +339,7 @@ def load_node_output_payload(
     if local is not None:
         return event_from_record(local).payload
 
-    reference = _one_record(
+    reference = one_record(
         session,
         sa.select(run_fork_reused_nodes).where(
             run_fork_reused_nodes.c.successor_run_id == run_id.value,
@@ -363,7 +360,7 @@ def load_node_output_payload(
     )
     if source_execution.value != str(reference["source_node_execution_id"]):
         raise RunTransitionConflict("fork output reference execution disagrees")
-    source_event_record = _one_record(
+    source_event_record = one_record(
         session,
         sa.select(run_events).where(
             run_events.c.event_hash == str(reference["source_event_hash"]),
@@ -372,14 +369,14 @@ def load_node_output_payload(
             run_events.c.node_execution_id == source_execution.value,
         ),
     )
-    receipt_record = _one_record(
+    receipt_record = one_record(
         session,
         sa.select(node_receipts_v3).where(
             node_receipts_v3.c.node_execution_id == source_execution.value,
             node_receipts_v3.c.receipt_hash == str(reference["source_receipt_hash"]),
         ),
     )
-    request_record = _one_record(
+    request_record = one_record(
         session,
         sa.select(node_execution_requests_v3).where(
             node_execution_requests_v3.c.node_execution_id == source_execution.value
@@ -787,13 +784,13 @@ def _tool_redemption_from_record(record: Mapping[Any, Any]) -> ToolRedemptionRec
 def commit_confirmed_effect(
     session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
 ) -> TransitionSnapshot:
-    intent_record = _one_record(
+    intent_record = one_record(
         session,
         sa.select(effect_intents).where(
             effect_intents.c.logical_key == logical_key.value
         ),
     )
-    receipt_record = _one_record(
+    receipt_record = one_record(
         session,
         sa.select(effect_receipts).where(
             effect_receipts.c.logical_key == logical_key.value
@@ -805,7 +802,7 @@ def commit_confirmed_effect(
     receipt = receipt_from_record(receipt_record)
     run_id = intent.binding.run_id
     graph = load_graph(session, revision_hash)
-    run_record = _one_record(
+    run_record = one_record(
         session, sa.select(runs).where(runs.c.run_id == run_id.value)
     )
     if run_record is None:
@@ -1222,7 +1219,7 @@ def _run_standing_at(
     current node absent, head event not stood on, current answer bound to
     another execution, pause contradicted by its answer or head event.
     """
-    run_record = _one_record(
+    run_record = one_record(
         session, sa.select(runs).where(runs.c.run_id == request.run_id.value)
     )
     if run_record is None:
