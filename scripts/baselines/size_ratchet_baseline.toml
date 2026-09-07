@@ -262,24 +262,12 @@ qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.get_node_detail"
 lines = 82
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.get_reconciliation_retry_target"
-lines = 65
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.prepare_run_event_stream"
 lines = 84
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.read_run_event_page"
 lines = 112
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
-lines = 160
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queries._node_detail_execution"
-lines = 62
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
@@ -588,18 +576,6 @@ lines = 115
 [[function]]
 qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__"
 lines = 84
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"
-complexity = 43
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
-complexity = 17
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
-complexity = 30
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
