@@ -4,12 +4,12 @@ import logging
 import math
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -102,6 +102,7 @@ from atelier2.contracts.definition_sources import (
 )
 from atelier2.contracts.effects import (
     EffectIntentState,
+    EffectReceipt,
     ReconcileCommandId,
     ReconcileCommandState,
 )
@@ -485,6 +486,10 @@ _LOG = logging.getLogger("atelier2")
 
 _AGENT_FAILURE_FORMATS = frozenset((WorkflowFormatVersion.V2, WorkflowFormatVersion.V3))
 """Which families reach the agent attempt path, and so can record its failure."""
+
+_RECEIPT_EVENT_KINDS = frozenset(
+    {RunEventKind.ACTION_RECONCILIATION_RESOLVED, RunEventKind.ACTION_COMPLETED}
+)
 
 
 def _run_ending_event_predicate(
@@ -1012,13 +1017,104 @@ def _unavailable_executor_refusal(
     return None if refusal is None else refusal.value
 
 
-def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None:
+def _wait_answer_actor(
+    connection: Connection, event: RunEvent
+) -> WaitAnswerAttribution:
+    """Who answered this Wait, proven against the one durable answer it kept."""
+    answer_records = tuple(
+        connection.execute(
+            sa.select(wait_answers).where(
+                wait_answers.c.node_execution_id == event.node_execution_id.value
+            )
+        ).mappings()
+    )
+    if len(answer_records) != 1:
+        raise WaitAnswerProjectionCorrupt(
+            "wait answer event has no unique durable answer"
+        )
+    answer_record = answer_records[0]
+    if (
+        answer_record["actor"] is None
+        and answer_record["actor_attribution_kind"]
+        != WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value
+    ):
+        raise WaitAnswerProjectionCorrupt("wait answer event has no durable actor")
+    try:
+        answer_snapshot = wait_answer_snapshot_from_record(answer_record)
+    except (RunTransitionConflict, TypeError, ValueError) as error:
+        raise WaitAnswerProjectionCorrupt(
+            "wait answer event has an unreadable durable answer"
+        ) from error
+    answer = answer_snapshot.answer
+    if (
+        answer_snapshot.state is not WaitAnswerState.APPLIED
+        or answer_snapshot.state_version != 1
+        or answer.run_id != event.run_id
+        or answer.revision_hash != event.revision_hash
+        or answer.node_id != event.node_id
+        or answer.node_execution_id != event.node_execution_id
+        or answer.round_ordinal != event.round_ordinal
+        or answer.answer_bytes != event.payload
+        or answer.answer_hash != event.payload_hash
+    ):
+        raise WaitAnswerProjectionCorrupt(
+            "wait answer event and durable answer disagree"
+        )
+    return answer.actor
+
+
+def _event_receipt(
+    connection: Connection, event: RunEvent, projection_limit: DurableProjectionLimit
+) -> EffectReceipt:
+    logical_key = event.receipt_logical_key
+    if logical_key is None:
+        raise RunTransitionConflict("receipt event has no logical key")
+    receipt_record = (
+        connection.execute(
+            _bounded_projection_select(
+                effect_receipts,
+                projection_limit,
+                payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
+                field_columns=_RECEIPT_FIELD_COLUMNS,
+            ).where(effect_receipts.c.logical_key == logical_key.value)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if receipt_record is None:
+        raise RunTransitionConflict("receipt event has no durable receipt")
+    _validate_bounded_record(
+        receipt_record,
+        projection_limit,
+        payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
+        field_columns=_RECEIPT_FIELD_COLUMNS,
+    )
+    receipt = receipt_from_record(receipt_record)
+    if (
+        receipt.intent.binding.run_id != event.run_id
+        or receipt.intent.binding.workflow_revision_hash != event.revision_hash
+        or receipt.result.payload_hash != event.receipt_result_hash
+    ):
+        raise RunTransitionConflict("receipt event binding disagrees")
+    return receipt
+
+
+def _agent_failure_reason(
+    connection: Connection, event: RunEvent, format_version: WorkflowFormatVersion
+) -> str | None:
     """Why this failure event says its node ended: its own word, or a receipt's.
 
     A pre-attempt refusal is the event's whole payload and carries no receipt;
     every other failure names an attempt whose stored receipt holds the reason.
     """
 
+    if format_version not in _AGENT_FAILURE_FORMATS:
+        raise RunTransitionConflict("V1 run carries an agent failure event")
+    if event.payload not in {
+        *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
+        *(refusal.value.encode("ascii") for refusal in AgentExecutionRefusal),
+    }:
+        raise RunTransitionConflict("agent failure event payload is not canonical")
     refusal = AgentExecutionRefusal.named_by(event.payload)
     if refusal is not None:
         return refusal.value
@@ -1027,6 +1123,55 @@ def _agent_failure_reason(connection: Connection, event: RunEvent) -> str | None
         event.node_execution_id,
         None if event.attempt_binding is None else event.attempt_binding.attempt_id,
     )
+
+
+def _composed_node_job(
+    connection: Connection,
+    projection: RunProjection,
+    node: AgentNodeV3 | WaitNodeV3,
+    round_ordinal: int,
+    opening: str,
+) -> bytes:
+    run = projection.run
+    orders = load_run_inputs(connection, run.run_id, node)
+    results = load_node_outputs(
+        connection, run.run_id, run.revision_hash, projection.graph, node, round_ordinal
+    )
+    return node_job(opening, orders, results).encode("utf-8")
+
+
+def _wait_job_and_refusal(
+    connection: Connection,
+    projection: RunProjection,
+    node: WaitNodeV3,
+    round_ordinal: int,
+    node_state: NodeState,
+) -> tuple[bytes | None, str | None, str | None]:
+    if not node.inputs:
+        question_bytes = node.prompt.encode("utf-8")
+        return question_bytes, Sha256Hash.of(question_bytes).value, None
+    run = projection.run
+    waiting_event = _waiting_input_event(
+        connection,
+        NodeExecutionId.for_node(run.run_id, run.revision_hash, node.id, round_ordinal),
+    )
+    if waiting_event is not None:
+        return waiting_event.payload, waiting_event.payload_hash.value, None
+    try:
+        question_bytes = _composed_node_job(
+            connection, projection, node, round_ordinal, node.prompt
+        )
+    except NodeOutputNotWritten as not_written:
+        if node_state in (NodeState.QUEUED, NodeState.WORKING):
+            return None, None, None
+        return None, None, str(not_written)
+    except NodeOutputSchemaRefused as refused:
+        return None, None, str(refused)
+    if node_state not in (NodeState.QUEUED, NodeState.WORKING):
+        raise RunTransitionConflict(
+            "an input-bearing Wait that already paused carries no WAITING_INPUT event"
+        )
+    return question_bytes, Sha256Hash.of(question_bytes).value, None
 
 
 def _node_job_and_refusal(
@@ -1051,64 +1196,15 @@ def _node_job_and_refusal(
     """
 
     if isinstance(node, WaitNodeV3):
-        if not node.inputs:
-            question_bytes = node.prompt.encode("utf-8")
-            return question_bytes, Sha256Hash.of(question_bytes).value, None
-        run = projection.run
-        waiting_event = _waiting_input_event(
-            connection,
-            NodeExecutionId.for_node(
-                run.run_id, run.revision_hash, node.id, round_ordinal
-            ),
+        return _wait_job_and_refusal(
+            connection, projection, node, round_ordinal, node_state
         )
-        if waiting_event is not None:
-            return (
-                waiting_event.payload,
-                waiting_event.payload_hash.value,
-                None,
-            )
-        try:
-            question = node_job(
-                node.prompt,
-                load_run_inputs(connection, run.run_id, node),
-                load_node_outputs(
-                    connection,
-                    run.run_id,
-                    run.revision_hash,
-                    projection.graph,
-                    node,
-                    round_ordinal,
-                ),
-            )
-            question_bytes = question.encode("utf-8")
-        except NodeOutputNotWritten as not_written:
-            if node_state in (NodeState.QUEUED, NodeState.WORKING):
-                return None, None, None
-            return None, None, str(not_written)
-        except NodeOutputSchemaRefused as refused:
-            return None, None, str(refused)
-        if node_state not in (NodeState.QUEUED, NodeState.WORKING):
-            raise RunTransitionConflict(
-                "an input-bearing Wait that already paused carries no "
-                "WAITING_INPUT event"
-            )
-        return question_bytes, Sha256Hash.of(question_bytes).value, None
     if not isinstance(node, AgentNodeV3):
         return None, None, None
-    run = projection.run
     try:
-        composed = node_job(
-            node.instruction,
-            load_run_inputs(connection, run.run_id, node),
-            load_node_outputs(
-                connection,
-                run.run_id,
-                run.revision_hash,
-                projection.graph,
-                node,
-                round_ordinal,
-            ),
-        ).encode("utf-8")
+        composed = _composed_node_job(
+            connection, projection, node, round_ordinal, node.instruction
+        )
     except NodeOutputNotWritten:
         # Absence, not refusal. The node this one reads has not written yet, so
         # there is no job to prove and nothing has judged anything. Saying so as
@@ -1785,50 +1881,54 @@ class DbosQueries:
                         limit + 1
                     )
                 )
-                items: list[ListedWorkflowRevision] = []
-                spent_nodes = 0
-                spent_bytes = 0
-                exhausted = False
-                for record in streamed.mappings():
-                    if len(items) == limit:
-                        exhausted = True
-                        break
-                    document = bytes(record["document"])
-                    if items and spent_bytes + len(document) > (
-                        budget.maximum_document_bytes
-                    ):
-                        exhausted = True
-                        break
-                    self._projection_limit.validate_document(document)
-                    revision = WorkflowRevision(document)
-                    if revision.revision_hash.value != str(record["revision_hash"]):
-                        return QueryDurableStateCorrupt()
-                    graph = _parsed_workflow_revision(revision)
-                    self._projection_limit.validate_graph(graph)
-                    if items and spent_nodes + len(graph.nodes) > budget.maximum_nodes:
-                        exhausted = True
-                        break
-                    items.append(
-                        ListedWorkflowRevision(
-                            WorkflowRevisionProjection(revision, graph),
-                            _revision_provenance(record),
-                        )
-                    )
-                    spent_bytes += len(document)
-                    spent_nodes += len(graph.nodes)
+                page = self._described_revision_page(streamed.mappings(), limit, budget)
                 streamed.close()
-                return DescribedWorkflowRevisionPage(
-                    tuple(items),
-                    items[-1].projection.revision.revision_hash
-                    if exhausted and items
-                    else None,
-                )
+                return page
         except ProjectionLimitExceeded:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return QueryDurableStateCorrupt()
+
+    def _described_revision_page(
+        self, records: Iterable[RowMapping], limit: int, budget: EnrichedPageBudget
+    ) -> DescribedWorkflowRevisionPage | QueryDurableStateCorrupt:
+        items: list[ListedWorkflowRevision] = []
+        spent_nodes = 0
+        spent_bytes = 0
+        exhausted = False
+        for record in records:
+            if len(items) == limit:
+                exhausted = True
+                break
+            document = bytes(record["document"])
+            if items and spent_bytes + len(document) > budget.maximum_document_bytes:
+                exhausted = True
+                break
+            self._projection_limit.validate_document(document)
+            revision = WorkflowRevision(document)
+            if revision.revision_hash.value != str(record["revision_hash"]):
+                return QueryDurableStateCorrupt()
+            graph = _parsed_workflow_revision(revision)
+            self._projection_limit.validate_graph(graph)
+            if items and spent_nodes + len(graph.nodes) > budget.maximum_nodes:
+                exhausted = True
+                break
+            items.append(
+                ListedWorkflowRevision(
+                    WorkflowRevisionProjection(revision, graph),
+                    _revision_provenance(record),
+                )
+            )
+            spent_bytes += len(document)
+            spent_nodes += len(graph.nodes)
+        return DescribedWorkflowRevisionPage(
+            tuple(items),
+            items[-1].projection.revision.revision_hash
+            if exhausted and items
+            else None,
+        )
 
     def get_node_detail(self, run_id: RunId, node_id: str) -> GetNodeDetailResult:
         """One node of one run, answered from what the run really kept.
@@ -2805,113 +2905,26 @@ class DbosQueries:
         projection_limit: DurableProjectionLimit,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
-        wait_answer_actor: WaitAnswerAttribution | None = None
-        if (
-            workflow_format_version is WorkflowFormatVersion.V3
+        wait_answer_actor = (
+            _wait_answer_actor(connection, event)
+            if workflow_format_version is WorkflowFormatVersion.V3
             and event.event_kind is RunEventKind.WAIT_ANSWERED
-        ):
-            answer_records = tuple(
-                connection.execute(
-                    sa.select(wait_answers).where(
-                        wait_answers.c.node_execution_id
-                        == event.node_execution_id.value
-                    )
-                ).mappings()
-            )
-            if len(answer_records) != 1:
-                raise WaitAnswerProjectionCorrupt(
-                    "wait answer event has no unique durable answer"
-                )
-            answer_record = answer_records[0]
-            if (
-                answer_record["actor"] is None
-                and answer_record["actor_attribution_kind"]
-                != WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value
-            ):
-                raise WaitAnswerProjectionCorrupt(
-                    "wait answer event has no durable actor"
-                )
-            try:
-                answer_snapshot = wait_answer_snapshot_from_record(answer_record)
-            except (RunTransitionConflict, TypeError, ValueError) as error:
-                raise WaitAnswerProjectionCorrupt(
-                    "wait answer event has an unreadable durable answer"
-                ) from error
-            answer = answer_snapshot.answer
-            if (
-                answer_snapshot.state is not WaitAnswerState.APPLIED
-                or answer_snapshot.state_version != 1
-                or answer.run_id != event.run_id
-                or answer.revision_hash != event.revision_hash
-                or answer.node_id != event.node_id
-                or answer.node_execution_id != event.node_execution_id
-                or answer.round_ordinal != event.round_ordinal
-                or answer.answer_bytes != event.payload
-                or answer.answer_hash != event.payload_hash
-            ):
-                raise WaitAnswerProjectionCorrupt(
-                    "wait answer event and durable answer disagree"
-                )
-            wait_answer_actor = answer.actor
-        if (
-            event.event_kind is RunEventKind.AGENT_FAILED
-            and workflow_format_version not in _AGENT_FAILURE_FORMATS
-        ):
-            raise RunTransitionConflict("V1 run carries an agent failure event")
-        if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
-            *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
-            *(refusal.value.encode("ascii") for refusal in AgentExecutionRefusal),
-        }:
-            raise RunTransitionConflict("agent failure event payload is not canonical")
+            else None
+        )
         node_receipt_reason = (
-            _agent_failure_reason(connection, event)
+            _agent_failure_reason(connection, event, workflow_format_version)
             if event.event_kind is RunEventKind.AGENT_FAILED
             else None
         )
-        if event.event_kind not in {
-            RunEventKind.ACTION_RECONCILIATION_RESOLVED,
-            RunEventKind.ACTION_COMPLETED,
-        }:
-            return PersistedRunEvent(
-                event,
-                None,
-                workflow_format_version,
-                node_receipt_reason,
-                wait_answer_actor,
-            )
-        logical_key = event.receipt_logical_key
-        if logical_key is None:
-            raise RunTransitionConflict("receipt event has no logical key")
-        receipt_record = (
-            connection.execute(
-                _bounded_projection_select(
-                    effect_receipts,
-                    projection_limit,
-                    payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
-                    field_columns=_RECEIPT_FIELD_COLUMNS,
-                ).where(effect_receipts.c.logical_key == logical_key.value)
-            )
-            .mappings()
-            .one_or_none()
+        receipt = (
+            _event_receipt(connection, event, projection_limit)
+            if event.event_kind in _RECEIPT_EVENT_KINDS
+            else None
         )
-        if receipt_record is None:
-            raise RunTransitionConflict("receipt event has no durable receipt")
-        _validate_bounded_record(
-            receipt_record,
-            projection_limit,
-            payload_columns=_RECEIPT_PAYLOAD_COLUMNS,
-            field_columns=_RECEIPT_FIELD_COLUMNS,
-        )
-        receipt = receipt_from_record(receipt_record)
-        if (
-            receipt.intent.binding.run_id != event.run_id
-            or receipt.intent.binding.workflow_revision_hash != event.revision_hash
-            or receipt.result.payload_hash != event.receipt_result_hash
-        ):
-            raise RunTransitionConflict("receipt event binding disagrees")
         return PersistedRunEvent(
             event,
             receipt,
             workflow_format_version,
-            wait_answer_actor=wait_answer_actor,
+            node_receipt_reason,
+            wait_answer_actor,
         )

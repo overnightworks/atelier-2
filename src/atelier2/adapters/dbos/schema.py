@@ -3530,26 +3530,38 @@ def _quoted_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+_SQL_QUOTE_CLOSERS = {"'": "'", '"': '"', "`": "`", "[": "]"}
+
+
+def _copy_quoted_span(
+    source: str, start: int, closing_quote: str, target: list[str]
+) -> int:
+    """Copy the quoted span opening at `start` verbatim; return the index after it."""
+    target.append(source[start])
+    index = start + 1
+    while index < len(source):
+        character = source[index]
+        target.append(character)
+        index += 1
+        if character != closing_quote:
+            continue
+        if index < len(source) and source[index] == closing_quote:
+            target.append(closing_quote)
+            index += 1
+            continue
+        return index
+    return index
+
+
 def _normalized_sql(value: object) -> str:
     if value is None:
         return ""
     source = str(value)
     normalized: list[str] = []
     pending_space = False
-    closing_quote: str | None = None
     index = 0
     while index < len(source):
         character = source[index]
-        if closing_quote is not None:
-            normalized.append(character)
-            if character == closing_quote:
-                if index + 1 < len(source) and source[index + 1] == closing_quote:
-                    normalized.append(source[index + 1])
-                    index += 2
-                    continue
-                closing_quote = None
-            index += 1
-            continue
         if character.isspace():
             pending_space = bool(normalized)
             index += 1
@@ -3557,12 +3569,12 @@ def _normalized_sql(value: object) -> str:
         if pending_space:
             normalized.append(" ")
             pending_space = False
-        normalized.append(character)
-        if character in {"'", '"', "`"}:
-            closing_quote = character
-        elif character == "[":
-            closing_quote = "]"
-        index += 1
+        closing_quote = _SQL_QUOTE_CLOSERS.get(character)
+        if closing_quote is None:
+            normalized.append(character)
+            index += 1
+            continue
+        index = _copy_quoted_span(source, index, closing_quote, normalized)
     return "".join(normalized)
 
 
@@ -3628,9 +3640,6 @@ _V27_ACCESS_TRIGGER_NAMES = (
 )
 
 
-_VERSIONS_WITH_TODAYS_TABLES = frozenset(range(_VERSION_FIFTY_ONE, SCHEMA_VERSION + 1))
-
-
 def _table_names_for_version(version: int) -> frozenset[str]:
     definition_source_tables = {
         host_definition_source_revisions.name,
@@ -3670,78 +3679,53 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V52 to V55 widened a vocabulary or moved one table's shape and added no
-    # table, so V51 -- which adds the ledger -- holds today's set. V50 widened one
-    # table's failure-code vocabulary and added no table either, so V49 and V50
-    # hold the same set: today's without that ledger.
-    if version in _VERSIONS_WITH_TODAYS_TABLES:
-        return PRODUCT_TABLE_NAMES
-    if version in {_VERSION_FIFTY, _VERSION_FORTY_NINE}:
-        return before_permission_receipts
-    if version in {_VERSION_FORTY_EIGHT, _VERSION_FORTY_SEVEN}:
-        return before_definition_sources
-    if version in {_VERSION_FORTY_SIX, _VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
-        return predecessor_product_tables
-    if version == _VERSION_FORTY_THREE:
-        return before_phase_d
-    if version in {_VERSION_FORTY_TWO, _VERSION_FORTY_ONE}:
-        return before_phase_d - attempt_receipt_tables
-    if version == _VERSION_FORTY:
-        return before_forks
-    # V33 to V39 hold the same tables: the hops between
-    # them moved one table's key and columns, three tables' state vocabulary, one
-    # table's index and one table's column set, never the set of tables.
-    if version in {
-        _VERSION_THIRTY_NINE,
-        _VERSION_THIRTY_EIGHT,
-        _VERSION_THIRTY_SEVEN,
-        _VERSION_THIRTY_SIX,
-        _VERSION_THIRTY_FIVE,
-        _VERSION_THIRTY_FOUR,
-        _VERSION_THIRTY_THREE,
-    }:
-        return before_model_configuration
-    if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
-        return before_model_configuration - connections
-    if version in {_VERSION_THIRTY, _VERSION_TWENTY_NINE}:
-        return before_model_configuration - connections - {webhook_delivery_cursor.name}
-    if version == _VERSION_TWENTY_EIGHT:
-        return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
-    if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
-        return predecessor_tables
-    if version == _VERSION_TWENTY_FIVE:
-        return predecessor_tables - occupancy
-    if version in {_VERSION_TWENTY_FOUR, _VERSION_TWENTY_THREE, _VERSION_TWENTY_TWO}:
-        return predecessor_tables - occupancy - host_channel
-    if version in {_VERSION_TWENTY_ONE, _VERSION_TWENTY, _VERSION_NINETEEN}:
-        return predecessor_tables - later - occupancy - host_channel
-    if version in {
-        _VERSION_EIGHTEEN,
-        _VERSION_SEVENTEEN,
-        _VERSION_SIXTEEN,
-        _VERSION_FIFTEEN,
-    }:
-        return predecessor_tables - {artifacts.name} - later - occupancy - host_channel
-    if version == _VERSION_FOURTEEN:
-        return (
+    # A hop that adds or drops no table keeps its predecessor's set, so each
+    # set holds from the version that shaped it up to the next one that did.
+    table_names_by_floor_version = (
+        (_VERSION_FIFTY_ONE, PRODUCT_TABLE_NAMES),
+        (_VERSION_FORTY_NINE, before_permission_receipts),
+        (_VERSION_FORTY_SEVEN, before_definition_sources),
+        (_VERSION_FORTY_FOUR, predecessor_product_tables),
+        (_VERSION_FORTY_THREE, before_phase_d),
+        (_VERSION_FORTY_ONE, before_phase_d - attempt_receipt_tables),
+        (_VERSION_FORTY, before_forks),
+        (_VERSION_THIRTY_THREE, before_model_configuration),
+        (_VERSION_THIRTY_ONE, before_model_configuration - connections),
+        (
+            _VERSION_TWENTY_NINE,
+            before_model_configuration - connections - {webhook_delivery_cursor.name},
+        ),
+        (_VERSION_TWENTY_EIGHT, predecessor_tables - {_V27_ACCESS_TABLE_NAME}),
+        (_VERSION_TWENTY_SIX, predecessor_tables),
+        (_VERSION_TWENTY_FIVE, predecessor_tables - occupancy),
+        (_VERSION_TWENTY_TWO, predecessor_tables - occupancy - host_channel),
+        (_VERSION_NINETEEN, predecessor_tables - later - occupancy - host_channel),
+        (
+            _VERSION_FIFTEEN,
+            predecessor_tables - {artifacts.name} - later - occupancy - host_channel,
+        ),
+        (
+            _VERSION_FOURTEEN,
             predecessor_tables
             - {artifacts.name, tool_redemptions.name}
             - later
             - occupancy
-            - host_channel
-        )
-    if version == _VERSION_THIRTEEN:
-        return (
+            - host_channel,
+        ),
+        (
+            _VERSION_THIRTEEN,
             predecessor_tables
-            - {
-                artifacts.name,
-                run_inputs_v3.name,
-                tool_redemptions.name,
-            }
+            - {artifacts.name, run_inputs_v3.name, tool_redemptions.name}
             - later
             - occupancy
-            - host_channel
-        )
+            - host_channel,
+        ),
+    )
+    if version > SCHEMA_VERSION:
+        raise UnsupportedSchemaVersion(version)
+    for floor_version, table_names in table_names_by_floor_version:
+        if version >= floor_version:
+            return table_names
     raise UnsupportedSchemaVersion(version)
 
 
@@ -3976,34 +3960,41 @@ def _added_table_step(
             _SQLITE_MASTER_TABLE_EXISTS_QUERY,
             (table.name,),
         ).fetchone()
-        if existing is not None:
-            if allow_empty_prepared_table and connection.execute(
-                f"SELECT count(*) FROM {table.name}"
-            ).fetchone() == (0,):
-                for trigger in triggers:
-                    trigger_exists = connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
-                        (trigger,),
-                    ).fetchone()
-                    if trigger_exists is None:
-                        connection.execute(_PRODUCT_TRIGGERS[trigger])
-                _raise_declared_version(connection, source, target)
-                return
+        if existing is None:
+            connection.execute(
+                PUBLISHED_TABLE_SHAPES.get(
+                    (target, table.name),
+                    str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
+                )
+            )
+            for trigger in triggers:
+                connection.execute(_PRODUCT_TRIGGERS[trigger])
+        elif allow_empty_prepared_table and _table_is_empty(connection, table.name):
+            _create_missing_triggers(connection, triggers)
+        else:
             raise StoreMigrationRefused(
                 f"schema version {source} already has {table.name}; "
                 "this command will not alter it"
             )
-        connection.execute(
-            PUBLISHED_TABLE_SHAPES.get(
-                (target, table.name),
-                str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
-            )
-        )
-        for trigger in triggers:
-            connection.execute(_PRODUCT_TRIGGERS[trigger])
         _raise_declared_version(connection, source, target)
 
     return apply
+
+
+def _table_is_empty(connection: sqlite3.Connection, table_name: str) -> bool:
+    return connection.execute(f"SELECT count(*) FROM {table_name}").fetchone() == (0,)
+
+
+def _create_missing_triggers(
+    connection: sqlite3.Connection, triggers: tuple[str, ...]
+) -> None:
+    for trigger in triggers:
+        trigger_exists = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger,),
+        ).fetchone()
+        if trigger_exists is None:
+            connection.execute(_PRODUCT_TRIGGERS[trigger])
 
 
 def _declared_indexes(table: sa.Table) -> Mapping[str, str]:
@@ -5819,43 +5810,28 @@ def _v44_project_source_connection_revision_hash(
     ).hexdigest()
 
 
-def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
-    """Give the existing connection history identity and lifecycle without loss."""
+def _v44_connected_revision_keys(
+    records: tuple[sqlite3.Row, ...],
+) -> frozenset[tuple[str, str, int]]:
+    """The one revision per project that stays connected after the hop.
 
-    if connection.execute(
-        _SQLITE_MASTER_NAME_EXISTS_QUERY,
-        (_V44_PROJECT_SOURCE_CONNECTIONS,),
-    ).fetchone():
-        raise StoreMigrationRefused(
-            f"schema version 44 already has {_V44_PROJECT_SOURCE_CONNECTIONS}; "
-            "this command will not alter it"
+    The V44 history carried no lifecycle: the kind whose latest revision is the
+    project's newest is the connected one, and every other row is history.
+    """
+
+    latest_by_history: dict[tuple[str, str], int] = {}
+    for record in records:
+        history = (str(record["project_id"]), str(record["source_kind"]))
+        latest_by_history[history] = max(
+            latest_by_history.get(history, 0), int(record["revision_number"])
         )
-    cursor = connection.execute(
-        "SELECT * FROM host_project_source_connection_revisions "
-        "ORDER BY project_id, source_kind, revision_number"
-    )
-    column_names = tuple(str(description[0]) for description in cursor.description)
-    records = tuple(
-        dict(zip(column_names, values, strict=True)) for values in cursor.fetchall()
-    )
-    current_source_kind_by_project: dict[str, str] = {}
-    latest_revision_by_history: dict[tuple[str, str], int] = {}
-    migrated_location_by_revision: dict[
-        tuple[str, str, int], tuple[SourceAddress, SourceReference | None]
-    ] = {}
-    for project_id in sorted({str(record["project_id"]) for record in records}):
-        latest_by_kind: dict[str, int] = {}
-        for record in records:
-            if record["project_id"] == project_id:
-                source_kind = str(record["source_kind"])
-                latest_by_kind[source_kind] = max(
-                    latest_by_kind.get(source_kind, 0),
-                    int(record["revision_number"]),
-                )
-        latest_revision_by_history.update(
-            ((project_id, source_kind), revision_number)
-            for source_kind, revision_number in latest_by_kind.items()
-        )
+    connected: set[tuple[str, str, int]] = set()
+    for project_id in sorted({project_id for project_id, _ in latest_by_history}):
+        latest_by_kind = {
+            source_kind: revision_number
+            for (owner, source_kind), revision_number in latest_by_history.items()
+            if owner == project_id
+        }
         project_maximum = max(latest_by_kind.values())
         current_kinds = tuple(
             source_kind
@@ -5868,7 +5844,33 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
                 f"project {project_id!r} has {len(current_kinds)} current kinds; "
                 "expected exactly one; this command will not alter it"
             )
-        current_source_kind_by_project[project_id] = current_kinds[0]
+        connected.add((project_id, current_kinds[0], project_maximum))
+    return frozenset(connected)
+
+
+def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
+    """Give the existing connection history identity and lifecycle without loss."""
+
+    if connection.execute(
+        _SQLITE_MASTER_NAME_EXISTS_QUERY,
+        (_V44_PROJECT_SOURCE_CONNECTIONS,),
+    ).fetchone():
+        raise StoreMigrationRefused(
+            f"schema version 44 already has {_V44_PROJECT_SOURCE_CONNECTIONS}; "
+            "this command will not alter it"
+        )
+    cursor = connection.cursor()
+    cursor.row_factory = sqlite3.Row
+    records = tuple(
+        cursor.execute(
+            "SELECT * FROM host_project_source_connection_revisions "
+            "ORDER BY project_id, source_kind, revision_number"
+        ).fetchall()
+    )
+    connected_keys = _v44_connected_revision_keys(records)
+    migrated_location_by_revision: dict[
+        tuple[str, str, int], tuple[SourceAddress, SourceReference | None]
+    ] = {}
     for record in records:
         project_id = str(record["project_id"])
         source_kind = SourceKind(str(record["source_kind"]))
@@ -5925,20 +5927,8 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
     for record in records:
         project_id = str(record["project_id"])
         source_kind = str(record["source_kind"])
-        source_latest_revision = latest_revision_by_history[(project_id, source_kind)]
-        lifecycle = (
-            ProjectSourceConnectionLifecycle.CONNECTED
-            if source_kind == current_source_kind_by_project[project_id]
-            and int(record["revision_number"]) == source_latest_revision
-            else ProjectSourceConnectionLifecycle.DISCONNECTED
-        )
-        source_address, source_ref = migrated_location_by_revision[
-            (
-                project_id,
-                source_kind,
-                int(record["revision_number"]),
-            )
-        ]
+        key = (project_id, source_kind, int(record["revision_number"]))
+        source_address, source_ref = migrated_location_by_revision[key]
         revision = ProjectSourceConnectionRevision(
             ProjectId(project_id),
             _legacy_project_source_id(project_id, source_kind),
@@ -5948,7 +5938,9 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
             Path(str(record["credential_directory"])),
             SourceConnectionAuthMethod(str(record["auth_method"])),
             ConnectionActor(str(record["connected_by"])),
-            lifecycle,
+            ProjectSourceConnectionLifecycle.CONNECTED
+            if key in connected_keys
+            else ProjectSourceConnectionLifecycle.DISCONNECTED,
             None,
             source_ref,
         )
@@ -6569,6 +6561,53 @@ def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
         ) from error
 
 
+def _refusable_fingerprint(connection: sqlite3.Connection, version: int) -> str:
+    try:
+        return _fingerprint_for_version(connection, version)
+    except UnsupportedSchemaVersion as error:
+        raise StoreMigrationRefused(str(error)) from error
+
+
+def _begin_immediate(connection: sqlite3.Connection) -> None:
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as error:
+        if _is_sqlite_lock(error):
+            raise StoreInUse() from error
+        raise StoreMigrationRefused(
+            "the database could not be locked; this command will not alter it"
+        ) from error
+
+
+def _migration_hops(
+    connection: sqlite3.Connection, source_version: int
+) -> list[tuple[int, int, str]]:
+    """Apply every step from `source_version` up, proving each hop's fingerprint."""
+
+    completed: list[tuple[int, int, str]] = []
+    current = source_version
+    while current != SCHEMA_VERSION:
+        current_step = _SCHEMA_MIGRATION_BY_SOURCE.get(current)
+        if current_step is None:
+            raise StoreMigrationRefused(
+                f"schema version {current} has no migration step; "
+                "this command will not alter it"
+            )
+        try:
+            current_step.apply(connection)
+        except sqlite3.DatabaseError as error:
+            raise StoreMigrationRefused(
+                f"migration from schema version {current} failed: {error}; "
+                "this command will not alter it"
+            ) from error
+        fingerprint = _refusable_fingerprint(connection, current_step.target_version)
+        completed.append(
+            (current_step.source_version, current_step.target_version, fingerprint)
+        )
+        current = current_step.target_version
+    return completed
+
+
 def migrate_store(database_path: Path) -> StoreMigrationReport:
     """Raise one existing store to SCHEMA_VERSION, or refuse it unaltered.
 
@@ -6603,8 +6642,7 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
             True,
             (),
         )
-    step = _SCHEMA_MIGRATION_BY_SOURCE.get(source_version)
-    if step is None:
+    if source_version not in _SCHEMA_MIGRATION_BY_SOURCE:
         if source_version in _OFFLINE_CUTOVER_VERSIONS:
             raisable = ", ".join(
                 str(version) for version in sorted(_SCHEMA_MIGRATION_BY_SOURCE)
@@ -6628,14 +6666,7 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
         # Row-level integrity is not waived -- the explicit foreign_key_check
         # before the commit refuses the whole hop on any violation.
         connection.execute("PRAGMA foreign_keys=OFF")
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError as error:
-            if _is_sqlite_lock(error):
-                raise StoreInUse() from error
-            raise StoreMigrationRefused(
-                "the database could not be locked; this command will not alter it"
-            ) from error
+        _begin_immediate(connection)
         try:
             locked_version = _read_declared_schema_version(connection)
             if locked_version != source_version:
@@ -6643,40 +6674,8 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
                     f"schema version changed from {source_version} to "
                     f"{locked_version} before the hop; this command will not alter it"
                 )
-            try:
-                _fingerprint_for_version(connection, locked_version)
-            except UnsupportedSchemaVersion as error:
-                raise StoreMigrationRefused(str(error)) from error
-            completed: list[tuple[int, int, str]] = []
-            current = locked_version
-            while current != SCHEMA_VERSION:
-                current_step = _SCHEMA_MIGRATION_BY_SOURCE.get(current)
-                if current_step is None:
-                    raise StoreMigrationRefused(
-                        f"schema version {current} has no migration step; "
-                        "this command will not alter it"
-                    )
-                try:
-                    current_step.apply(connection)
-                except sqlite3.DatabaseError as error:
-                    raise StoreMigrationRefused(
-                        f"migration from schema version {current} failed: {error}; "
-                        "this command will not alter it"
-                    ) from error
-                try:
-                    fingerprint = _fingerprint_for_version(
-                        connection, current_step.target_version
-                    )
-                except UnsupportedSchemaVersion as error:
-                    raise StoreMigrationRefused(str(error)) from error
-                completed.append(
-                    (
-                        current_step.source_version,
-                        current_step.target_version,
-                        fingerprint,
-                    )
-                )
-                current = current_step.target_version
+            _refusable_fingerprint(connection, locked_version)
+            completed = _migration_hops(connection, locked_version)
             violations = connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 tables = ", ".join(sorted({str(row[0]) for row in violations}))

@@ -178,10 +178,6 @@ qualified_name = "atelier2.adapters.dbos.advancer.legacy_agent_effect_runs_witho
 lines = 83
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._begin_output_schema_repair"
-lines = 63
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore._commit_new_cancellation"
 lines = 77
 
@@ -200,10 +196,6 @@ lines = 71
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
 lines = 61
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_cancellation"
-lines = 68
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_run_cancellation"
@@ -270,10 +262,6 @@ qualified_name = "atelier2.adapters.dbos.node_records.persist_bound_node_executi
 lines = 67
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._event_projection"
-lines = 131
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"
 lines = 426
 
@@ -284,10 +272,6 @@ lines = 82
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.get_reconciliation_retry_target"
 lines = 65
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.list_described_workflow_revisions"
-lines = 77
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries.DbosQueries.prepare_run_event_stream"
@@ -304,10 +288,6 @@ lines = 160
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries._node_detail_execution"
 lines = 62
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queries._node_job_and_refusal"
-lines = 88
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
@@ -664,14 +644,6 @@ complexity = 46
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
 complexity = 27
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.schema._table_names_for_version"
-complexity = 20
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.schema.migrate_store"
-complexity = 18
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
