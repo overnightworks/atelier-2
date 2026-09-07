@@ -1,0 +1,8 @@
+claim_id = "c90578f0afa849df98c5e3701c6b8784"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "49551584e696f999c2d1692475f8cdfe87954db1"
+branch = "claude/issue-1409-s3776-giants"
+scope = ["src/atelier2/adapters/dbos/run_store.py", "src/atelier2/adapters/dbos/starter.py", "tests/integration", "scripts/baselines/size_ratchet_baseline.toml"]
+opened_commit = "d5f1696d11dcfba86765c881c94529fc3bd8aefa"
+whole_reason = "Zwei S3776-Riesen in zwei Dateien; Integrationstests sind der Beweis"
