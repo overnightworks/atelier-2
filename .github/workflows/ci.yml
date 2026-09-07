@@ -628,13 +628,14 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      # agent-claim 0.13.0 resolves `.agent-claim/board.toml` under the git
-      # toplevel, so pr-check needs the working tree here.
+      # pr-check reads `.agent-claim/board.toml` under the git toplevel and
+      # fetches the coordination store `refs/aco/state` from the checkout's
+      # origin with the checkout's credentials, so this job keeps them.
       - name: Check out the event commit
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Install uv
         if: ${{ github.event_name == 'pull_request' }}
@@ -649,7 +650,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@v0.13.1 agent-claim --repo ${{ github.repository }} pr-check --pr ${{ github.event.pull_request.number }}
+        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@24598455006880fbb96bfead4de02339cd7f8a4f agent-claim pr-check --pr ${{ github.event.pull_request.number }}
 
       - name: Hold the required check name for the merge queue
         if: ${{ github.event_name == 'merge_group' }}
