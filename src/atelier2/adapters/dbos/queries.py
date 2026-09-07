@@ -103,8 +103,10 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
 )
 from atelier2.contracts.effects import (
+    EffectIntentSnapshot,
     EffectIntentState,
     EffectReceipt,
+    LogicalEffectKey,
     ReconcileCommandId,
     ReconcileCommandState,
 )
@@ -130,6 +132,7 @@ from atelier2.contracts.run_events import (
 )
 from atelier2.contracts.run_forks import (
     MAXIMUM_RUN_FORK_SUCCESSORS,
+    RunFork,
     RunForkCommandId,
 )
 from atelier2.contracts.run_projections import (
@@ -1828,6 +1831,426 @@ def _run_row_id(row: RunProjection | DefectiveRunProjection) -> RunId:
     return row.run_id if isinstance(row, DefectiveRunProjection) else row.run.run_id
 
 
+def _bounded_records(
+    connection: Connection,
+    table: sa.Table,
+    projection_limit: DurableProjectionLimit,
+    where: sa.ColumnElement[bool],
+    *,
+    document_columns: frozenset[str] = frozenset(),
+    payload_columns: frozenset[str] = frozenset(),
+    field_columns: frozenset[str] = frozenset(),
+) -> tuple[RowMapping, ...]:
+    """Every row the clause admits, each proven inside the projection limit."""
+    statement = _bounded_projection_select(
+        table,
+        projection_limit,
+        document_columns=document_columns,
+        payload_columns=payload_columns,
+        field_columns=field_columns,
+    ).where(where)
+    records = tuple(connection.execute(statement).mappings())
+    for record in records:
+        _validate_bounded_record(
+            record,
+            projection_limit,
+            document_columns=document_columns,
+            payload_columns=payload_columns,
+            field_columns=field_columns,
+        )
+    return records
+
+
+@dataclass(frozen=True)
+class _PageForks:
+    """What the page's runs are to the forks that name them."""
+
+    origin_by_successor: Mapping[str, RunForkOriginProjection]
+    successors_by_origin: Mapping[str, Sequence[RunForkSuccessorProjection]]
+    reused_by_successor: Mapping[str, Sequence[ReusedNodeProjection]]
+
+
+def _fork_records(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    run_ids: Sequence[str],
+) -> tuple[RowMapping, ...]:
+    """Every fork naming a page run as successor or origin, once per command.
+
+    An origin's successors are bounded by `MAXIMUM_RUN_FORK_SUCCESSORS`, so
+    the page reads one row past the bound it admits and refuses beyond it.
+    """
+    fork_select = _bounded_projection_select(
+        run_forks, projection_limit, field_columns=_RUN_FORK_FIELD_COLUMNS
+    )
+    successor_fork_records = tuple(
+        connection.execute(
+            fork_select.where(run_forks.c.successor_run_id.in_(run_ids))
+        ).mappings()
+    )
+    maximum_successor_records = len(run_ids) * MAXIMUM_RUN_FORK_SUCCESSORS
+    origin_fork_records = tuple(
+        connection.execute(
+            fork_select.where(run_forks.c.origin_run_id.in_(run_ids))
+            .order_by(run_forks.c.origin_run_id, run_forks.c.successor_run_id)
+            .limit(maximum_successor_records + 1)
+        ).mappings()
+    )
+    if len(origin_fork_records) > maximum_successor_records:
+        raise ProjectionLimitExceeded("run fork successor projection exceeds its limit")
+    successor_counts: dict[str, int] = {}
+    for record in origin_fork_records:
+        origin_id = str(record["origin_run_id"])
+        successor_counts[origin_id] = successor_counts.get(origin_id, 0) + 1
+        if successor_counts[origin_id] > MAXIMUM_RUN_FORK_SUCCESSORS:
+            raise ProjectionLimitExceeded(
+                "run fork successor projection exceeds its limit"
+            )
+    fork_records = tuple(
+        {
+            str(record["command_id"]): record
+            for record in (*successor_fork_records, *origin_fork_records)
+        }.values()
+    )
+    for fork_record in fork_records:
+        _validate_bounded_record(
+            fork_record, projection_limit, field_columns=_RUN_FORK_FIELD_COLUMNS
+        )
+    return fork_records
+
+
+def _stored_forks(
+    connection: Connection, fork_records: Sequence[RowMapping]
+) -> tuple[RunFork, ...]:
+    stored_forks = []
+    for record in fork_records:
+        # A same-snapshot invariant check, not a live race: `record` was
+        # read from `run_forks` under this call's one SQLite snapshot
+        # (`_connection` opens one `BEGIN DEFERRED` transaction for the
+        # whole read), and `_stored_fork_for_command` re-reads the exact
+        # same table under that unchanged snapshot -- so this branch
+        # should be unreachable today. It stays as a guard rather than an
+        # assumption, and if that snapshot guarantee is ever weakened, the
+        # honest response is retrying the read, not treating the row as
+        # permanently corrupt: nothing here proves the fork is gone, only
+        # that this one read could not see it.
+        fork = _stored_fork_for_command(
+            connection, RunForkCommandId(str(record["command_id"]))
+        )
+        if fork is None:
+            raise RunTransitionConflict("run fork disappeared during projection")
+        validate_stored_fork(connection, fork)
+        stored_forks.append(fork)
+    return tuple(stored_forks)
+
+
+def _page_forks(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    run_ids: Sequence[str],
+) -> _PageForks:
+    stored_forks = _stored_forks(
+        connection, _fork_records(connection, projection_limit, run_ids)
+    )
+    origin_by_successor = {
+        fork.successor_run_id.value: RunForkOriginProjection(
+            fork.origin_run_id,
+            fork.origin_terminal_hash,
+            fork.restart_from_node_id,
+            fork.fork_hash,
+        )
+        for fork in stored_forks
+        if fork.successor_run_id.value in run_ids
+    }
+    successors_by_origin: dict[str, list[RunForkSuccessorProjection]] = {}
+    reused_by_successor: dict[str, list[ReusedNodeProjection]] = {}
+    for fork in stored_forks:
+        if fork.origin_run_id.value in run_ids:
+            successors_by_origin.setdefault(fork.origin_run_id.value, []).append(
+                RunForkSuccessorProjection(
+                    fork.successor_run_id,
+                    fork.restart_from_node_id,
+                    fork.fork_hash,
+                )
+            )
+        if fork.successor_run_id.value in run_ids:
+            reused_by_successor[fork.successor_run_id.value] = [
+                ReusedNodeProjection(
+                    entry.node_id,
+                    entry.source_run_id,
+                    entry.source_event_hash,
+                    entry.source_receipt_hash,
+                    entry.source_declared_context_package_hash,
+                )
+                for entry in fork.reused_nodes
+            ]
+    for successors in successors_by_origin.values():
+        successors.sort(key=lambda item: item.successor_run_id.value.encode())
+    return _PageForks(origin_by_successor, successors_by_origin, reused_by_successor)
+
+
+def _page_graphs(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    loaded_runs: Sequence[AnyRun],
+) -> dict[WorkflowRevisionHash, AnyWorkflowDocument]:
+    revision_hashes = {run.revision_hash for run in loaded_runs}
+    revision_records = {
+        WorkflowRevisionHash(str(record["revision_hash"])): bytes(record["document"])
+        for record in _bounded_records(
+            connection,
+            workflow_revisions,
+            projection_limit,
+            workflow_revisions.c.revision_hash.in_(
+                tuple(value.value for value in revision_hashes)
+            ),
+            document_columns=_REVISION_DOCUMENT_COLUMNS,
+        )
+    }
+    if set(revision_records) != revision_hashes:
+        raise RunTransitionConflict("run page references a missing workflow revision")
+    graphs: dict[WorkflowRevisionHash, AnyWorkflowDocument] = {}
+    for revision_hash, document in revision_records.items():
+        projection_limit.validate_document(document)
+        stored = WorkflowRevision(document)
+        if stored.revision_hash != revision_hash:
+            raise RevisionHashCollision(
+                "durable workflow revision bytes disagree with their hash"
+            )
+        # A run already started against these bytes. Today's executable
+        # parse may refuse the same document; listing and inspecting it
+        # is a read of published history, not a start.
+        graph = parse_workflow_document(document)
+        projection_limit.validate_graph(graph)
+        graphs[revision_hash] = graph
+    for run in loaded_runs:
+        validate_run_graph_binding(run, graphs[run.revision_hash])
+    return graphs
+
+
+def _current_attempt_records(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    executions: Iterable[NodeExecutionId],
+) -> dict[str, list[RowMapping]]:
+    """Each current agent execution's attempts, ordinal one first, canonical."""
+    execution_values = tuple(execution.value for execution in executions)
+    if not execution_values:
+        return {}
+    attempt_records: dict[str, list[RowMapping]] = {}
+    for record in _bounded_records(
+        connection,
+        agent_attempts,
+        projection_limit,
+        agent_attempts.c.node_execution_id.in_(execution_values),
+        field_columns=_ATTEMPT_FIELD_COLUMNS,
+    ):
+        attempt_records.setdefault(str(record["node_execution_id"]), []).append(record)
+    for records_for_execution in attempt_records.values():
+        records_for_execution.sort(key=lambda item: int(item["attempt_ordinal"]))
+        ordinals = tuple(int(item["attempt_ordinal"]) for item in records_for_execution)
+        if ordinals not in {(1,), (1, 2)}:
+            raise RunTransitionConflict(
+                "current node has a noncanonical agent-attempt sequence"
+            )
+    return attempt_records
+
+
+def _intent_records(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    logical_keys: Iterable[LogicalEffectKey],
+) -> dict[str, RowMapping]:
+    key_values = tuple(key.value for key in logical_keys)
+    if not key_values:
+        return {}
+    intent_records: dict[str, RowMapping] = {}
+    for record in _bounded_records(
+        connection,
+        effect_intents,
+        projection_limit,
+        effect_intents.c.logical_key.in_(key_values),
+        payload_columns=_INTENT_PAYLOAD_COLUMNS,
+        field_columns=_INTENT_FIELD_COLUMNS,
+    ):
+        key = str(record["logical_key"])
+        if key in intent_records:
+            raise RunTransitionConflict("durable intent primary key repeated")
+        intent_records[key] = record
+    return intent_records
+
+
+def _reconciling_command_records(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    intent_records: Mapping[str, RowMapping],
+) -> dict[str, RowMapping]:
+    owner_ids = tuple(
+        str(record["reconciliation_owner_command_id"])
+        for record in intent_records.values()
+        if record["reconciliation_owner_command_id"] is not None
+    )
+    if not owner_ids:
+        return {}
+    command_records = {
+        str(record["command_id"]): record
+        for record in _bounded_records(
+            connection,
+            reconcile_commands,
+            projection_limit,
+            reconcile_commands.c.command_id.in_(owner_ids),
+            payload_columns=_COMMAND_PAYLOAD_COLUMNS,
+            field_columns=_COMMAND_FIELD_COLUMNS,
+        )
+    }
+    if set(command_records) != set(owner_ids):
+        raise RunTransitionConflict("reconciling intent command is missing")
+    return command_records
+
+
+def _run_instants(
+    connection: Connection, run_ids: Sequence[str]
+) -> dict[str, tuple[RecordedAt, RecordedAt | None]]:
+    if not run_ids:
+        return {}
+    instants: dict[str, tuple[RecordedAt, RecordedAt | None]] = {}
+    for record in connection.execute(
+        sa.select(run_instants).where(run_instants.c.run_id.in_(run_ids))
+    ).mappings():
+        ended = record["ended_at"]
+        instants[str(record["run_id"])] = (
+            RecordedAt(str(record["started_at"])),
+            None if ended is None else RecordedAt(str(ended)),
+        )
+    return instants
+
+
+def _bound_intent_snapshot(
+    intent_record: RowMapping,
+    run: AnyRun,
+    logical_key: LogicalEffectKey,
+    disagreement: str,
+) -> EffectIntentSnapshot:
+    intent = intent_snapshot_from_record(intent_record)
+    if (
+        intent.intent.binding.run_id != run.run_id
+        or intent.intent.binding.workflow_revision_hash != run.revision_hash
+        or intent.intent.binding.logical_key != logical_key
+    ):
+        raise RunTransitionConflict(disagreement)
+    return intent
+
+
+def _waiting_run_reconciliation(
+    run: AnyRun,
+    logical_key: LogicalEffectKey,
+    intent_record: RowMapping,
+    command_records: Mapping[str, RowMapping],
+) -> WaitingReconciliationProjection:
+    intent = _bound_intent_snapshot(
+        intent_record,
+        run,
+        logical_key,
+        "waiting run intent binding disagrees with its logical key",
+    )
+    owner = intent_record["reconciliation_owner_command_id"]
+    if intent.state is EffectIntentState.RECONCILING:
+        if owner is None:
+            raise RunTransitionConflict("reconciling intent has no command owner")
+        pending = command_snapshot_from_record(
+            command_records[str(owner)], intent.intent
+        )
+        if pending.state is not ReconcileCommandState.PENDING:
+            raise RunTransitionConflict("reconciling intent command is not pending")
+        return WaitingReconciliationProjection(intent, pending)
+    if (
+        intent.state is not EffectIntentState.WAITING_RECONCILIATION
+        or owner is not None
+    ):
+        raise RunTransitionConflict(
+            "waiting reconciliation run has inconsistent intent state"
+        )
+    return WaitingReconciliationProjection(intent, None)
+
+
+def _ended_run_reconciliation(
+    run: AnyRun, logical_key: LogicalEffectKey, intent_record: RowMapping
+) -> WaitingReconciliationProjection | None:
+    intent = _bound_intent_snapshot(
+        intent_record,
+        run,
+        logical_key,
+        "ended run intent binding disagrees with its logical key",
+    )
+    if intent.state is not EffectIntentState.ABANDONED:
+        return None
+    if intent_record["reconciliation_owner_command_id"] is not None:
+        raise RunTransitionConflict("abandoned intent has a command owner")
+    return WaitingReconciliationProjection(intent, None)
+
+
+def _run_reconciliation(
+    run: AnyRun,
+    logical_keys_by_run: Mapping[RunId, LogicalEffectKey],
+    intent_records: Mapping[str, RowMapping],
+    command_records: Mapping[str, RowMapping],
+) -> WaitingReconciliationProjection | None:
+    logical_key = logical_keys_by_run.get(run.run_id)
+    if logical_key is None:
+        return None
+    if run.state is RunState.WAITING_RECONCILIATION:
+        return _waiting_run_reconciliation(
+            run, logical_key, intent_records[logical_key.value], command_records
+        )
+    intent_record = intent_records.get(logical_key.value)
+    if intent_record is None:
+        return None
+    return _ended_run_reconciliation(run, logical_key, intent_record)
+
+
+def _current_attempt_projections(
+    connection: Connection,
+    run: AnyRun,
+    graph: AnyWorkflowDocument,
+    execution: NodeExecutionId | None,
+    attempt_records: Mapping[str, Sequence[RowMapping]],
+    reconciliation: WaitingReconciliationProjection | None,
+) -> tuple[AgentAttemptProjection, ...]:
+    if execution is None:
+        return ()
+    if not isinstance(run, (RunV2, RunV3)):
+        raise RunTransitionConflict("agent node belongs to a V1 run")
+    records_for_execution = attempt_records.get(execution.value, ())
+    # A succeeded attempt has no public state unless the run
+    # parks on its node's effect, so projecting it would refuse
+    # the read. COMPLETED is that case. FAILED is not: the attempt
+    # is still the current one, and the rail needs it so a list
+    # read does not pose the node as working.
+    # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
+    # is control evidence for an attempt-less refusal, not the
+    # public node ending.
+    if not records_for_execution or run.state is RunState.COMPLETED:
+        return ()
+    effect_awaits_reconciliation = execution_awaits_effect_reconciliation(
+        run.state, reconciliation, execution
+    )
+    attempt_projections = tuple(
+        _current_attempt_projection(
+            attempt_record,
+            session=connection,
+            run=run,
+            graph=graph,
+            effect_awaits_reconciliation=effect_awaits_reconciliation,
+        )
+        for attempt_record in records_for_execution
+    )
+    return tuple(
+        attempt
+        for attempt in attempt_projections
+        if not never_launched_cleanup_on_failed_run(run, attempt)
+    )
+
+
 class DbosQueries:
     """Bounded SQLite projections; each call owns and closes its read connection."""
 
@@ -2360,154 +2783,11 @@ class DbosQueries:
     ) -> tuple[RunProjection, ...]:
         if not records:
             return ()
+        limit = self._projection_limit
         loaded_runs = runs_from_records_with_bindings(connection, records)
         run_ids = tuple(run.run_id.value for run in loaded_runs)
-        successor_fork_records = tuple(
-            connection.execute(
-                _bounded_projection_select(
-                    run_forks,
-                    self._projection_limit,
-                    field_columns=_RUN_FORK_FIELD_COLUMNS,
-                ).where(run_forks.c.successor_run_id.in_(run_ids))
-            ).mappings()
-        )
-        maximum_successor_records = len(run_ids) * MAXIMUM_RUN_FORK_SUCCESSORS
-        origin_fork_records = tuple(
-            connection.execute(
-                _bounded_projection_select(
-                    run_forks,
-                    self._projection_limit,
-                    field_columns=_RUN_FORK_FIELD_COLUMNS,
-                )
-                .where(run_forks.c.origin_run_id.in_(run_ids))
-                .order_by(run_forks.c.origin_run_id, run_forks.c.successor_run_id)
-                .limit(maximum_successor_records + 1)
-            ).mappings()
-        )
-        if len(origin_fork_records) > maximum_successor_records:
-            raise ProjectionLimitExceeded(
-                "run fork successor projection exceeds its limit"
-            )
-        successor_counts: dict[str, int] = {}
-        for record in origin_fork_records:
-            origin_id = str(record["origin_run_id"])
-            successor_counts[origin_id] = successor_counts.get(origin_id, 0) + 1
-            if successor_counts[origin_id] > MAXIMUM_RUN_FORK_SUCCESSORS:
-                raise ProjectionLimitExceeded(
-                    "run fork successor projection exceeds its limit"
-                )
-        fork_records = tuple(
-            {
-                str(record["command_id"]): record
-                for record in (*successor_fork_records, *origin_fork_records)
-            }.values()
-        )
-        for fork_record in fork_records:
-            _validate_bounded_record(
-                fork_record,
-                self._projection_limit,
-                field_columns=_RUN_FORK_FIELD_COLUMNS,
-            )
-        stored_forks = []
-        for record in fork_records:
-            # A same-snapshot invariant check, not a live race: `record` was
-            # read from `run_forks` under this call's one SQLite snapshot
-            # (`_connection` opens one `BEGIN DEFERRED` transaction for the
-            # whole read), and `_stored_fork_for_command` re-reads the exact
-            # same table under that unchanged snapshot -- so this branch
-            # should be unreachable today. It stays as a guard rather than an
-            # assumption, and if that snapshot guarantee is ever weakened, the
-            # honest response is retrying the read, not treating the row as
-            # permanently corrupt: nothing here proves the fork is gone, only
-            # that this one read could not see it.
-            fork = _stored_fork_for_command(
-                connection, RunForkCommandId(str(record["command_id"]))
-            )
-            if fork is None:
-                raise RunTransitionConflict("run fork disappeared during projection")
-            validate_stored_fork(connection, fork)
-            stored_forks.append(fork)
-        origin_by_successor = {
-            fork.successor_run_id.value: RunForkOriginProjection(
-                fork.origin_run_id,
-                fork.origin_terminal_hash,
-                fork.restart_from_node_id,
-                fork.fork_hash,
-            )
-            for fork in stored_forks
-            if fork.successor_run_id.value in run_ids
-        }
-        successors_by_origin: dict[str, list[RunForkSuccessorProjection]] = {}
-        reused_by_successor: dict[str, list[ReusedNodeProjection]] = {}
-        for fork in stored_forks:
-            if fork.origin_run_id.value in run_ids:
-                successors_by_origin.setdefault(fork.origin_run_id.value, []).append(
-                    RunForkSuccessorProjection(
-                        fork.successor_run_id,
-                        fork.restart_from_node_id,
-                        fork.fork_hash,
-                    )
-                )
-            if fork.successor_run_id.value in run_ids:
-                reused_by_successor[fork.successor_run_id.value] = [
-                    ReusedNodeProjection(
-                        entry.node_id,
-                        entry.source_run_id,
-                        entry.source_event_hash,
-                        entry.source_receipt_hash,
-                        entry.source_declared_context_package_hash,
-                    )
-                    for entry in fork.reused_nodes
-                ]
-        for successors in successors_by_origin.values():
-            successors.sort(key=lambda item: item.successor_run_id.value.encode())
-        revision_hashes = {run.revision_hash for run in loaded_runs}
-        revision_rows = tuple(
-            connection.execute(
-                _bounded_projection_select(
-                    workflow_revisions,
-                    self._projection_limit,
-                    document_columns=_REVISION_DOCUMENT_COLUMNS,
-                ).where(
-                    workflow_revisions.c.revision_hash.in_(
-                        tuple(value.value for value in revision_hashes)
-                    )
-                )
-            ).mappings()
-        )
-        for record in revision_rows:
-            _validate_bounded_record(
-                record,
-                self._projection_limit,
-                document_columns=_REVISION_DOCUMENT_COLUMNS,
-            )
-        revision_records = {
-            WorkflowRevisionHash(str(record["revision_hash"])): bytes(
-                record["document"]
-            )
-            for record in revision_rows
-        }
-        if set(revision_records) != revision_hashes:
-            raise RunTransitionConflict(
-                "run page references a missing workflow revision"
-            )
-        graphs = {}
-        for revision_hash, document in revision_records.items():
-            self._projection_limit.validate_document(document)
-            stored = WorkflowRevision(document)
-            if stored.revision_hash != revision_hash:
-                raise RevisionHashCollision(
-                    "durable workflow revision bytes disagree with their hash"
-                )
-            # A run already started against these bytes. Today's executable
-            # parse may refuse the same document; listing and inspecting it
-            # is a read of published history, not a start.
-            graph = parse_workflow_document(document)
-            self._projection_limit.validate_graph(graph)
-            graphs[revision_hash] = graph
-        for run in loaded_runs:
-            validate_run_graph_binding(run, graphs[run.revision_hash])
-
+        forks = _page_forks(connection, limit, run_ids)
+        graphs = _page_graphs(connection, limit, loaded_runs)
         current_agent_executions = {
             run.run_id: _node_execution_id(
                 run, graphs[run.revision_hash], run.current_node_id
@@ -2518,41 +2798,9 @@ class DbosQueries:
                 AgentNodeV3,
             )
         }
-        attempt_records: dict[str, list[Mapping[Any, Any]]] = {}
-        if current_agent_executions:
-            for record in connection.execute(
-                _bounded_projection_select(
-                    agent_attempts,
-                    self._projection_limit,
-                    field_columns=_ATTEMPT_FIELD_COLUMNS,
-                ).where(
-                    agent_attempts.c.node_execution_id.in_(
-                        tuple(
-                            execution.value
-                            for execution in current_agent_executions.values()
-                        )
-                    )
-                )
-            ).mappings():
-                _validate_bounded_record(
-                    record,
-                    self._projection_limit,
-                    field_columns=_ATTEMPT_FIELD_COLUMNS,
-                )
-                execution_value = str(record["node_execution_id"])
-                attempt_records.setdefault(execution_value, []).append(record)
-            for records_for_execution in attempt_records.values():
-                records_for_execution.sort(
-                    key=lambda item: int(item["attempt_ordinal"])
-                )
-                ordinals = tuple(
-                    int(item["attempt_ordinal"]) for item in records_for_execution
-                )
-                if ordinals not in {(1,), (1, 2)}:
-                    raise RunTransitionConflict(
-                        "current node has a noncanonical agent-attempt sequence"
-                    )
-
+        attempt_records = _current_attempt_records(
+            connection, limit, current_agent_executions.values()
+        )
         waiting_runs = tuple(
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
@@ -2565,7 +2813,6 @@ class DbosQueries:
                 ActionNodeV3,
             )
         )
-        intent_runs = waiting_runs + ended_action_runs
         logical_keys_by_run = {
             run.run_id: logical_effect_key_for_node(
                 run.run_id,
@@ -2577,32 +2824,11 @@ class DbosQueries:
                     run.current_round_ordinal,
                 ),
             )
-            for run in intent_runs
+            for run in waiting_runs + ended_action_runs
         }
-        intent_records: dict[str, Mapping[Any, Any]] = {}
-        if intent_runs:
-            for record in connection.execute(
-                _bounded_projection_select(
-                    effect_intents,
-                    self._projection_limit,
-                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
-                    field_columns=_INTENT_FIELD_COLUMNS,
-                ).where(
-                    effect_intents.c.logical_key.in_(
-                        tuple(key.value for key in logical_keys_by_run.values())
-                    )
-                )
-            ).mappings():
-                _validate_bounded_record(
-                    record,
-                    self._projection_limit,
-                    payload_columns=_INTENT_PAYLOAD_COLUMNS,
-                    field_columns=_INTENT_FIELD_COLUMNS,
-                )
-                key = str(record["logical_key"])
-                if key in intent_records:
-                    raise RunTransitionConflict("durable intent primary key repeated")
-                intent_records[key] = record
+        intent_records = _intent_records(
+            connection, limit, logical_keys_by_run.values()
+        )
         waiting_key_values = {
             logical_keys_by_run[run.run_id].value for run in waiting_runs
         }
@@ -2610,52 +2836,10 @@ class DbosQueries:
             raise RunTransitionConflict(
                 "WAITING_RECONCILIATION run has no exact durable intent"
             )
-
-        owner_ids = tuple(
-            str(record["reconciliation_owner_command_id"])
-            for record in intent_records.values()
-            if record["reconciliation_owner_command_id"] is not None
+        command_records = _reconciling_command_records(
+            connection, limit, intent_records
         )
-        command_rows = (
-            tuple(
-                connection.execute(
-                    _bounded_projection_select(
-                        reconcile_commands,
-                        self._projection_limit,
-                        payload_columns=_COMMAND_PAYLOAD_COLUMNS,
-                        field_columns=_COMMAND_FIELD_COLUMNS,
-                    ).where(reconcile_commands.c.command_id.in_(owner_ids))
-                ).mappings()
-            )
-            if owner_ids
-            else ()
-        )
-        for record in command_rows:
-            _validate_bounded_record(
-                record,
-                self._projection_limit,
-                payload_columns=_COMMAND_PAYLOAD_COLUMNS,
-                field_columns=_COMMAND_FIELD_COLUMNS,
-            )
-        command_records = {str(record["command_id"]): record for record in command_rows}
-        if set(command_records) != set(owner_ids):
-            raise RunTransitionConflict("reconciling intent command is missing")
-
-        instants: dict[str, tuple[RecordedAt, RecordedAt | None]] = {}
-        run_ids = tuple(run.run_id.value for run in loaded_runs)
-        instant_rows = (
-            connection.execute(
-                sa.select(run_instants).where(run_instants.c.run_id.in_(run_ids))
-            ).mappings()
-            if run_ids
-            else ()
-        )
-        for record in instant_rows:
-            ended = record["ended_at"]
-            instants[str(record["run_id"])] = (
-                RecordedAt(str(record["started_at"])),
-                None if ended is None else RecordedAt(str(ended)),
-            )
+        instants = _run_instants(connection, run_ids)
         orders_by_run = load_run_orders(connection, run_ids)
         ended_v3_runs = tuple(
             run
@@ -2666,114 +2850,37 @@ class DbosQueries:
 
         projections = []
         for run in loaded_runs:
-            reconciliation: WaitingReconciliationProjection | None = None
-            if run.state is RunState.WAITING_RECONCILIATION:
-                logical_key = logical_keys_by_run[run.run_id]
-                intent_record = intent_records[logical_key.value]
-                intent = intent_snapshot_from_record(intent_record)
-                if (
-                    intent.intent.binding.run_id != run.run_id
-                    or intent.intent.binding.workflow_revision_hash != run.revision_hash
-                    or intent.intent.binding.logical_key != logical_key
-                ):
-                    raise RunTransitionConflict(
-                        "waiting run intent binding disagrees with its logical key"
-                    )
-                pending = None
-                owner = intent_record["reconciliation_owner_command_id"]
-                if intent.state is EffectIntentState.RECONCILING:
-                    if owner is None:
-                        raise RunTransitionConflict(
-                            "reconciling intent has no command owner"
-                        )
-                    pending = command_snapshot_from_record(
-                        command_records[str(owner)], intent.intent
-                    )
-                    if pending.state is not ReconcileCommandState.PENDING:
-                        raise RunTransitionConflict(
-                            "reconciling intent command is not pending"
-                        )
-                elif (
-                    intent.state is not EffectIntentState.WAITING_RECONCILIATION
-                    or owner is not None
-                ):
-                    raise RunTransitionConflict(
-                        "waiting reconciliation run has inconsistent intent state"
-                    )
-                reconciliation = WaitingReconciliationProjection(intent, pending)
-            elif run.run_id in logical_keys_by_run:
-                logical_key = logical_keys_by_run[run.run_id]
-                intent_record = intent_records.get(logical_key.value)
-                if intent_record is not None:
-                    intent = intent_snapshot_from_record(intent_record)
-                    if (
-                        intent.intent.binding.run_id != run.run_id
-                        or intent.intent.binding.workflow_revision_hash
-                        != run.revision_hash
-                        or intent.intent.binding.logical_key != logical_key
-                    ):
-                        raise RunTransitionConflict(
-                            "ended run intent binding disagrees with its logical key"
-                        )
-                    if intent.state is EffectIntentState.ABANDONED:
-                        if intent_record["reconciliation_owner_command_id"] is not None:
-                            raise RunTransitionConflict(
-                                "abandoned intent has a command owner"
-                            )
-                        reconciliation = WaitingReconciliationProjection(intent, None)
-            attempt_projections: tuple[AgentAttemptProjection, ...] = ()
-            execution = current_agent_executions.get(run.run_id)
-            if execution is not None:
-                if not isinstance(run, (RunV2, RunV3)):
-                    raise RunTransitionConflict("agent node belongs to a V1 run")
-                records_for_execution = attempt_records.get(execution.value, [])
-                # A succeeded attempt has no public state unless the run
-                # parks on its node's effect, so projecting it would refuse
-                # the read. COMPLETED is that case. FAILED is not: the attempt
-                # is still the current one, and the rail needs it so a list
-                # read does not pose the node as working.
-                # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
-                # is control evidence for an attempt-less refusal, not the
-                # public node ending.
-                if records_for_execution and run.state is not RunState.COMPLETED:
-                    graph = graphs[run.revision_hash]
-                    attempt_projections = tuple(
-                        _current_attempt_projection(
-                            attempt_record,
-                            session=connection,
-                            run=run,
-                            graph=graph,
-                            effect_awaits_reconciliation=(
-                                execution_awaits_effect_reconciliation(
-                                    run.state, reconciliation, execution
-                                )
-                            ),
-                        )
-                        for attempt_record in records_for_execution
-                    )
-                    attempt_projections = tuple(
-                        attempt
-                        for attempt in attempt_projections
-                        if not never_launched_cleanup_on_failed_run(run, attempt)
-                    )
-            instant = instants.get(run.run_id.value)
+            graph = graphs[run.revision_hash]
+            reconciliation = _run_reconciliation(
+                run, logical_keys_by_run, intent_records, command_records
+            )
+            started_at, ended_at = instants.get(run.run_id.value, (None, None))
             terminal_answer, terminal_refusal_output = terminal_results.get(
                 run.run_id.value, (None, None)
             )
             projections.append(
                 RunProjection(
                     run,
-                    graphs[run.revision_hash],
+                    graph,
                     reconciliation,
-                    attempt_projections,
-                    None if instant is None else instant[0],
-                    None if instant is None else instant[1],
-                    orders=orders_by_run.get(run.run_id.value, ()),
-                    fork_origin=origin_by_successor.get(run.run_id.value),
-                    fork_successors=tuple(
-                        successors_by_origin.get(run.run_id.value, ())
+                    _current_attempt_projections(
+                        connection,
+                        run,
+                        graph,
+                        current_agent_executions.get(run.run_id),
+                        attempt_records,
+                        reconciliation,
                     ),
-                    reused_nodes=tuple(reused_by_successor.get(run.run_id.value, ())),
+                    started_at,
+                    ended_at,
+                    orders=orders_by_run.get(run.run_id.value, ()),
+                    fork_origin=forks.origin_by_successor.get(run.run_id.value),
+                    fork_successors=tuple(
+                        forks.successors_by_origin.get(run.run_id.value, ())
+                    ),
+                    reused_nodes=tuple(
+                        forks.reused_by_successor.get(run.run_id.value, ())
+                    ),
                     answer=terminal_answer,
                     refusal_output=terminal_refusal_output,
                 )
