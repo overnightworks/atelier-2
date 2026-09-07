@@ -260,7 +260,8 @@ class AgentAttemptWorkspaceOwner(Protocol):
         ...
 
     def acquire(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
-        """Create this attempt's own directory. Invoke only after its claim won."""
+        """Create this attempt's own directory, or adopt what this owner already
+        leased to it. Invoke only after its claim won."""
         ...
 
     def release(self, attempt_id: AgentAttemptId) -> None:

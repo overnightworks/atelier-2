@@ -250,16 +250,40 @@ class LocalAgentAttemptWorkspaceOwner:
                 )
 
     def acquire(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
+        """Create this attempt's directory, or hand back the one already leased to it.
+
+        A directory already standing under the attempt's name is this owner's
+        only when the mark it wrote names that very directory; then the same
+        lease is answered again and nothing is created. A directory bearing the
+        name without a mark, or under a mark that names another directory, is
+        somebody else's ground and is refused untouched.
+        """
+
         self.preflight()
         name = attempt_id.value
         try:
             os.mkdir(name, SCRATCH_ROOT_MODE, dir_fd=self._root_fd)
-        except FileExistsError as error:
+        except FileExistsError:
+            return self._adopted(attempt_id)
+        return self._created(attempt_id)
+
+    def _adopted(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
+        name = attempt_id.value
+        leased = self._read_lease_mark(attempt_id)
+        standing = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
+        if leased is None or (standing.st_dev, standing.st_ino) != leased:
             raise AgentAttemptWorkspaceRefused(
                 f"the workspace of attempt {name} already exists under "
-                f"{self._scratch_root}: an attempt is started in a directory it "
-                "created itself or in none at all"
-            ) from error
+                f"{self._scratch_root} and is not the directory this owner leased: "
+                "an attempt is started in a directory it created itself or in "
+                "none at all"
+            )
+        return AgentAttemptWorkspaceLease(
+            attempt_id, self._scratch_root / name, standing.st_dev, standing.st_ino
+        )
+
+    def _created(self, attempt_id: AgentAttemptId) -> AgentAttemptWorkspaceLease:
+        name = attempt_id.value
         working_directory = self._scratch_root / name
         created = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
         try:
@@ -309,26 +333,9 @@ class LocalAgentAttemptWorkspaceOwner:
         """
 
         marker = _lease_marker_name(attempt_id)
-        try:
-            with open(
-                os.open(
-                    marker,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=self._root_fd,
-                ),
-                "rb",
-            ) as stream:
-                marked = stream.read(_LEASE_MARKER_BYTES + 1)
-        except FileNotFoundError:
+        leased = self._read_lease_mark(attempt_id)
+        if leased is None:
             return
-        try:
-            leased = _decode_lease_mark(marked)
-        except ValueError as error:
-            raise AgentAttemptWorkspaceRefused(
-                f"the lease mark of attempt {attempt_id.value} under "
-                f"{self._scratch_root} is not one this owner wrote, so the "
-                "directory it names is not this owner's to remove"
-            ) from error
         try:
             standing = os.stat(
                 attempt_id.value, dir_fd=self._root_fd, follow_symlinks=False
@@ -344,6 +351,30 @@ class LocalAgentAttemptWorkspaceOwner:
             )
         _remove_workspace_tree(self._root_fd, attempt_id.value)
         os.unlink(marker, dir_fd=self._root_fd)
+
+    def _read_lease_mark(self, attempt_id: AgentAttemptId) -> tuple[int, int] | None:
+        """The directory identity this owner marked for that attempt, if any."""
+
+        try:
+            with open(
+                os.open(
+                    _lease_marker_name(attempt_id),
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=self._root_fd,
+                ),
+                "rb",
+            ) as stream:
+                marked = stream.read(_LEASE_MARKER_BYTES + 1)
+        except FileNotFoundError:
+            return None
+        try:
+            return _decode_lease_mark(marked)
+        except ValueError as error:
+            raise AgentAttemptWorkspaceRefused(
+                f"the lease mark of attempt {attempt_id.value} under "
+                f"{self._scratch_root} is not one this owner wrote, so the "
+                "directory it names is not this owner's"
+            ) from error
 
     def _mark_leased(self, attempt_id: AgentAttemptId, created: os.stat_result) -> None:
         """Write the provenance of exactly the directory that was just created.
