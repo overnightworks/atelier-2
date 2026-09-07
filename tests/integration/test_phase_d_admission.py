@@ -52,8 +52,11 @@ from atelier2.api.openapi import (
 from atelier2.api.references import encode_public_project_reference
 from atelier2.application.advance_queue import (
     QueueAdvanceCorrupt,
+    QueueAdvanceOutcome,
     QueueAdvanceUnavailable,
     QueueItemBlocked,
+    QueueItemRestarting,
+    QueueItemRestartWithheld,
     QueueRunStarted,
 )
 from atelier2.application.import_project_source_issues import (
@@ -61,6 +64,7 @@ from atelier2.application.import_project_source_issues import (
     ProjectSourceIssuesImported,
     import_project_source_issues,
 )
+from atelier2.application.queue_sweep_reads import validated_snapshot
 from atelier2.application.refusals import (
     DurableStateCorrupt as ApplicationDurableStateCorrupt,
 )
@@ -103,6 +107,7 @@ from atelier2.contracts.queue_projection import (
     QueueProposalRefused,
     QueueProposalRevisionConflict,
     QueueProposalSource,
+    QueueRestartRefusal,
     ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
@@ -599,7 +604,7 @@ def test_a_run_failing_after_its_first_write_leaves_every_row_unchanged(
 
 
 def test_validated_snapshot_carries_the_observation_and_retirement_through() -> None:
-    """advance_queue's revalidation cannot silently drop a snapshot field.
+    """The sweep's revalidation cannot silently drop a snapshot field.
 
     Regression for a real finding: a fixed positional reconstruction dropped
     `observation` and `retired_at` to None on every item it revalidated.
@@ -619,7 +624,7 @@ def test_validated_snapshot_carries_the_observation_and_retirement_through() -> 
         retired_at=retired_at,
     )
 
-    validated = advance_queue_module._validated_snapshot(item)
+    validated = validated_snapshot(item)
 
     assert validated.observation == observation
     assert validated.retired_at == retired_at
@@ -2797,3 +2802,107 @@ def test_the_release_itself_refuses_a_restart_past_the_cap(
     assert isinstance(page, QueueItemsPage)
     (item,) = page.items
     assert item.launch_binding == last
+
+
+def _tracker_showing(*open_items: tuple[str, tuple[str, ...]]) -> FakeTrackerItemSource:
+    return FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            tuple(
+                ObservedOpenTrackerItem(TrackerItemReference(reference), "open", labels)
+                for reference, labels in open_items
+            ),
+            THIRD_READ,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("tracker", "refusal"),
+    [
+        pytest.param(
+            _tracker_showing(("gh:79", ("bereit",))), None, id="open, labelled"
+        ),
+        pytest.param(
+            _tracker_showing(),
+            QueueRestartRefusal.TRACKER_ITEM_CLOSED,
+            id="tracker item closed",
+        ),
+        pytest.param(
+            _tracker_showing(("gh:79", ())),
+            QueueRestartRefusal.LABEL_REMOVED,
+            id="label removed",
+        ),
+        pytest.param(
+            FakeTrackerItemSource(
+                open_items_answer=TrackerSourceUnavailable("the tracker is away")
+            ),
+            QueueRestartRefusal.TRACKER_UNREADABLE,
+            id="tracker unreadable",
+        ),
+    ],
+)
+def test_two_concurrent_sweeps_restart_only_what_the_tracker_still_authorizes(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+    tracker: FakeTrackerItemSource,
+    refusal: QueueRestartRefusal | None,
+) -> None:
+    """The tracker decides before the release, against the real rows.
+
+    An open, labelled item's ended launch is released exactly once across the
+    two sweeps; a closed or unlabelled item, and one the tracker could not be
+    asked about, are released by neither: the binding row keeps its NULL
+    ending, the item keeps its revision and its binding, and both sweeps name
+    the same refusal.
+    """
+
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, "bereit"), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    binding = _bound_and_ended(
+        queue, engine, reference, revision_hash, RunId("failed-run"), RunState.FAILED
+    )
+    monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
+    barrier = Barrier(2)
+
+    def sweep(_index: int) -> tuple[QueueAdvanceOutcome, ...]:
+        barrier.wait()
+        return advance_queue_module.advance_queue(
+            queue,
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+            workflow_document_parser=parse_workflow_document,
+            served_project=PROJECT,
+            tracker=tracker,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = [
+            outcome
+            for sweep_outcomes in executor.map(sweep, range(2))
+            for outcome in sweep_outcomes
+        ]
+
+    restarting = [
+        outcome for outcome in outcomes if isinstance(outcome, QueueItemRestarting)
+    ]
+    withheld = [
+        outcome for outcome in outcomes if isinstance(outcome, QueueItemRestartWithheld)
+    ]
+    (item,) = _snapshots_by_reference(queue).values()
+    assert item.state is QueueItemState.ADMITTED
+    assert item.retired_at is None
+    assert item.admission is not None
+    if refusal is None:
+        assert len(restarting) == 1
+        assert withheld == []
+        assert _stored_bindings(engine) == [("failed-run", RunState.FAILED.value, 0)]
+        assert item.admission.proposal_revision == QueueProjectionRevision(2)
+        assert item.launch_binding is None
+    else:
+        assert restarting == []
+        assert [outcome.refusal for outcome in withheld] == [refusal, refusal]
+        assert _stored_bindings(engine) == [("failed-run", None, 0)]
+        assert item.admission.proposal_revision == QueueProjectionRevision(1)
+        assert item.launch_binding == binding

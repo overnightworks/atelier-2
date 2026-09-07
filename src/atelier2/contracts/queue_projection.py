@@ -203,6 +203,21 @@ class QueueBlockerKind(StrEnum):
     LEGACY_REVIEW_REQUIRED = "LEGACY_REVIEW_REQUIRED"
 
 
+class QueueRestartRefusal(StrEnum):
+    """Why the sweep left an ended launch bound instead of buying its item a run.
+
+    A restart is an unattended, paid decision, so it needs the authority an
+    automatic admission needs (REQ-QUEUE-08): the tracker, read at the instant
+    the sweep decides, still lists the item open and carrying the automation
+    label. Each member names which part of that authority was missing.
+    """
+
+    AUTOMATION_LABEL_UNSET = "AUTOMATION_LABEL_UNSET"
+    TRACKER_UNREADABLE = "TRACKER_UNREADABLE"
+    TRACKER_ITEM_CLOSED = "TRACKER_ITEM_CLOSED"
+    LABEL_REMOVED = "LABEL_REMOVED"
+
+
 @dataclass(frozen=True)
 class QueueProjectPolicyDefaults:
     """What the label sweep proposes for an item the operator has only labelled.
