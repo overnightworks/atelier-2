@@ -27,6 +27,11 @@ from atelier2.contracts.queue_projection import (
     QueueDecisionAuthority,
     QueueProposalSource,
 )
+from atelier2.contracts.runs import UNSUCCESSFUL_TERMINAL_RUN_STATES
+
+_ENDED_RUN_STATE_VALUES = ", ".join(
+    f"'{state.value}'" for state in sorted(UNSUCCESSFUL_TERMINAL_RUN_STATES)
+)
 
 _QUEUE_PROPOSAL_REVISIONS_ITEM_ID = "queue_proposal_revisions.item_id"
 _QUEUE_PROPOSAL_REVISIONS_PROPOSAL_REVISION = (
@@ -226,11 +231,19 @@ queue_dependency_edges = sa.Table(
 queue_launch_bindings = sa.Table(
     "queue_launch_bindings",
     metadata,
-    sa.Column("item_id", sa.Text, primary_key=True),
+    sa.Column("item_id", sa.Text, nullable=False),
     sa.Column("proposal_revision", sa.Integer, nullable=False),
     sa.Column("project_id", sa.Text, nullable=False),
     sa.Column("run_id", sa.Text, nullable=False, unique=True),
     sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    # How the run this binding named ended without an answer, and how many
+    # restarts the item had already spent when the binding was written. An
+    # empty ending is the item's one held binding; every earlier one names the
+    # ending that gave it back, so the history of a restarted item stays
+    # readable instead of being overwritten.
+    sa.Column("ended_run_state", sa.Text, nullable=True),
+    sa.Column("restart_ordinal", sa.Integer, nullable=False),
+    sa.PrimaryKeyConstraint("item_id", "proposal_revision"),
     sa.ForeignKeyConstraint(
         ("item_id", "proposal_revision", "project_id"),
         (
@@ -248,4 +261,6 @@ queue_launch_bindings = sa.Table(
         "length(workflow_revision_hash) = 64 "
         "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
+    sa.CheckConstraint(f"ended_run_state IN ({_ENDED_RUN_STATE_VALUES})"),
+    sa.CheckConstraint("restart_ordinal >= 0"),
 )

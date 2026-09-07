@@ -39,6 +39,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
+    QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
     QueueProjectPolicyDefaults,
@@ -46,6 +47,7 @@ from atelier2.contracts.queue_projection import (
     QueueProposal,
     QueueProposalOutcome,
     QueueProposalSource,
+    ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -57,6 +59,8 @@ from atelier2.ports.issue_observation import (
 )
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
+    QueueLaunchReleased,
+    QueueLaunchRunOpen,
     QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
     ReadQueueProjectPolicyResult,
@@ -134,6 +138,7 @@ class _QueueProjectionFake:
             QueueProjectPolicyRevision(PROJECT, 1, 2, LABEL)
         )
     )
+    released: list[ReleaseQueueLaunch] = field(default_factory=list)
 
     def current_policy(self, project: ProjectId) -> ReadQueueProjectPolicyResult:
         assert project == PROJECT
@@ -184,6 +189,13 @@ class _QueueProjectionFake:
 
     def reserve_launch(self, binding: object) -> Never:
         raise AssertionError("admission is not a start: no launch is reserved")
+
+    def read_launch(self, binding: QueueLaunchBinding) -> QueueLaunchRunOpen:
+        return QueueLaunchRunOpen()
+
+    def release_launch(self, command: ReleaseQueueLaunch) -> QueueLaunchReleased:
+        self.released.append(command)
+        return QueueLaunchReleased()
 
     def reconcile_open_items(
         self, project: object, items: object, observed_at: object

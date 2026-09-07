@@ -54,6 +54,12 @@ borrowing `FAILED` for something the operator chose. Issue #439 P1 gives
 word its own end-of-run seam."""
 
 
+UNSUCCESSFUL_TERMINAL_RUN_STATES = frozenset(TERMINAL_RUN_STATES - {RunState.COMPLETED})
+"""The two ways a run ends without an answer. A reader asking whether a run
+ended badly asks this rather than spelling the pair again, so a further ending
+reaches every such reader at once."""
+
+
 FIRST_ROUND_ORDINAL = 1
 """The round a run stands in until a declared loop turns it on.
 

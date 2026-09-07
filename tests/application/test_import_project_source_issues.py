@@ -23,6 +23,8 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
     QueueItemId,
     QueueItemTrackerObservation,
+    QueueLaunchBinding,
+    ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -38,6 +40,8 @@ from atelier2.ports.issue_observation import (
 )
 from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
+    QueueLaunchReleased,
+    QueueLaunchRunOpen,
     ReconcileQueueItemsResult,
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
@@ -58,6 +62,7 @@ class _QueueRecording:
             RecordedAt,
         ]
     ] = field(default_factory=list)
+    released: list[ReleaseQueueLaunch] = field(default_factory=list)
 
     def reconcile_open_items(
         self,
@@ -82,6 +87,13 @@ class _QueueRecording:
 
     def reserve_launch(self, binding: object) -> Never:
         raise AssertionError("an import never reserves a launch")
+
+    def read_launch(self, binding: QueueLaunchBinding) -> QueueLaunchRunOpen:
+        return QueueLaunchRunOpen()
+
+    def release_launch(self, command: ReleaseQueueLaunch) -> QueueLaunchReleased:
+        self.released.append(command)
+        return QueueLaunchReleased()
 
     def list_items(self, after: object, limit: object) -> Never:
         raise AssertionError("an import never reads the projection")

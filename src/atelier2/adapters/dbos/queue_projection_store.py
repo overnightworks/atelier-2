@@ -8,6 +8,14 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.queue_launch_runs import (
+    HELD_BINDING,
+    active_launch_count,
+    held_binding,
+    read_launch,
+    release_ended_launch,
+    restarts_spent,
+)
 from atelier2.adapters.dbos.queue_projection_records import (
     policy_from_record,
     policy_row,
@@ -47,15 +55,11 @@ from atelier2.contracts.queue_projection import (
     QueueProposal,
     QueueProposalRefusal,
     QueueProposalRefused,
+    ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
 )
-from atelier2.contracts.runs import (
-    TERMINAL_RUN_STATES,
-    RunId,
-    RunState,
-    WorkflowRevisionHash,
-)
+from atelier2.contracts.runs import UNSUCCESSFUL_TERMINAL_RUN_STATES, RunState
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.queue_projection import (
@@ -73,8 +77,10 @@ from atelier2.ports.queue_projection import (
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
     QueueReadUnavailable,
+    ReadQueueLaunchResult,
     ReadQueueProjectPolicyResult,
     ReconcileQueueItemsResult,
+    ReleaseQueueLaunchResult,
     ReserveQueueLaunchResult,
 )
 
@@ -82,10 +88,6 @@ from atelier2.ports.queue_projection import (
 class DurableQueueAdmissionConflict(RuntimeError):
     """Durable rows do not form the exact admission CAS transition expected."""
 
-
-_UNSUCCESSFUL_TERMINAL_RUN_STATE_VALUES = frozenset(
-    state.value for state in TERMINAL_RUN_STATES if state is not RunState.COMPLETED
-)
 
 # The SQL realization of `contracts.queue_projection.queue_start_order_key`: the
 # rank lives on `queue_proposal_revisions.priority_rank`, joined by the item's
@@ -186,25 +188,7 @@ def _snapshot_from_record(
                 QueueDecisionAuthority(decision_authority),
                 QueueProjectionRevision(int(proposal_revision)),
             )
-    binding_record = (
-        connection.execute(
-            sa.select(queue_launch_bindings).where(
-                queue_launch_bindings.c.item_id == item_reference.item_id.value
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    launch_binding = (
-        None
-        if binding_record is None
-        else QueueLaunchBinding(
-            item_reference.item_id,
-            QueueProjectionRevision(int(binding_record["proposal_revision"])),
-            RunId(str(binding_record["run_id"])),
-            WorkflowRevisionHash(str(binding_record["workflow_revision_hash"])),
-        )
-    )
+    launch_binding = held_binding(connection, item_reference.item_id)
     blocker = _blocker_for(
         connection,
         item_reference,
@@ -273,8 +257,11 @@ def _blocker_for_unlaunched_prerequisites(
         .select_from(
             queue_dependency_edges.outerjoin(
                 queue_launch_bindings,
-                queue_dependency_edges.c.prerequisite_item_id
-                == queue_launch_bindings.c.item_id,
+                sa.and_(
+                    queue_dependency_edges.c.prerequisite_item_id
+                    == queue_launch_bindings.c.item_id,
+                    HELD_BINDING,
+                ),
             ).outerjoin(runs, queue_launch_bindings.c.run_id == runs.c.run_id)
         )
         .where(
@@ -290,7 +277,7 @@ def _blocker_for_unlaunched_prerequisites(
             open_prerequisite = True
             continue
         prerequisite_state = RunState(str(value))
-        if prerequisite_state.value in _UNSUCCESSFUL_TERMINAL_RUN_STATE_VALUES:
+        if prerequisite_state in UNSUCCESSFUL_TERMINAL_RUN_STATES:
             failed_prerequisite = True
         elif prerequisite_state is not RunState.COMPLETED:
             open_prerequisite = True
@@ -560,17 +547,9 @@ class DbosQueueProjectionStore:
     def reserve_launch(self, binding: QueueLaunchBinding) -> ReserveQueueLaunchResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                existing = (
-                    connection.execute(
-                        sa.select(queue_launch_bindings).where(
-                            queue_launch_bindings.c.item_id == binding.item_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                existing = held_binding(connection, binding.item_id)
                 if existing is not None:
-                    return QueueLaunchAlreadyBound(_binding_from_record(existing))
+                    return QueueLaunchAlreadyBound(existing)
                 record = (
                     connection.execute(
                         sa.select(queue_items).where(
@@ -584,14 +563,11 @@ class DbosQueueProjectionStore:
                     return DurableStateCorrupt()
                 snapshot = _snapshot_from_record(connection, record)
                 blockers = list(snapshot.blockers)
-                policy = self._current_policy(
-                    connection, snapshot.item_reference.project
-                )
+                project = snapshot.item_reference.project
+                policy = self._current_policy(connection, project)
                 if (
                     policy is not None
-                    and self._active_launch_count(
-                        connection, snapshot.item_reference.project
-                    )
+                    and active_launch_count(connection, project)
                     >= policy.maximum_active_runs
                 ):
                     blockers.append(QueueBlockerKind.CAP_REACHED)
@@ -619,9 +595,10 @@ class DbosQueueProjectionStore:
                     queue_launch_bindings.insert().values(
                         item_id=binding.item_id.value,
                         proposal_revision=binding.proposal_revision.value,
-                        project_id=snapshot.item_reference.project.value,
+                        project_id=project.value,
                         run_id=binding.run_id.value,
                         workflow_revision_hash=binding.workflow_revision_hash.value,
+                        restart_ordinal=restarts_spent(connection, binding.item_id),
                     )
                 )
                 return QueueLaunchReserved(binding)
@@ -629,6 +606,12 @@ class DbosQueueProjectionStore:
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
+
+    def read_launch(self, binding: QueueLaunchBinding) -> ReadQueueLaunchResult:
+        return read_launch(self._engine, binding)
+
+    def release_launch(self, command: ReleaseQueueLaunch) -> ReleaseQueueLaunchResult:
+        return release_ended_launch(self._engine, command)
 
     def list_items(
         self, after: QueueItemId | None, limit: int
@@ -735,29 +718,6 @@ class DbosQueueProjectionStore:
             .one_or_none()
         )
         return None if record is None else policy_from_record(record)
-
-    @staticmethod
-    def _active_launch_count(connection: Connection, project: ProjectId) -> int:
-        count = connection.scalar(
-            sa.select(sa.func.count())
-            .select_from(
-                queue_launch_bindings.outerjoin(
-                    runs, queue_launch_bindings.c.run_id == runs.c.run_id
-                )
-            )
-            .where(
-                queue_launch_bindings.c.project_id == project.value,
-                sa.or_(
-                    runs.c.run_id.is_(None),
-                    runs.c.state.not_in(
-                        tuple(state.value for state in TERMINAL_RUN_STATES)
-                    ),
-                ),
-            )
-        )
-        if count is None:
-            raise ValueError("active queue launch count could not be read")
-        return int(count)
 
     def _page_in_state(
         self, state: QueueItemState | None, after: QueueItemId | None, limit: int
@@ -893,12 +853,3 @@ def _closes_a_dependency_cycle(connection: Connection, command: PlanQueueItem) -
         return False
 
     return any(reaches_itself(node) for node in tuple(graph))
-
-
-def _binding_from_record(record: Mapping[Any, Any]) -> QueueLaunchBinding:
-    return QueueLaunchBinding(
-        QueueItemId(str(record["item_id"])),
-        QueueProjectionRevision(int(record["proposal_revision"])),
-        RunId(str(record["run_id"])),
-        WorkflowRevisionHash(str(record["workflow_revision_hash"])),
-    )

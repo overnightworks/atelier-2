@@ -38,6 +38,7 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_LAUNCH_RESTARTS,
     ConfirmQueueProposal,
     PlanQueueItem,
     QueueAdmissionOutcome,
@@ -55,12 +56,18 @@ from atelier2.contracts.queue_projection import (
     QueueProposal,
     QueueProposalAlreadyCurrent,
     QueueProposalSource,
+    ReleaseQueueLaunch,
     WorkItemReference,
     queue_start_order_key,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    UNSUCCESSFUL_TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_REVISION
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
@@ -88,7 +95,13 @@ from atelier2.ports.queue_projection import (
     QueueItemsReader,
     QueueLaunchAlreadyBound,
     QueueLaunchBlocked,
+    QueueLaunchReleased,
+    QueueLaunchReleaseRefused,
     QueueLaunchReserved,
+    QueueLaunchRestartsExhausted,
+    QueueLaunchRunEnded,
+    QueueLaunchRunOpen,
+    QueueLaunchRuns,
     QueuePolicyReader,
     QueueProjection,
     QueueProjectPolicyAbsent,
@@ -132,7 +145,33 @@ class QueueItemBlocked:
     blockers: tuple[QueueBlockerKind, ...]
 
 
-type QueueAdvanceOutcome = QueueRunStarted | QueueRunAlreadyActive | QueueItemBlocked
+@dataclass(frozen=True)
+class QueueItemRestarting:
+    """The item's ended run gave its binding back; the next sweep starts it anew."""
+
+    item_id: QueueItemId
+    binding: QueueLaunchBinding
+    ended_state: RunState
+    restarts_spent: int
+
+
+@dataclass(frozen=True)
+class QueueItemRestartsExhausted:
+    """The item keeps its ended run: it has spent every restart it may have."""
+
+    item_id: QueueItemId
+    binding: QueueLaunchBinding
+    ended_state: RunState
+    restarts_spent: int
+
+
+type QueueAdvanceOutcome = (
+    QueueRunStarted
+    | QueueRunAlreadyActive
+    | QueueItemBlocked
+    | QueueItemRestarting
+    | QueueItemRestartsExhausted
+)
 
 
 @dataclass(frozen=True)
@@ -365,7 +404,7 @@ def advance_queue(
     ]
     ordered = sorted(admitted_items, key=queue_start_order_key)
     outcomes = (
-        _advance_one(
+        _released_or_advanced(
             item,
             queue,
             catalog,
@@ -377,6 +416,88 @@ def advance_queue(
         for item in ordered
     )
     return tuple(outcome for outcome in outcomes if outcome is not None)
+
+
+def _released_or_advanced(
+    item: QueueItemSnapshot,
+    queue: QueueProjection,
+    catalog: CatalogResolver,
+    starter: DurablePublishedRunStarter,
+    workflow_document_parser: WorkflowDocumentParser | None,
+    served_project: ProjectId | None,
+    tracker: TrackerItemSource | None,
+) -> QueueAdvanceOutcome | None:
+    """Give back an ended launch before deciding anything else about the item.
+
+    A sweep that releases an item does not also start it: the item rejoins the
+    start order at the revision the release wrote, where the cap and the
+    priority decide about it again like any other admitted item.
+    """
+
+    if served_project is not None and item.item_reference.project != served_project:
+        return None
+    released = _release_ended_launch(item, queue)
+    if released is not None:
+        return released
+    return _advance_one(
+        item, queue, catalog, starter, workflow_document_parser, served_project, tracker
+    )
+
+
+def _release_ended_launch(
+    item: QueueItemSnapshot, queue: QueueLaunchRuns
+) -> QueueItemRestarting | QueueItemRestartsExhausted | None:
+    """Give back the binding of a run that ended without an answer.
+
+    `None` for every launch this sweep treats exactly as it always did: an item
+    with no binding, a run still going, a reservation whose start never landed,
+    and a COMPLETED run -- that run is the item's answer, and a second one
+    would spend money on a question already answered.
+    """
+
+    binding = item.launch_binding
+    if binding is None:
+        return None
+    ended = _ended_launch(queue, binding)
+    if ended is None or ended.state not in UNSUCCESSFUL_TERMINAL_RUN_STATES:
+        return None
+    item_id = binding.item_id
+    # The release holds the cap itself; this answer only spares the transaction.
+    if ended.restarts_spent >= MAXIMUM_QUEUE_LAUNCH_RESTARTS:
+        return QueueItemRestartsExhausted(
+            item_id, binding, ended.state, ended.restarts_spent
+        )
+    match queue.release_launch(ReleaseQueueLaunch(binding, ended.state)):
+        case QueueLaunchReleased():
+            return QueueItemRestarting(
+                item_id, binding, ended.state, ended.restarts_spent + 1
+            )
+        case QueueLaunchRestartsExhausted(restarts_spent=spent):
+            return QueueItemRestartsExhausted(item_id, binding, ended.state, spent)
+        case QueueLaunchReleaseRefused():
+            return None
+        case DurableWriteUnavailable():
+            raise QueueAdvanceUnavailable("the ended launch could not be released")
+        case PortDurableStateCorrupt():
+            raise QueueAdvanceCorrupt("the ended launch found corrupt state")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _ended_launch(
+    queue: QueueLaunchRuns, binding: QueueLaunchBinding
+) -> QueueLaunchRunEnded | None:
+    match queue.read_launch(binding):
+        case QueueLaunchRunEnded() as ended:
+            return ended
+        case QueueLaunchRunOpen():
+            return None
+        case QueueReadUnavailable():
+            raise QueueAdvanceUnavailable("a bound run's state could not be read")
+        case PortDurableStateCorrupt():
+            raise QueueAdvanceCorrupt("a bound run contradicted its own contract")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _projected_items(
@@ -409,8 +530,6 @@ def _advance_one(
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
 ) -> QueueAdvanceOutcome | None:
-    if served_project is not None and item.item_reference.project != served_project:
-        return None
     binding = item.launch_binding
     if binding is None:
         proposal = item.proposal

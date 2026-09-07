@@ -318,8 +318,12 @@ is never this instance's item either: the sweep leaves it untouched and moves
 on, rather than treating it as corrupt state. The sweep fires at process
 launch (`DbosRuntime.launch()`), then on the runtime's own tick every
 `QUEUE_SWEEP_INTERVAL_SECONDS`, and again the moment an admission commits. An
-item whose run ended stays bound to that run: releasing that binding after a
-failed or cancelled run, and rendering a refused start at its item, are open
+item whose run ended `FAILED` or `CANCELLED` is given back: the sweep writes
+that ending onto the binding, carries the item's proposal forward one revision
+with its prerequisites, and the next sweep starts it as a differently
+identified run, up to `MAXIMUM_QUEUE_LAUNCH_RESTARTS` times (two, because every
+restart is paid for). At the cap the item stays bound to its last ending, and a
+`COMPLETED` run binds for good. Rendering a refused start at its item is open
 #79 work.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent

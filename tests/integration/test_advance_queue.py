@@ -13,7 +13,7 @@ function itself.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Never, cast
 
 import pytest
@@ -21,13 +21,18 @@ import pytest
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.advance_queue import (
     QueueItemBlocked,
+    QueueItemRestarting,
+    QueueItemRestartsExhausted,
+    QueueRunAlreadyActive,
     QueueRunStarted,
     advance_queue,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName, CatalogLineageId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import ObservedWorkItemOrderValue, WorkItemOrderValue
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_LAUNCH_RESTARTS,
     QueueAdmission,
     QueueAdmissionRationale,
     QueueAutomationDisposition,
@@ -40,6 +45,7 @@ from atelier2.contracts.queue_projection import (
     QueuePriorityRank,
     QueueProjectionRevision,
     QueueProposal,
+    ReleaseQueueLaunch,
     TrackerItemReference,
     WorkItemReference,
     queue_start_order_key,
@@ -49,7 +55,7 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
-from atelier2.contracts.runs import Run, RunState
+from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_REVISION,
@@ -61,6 +67,7 @@ from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurablePublishedRunResult,
     DurableRunCreated,
+    DurableRunExisting,
     DurableWorkItemOrderUnread,
     StartPublishedRunRequest,
     StartPublishedRunRequestV3,
@@ -72,7 +79,14 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     ResolveCatalogNameResult,
 )
-from atelier2.ports.queue_projection import QueueItemsPage, QueueLaunchReserved
+from atelier2.ports.queue_projection import (
+    QueueItemsPage,
+    QueueLaunchReleased,
+    QueueLaunchReserved,
+    QueueLaunchRunEnded,
+    QueueLaunchRunOpen,
+    ReadQueueLaunchResult,
+)
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
@@ -117,6 +131,43 @@ def _admitted(
     )
 
 
+def _bound(tracker: str, rank: int, run_id: RunId) -> QueueItemSnapshot:
+    """An admitted item holding the one launch its admitted proposal reserved."""
+
+    item = _admitted(tracker, rank)
+    admission = item.admission
+    assert admission is not None
+    assert admission.proposal_revision is not None
+    return replace(
+        item,
+        launch_binding=QueueLaunchBinding(
+            item.item_reference.item_id,
+            admission.proposal_revision,
+            run_id,
+            WorkflowRevisionHash(REVISION_HASH.value),
+        ),
+    )
+
+
+def _readmitted(item: QueueItemSnapshot) -> QueueItemSnapshot:
+    """What the store answers about a released item: unbound, one revision on."""
+
+    admission = item.admission
+    assert admission is not None
+    assert admission.proposal_revision is not None
+    return replace(
+        item,
+        revision=QueueProjectionRevision(item.revision.value + 1),
+        admission=replace(
+            admission,
+            proposal_revision=QueueProjectionRevision(
+                admission.proposal_revision.value + 1
+            ),
+        ),
+        launch_binding=None,
+    )
+
+
 def _legacy_admitted(tracker: str) -> QueueItemSnapshot:
     """An item admitted before proposals existed: no proposal, no rank."""
 
@@ -132,7 +183,9 @@ class _QueueRecording:
     """The queue projection reduced to what `advance_queue` may do with it."""
 
     page: QueueItemsPage
+    endings: dict[RunId, ReadQueueLaunchResult] = field(default_factory=dict)
     reserved: list[QueueLaunchBinding] = field(default_factory=list)
+    released: list[ReleaseQueueLaunch] = field(default_factory=list)
 
     def list_items(self, after: QueueItemId | None, limit: int) -> QueueItemsPage:
         assert after is None, "this fixture serves exactly one page"
@@ -141,6 +194,25 @@ class _QueueRecording:
     def reserve_launch(self, binding: QueueLaunchBinding) -> QueueLaunchReserved:
         self.reserved.append(binding)
         return QueueLaunchReserved(binding)
+
+    def read_launch(self, binding: QueueLaunchBinding) -> ReadQueueLaunchResult:
+        return self.endings.get(binding.run_id, QueueLaunchRunOpen())
+
+    def release_launch(self, command: ReleaseQueueLaunch) -> QueueLaunchReleased:
+        """Answer the release, and serve what the store would answer afterwards."""
+
+        self.released.append(command)
+        released_item = command.binding.item_id
+        self.page = QueueItemsPage(
+            tuple(
+                _readmitted(item)
+                if item.item_reference.item_id == released_item
+                else item
+                for item in self.page.items
+            ),
+            self.page.next_after,
+        )
+        return QueueLaunchReleased()
 
     def plan(self, command: object) -> Never:
         raise AssertionError("advance_queue never plans a proposal")
@@ -452,3 +524,102 @@ def test_a_foreign_project_item_is_skipped_while_a_served_item_still_starts() ->
     assert [binding.item_id for binding in queue.reserved] == [
         served_item.item_reference.item_id
     ]
+
+
+@pytest.mark.parametrize("ending", [RunState.FAILED, RunState.CANCELLED])
+def test_an_item_whose_run_ended_badly_is_released_and_started_again(
+    ending: RunState,
+) -> None:
+    """The sweep that gives the binding back does not also start the item.
+
+    Two sweeps, because that is what the runtime does: the first records the
+    ending and returns the item to the start order one proposal revision on,
+    and the second starts it under a run named after that new revision -- never
+    the run that already ended.
+    """
+
+    ended = RunId("run-that-ended")
+    item = _bound("gh:610", rank=1, run_id=ended)
+    queue = _QueueRecording(
+        QueueItemsPage((item,), None), endings={ended: QueueLaunchRunEnded(ending, 0)}
+    )
+    catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
+    starter = _ScriptedStarter([_created])
+
+    (released,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+    (started,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+
+    assert item.launch_binding is not None
+    assert released == QueueItemRestarting(
+        item.item_reference.item_id, item.launch_binding, ending, 1
+    )
+    assert isinstance(started, QueueRunStarted)
+    assert started.binding.run_id != ended
+    assert started.binding.proposal_revision == QueueProjectionRevision(2)
+
+
+def test_a_completed_run_keeps_its_item_bound_and_releases_nothing() -> None:
+    """A completed run is the item's answer; a second one would pay twice."""
+
+    completed = RunId("run-that-answered")
+    item = _bound("gh:620", rank=1, run_id=completed)
+    queue = _QueueRecording(
+        QueueItemsPage((item,), None),
+        endings={completed: QueueLaunchRunEnded(RunState.COMPLETED, 0)},
+    )
+    catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
+    starter = _ScriptedStarter(
+        [
+            DurableRunExisting(
+                Run(
+                    completed,
+                    WorkflowRevisionHash(REVISION_HASH.value),
+                    RunState.COMPLETED,
+                    "final",
+                    0,
+                    0,
+                    Sha256Hash("f" * 64),
+                )
+            )
+        ]
+    )
+
+    (outcome,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+
+    assert queue.released == []
+    assert isinstance(outcome, QueueRunAlreadyActive)
+    assert outcome.binding.run_id == completed
+
+
+@pytest.mark.parametrize(
+    ("spent", "releases"),
+    [(MAXIMUM_QUEUE_LAUNCH_RESTARTS - 1, True), (MAXIMUM_QUEUE_LAUNCH_RESTARTS, False)],
+)
+def test_an_item_is_restarted_up_to_the_cap_and_then_stays_bound(
+    spent: int, releases: bool
+) -> None:
+    """Money is spent per restart, so the last ending is where the item stops."""
+
+    ended = RunId("run-that-kept-failing")
+    item = _bound("gh:630", rank=1, run_id=ended)
+    queue = _QueueRecording(
+        QueueItemsPage((item,), None),
+        endings={ended: QueueLaunchRunEnded(RunState.FAILED, spent)},
+    )
+    catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
+
+    (outcome,) = advance_queue(
+        queue, catalog, _ScriptedStarter([]), workflow_document_parser=None
+    )
+
+    assert bool(queue.released) is releases
+    assert item.launch_binding is not None
+    assert outcome == (
+        QueueItemRestarting(
+            item.item_reference.item_id, item.launch_binding, RunState.FAILED, spent + 1
+        )
+        if releases
+        else QueueItemRestartsExhausted(
+            item.item_reference.item_id, item.launch_binding, RunState.FAILED, spent
+        )
+    )
