@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Protocol
 
-from atelier2.contracts.effect_requests import HeadBranch
+from atelier2.contracts.effect_requests import ClaimReasons, HeadBranch
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.secret_redaction import redact_credentials
 
@@ -116,7 +116,7 @@ class WorkItemClaims(Protocol):
         branch: HeadBranch,
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
-        out_of_order_reason: str | None,
+        reasons: ClaimReasons,
     ) -> ClaimReceipt | ClaimRefusal: ...
 
     def read_back(self, item: int, claim_id: str) -> ClaimReadback:

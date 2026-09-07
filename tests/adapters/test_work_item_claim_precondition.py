@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.work_item_claims import (
 from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
+    ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
     HeadBranch,
@@ -76,6 +77,10 @@ BRANCH = HeadBranch("atelier2/work-item/claim-before-build")
 SCOPE = ("src/atelier2/adapters/dbos/work_item_claims.py", "tests")
 CLAIM_ID = work_item_claim_id(RUN_ID, ITEM)
 AGENT = f"atelier2 run {RUN_ID.value}"
+REASONS = ClaimReasons(
+    "the scope is the item body's own cut",
+    "admitted by the operator through the queue label `bereit`",
+)
 LEDGER_BINDING = EffectAdapterBinding(
     AdapterRevision("agent-claim-cli/0.12.0"),
     EffectDestination("/checkout"),
@@ -85,7 +90,7 @@ LEDGER_BINDING = EffectAdapterBinding(
 
 
 def _intent() -> EffectIntent:
-    request = ClaimWorkItem(ITEM, CLAIM_ID, BRANCH, SCOPE)
+    request = ClaimWorkItem(ITEM, CLAIM_ID, BRANCH, SCOPE, REASONS)
     return EffectIntent(
         EffectBinding(
             LogicalEffectKey("atelier2-work-item-claim-test"),
@@ -120,8 +125,9 @@ def _held(claims: FakeWorkItemClaims) -> WorkItemClaimHeld | WorkItemClaimRefuse
     return hold_prepared_claim(_intent(), WorkItemClaimLedger(claims, LEDGER_BINDING))
 
 
-def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
-    """The claim carries the run's identity and the item's own paths, and no more."""
+def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() -> None:
+    """The claim carries the run's identity, the item's own paths and the
+    reasons that were prepared with it, and no more."""
 
     claims = FakeWorkItemClaims(claim_answer=_receipt())
 
@@ -135,7 +141,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
             request.branch,
             request.scope,
             request.claim_id,
-            request.out_of_order_reason,
+            request.reasons,
         )
         for request in claims.claim_requests
     ] == [
@@ -145,7 +151,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
             BRANCH,
             tuple(PurePosixPath(path) for path in SCOPE),
             CLAIM_ID,
-            None,
+            REASONS,
         )
     ]
     assert outcome == WorkItemClaimHeld(

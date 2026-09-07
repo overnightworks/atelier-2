@@ -49,6 +49,7 @@ from atelier2.adapters.github.tracker_reference import github_issue_number_or_no
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
     ClaimedLanePath,
+    ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
     work_item_claim_id,
@@ -84,6 +85,11 @@ from atelier2.ports.work_item_claims import (
 LOGICAL_KEY_FIELD = "logical_key"
 REFUSAL_FIELD = "refusal"
 HELD_FIELD = "held"
+WHOLE_SCOPE_REASON = (
+    "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` "
+    "regelt; der Schnitt ist der des Items"
+)
+"""Why the ledger's width check is waived: the scope is the item's own cut."""
 _UNCONFIGURED_CLAIM_LEDGER = AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED.value
 
 _REFUSAL_WORDS = {
@@ -213,6 +219,7 @@ def _requested_claim(
         work_item_claim_id(run_id, item),
         head_branch_for_work_item(order, project_id),
         order.scope.paths,
+        ClaimReasons(WHOLE_SCOPE_REASON, None),
     )
 
 
@@ -241,7 +248,7 @@ def hold_prepared_claim(
             request.head_branch,
             scope,
             request.claim_id,
-            None,
+            request.reasons,
         )
         if isinstance(standing, ClaimRefusal):
             return WorkItemClaimRefused(
