@@ -7,11 +7,18 @@ and is not touched by these tests.
 
 from __future__ import annotations
 
+import os
+import shutil
+import stat
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
+from atelier2.adapters.claim_checkouts import (
+    ClaimCheckoutRootRefused,
+    LocalClaimCheckouts,
+)
 from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.runs import RunId
@@ -53,6 +60,15 @@ class Project:
             for line in listed.splitlines()
             if line.startswith("worktree ")
         }
+
+    def state(self) -> tuple[str, str, str]:
+        """What the project checkout stands on: HEAD, its index, and `main`."""
+
+        return (
+            run_git(self.checkout, "rev-parse", "HEAD"),
+            run_git(self.checkout, "write-tree"),
+            run_git(self.checkout, "rev-parse", "refs/heads/main"),
+        )
 
     def lane_ref(self) -> str:
         """The commit the lane branch stands at, or nothing while there is none."""
@@ -178,19 +194,78 @@ def test_a_standing_checkout_at_another_pin_is_not_this_runs(tmp_path: Path) -> 
         project.checkouts.open(A_RUN, LANE, later)
 
 
-def test_a_path_holding_foreign_content_is_refused_untouched(tmp_path: Path) -> None:
+def a_plain_directory(project: Project, path: Path) -> None:
+    path.mkdir()
+    (path / ".env").write_text("the operator's own secret", encoding="utf-8")
+
+
+def a_link_to_the_project_checkout(project: Project, path: Path) -> None:
+    path.symlink_to(project.checkout)
+
+
+def a_plain_clone(project: Project, path: Path) -> None:
+    run_git(project.checkout, "clone", "--quiet", str(project.checkout), str(path))
+
+
+def a_worktree_of_another_repository(project: Project, path: Path) -> None:
+    other = project.checkout.parent / "other"
+    pin = git_project(other, {"other.txt": "other\n"})
+    run_git(
+        other, "worktree", "add", "--quiet", "-B", LANE.value, str(path), pin.commit
+    )
+
+
+def snapshot(directory: Path) -> dict[str, bytes]:
+    """Every file under the directory, its repository administration included."""
+
+    return {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def working_tree(directory: Path) -> dict[str, bytes]:
+    """The files a person works on there; the lane ref beneath `.git` is not one."""
+
+    return {
+        name: body
+        for name, body in snapshot(directory).items()
+        if not name.startswith(".git/")
+    }
+
+
+@pytest.mark.parametrize(
+    ("standing", "refused_as"),
+    [
+        (a_plain_directory, "no checkout"),
+        (a_link_to_the_project_checkout, "a link or the project checkout"),
+        (a_plain_clone, "not a linked worktree"),
+        (a_worktree_of_another_repository, "not a linked worktree"),
+    ],
+    ids=["plain directory", "link to the checkout", "clone", "foreign worktree"],
+)
+def test_what_is_not_this_runs_checkout_is_refused_untouched(
+    tmp_path: Path,
+    standing: Callable[[Project, Path], None],
+    refused_as: str,
+) -> None:
+    """Found again means a linked worktree of this checkout, never what else stands."""
+
     project = Project(tmp_path)
     occupied = project.checkouts.open(A_RUN, LANE, project.pin)
     project.checkouts.close(A_RUN)
-    occupied.mkdir()
-    (occupied / ".env").write_text("the operator's own secret", encoding="utf-8")
+    standing(project, occupied)
+    before = (working_tree(project.checkout), snapshot(occupied), project.state())
 
-    with pytest.raises(ClaimCheckoutRefused, match="no checkout"):
+    with pytest.raises(ClaimCheckoutRefused, match=refused_as):
         project.checkouts.open(A_RUN, LANE, project.pin)
 
-    assert (occupied / ".env").read_text(encoding="utf-8") == (
-        "the operator's own secret"
-    )
+    assert (
+        working_tree(project.checkout),
+        snapshot(occupied),
+        project.state(),
+    ) == before
 
 
 def test_a_lane_branch_a_standing_checkout_holds_refuses_the_next_run(
@@ -219,6 +294,58 @@ def test_close_removes_the_checkout_and_its_administration_and_keeps_the_lane_re
     assert not (project.checkout / ".git" / "worktrees").exists()
     assert project.registered_worktrees() == {str(project.checkout)}
     assert project.lane_ref() == project.pin.commit
+
+
+def test_closing_one_run_leaves_another_runs_vanished_checkout_registered(
+    tmp_path: Path,
+) -> None:
+    """A locked entry survives the prune; only its own run's close takes it."""
+
+    project = Project(tmp_path)
+    first = project.checkouts.open(A_RUN, LANE, project.pin)
+    second = project.checkouts.open(
+        ANOTHER_RUN, HeadBranch("atelier2/work-item/other"), project.pin
+    )
+    shutil.rmtree(first)
+
+    project.checkouts.close(ANOTHER_RUN)
+
+    assert project.registered_worktrees() == {str(project.checkout), str(first)}
+    assert not second.exists()
+
+    project.checkouts.close(A_RUN)
+
+    assert project.registered_worktrees() == {str(project.checkout)}
+
+
+def test_open_and_close_leave_the_project_checkout_where_it_stood(
+    tmp_path: Path,
+) -> None:
+    project = Project(tmp_path)
+    (project.checkout / "README.md").write_text("edited, unstaged\n", encoding="utf-8")
+    run_git(project.checkout, "add", "README.md")
+    before = (project.state(), working_tree(project.checkout))
+
+    project.checkouts.open(A_RUN, LANE, project.pin)
+    project.checkouts.close(A_RUN)
+
+    assert (project.state(), working_tree(project.checkout)) == before
+
+
+def test_a_root_inside_the_project_checkout_is_refused(tmp_path: Path) -> None:
+    project = Project(tmp_path)
+
+    with pytest.raises(ClaimCheckoutRootRefused, match="inside"):
+        LocalClaimCheckouts(project.checkout, project.checkout / "claims")
+
+
+def test_an_existing_root_is_held_at_mode_700(tmp_path: Path) -> None:
+    project = Project(tmp_path)
+    project.root.mkdir(mode=0o755)
+
+    project.checkouts.open(A_RUN, LANE, project.pin)
+
+    assert stat.S_IMODE(os.stat(project.root).st_mode) == 0o700
 
 
 def test_a_closed_run_opens_again_at_the_pin(tmp_path: Path) -> None:
