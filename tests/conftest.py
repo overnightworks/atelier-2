@@ -12,6 +12,29 @@ if TYPE_CHECKING:
 
 PROOF_MARKER = "proves"
 DBOS_RUNTIME_MODULE = "atelier2.adapters.dbos.runtime"
+DBOS_LOGGER_NAME = "dbos"
+
+
+@pytest.fixture(autouse=True)
+def dbos_logger_handlers_stay_with_their_test() -> Iterator[None]:
+    """Drop the handlers DBOS attaches to its own logger during a test.
+
+    Nothing in the test tree configures the ``dbos`` logger, so the first DBOS
+    construction in a process attaches a stream handler to whatever
+    ``sys.stderr`` is at that moment, and ``DBOS.destroy`` leaves it there.
+    Under ``capsys`` that stream is the test's own capture buffer, closed at
+    its teardown; the next DBOS construction in the same worker flushes the
+    closed buffer and refuses, so whichever DBOS test follows in the worker
+    fails. Handing the logger back the handlers it had before the test keeps a
+    binding's logging inside the test that opened it.
+    """
+
+    dbos_logger = logging.getLogger(DBOS_LOGGER_NAME)
+    inherited = dbos_logger.handlers[:]
+    yield
+    for handler in dbos_logger.handlers[:]:
+        if handler not in inherited:
+            dbos_logger.removeHandler(handler)
 
 
 @pytest.fixture(autouse=True)
