@@ -96,11 +96,12 @@ def validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
     """
 
     try:
-        return replace(item)
+        validated: QueueItemSnapshot = replace(item)
     except (AttributeError, TypeError, ValueError) as error:
         raise QueueAdvanceCorrupt(
             "the queue projection returned an inconsistent item"
         ) from error
+    return validated
 
 
 @dataclass(frozen=True)
