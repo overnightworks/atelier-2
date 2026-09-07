@@ -92,6 +92,7 @@ from atelier2.ports.work_item_claims import (
     ClaimRefusal,
     ClaimRefusalReason,
     WorkItemClaims,
+    _bounded_detail,
 )
 
 LOGICAL_KEY_FIELD = "logical_key"
@@ -405,8 +406,9 @@ def refuse_unattested_pin(
     """End the node when the pin it was bound to can no longer be answered for.
 
     Opening a claim for work this host cannot begin would hold a lane forever.
-    The source's own sentence travels as the refusal detail; the closed word is
-    the claim door's generic refusal, not a new vocabulary.
+    The source's own sentence travels as the refusal detail, through the same
+    scrub and bound every ledger refusal uses; the closed word is the claim
+    door's generic refusal, not a new vocabulary.
     """
 
     pinned = pinned_project(binding, project)
@@ -422,7 +424,8 @@ def refuse_unattested_pin(
             node_id,
             binding.round_ordinal,
             AgentNodeRefusalRecord(
-                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, str(error)
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+                _bounded_detail(str(error)),
             ),
         )
     return None
@@ -504,6 +507,8 @@ def _drive_prepared_claim(
     Opening is no durable step. A typed checkout failure is recorded as this
     hold's own refusal so a replay that cannot open still consumes the hold
     step, then takes the refuse step, instead of raising out of the node.
+    Closing the checkout on that path is best-effort: a close that cannot
+    finish must not replace the refusal, so the refuse step still runs.
     """
 
     logical_key = prepared[LOGICAL_KEY_FIELD]
@@ -522,7 +527,10 @@ def _drive_prepared_claim(
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
     if isinstance(outcome, WorkItemClaimHeld):
         return None
-    ledger.checkouts.close(run_id)
+    try:
+        ledger.checkouts.close(run_id)
+    except ClaimCheckoutUnavailable:
+        pass
     return _refuse_claim(
         datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
     )
@@ -597,7 +605,8 @@ def _held_claim(
     def take() -> WorkItemClaimOutcome:
         if checkout is None:
             return WorkItemClaimRefused(
-                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, str(unavailable)
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED,
+                _bounded_detail(str(unavailable)),
             )
         return hold_prepared_claim(
             load_intent(datasource.sql_session(), logical_key, revision_hash.value),

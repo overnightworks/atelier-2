@@ -74,7 +74,9 @@ from atelier2.contracts.queue_projection import (
     WorkItemReference,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.contracts.when import RecordedAt
+from atelier2.ports.claim_checkouts import ClaimCheckoutUnavailable
 from atelier2.ports.queue_projection import (
     QueueItemsReconciled,
     QueueLaunchReserved,
@@ -82,6 +84,7 @@ from atelier2.ports.queue_projection import (
     ReadQueueProjectPolicyResult,
 )
 from atelier2.ports.work_item_claims import (
+    MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES,
     ClaimAbsent,
     ClaimReceipt,
     ClaimRefusal,
@@ -108,6 +111,7 @@ from tests.integration.test_claim_checkouts import (
     worktree_facts,
 )
 from tests.scenarios.catalog_lineages import found_lineage
+from tests.scenarios.credentials import assembled
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
     claimed_ledger,
@@ -186,6 +190,20 @@ class _CheckoutsNeverOpened:
 
     def close(self, run_id: RunId) -> None:
         raise AssertionError("holding a prepared claim closes no checkout")
+
+
+@dataclass(frozen=True)
+class _CheckoutsWhoseOpenAndCloseFail:
+    """Open and close both raise, with distinct sentences."""
+
+    open_sentence: str
+    close_sentence: str
+
+    def open(self, run_id: RunId, branch: HeadBranch, pin: object) -> Path:
+        raise ClaimCheckoutUnavailable(self.open_sentence)
+
+    def close(self, run_id: RunId) -> None:
+        raise ClaimCheckoutUnavailable(self.close_sentence)
 
 
 CHECKOUT = Path("/claim-checkout")
@@ -792,3 +810,49 @@ def test_a_standing_claim_checkout_refuses_the_next_run_of_the_same_item(
         assert first.claim_checkout() == held
     finally:
         runtime.close()
+
+
+def test_a_close_that_fails_during_refuse_keeps_the_git_error_sentence(
+    started_node: _StartedBuilderNode,
+) -> None:
+    """Opening fails with a git error that echoed a remote URL and ran long;
+    close then raises too. The node still ends AGENT_FAILED on the opening
+    sentence, credential-scrubbed and bounded, never on the close error."""
+
+    secret = assembled("notareal", "remotepassword")
+    git_sentence = (
+        "no claim checkout could be made: fatal: unable to access "
+        f"'https://deploy:{secret}@example.invalid/org/repo.git/': "
+        "The requested URL returned error: 403 "
+        + "x"
+        * (2 * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES)
+    )
+    close_sentence = "the claim checkout could not be removed: prune failed"
+    claims = FakeWorkItemClaims(claim_answer=_receipt())
+    ledger = WorkItemClaimLedger(
+        claims,
+        LEDGER_BINDING,
+        DbosQueueProjectionStore(started_node.runtime.engine),
+        _CheckoutsWhoseOpenAndCloseFail(git_sentence, close_sentence),
+    )
+
+    assert started_node.hold(ledger) == RunState.FAILED.value
+
+    assert claims.claim_requests == []
+    assert started_node.standing() == (RunState.FAILED.value, 0, 1, 0)
+    with started_node.runtime.engine.connect() as connection:
+        payload = connection.execute(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == started_node.run_id.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        ).scalar_one()
+    record = AgentNodeRefusalRecord.decode(bytes(payload))
+    assert record is not None
+    assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+    assert "fatal: unable to access" in record.detail
+    assert secret not in record.detail
+    assert REDACTION_MARKER in record.detail
+    assert close_sentence not in record.detail
+    assert len(git_sentence.encode()) > MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
+    assert len(record.detail.encode("utf-8")) <= MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
