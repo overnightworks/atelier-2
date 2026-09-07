@@ -47,6 +47,7 @@ from atelier2.adapters.dbos.work_item_intents import (
     issue_work_item_order,
 )
 from atelier2.adapters.github.tracker_reference import github_issue_number_or_none
+from atelier2.application.bind_node import pinned_project
 from atelier2.application.queue_sweep_reads import active_policy
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
@@ -82,6 +83,8 @@ from atelier2.ports.claim_checkouts import (
     ClaimCheckouts,
     ClaimCheckoutUnavailable,
 )
+from atelier2.ports.project_source import ProjectSourceUnavailable
+from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.queue_projection import QueuePolicyReader
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -389,6 +392,40 @@ def _confirmed_claim(receipt: ClaimReceipt) -> ClaimWorkItemReceipt:
             for touch in receipt.touches
         ),
     )
+
+
+def refuse_unattested_pin(
+    datasource: SQLAlchemyDatasource,
+    binding: AgentNodeBindingV2,
+    project: DeclaredProject | None,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+) -> str | None:
+    """End the node when the pin it was bound to can no longer be answered for.
+
+    Opening a claim for work this host cannot begin would hold a lane forever.
+    The source's own sentence travels as the refusal detail; the closed word is
+    the claim door's generic refusal, not a new vocabulary.
+    """
+
+    pinned = pinned_project(binding, project)
+    if pinned is None:
+        return None
+    try:
+        pinned.source.attest(pinned.pin)
+    except ProjectSourceUnavailable as error:
+        return _refuse_claim(
+            datasource,
+            run_id,
+            revision_hash,
+            node_id,
+            binding.round_ordinal,
+            AgentNodeRefusalRecord(
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, str(error)
+            ),
+        )
+    return None
 
 
 def hold_work_item_claim(

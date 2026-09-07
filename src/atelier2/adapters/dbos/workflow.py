@@ -84,6 +84,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.work_item_claims import (
     WorkItemClaimLedger,
     hold_work_item_claim,
+    refuse_unattested_pin,
 )
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
@@ -657,10 +658,7 @@ def register_durable_run_workflow(
     ) -> str:
         """One Agent node from its preconditions to wherever the run stands next.
 
-        The executor is asked for first and the pin attested second, before
-        the claim: a node no bound executor can start ends on that, and a pin
-        the source no longer answers for refuses here, so no lane is ever
-        held for work this host cannot begin.
+        A pin the source no longer answers for refuses here, so no lane is held.
         """
 
         attempt = agent_node_attempt(
@@ -668,9 +666,11 @@ def register_durable_run_workflow(
         )
         if attempt.executor is None:
             return refuse_unavailable_executor(attempt.execution.request)
-        pinned = pinned_project(binding, project)
-        if pinned is not None:
-            pinned.source.attest(pinned.pin)
+        unattested = refuse_unattested_pin(
+            datasource, binding, project, run_id, revision_hash, node_id
+        )
+        if unattested is not None:
+            return unattested
         unclaimed = hold_work_item_claim(
             datasource,
             work_item_claims,
