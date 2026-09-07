@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, assert_never
 
@@ -560,6 +561,7 @@ def observe_reconcile_command(
 def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
     binding = receipt.intent.binding
     source = receipt.source_receipt
+    command_id = receipt.reconcile_command_id
     return {
         "logical_key": binding.logical_key.value,
         "run_id": binding.run_id.value,
@@ -574,11 +576,7 @@ def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
         "result": receipt.result.payload,
         "result_hash": receipt.result.payload_hash.value,
         "confirmation_source": receipt.confirmation_source.value,
-        "reconcile_command_id": (
-            None
-            if receipt.reconcile_command_id is None
-            else receipt.reconcile_command_id.value
-        ),
+        "reconcile_command_id": None if command_id is None else command_id.value,
         "fork_source_logical_key": None if source is None else source.logical_key.value,
         "fork_source_run_id": None if source is None else source.run_id.value,
         "fork_source_workflow_revision_hash": (
@@ -586,6 +584,38 @@ def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
         ),
         "fork_source_result_hash": None if source is None else source.result_hash.value,
     }
+
+
+@dataclass(frozen=True)
+class _ConfirmationDoor:
+    name: str
+    admitted_sources: tuple[ConfirmationSource, ...]
+    expected_state: EffectIntentState
+    expected_version: EffectIntentStateVersion
+    confirmed_version: EffectIntentStateVersion
+
+
+_INITIAL_CONFIRMATION = _ConfirmationDoor(
+    "initial",
+    (
+        ConfirmationSource.ADAPTER_READBACK,
+        ConfirmationSource.ADAPTER_EXECUTION,
+        ConfirmationSource.FORK_REFERENCE,
+    ),
+    EffectIntentState.PREPARED,
+    EFFECT_INTENT_VERSION_INITIAL,
+    EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
+)
+_RECONCILED_CONFIRMATION = _ConfirmationDoor(
+    "reconciliation",
+    (
+        ConfirmationSource.OPERATOR_FOUND,
+        ConfirmationSource.OPERATOR_AUTHORIZED_EXECUTION,
+    ),
+    EffectIntentState.RECONCILING,
+    EFFECT_INTENT_VERSION_RECONCILING,
+    EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED,
+)
 
 
 def commit_resolution(
@@ -628,28 +658,12 @@ def commit_resolution(
         return RunState.WAITING_RECONCILIATION
 
     receipt = decode_found(intent, resolved)
-    if command_id is None:
-        if (
-            receipt.confirmation_source
-            not in {
-                ConfirmationSource.ADAPTER_READBACK,
-                ConfirmationSource.ADAPTER_EXECUTION,
-                ConfirmationSource.FORK_REFERENCE,
-            }
-            or receipt.reconcile_command_id is not None
-        ):
-            raise DurableEffectConflict("initial confirmation has invalid provenance")
-    elif (
-        receipt.confirmation_source
-        not in {
-            ConfirmationSource.OPERATOR_FOUND,
-            ConfirmationSource.OPERATOR_AUTHORIZED_EXECUTION,
-        }
+    door = _INITIAL_CONFIRMATION if command_id is None else _RECONCILED_CONFIRMATION
+    if (
+        receipt.confirmation_source not in door.admitted_sources
         or receipt.reconcile_command_id != command_id
     ):
-        raise DurableEffectConflict(
-            "reconciliation confirmation has invalid provenance"
-        )
+        raise DurableEffectConflict(f"{door.name} confirmation has invalid provenance")
 
     session.execute(
         effect_receipts.insert()
@@ -668,34 +682,19 @@ def commit_resolution(
     if receipt_from_record(durable_receipt_record) != receipt:
         raise DurableEffectConflict("durable receipt differs from exact resolution")
 
-    expected_state = (
-        EffectIntentState.PREPARED
-        if command_id is None
-        else EffectIntentState.RECONCILING
-    )
-    expected_version = (
-        EFFECT_INTENT_VERSION_INITIAL
-        if command_id is None
-        else EFFECT_INTENT_VERSION_RECONCILING
-    )
-    confirmed_version = (
-        EFFECT_INTENT_VERSION_CONFIRMED_INITIAL
-        if command_id is None
-        else EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED
-    )
     intent_update = session.execute(
         effect_intents.update()
         .where(
             effect_intents.c.logical_key == logical_key,
             effect_intents.c.workflow_revision_hash == revision_hash,
-            effect_intents.c.state == expected_state.value,
-            effect_intents.c.state_version == expected_version.value,
+            effect_intents.c.state == door.expected_state.value,
+            effect_intents.c.state_version == door.expected_version.value,
             effect_intents.c.reconciliation_owner_command_id
             == (None if command_id is None else command_id.value),
         )
         .values(
             state=EffectIntentState.CONFIRMED.value,
-            state_version=confirmed_version.value,
+            state_version=door.confirmed_version.value,
             reconciliation_owner_command_id=None,
         )
     )
