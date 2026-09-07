@@ -257,7 +257,7 @@ def _runtime(root: Path, runner: SubprocessGitCommandRunner) -> DbosRuntime:
             agent_scratch_root=agent_scratch_root(root),
             project_id=PROJECT,
             bootstrap_project_root=root / "project",
-            agent_claim_executable=fake_agent_claim_executable(root),
+            aco_executable=fake_agent_claim_executable(root),
         ),
         registry,
         (executor,),
@@ -429,7 +429,7 @@ def test_a_claim_posted_before_the_crash_is_read_back_and_never_taken_twice(
 
     _child(tmp_path, "claim-crash", expected=CRASHED)
 
-    posted = claimed_ledger(tmp_path / "agent-claim")
+    posted = claimed_ledger(tmp_path / "aco")
     assert [request.item for request in posted] == [642]
     with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
         assert connection.execute(
@@ -443,7 +443,7 @@ def test_a_claim_posted_before_the_crash_is_read_back_and_never_taken_twice(
 
     _child(tmp_path, "resolve")
 
-    assert claimed_ledger(tmp_path / "agent-claim") == posted
+    assert claimed_ledger(tmp_path / "aco") == posted
     with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
         assert connection.execute(
             "SELECT effect_id,confirmation_source FROM effect_receipts "

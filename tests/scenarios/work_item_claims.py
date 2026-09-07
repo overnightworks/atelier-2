@@ -77,7 +77,7 @@ class FakeWorkItemClaims:
 
 
 _LEDGER_STUB = '''
-"""A pinned `agent-claim` stand-in: one JSON ledger file, no network."""
+"""A pinned `aco` stand-in: one JSON ledger file, no network."""
 
 import json
 import os
@@ -190,7 +190,6 @@ def _claim(arguments: list[str]) -> int:
         "issue": int(arguments[1]),
         "lane": None,
         "claim_id": _option(arguments, "--claim-id"),
-        "url": "https://example.invalid/claims/1",
         "agent": _option(arguments, "--agent"),
         "role": _option(arguments, "--role"),
         "base": "0" * 40,
@@ -233,7 +232,6 @@ def _claim(arguments: list[str]) -> int:
 def _status() -> int:
     json.dump(
         {
-            "ledger": 1,
             "issue": None,
             "state": "CLAIMED" if _claims() else "UNCLAIMED",
             "claims": [
@@ -255,7 +253,6 @@ def _status() -> int:
                 }
                 for claim in _claims()
             ],
-            "unreadable": [],
         },
         sys.stdout,
     )
@@ -285,12 +282,12 @@ sys.exit(main(sys.argv[1:]))
 def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     """A claim command a run can really invoke, holding its ledger in one file.
 
-    The stub answers `agent-claim` 0.12.0's pinned JSON for the commands a run
-    uses, and it remembers: a claim already posted is refused a second time and
-    read back by `status`, exactly as the real ledger behaves, so a scenario
+    The stub answers `aco` 1.0.0's pinned JSON for the commands a run uses,
+    and it remembers: a claim already posted is refused a second time and
+    read back by `status`, exactly as the real store behaves, so a scenario
     proves the retry path rather than assuming it. It also keeps the `--whole`
     and `--out-of-order` reasons each claim arrived with, which the real tool
-    records on the ledger comment, so `claimed_ledger` answers them.
+    records on the claim, so `claimed_ledger` answers them.
 
     `answer` scripts what the ledger says to a claim: `grant` posts it,
     `priority` refuses it with the tool's own out-of-order check, `unknown`
@@ -302,7 +299,7 @@ def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     `touches` grants it while naming a foreign lane on the same paths.
     """
 
-    executable = root / "agent-claim"
+    executable = root / "aco"
     executable.write_text(f"#!{sys.executable}\n{_LEDGER_STUB}")
     executable.chmod(0o755)
     (root / "claim-answer").write_text(answer)

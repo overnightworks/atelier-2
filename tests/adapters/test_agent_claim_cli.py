@@ -71,7 +71,6 @@ def _claim_payload(
             "issue": ITEM,
             "lane": None,
             "claim_id": claim_id,
-            "url": "https://example.invalid/claims/42",
             "agent": agent,
             "role": role,
             "base": "a" * 40,
@@ -124,7 +123,6 @@ def _standing_claim(
 def _status_payload(
     *,
     claims: list[object] | None = None,
-    unreadable: list[object] | None = None,
     claim_id: str = CLAIM_ID,
     whole: str | None = None,
     resource: str | None = None,
@@ -144,11 +142,9 @@ def _status_payload(
     )
     return json.dumps(
         {
-            "ledger": 1,
             "issue": None,
             "state": "CLAIMED",
             "claims": standing,
-            "unreadable": [] if unreadable is None else unreadable,
         }
     ).encode()
 
@@ -186,7 +182,7 @@ def recorded_process(monkeypatch: pytest.MonkeyPatch) -> RecordedProcess:
 
 
 def _adapter() -> AgentClaimCli:
-    return AgentClaimCli(Path("agent-claim"), PROJECT_CHECKOUT)
+    return AgentClaimCli(Path("aco"), PROJECT_CHECKOUT)
 
 
 @pytest.mark.parametrize(
@@ -226,7 +222,7 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
     ]
     assert recorded_process.commands == [
         (
-            "agent-claim",
+            "aco",
             "claim",
             "1299",
             "--agent",
@@ -242,9 +238,9 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
             *reason_flags,
             "--json",
         ),
-        ("agent-claim", "status", "--json"),
+        ("aco", "status", "--json"),
         (
-            "agent-claim",
+            "aco",
             "release",
             "1299",
             "--agent",
@@ -258,7 +254,7 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
     ]
 
 
-PINNED_CONTRACT_VIOLATION = "agent-claim returned fields outside its pinned contract"
+PINNED_CONTRACT_VIOLATION = "aco returned fields outside its pinned contract"
 
 
 @pytest.mark.parametrize(
@@ -375,28 +371,6 @@ def test_adapter_reads_back_nothing_when_the_ledger_holds_no_such_claim(
     assert _adapter().read_back(ITEM, CLAIM_ID, CHECKOUT) == ClaimAbsent()
 
 
-def test_adapter_reads_back_an_unreadable_ledger_as_its_own_refusal(
-    recorded_process: RecordedProcess,
-) -> None:
-    recorded_process.outputs.append(
-        _status_payload(
-            unreadable=[
-                {
-                    "claim_id": "claim-9",
-                    "comment_url": "https://example.invalid/claims/9",
-                    "fields": ["extra"],
-                    "note": "a newer agent-claim wrote this",
-                }
-            ]
-        )
-    )
-
-    assert _adapter().read_back(ITEM, CLAIM_ID, CHECKOUT) == ClaimRefusal(
-        ClaimRefusalReason.LEDGER_UNREADABLE,
-        "1 claim(s) in the ledger are unreadable to this tool",
-    )
-
-
 @pytest.mark.parametrize(
     "payload",
     (
@@ -417,9 +391,6 @@ def test_adapter_refuses_release_output_outside_the_pinned_json_contract(
 
 
 def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> None:
-    # Pinned verbatim against agent-claim 0.12.0's `_out_of_order_check`
-    # (cli.py:1042-1058): the structured check id is "out-of-order", not a
-    # word this adapter would have to find in prose.
     recorded_process.outputs.append(
         json.dumps(
             {
@@ -450,35 +421,14 @@ def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> N
     )
 
 
-def test_adapter_maps_a_ledger_unreadable_diagnostic_refusal(
-    recorded_process: RecordedProcess,
-) -> None:
-    # agent-claim 0.12.0 never reaches its `--json` refusal payload for an
-    # unreadable ledger: `_reject_unreadable_claims` (protocol.py:1191-1200)
-    # raises before one exists, and the top-level `ClaimError` handler
-    # (cli.py:1990-1992) prints this documented sentence to stderr instead,
-    # with empty stdout.
-    sentence = (
-        "claim refused: claim 'claim-1' at https://example.invalid/claims/1 is "
-        "unreadable (unknown fields: extra); upgrade the installed tool before "
-        "claiming a scope that could overlap it"
-    )
-    recorded_process.outputs.append(b"")
-    recorded_process.errors.append(f"ERROR: {sentence}\n".encode())
-
-    assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
-    ) == ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, sentence)
-
-
 def test_a_checkout_precondition_the_tool_refuses_names_its_sentence(
     recorded_process: RecordedProcess,
 ) -> None:
     """The one line the tool printed is the refusal's detail; nothing else is.
 
-    agent-claim checks the checkout before it reads any board, and every
-    check it fails ends as one `ERROR:` sentence on standard error with no
-    JSON at all. The progress lines it printed before are not the reason.
+    aco checks the checkout before it reads any board, and every check it
+    fails ends as one `ERROR:` sentence on standard error with no JSON at
+    all. The progress lines it printed before are not the reason.
     """
 
     recorded_process.outputs.append(b"")
@@ -563,14 +513,14 @@ def test_adapter_refuses_infeasible_resource_pairs(
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
     ) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN, "agent-claim returned an invalid resource pair"
+        ClaimRefusalReason.UNKNOWN, "aco returned an invalid resource pair"
     )
     assert _adapter().read_back(ITEM, CLAIM_ID, CHECKOUT) == ClaimRefusal(
-        ClaimRefusalReason.UNKNOWN, "agent-claim returned an invalid resource pair"
+        ClaimRefusalReason.UNKNOWN, "aco returned an invalid resource pair"
     )
 
 
-ANOTHER_CLAIM_POSTED = "agent-claim posted a claim other than the one requested"
+ANOTHER_CLAIM_POSTED = "aco posted a claim other than the one requested"
 
 
 @pytest.mark.parametrize(
@@ -579,7 +529,7 @@ ANOTHER_CLAIM_POSTED = "agent-claim posted a claim other than the one requested"
         (lambda: _claim_payload(agent="atelier2 run other"), ANOTHER_CLAIM_POSTED),
         (
             lambda: _claim_payload(role="reviewer"),
-            "agent-claim posted a claim under another role",
+            "aco posted a claim under another role",
         ),
         (lambda: _claim_payload(claim_id="another-claim"), ANOTHER_CLAIM_POSTED),
     ),
@@ -608,7 +558,7 @@ def test_adapter_refuses_release_receipts_that_do_not_match_the_request(
 
     assert _adapter().release(ITEM, RUN_ID, CLAIM_ID, Merged(44)) == ClaimRefusal(
         ClaimRefusalReason.UNKNOWN,
-        "agent-claim released a claim other than the one requested",
+        "aco released a claim other than the one requested",
     )
 
 
@@ -730,7 +680,7 @@ def test_adapter_builds_an_abandon_release(recorded_process: RecordedProcess) ->
     )
     assert recorded_process.commands == [
         (
-            "agent-claim",
+            "aco",
             "release",
             "1299",
             "--agent",
