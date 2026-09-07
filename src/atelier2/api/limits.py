@@ -16,7 +16,7 @@ from atelier2.api.references import (
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, ArtifactRefusal
 from atelier2.contracts.effects import OperatorFoundEffect
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import AgentNodeRefusalRecord, RunEventKind
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -188,7 +188,11 @@ class ApiLimits:
         self.require_event_cursor(event.run_id, event.event_sequence)
         self.require_field(event.node_id, "node_id")
         if event.event_kind is RunEventKind.AGENT_FAILED:
-            self.require_field(event.payload.decode("ascii"), "failure_code")
+            refusal = AgentNodeRefusalRecord.decode(event.payload)
+            if refusal is None:
+                self.require_field(event.payload.decode("ascii"), "failure_code")
+            else:
+                self.require_field(refusal.detail, "detail")
             if projection.node_receipt_reason is not None:
                 self.require_field(
                     projection.node_receipt_reason, "node_receipt_reason"

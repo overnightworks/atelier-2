@@ -36,6 +36,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
     NodeExecutionId,
     RunEvent,
     RunEventAgentAttemptBinding,
@@ -103,6 +104,7 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
 
 def refused_v3_projection(
     refusal: AgentExecutionRefusal = AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE,
+    detail: str = "",
 ) -> PersistedRunEvent:
     event = RunEvent(
         RUN_ID,
@@ -111,7 +113,7 @@ def refused_v3_projection(
         NODE_ID,
         NodeExecutionId.for_node(RUN_ID, REVISION_HASH, NODE_ID),
         RunEventKind.AGENT_FAILED,
-        refusal.value.encode("ascii"),
+        AgentNodeRefusalRecord(refusal, detail).encode(),
     )
     return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
 
@@ -170,6 +172,7 @@ def test_format_3_pre_attempt_executor_refusal_has_no_attempt_failure_shape() ->
 
     assert dumped["event"] == "AGENT_FAILED"
     assert dumped["reason"] == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+    assert dumped["detail"] is None
     assert "failure_code" not in dumped
     assert "attempt_id" not in dumped
     assert "attempt_ordinal" not in dumped
@@ -180,18 +183,20 @@ def test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift() -> None:
 
     The wire spells this set out as a Literal, so a refusal the runtime can
     write and the wire cannot name would answer a reader with a 500 instead of
-    the reason its run ended on.
+    the reason its run ended on -- and the sentence the refusing boundary gave
+    travels beside every word of it.
     """
 
-    served = {
-        run_event_resource(refused_v3_projection(refusal), SERVED_RAIL).model_dump(
-            mode="json"
-        )["reason"]
-        for refusal in AgentExecutionRefusal
-    }
+    sentence = "claim branch 'x' does not match checkout branch 'main'"
+    served: dict[str, str | None] = {}
+    for refusal in AgentExecutionRefusal:
+        dumped = run_event_resource(
+            refused_v3_projection(refusal, sentence), SERVED_RAIL
+        ).model_dump(mode="json")
+        served[dumped["reason"]] = dumped["detail"]
 
-    assert served == {refusal.value for refusal in AgentExecutionRefusal}
-    assert served == set(get_args(AgentNodeRefusalName))
+    assert served == {refusal.value: sentence for refusal in AgentExecutionRefusal}
+    assert set(served) == set(get_args(AgentNodeRefusalName))
 
 
 @pytest.mark.proves("an-agent-failed-event-carries-the-stored-receipt-reason")

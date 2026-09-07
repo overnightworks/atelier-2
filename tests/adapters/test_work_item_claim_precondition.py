@@ -192,24 +192,26 @@ def test_a_claim_this_run_already_holds_is_read_back_and_never_taken_twice() -> 
         ),
     ),
 )
-def test_every_ledger_refusal_ends_the_node_under_its_own_word(
+def test_every_ledger_refusal_ends_the_node_under_its_own_word_and_sentence(
     reason: ClaimRefusalReason, refusal: AgentExecutionRefusal
 ) -> None:
-    claims = FakeWorkItemClaims(claim_answer=ClaimRefusal(reason))
+    sentence = "claim branch 'x' does not match checkout branch 'main'"
+    claims = FakeWorkItemClaims(claim_answer=ClaimRefusal(reason, sentence))
 
-    assert _held(claims) == WorkItemClaimRefused(refusal)
+    assert _held(claims) == WorkItemClaimRefused(refusal, sentence)
 
 
 def test_an_unreadable_ledger_refuses_before_any_claim_is_attempted() -> None:
+    sentence = "1 claim(s) in the ledger are unreadable to this tool"
     claims = FakeWorkItemClaims(
-        read_back_answer=ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE)
+        read_back_answer=ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, sentence)
     )
 
     outcome = _held(claims)
 
     assert claims.claim_requests == []
     assert outcome == WorkItemClaimRefused(
-        AgentExecutionRefusal.WORK_ITEM_CLAIM_LEDGER_UNREADABLE
+        AgentExecutionRefusal.WORK_ITEM_CLAIM_LEDGER_UNREADABLE, sentence
     )
 
 

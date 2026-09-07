@@ -341,10 +341,15 @@ describe("closed API decoders", () => {
     ).toThrow();
   });
 
-  it("decodes the attempt-less executor refusal and refuses a forged attempt", () => {
-    const refusal = { reason: "agent-executor-binding-unavailable" as const };
+  it("decodes the attempt-less refusal with or without its sentence and refuses a forged attempt", () => {
+    const refusal = { reason: "agent-executor-binding-unavailable" as const, detail: null };
+    const explained = {
+      reason: "work-item-claim-refused" as const,
+      detail: "claim branch 'x' does not match checkout branch 'main'"
+    };
 
     expect(decodeStreamFrame(v3Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
+    expect(decodeStreamFrame(v3Event("AGENT_FAILED", explained))).toMatchObject(explained);
     expect(() => decodeStreamFrame(v3Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
   });
 

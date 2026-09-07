@@ -124,19 +124,48 @@ class AgentExecutionRefusal(StrEnum):
     WORK_ITEM_CLAIM_REFUSED = "work-item-claim-refused"
     WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE = "work-item-claim-touches-another-lane"
 
+
+_REFUSAL_DETAIL_SEPARATOR = b"\n"
+
+
+@dataclass(frozen=True)
+class AgentNodeRefusalRecord:
+    """What an `AGENT_FAILED` payload says about a node that never started.
+
+    `refusal` is the closed word; `detail` is the sentence the refusing boundary
+    gave for it -- a claim ledger's own `ERROR:` line -- and empty where it gave
+    none. One owner for both directions of the bytes, because a failure event's
+    payload is either this record or an attempt's own failure code, and two
+    readers that split it differently would answer a run differently in two
+    places. A record without detail is the bare word.
+    """
+
+    refusal: AgentExecutionRefusal
+    detail: str = ""
+
+    def encode(self) -> bytes:
+        word = self.refusal.value.encode("ascii")
+        if not self.detail:
+            return word
+        return word + _REFUSAL_DETAIL_SEPARATOR + self.detail.encode("utf-8")
+
     @classmethod
-    def named_by(cls, payload: bytes) -> AgentExecutionRefusal | None:
-        """The refusal these exact event-payload bytes name, if they name one.
+    def decode(cls, payload: bytes) -> AgentNodeRefusalRecord | None:
+        """The record these exact event-payload bytes carry, if they carry one."""
 
-        One owner for the reading, because a failure event's payload is either
-        one of these words or an attempt's own failure code, and two readers
-        that disagreed would answer a run differently in two places.
-        """
+        word, _separator, detail = payload.partition(_REFUSAL_DETAIL_SEPARATOR)
+        try:
+            refusal = AgentExecutionRefusal(word.decode("ascii"))
+        except ValueError:
+            return None
+        return cls(refusal, detail.decode("utf-8"))
 
-        for refusal in cls:
-            if payload == refusal.value.encode("ascii"):
-                return refusal
-        return None
+    def sentence(self) -> str:
+        """`<word>: <detail>`, or the word alone where nothing more was said."""
+
+        if not self.detail:
+            return self.refusal.value
+        return f"{self.refusal.value}: {self.detail}"
 
 
 class WaitAnswerState(StrEnum):

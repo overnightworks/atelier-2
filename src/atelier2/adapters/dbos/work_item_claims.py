@@ -65,6 +65,7 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import (
     AgentExecutionRefusal,
+    AgentNodeRefusalRecord,
     RunEventKind,
     logical_effect_key_for_work_item_claim,
 )
@@ -129,13 +130,19 @@ class WorkItemClaimHeld:
 class WorkItemClaimRefused:
     """This node ends here, and `confirmed` is the claim that was still taken.
 
-    A claim the ledger granted over paths another lane already holds is a fact
-    that happened: it is recorded as this effect's receipt, and the node ends
+    `detail` is the ledger's own sentence for the refusal, empty where the
+    refusal is this runtime's judgement rather than the ledger's word. A claim
+    the ledger granted over paths another lane already holds is a fact that
+    happened: it is recorded as this effect's receipt, and the node ends
     afterwards. Releasing it belongs to the run's own completion.
     """
 
     reason: AgentExecutionRefusal
+    detail: str = ""
     confirmed: ConfirmedWorkItemClaim | None = None
+
+    def record(self) -> AgentNodeRefusalRecord:
+        return AgentNodeRefusalRecord(self.reason, self.detail)
 
 
 type WorkItemClaimOutcome = WorkItemClaimHeld | WorkItemClaimRefused
@@ -225,7 +232,7 @@ def hold_prepared_claim(
     standing = ledger.claims.read_back(request.item, request.claim_id)
     source = ConfirmationSource.ADAPTER_READBACK
     if isinstance(standing, ClaimRefusal):
-        return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason])
+        return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason], standing.detail)
     if isinstance(standing, ClaimAbsent):
         source = ConfirmationSource.ADAPTER_EXECUTION
         standing = ledger.claims.claim(
@@ -237,7 +244,9 @@ def hold_prepared_claim(
             None,
         )
         if isinstance(standing, ClaimRefusal):
-            return WorkItemClaimRefused(_REFUSAL_WORDS[standing.reason])
+            return WorkItemClaimRefused(
+                _REFUSAL_WORDS[standing.reason], standing.detail
+            )
     held: ClaimReceipt = standing
     confirmed = ConfirmedWorkItemClaim(_confirmed_claim(held), source)
     if (
@@ -251,11 +260,12 @@ def hold_prepared_claim(
         # so it is receipted as it stands -- an unreceipted grant would be a
         # claim nothing can ever release.
         return WorkItemClaimRefused(
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, confirmed
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED, confirmed=confirmed
         )
     if held.touches:
         return WorkItemClaimRefused(
-            AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE, confirmed
+            AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+            confirmed=confirmed,
         )
     return WorkItemClaimHeld(confirmed)
 
@@ -286,7 +296,7 @@ def commit_work_item_claim_refusal(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int,
-    refusal: AgentExecutionRefusal,
+    refusal: AgentNodeRefusalRecord,
 ) -> str:
     """End this node on its refusal, before an attempt of it ever exists."""
 
@@ -296,7 +306,7 @@ def commit_work_item_claim_refusal(
         revision_hash,
         node_id,
         RunEventKind.AGENT_FAILED,
-        refusal.value.encode("ascii"),
+        refusal.encode(),
         RunState.STARTED,
         RunState.FAILED,
         node_id,
@@ -362,7 +372,7 @@ def hold_work_item_claim(
             revision_hash,
             node_id,
             round_ordinal,
-            AgentExecutionRefusal(refused),
+            AgentNodeRefusalRecord(AgentExecutionRefusal(refused)),
         )
     if ledger is None:
         raise RunBindingConflict(
@@ -374,7 +384,7 @@ def hold_work_item_claim(
     if isinstance(outcome, WorkItemClaimHeld):
         return None
     return _refuse_claim(
-        datasource, run_id, revision_hash, node_id, round_ordinal, outcome.reason
+        datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
     )
 
 
@@ -463,7 +473,7 @@ def _refuse_claim(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int,
-    refusal: AgentExecutionRefusal,
+    refusal: AgentNodeRefusalRecord,
 ) -> str:
     return str(
         datasource.run_tx_step(

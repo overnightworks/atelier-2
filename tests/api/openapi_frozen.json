@@ -1120,12 +1120,23 @@
       },
       "AgentExecutorBindingUnavailableEventResourceV3": {
         "additionalProperties": false,
-        "description": "An Agent node stopped before any provider attempt could be claimed.\n\n`reason` is `AgentExecutionRefusal`'s closed set -- an executor nothing can\nbind, and the lane claim a node must hold before it works -- written out\nhere because a wire schema may name no contract enum inline;\n`test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the\ntwo spellings to set equality.",
+        "description": "An Agent node stopped before any provider attempt could be claimed.\n\n`reason` is `AgentExecutionRefusal`'s closed set -- an executor nothing can\nbind, and the lane claim a node must hold before it works -- written out\nhere because a wire schema may name no contract enum inline;\n`test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the\ntwo spellings to set equality. `detail` is the sentence the refusing\nboundary gave, the claim ledger's own line, and none where it gave none.",
         "properties": {
           "cursor": {
             "pattern": "^event1\\.[A-Za-z0-9_-]+\\.[1-9][0-9]*$",
             "title": "Cursor",
             "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
           },
           "event": {
             "const": "AGENT_FAILED",
@@ -1201,7 +1212,8 @@
           "event_hash",
           "node_rail",
           "event",
-          "reason"
+          "reason",
+          "detail"
         ],
         "title": "AgentExecutorBindingUnavailableEventResourceV3",
         "type": "object"
@@ -9195,7 +9207,7 @@
         "type": "object"
       },
       "RunEventResourceV3": {
-        "description": "The AGENT_FAILED forms are closed by their required shape: an attempt failure names failure_code and an attempt; a pre-claim executor refusal names only its product reason.",
+        "description": "The AGENT_FAILED forms are closed by their required shape: an attempt failure names failure_code and an attempt; a pre-attempt refusal names its product reason and, as detail, the sentence the refusing boundary gave, null where it gave none.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/AgentCompletedEventResourceV3"

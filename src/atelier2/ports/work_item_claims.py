@@ -9,6 +9,10 @@ from typing import Protocol
 
 from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.runs import RunId
+from atelier2.contracts.secret_redaction import redact_credentials
+
+MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES = 512
+"""How much of the ledger's own sentence a refusal keeps, in UTF-8 bytes."""
 
 
 class ClaimRefusalReason(StrEnum):
@@ -49,9 +53,32 @@ class ClaimReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ClaimRefusal:
-    """A claim command that completed without creating a usable receipt."""
+    """A claim command that completed without creating a usable receipt.
+
+    `detail` is the one sentence the ledger gave for it -- the command's last
+    `ERROR:` line, or the first failing check of a structured refusal -- kept
+    verbatim so a reader learns the cause and not only its class, and empty
+    where the ledger said nothing. It is credential-scrubbed and bounded here
+    rather than at each call site, because an adapter that forgot either would
+    carry a token into durable state.
+    """
 
     reason: ClaimRefusalReason
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "detail", _bounded_detail(self.detail))
+
+
+def _bounded_detail(said: str) -> str:
+    """`said` without any credential shape, cut to the bytes a refusal keeps.
+
+    Scrubbed before it is cut: a cut that split a token in half would leave a
+    fragment no shape recognises.
+    """
+
+    scrubbed = redact_credentials(said).text.encode("utf-8")
+    return scrubbed[:MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES].decode("utf-8", "ignore")
 
 
 @dataclass(frozen=True, slots=True)

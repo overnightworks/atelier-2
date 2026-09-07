@@ -73,11 +73,13 @@ class AgentExecutorBindingUnavailableEventResourceV3(RunEventBaseResourceV3):
     bind, and the lane claim a node must hold before it works -- written out
     here because a wire schema may name no contract enum inline;
     `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the
-    two spellings to set equality.
+    two spellings to set equality. `detail` is the sentence the refusing
+    boundary gave, the claim ledger's own line, and none where it gave none.
     """
 
     event: Literal["AGENT_FAILED"]
     reason: AgentNodeRefusalName
+    detail: str | None
 
 
 class AgentCancelRequestedEventResourceV3(RunEventBaseResourceV3):

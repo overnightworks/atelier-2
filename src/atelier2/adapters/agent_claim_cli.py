@@ -30,6 +30,8 @@ MAXIMUM_AGENT_CLAIM_OUTPUT_BYTES = 65_536
 _JSON_FLAG = "--json"
 _BUILDER_ROLE = "builder"
 _OUT_OF_ORDER_CHECK = "out-of-order"
+_ERROR_CHECK_LEVEL = "error"
+_ERROR_LINE_BANNER = "ERROR:"
 
 _CLAIM_FIELDS = frozenset(
     {
@@ -90,6 +92,15 @@ class _ClaimPeer:
 
 
 @dataclass(frozen=True, slots=True)
+class _SliceCheck:
+    """One structured finding of a claim answer: its id, level and sentence."""
+
+    name: str
+    level: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class _StandingClaim:
     """One live claim of the ledger, read back in full."""
 
@@ -142,26 +153,29 @@ class AgentClaimCli:
             arguments.extend(("--out-of-order", out_of_order_reason))
         payload, diagnostics = self._command(*arguments, _JSON_FLAG)
         if payload is None:
-            return ClaimRefusal(_diagnostic_refusal(diagnostics))
+            return _diagnostic_refusal(diagnostics)
         if _is_claim_refusal(payload):
-            return ClaimRefusal(_claim_refusal_reason(payload))
+            return _claim_refusal(payload)
         try:
             acquired = _acquired_claim(payload)
-        except (TypeError, ValueError):
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+        except (TypeError, ValueError) as violation:
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
         if (
             acquired.item != item
             or acquired.claim_id != claim_id
             or acquired.branch != branch
             or acquired.agent != _agent_name(agent)
         ):
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+            return ClaimRefusal(
+                ClaimRefusalReason.UNKNOWN,
+                "agent-claim posted a claim other than the one requested",
+            )
         return acquired
 
     def read_back(self, item: int, claim_id: str) -> ClaimReadback:
         payload, diagnostics = self._command("status", _JSON_FLAG)
         if payload is None:
-            return ClaimRefusal(_diagnostic_refusal(diagnostics))
+            return _diagnostic_refusal(diagnostics)
         try:
             _require_fields(payload, _STATUS_FIELDS)
             _integer(payload["ledger"])
@@ -172,15 +186,21 @@ class AgentClaimCli:
             unreadable = _list(payload["unreadable"])
             for value in unreadable:
                 _unreadable(value)
-        except (TypeError, ValueError):
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+        except (TypeError, ValueError) as violation:
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
         if unreadable:
-            return ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE)
+            return ClaimRefusal(
+                ClaimRefusalReason.LEDGER_UNREADABLE,
+                f"{len(unreadable)} claim(s) in the ledger are unreadable to this tool",
+            )
         held = tuple(claim for claim in claims if claim.claim_id == claim_id)
         if not held:
             return ClaimAbsent()
         if len(held) != 1 or held[0].item != item:
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+            return ClaimRefusal(
+                ClaimRefusalReason.UNKNOWN,
+                "the ledger holds this claim id under another item or more than once",
+            )
         standing = held[0]
         scopes = {claim.claim_id: claim for claim in claims}
         return ClaimReceipt(
@@ -215,27 +235,31 @@ class AgentClaimCli:
             arguments.extend(("--abandoned", outcome.reason))
         payload, diagnostics = self._command(*arguments, _JSON_FLAG)
         if payload is None:
-            return ClaimRefusal(_diagnostic_refusal(diagnostics))
+            return _diagnostic_refusal(diagnostics)
+        other_release = ClaimRefusal(
+            ClaimRefusalReason.UNKNOWN,
+            "agent-claim released a claim other than the one requested",
+        )
         try:
             _require_fields(payload, _RELEASE_FIELDS)
             if (
                 _integer(payload["issue"]) != item
                 or _text(payload["claim_id"]) != claim_id
             ):
-                return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+                return other_release
             _identity(payload["issue"], payload["lane"])
             HeadBranch(_text(payload["branch"]))
             released_agent = _text(payload["agent"])
             released_role = _text(payload["role"])
             released_reason = _text(payload["reason"])
-        except (TypeError, ValueError):
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+        except (TypeError, ValueError) as violation:
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
         if (
             released_agent != _agent_name(agent)
             or released_role != _BUILDER_ROLE
             or released_reason != _release_reason(outcome)
         ):
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN)
+            return other_release
         return None
 
     def _command(self, *arguments: str) -> tuple[dict[str, object] | None, str]:
@@ -373,15 +397,26 @@ def _is_claim_refusal(value: dict[str, object]) -> bool:
     return value.get("refused") is True
 
 
-def _diagnostic_refusal(diagnostics: str) -> ClaimRefusalReason:
-    # agent-claim 0.12.0 fails a claim or release against an unreadable ledger
-    # by raising `ClaimError` before any `--json` payload exists, so the tool
-    # prints no stdout and this documented stderr sentence instead (its
-    # `_reject_unreadable_claims`, cli.py's top-level `ClaimError` handler):
-    # match that fragment as the tool's stderr contract.
+def _diagnostic_refusal(diagnostics: str) -> ClaimRefusal:
+    """The refusal a command that printed no JSON left on its standard error.
+
+    agent-claim 0.12.0 raises `ClaimError` before any `--json` payload exists
+    -- for an unreadable ledger, and for every checkout precondition a claim
+    fails -- and its top-level handler prints that one sentence under an
+    `ERROR:` banner instead. The last such line is the refusal's own detail;
+    an unreadable ledger is recognised by the sentence's documented fragment
+    (its `_reject_unreadable_claims`), every other sentence stays unknown.
+    """
+
+    error_lines = [
+        line.removeprefix(_ERROR_LINE_BANNER).strip()
+        for line in diagnostics.splitlines()
+        if line.startswith(_ERROR_LINE_BANNER)
+    ]
+    detail = error_lines[-1] if error_lines else ""
     if "unreadable" in diagnostics or "upgrade the installed tool" in diagnostics:
-        return ClaimRefusalReason.LEDGER_UNREADABLE
-    return ClaimRefusalReason.UNKNOWN
+        return ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, detail)
+    return ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
 def _release_reason(outcome: ClaimReleaseOutcome) -> str:
@@ -390,20 +425,25 @@ def _release_reason(outcome: ClaimReleaseOutcome) -> str:
     return f"abandoned: {outcome.reason}"
 
 
-def _claim_refusal_reason(value: dict[str, object]) -> ClaimRefusalReason:
+def _claim_refusal(value: dict[str, object]) -> ClaimRefusal:
+    """The refusal a structured `--json` claim answer states, with its first
+    failing check's sentence as the detail."""
+
     try:
         _require_fields(value, _CLAIM_REFUSAL_FIELDS)
         _integer(value["issue"])
         checks = tuple(_check(check) for check in _list(value["checks"]))
-    except (TypeError, ValueError):
-        return ClaimRefusalReason.UNKNOWN
+    except (TypeError, ValueError) as violation:
+        return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
+    failed = [check.text for check in checks if check.level == _ERROR_CHECK_LEVEL]
+    detail = failed[0] if failed else ""
     # agent-claim 0.12.0 names the out-of-order slice rule with the structured
     # check id "out-of-order" (cli.py `_out_of_order_check`); a ledger-unreadable
     # claim refusal never reaches this JSON payload -- it fails before one
     # exists (see `_diagnostic_refusal`).
-    if any(name == _OUT_OF_ORDER_CHECK for name, _level in checks):
-        return ClaimRefusalReason.PRIORITY
-    return ClaimRefusalReason.UNKNOWN
+    if any(check.name == _OUT_OF_ORDER_CHECK for check in checks):
+        return ClaimRefusal(ClaimRefusalReason.PRIORITY, detail)
+    return ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
 def _status_claim(value: object) -> _StandingClaim:
@@ -440,19 +480,20 @@ def _status_claim(value: object) -> _StandingClaim:
     return _StandingClaim(item, claim_id, agent, branch, scope, tuple(overlaps))
 
 
-def _check(value: object) -> tuple[str, str]:
-    """Validate one ``SliceCheck`` and return its ``(check, level)`` pair --
-    agent-claim 0.12.0's structured refusal fields, not its rendered text."""
+def _check(value: object) -> _SliceCheck:
+    """Validate one ``SliceCheck`` of agent-claim 0.12.0's structured refusal
+    fields; `name` and `level` are what a reader decides on, `text` is what it
+    shows."""
     check = _object(value)
     _require_fields(check, _CHECK_FIELDS)
-    level = _text(check["level"])
-    name = _text(check["check"])
-    _text(check["text"])
+    slice_check = _SliceCheck(
+        _text(check["check"]), _text(check["level"]), _text(check["text"])
+    )
     if check["slice"] is not None:
         _integer(check["slice"])
     if check["issue"] is not None:
         _integer(check["issue"])
-    return name, level
+    return slice_check
 
 
 def _unreadable(value: object) -> None:
