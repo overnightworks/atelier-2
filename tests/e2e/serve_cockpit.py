@@ -1038,9 +1038,9 @@ class BrowserProofHarness:
         if (
             scope["type"] == "http"
             and scope.get("method") == "POST"
-            and path == "/__e2e/seed-conductor"
+            and path == "/__e2e/seed-fixed-report-agent"
         ):
-            body = await asyncio.to_thread(self.seed_conductor)
+            body = await asyncio.to_thread(self.seed_fixed_report_agent)
             await send(
                 {
                     "type": "http.response.start",
@@ -1167,15 +1167,16 @@ class BrowserProofHarness:
         self.app, self.runtime = self.recompose()
         self.generation += 1
 
-    def seed_conductor(self) -> bytes:
-        """Publish the whole conductor catalog through the production doors.
+    def seed_fixed_report_agent(self) -> bytes:
+        """Publish an agent role answered by the fixed-report executor.
 
-        The message and report schemas, the conversation document
-        (`conductor_seed.py`) and its catalog lineage, an auth profile plus
-        agent configuration bound to the fake conductor executor, its model
-        registry entry, and the project level-2 default selecting that exact
-        model. The configuration hash comes back so a run can bind its
-        `conductor` role to the executor seeded here.
+        Through the production doors: the message and report schemas, the
+        conversation document (`conductor_seed.py`) and its catalog lineage,
+        an auth profile plus agent configuration bound to the fake executor
+        that answers `CONDUCTOR_FAKE_REPORT`, its model registry entry, and
+        the project level-2 default selecting that exact model. The
+        configuration hash comes back so a run can bind its `conductor` role
+        to the executor seeded here.
 
         A door rather than startup state, because the cold-boot baseline
         carries no conductor: a spec that resets this one shared server back
