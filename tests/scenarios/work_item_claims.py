@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from atelier2.contracts.effect_requests import HeadBranch
+from atelier2.contracts.effect_requests import ClaimReasons, HeadBranch
 from atelier2.contracts.runs import RunId
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
@@ -27,7 +27,7 @@ class ClaimRequest:
     branch: HeadBranch
     scope: tuple[PurePosixPath, ...]
     claim_id: str
-    out_of_order_reason: str | None
+    reasons: ClaimReasons
 
 
 @dataclass
@@ -50,10 +50,10 @@ class FakeWorkItemClaims:
         branch: HeadBranch,
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
-        out_of_order_reason: str | None,
+        reasons: ClaimReasons,
     ) -> ClaimReceipt | ClaimRefusal:
         self.claim_requests.append(
-            ClaimRequest(item, agent, branch, scope, claim_id, out_of_order_reason)
+            ClaimRequest(item, agent, branch, scope, claim_id, reasons)
         )
         if self.claim_answer is None:
             raise AssertionError("this scenario did not arrange a claim answer")
@@ -95,6 +95,10 @@ def _claims() -> list[dict[str, object]]:
 
 def _option(arguments: list[str], name: str) -> str:
     return arguments[arguments.index(name) + 1]
+
+
+def _optional(arguments: list[str], name: str) -> str | None:
+    return _option(arguments, name) if name in arguments else None
 
 
 def _claim(arguments: list[str]) -> int:
@@ -166,7 +170,11 @@ def _claim(arguments: list[str]) -> int:
     if any(held["claim_id"] == claim["claim_id"] for held in standing):
         json.dump({"refused": True, "issue": claim["issue"], "checks": []}, sys.stdout)
         return 2
-    standing.append(claim)
+    reasons = {
+        "whole": _option(arguments, "--whole"),
+        "out_of_order": _optional(arguments, "--out-of-order"),
+    }
+    standing.append({**claim, "reasons": reasons})
     LEDGER.write_text(json.dumps(standing))
     json.dump(claim, sys.stdout)
     return 0
@@ -228,7 +236,9 @@ def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     The stub answers `agent-claim` 0.12.0's pinned JSON for the commands a run
     uses, and it remembers: a claim already posted is refused a second time and
     read back by `status`, exactly as the real ledger behaves, so a scenario
-    proves the retry path rather than assuming it.
+    proves the retry path rather than assuming it. It also keeps the `--whole`
+    and `--out-of-order` reasons each claim arrived with, which the real tool
+    records on the ledger comment, so `claimed_ledger` answers them.
 
     `answer` scripts what the ledger says to a claim: `grant` posts it,
     `priority` refuses it with the tool's own out-of-order check, `unknown`
@@ -258,7 +268,9 @@ def claimed_ledger(executable: Path) -> tuple[ClaimRequest, ...]:
             HeadBranch(str(claim["branch"])),
             tuple(PurePosixPath(path) for path in claim["scope"]),
             str(claim["claim_id"]),
-            None,
+            ClaimReasons(
+                str(claim["reasons"]["whole"]), claim["reasons"]["out_of_order"]
+            ),
         )
         for claim in json.loads(ledger.read_text())
     )

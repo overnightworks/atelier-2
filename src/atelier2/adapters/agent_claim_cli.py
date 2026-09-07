@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.bounded_processes import bounded_process_streams
-from atelier2.contracts.effect_requests import HeadBranch
+from atelier2.contracts.effect_requests import ClaimReasons, HeadBranch
 from atelier2.contracts.runs import RunId
 from atelier2.ports.work_item_claims import (
     Abandoned,
@@ -133,7 +133,7 @@ class AgentClaimCli:
         branch: HeadBranch,
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
-        out_of_order_reason: str | None,
+        reasons: ClaimReasons,
     ) -> ClaimReceipt | ClaimRefusal:
         arguments = [
             "claim",
@@ -149,8 +149,9 @@ class AgentClaimCli:
         ]
         for path in scope:
             arguments.extend(("--scope", path.as_posix()))
-        if out_of_order_reason is not None:
-            arguments.extend(("--out-of-order", out_of_order_reason))
+        arguments.extend(("--whole", reasons.whole))
+        if reasons.out_of_order is not None:
+            arguments.extend(("--out-of-order", reasons.out_of_order))
         payload, diagnostics = self._command(*arguments, _JSON_FLAG)
         if payload is None:
             return _diagnostic_refusal(diagnostics)

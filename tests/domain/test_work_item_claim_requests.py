@@ -6,6 +6,7 @@ import pytest
 
 from atelier2.contracts.effect_requests import (
     ClaimedLanePath,
+    ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
     HeadBranch,
@@ -16,16 +17,31 @@ from atelier2.contracts.runs import RunId
 RUN = RunId("run-claim-before-build")
 BRANCH = HeadBranch("atelier2/work-item/claim-before-build")
 CLAIM_ID = work_item_claim_id(RUN, 1320)
+WHOLE = "the scope is the item body's own cut"
+OUT_OF_ORDER = "admitted by the operator through the queue label `bereit`"
+REASONS = ClaimReasons(WHOLE, None)
 
 
-def _request() -> ClaimWorkItem:
-    return ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("src/atelier2", "tests"))
+def _request(reasons: ClaimReasons = REASONS) -> ClaimWorkItem:
+    return ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("src/atelier2", "tests"), reasons)
 
 
-def test_a_claim_request_reads_back_as_the_value_that_wrote_it() -> None:
-    request = _request()
+@pytest.mark.parametrize(
+    "reasons",
+    (ClaimReasons(WHOLE, None), ClaimReasons(WHOLE, OUT_OF_ORDER)),
+    ids=("whole-only", "whole-and-out-of-order"),
+)
+def test_a_claim_request_reads_back_as_the_value_that_wrote_it(
+    reasons: ClaimReasons,
+) -> None:
+    """The reasons are part of the bytes: a replay sends what was prepared."""
 
-    assert ClaimWorkItem.from_canonical_bytes(request.canonical_bytes()) == request
+    request = _request(reasons)
+
+    read = ClaimWorkItem.from_canonical_bytes(request.canonical_bytes())
+
+    assert read == request
+    assert read.reasons == reasons
 
 
 def test_the_same_run_and_item_always_name_the_same_claim() -> None:
@@ -39,11 +55,15 @@ def test_the_same_run_and_item_always_name_the_same_claim() -> None:
 @pytest.mark.parametrize(
     "make",
     (
-        lambda: ClaimWorkItem(0, CLAIM_ID, BRANCH, ("src",)),
-        lambda: ClaimWorkItem(1320, "a claim id with spaces", BRANCH, ("src",)),
-        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, ()),
-        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("tests", "src")),
-        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("src", "src")),
+        lambda: ClaimWorkItem(0, CLAIM_ID, BRANCH, ("src",), REASONS),
+        lambda: ClaimWorkItem(
+            1320, "a claim id with spaces", BRANCH, ("src",), REASONS
+        ),
+        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, (), REASONS),
+        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("tests", "src"), REASONS),
+        lambda: ClaimWorkItem(1320, CLAIM_ID, BRANCH, ("src", "src"), REASONS),
+        lambda: ClaimReasons("", None),
+        lambda: ClaimReasons(WHOLE, ""),
     ),
     ids=(
         "no-item",
@@ -51,6 +71,8 @@ def test_the_same_run_and_item_always_name_the_same_claim() -> None:
         "empty-scope",
         "unsorted-scope",
         "duplicate-scope",
+        "no-whole-reason",
+        "empty-out-of-order-reason",
     ),
 )
 def test_a_claim_nothing_could_be_taken_under_is_refused(

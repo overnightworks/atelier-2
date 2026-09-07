@@ -11,6 +11,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
 from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -19,16 +20,19 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.work_item_claims import (
+    WHOLE_SCOPE_REASON,
     ConfirmedWorkItemClaim,
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
     hold_prepared_claim,
     hold_work_item_claim,
+    out_of_order_reason,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
+    ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
     HeadBranch,
@@ -46,14 +50,38 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
 )
 from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    PlanQueueItem,
+    QueueAdmissionRationale,
+    QueueAutomationDisposition,
+    QueueItemAdmitted,
+    QueueItemProposed,
+    QueueItemTrackerObservation,
+    QueueLaunchBinding,
+    QueuePriorityRank,
+    QueueProjectionRevision,
+    QueueProjectPolicyRevision,
+    QueueProposal,
+    WorkItemReference,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
+from atelier2.ports.queue_projection import (
+    QueueItemsReconciled,
+    QueueLaunchReserved,
+    QueueProjectPolicyPublished,
+    ReadQueueProjectPolicyResult,
+)
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
     ClaimReceipt,
     ClaimRefusal,
     ClaimRefusalReason,
     ClaimTouch,
+    WorkItemClaims,
 )
 from tests.acceptance.test_v3_push_before_open_pr import (
     _SCOPED_ITEM,
@@ -63,6 +91,10 @@ from tests.acceptance.test_v3_push_before_open_pr import (
     _repositories,
     _start_public_run,
 )
+from tests.acceptance.test_v3_push_before_open_pr import (
+    ITEM as PUBLIC_ITEM,
+)
+from tests.scenarios.catalog_lineages import found_lineage
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
     claimed_ledger,
@@ -76,6 +108,10 @@ BRANCH = HeadBranch("atelier2/work-item/claim-before-build")
 SCOPE = ("src/atelier2/adapters/dbos/work_item_claims.py", "tests")
 CLAIM_ID = work_item_claim_id(RUN_ID, ITEM)
 AGENT = f"atelier2 run {RUN_ID.value}"
+REASONS = ClaimReasons(
+    "the scope is the item body's own cut",
+    "admitted by the operator through the queue label `bereit`",
+)
 LEDGER_BINDING = EffectAdapterBinding(
     AdapterRevision("agent-claim-cli/0.12.0"),
     EffectDestination("/checkout"),
@@ -85,7 +121,7 @@ LEDGER_BINDING = EffectAdapterBinding(
 
 
 def _intent() -> EffectIntent:
-    request = ClaimWorkItem(ITEM, CLAIM_ID, BRANCH, SCOPE)
+    request = ClaimWorkItem(ITEM, CLAIM_ID, BRANCH, SCOPE, REASONS)
     return EffectIntent(
         EffectBinding(
             LogicalEffectKey("atelier2-work-item-claim-test"),
@@ -116,12 +152,26 @@ def _receipt(
     )
 
 
+class _PolicyNeverRead:
+    """The queue policy of a ledger whose claim is already prepared.
+
+    Holding a prepared claim sends the reasons the intent carries; a hold that
+    asked the policy again would compose a sentence from later state.
+    """
+
+    def current_policy(self, project: ProjectId) -> ReadQueueProjectPolicyResult:
+        raise AssertionError("holding a prepared claim never reads the queue policy")
+
+
 def _held(claims: FakeWorkItemClaims) -> WorkItemClaimHeld | WorkItemClaimRefused:
-    return hold_prepared_claim(_intent(), WorkItemClaimLedger(claims, LEDGER_BINDING))
+    return hold_prepared_claim(
+        _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
+    )
 
 
-def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
-    """The claim carries the run's identity and the item's own paths, and no more."""
+def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() -> None:
+    """The claim carries the run's identity, the item's own paths and the
+    reasons that were prepared with it, and no more."""
 
     claims = FakeWorkItemClaims(claim_answer=_receipt())
 
@@ -135,7 +185,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
             request.branch,
             request.scope,
             request.claim_id,
-            request.out_of_order_reason,
+            request.reasons,
         )
         for request in claims.claim_requests
     ] == [
@@ -145,7 +195,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_and_scope() -> None:
             BRANCH,
             tuple(PurePosixPath(path) for path in SCOPE),
             CLAIM_ID,
-            None,
+            REASONS,
         )
     ]
     assert outcome == WorkItemClaimHeld(
@@ -273,7 +323,9 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     """
 
     executable = fake_agent_claim_executable(tmp_path)
-    ledger = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    ledger = WorkItemClaimLedger(
+        AgentClaimCli(executable, tmp_path), LEDGER_BINDING, _PolicyNeverRead()
+    )
     intent = _intent()
 
     first = hold_prepared_claim(intent, ledger)
@@ -295,7 +347,9 @@ def test_a_ledger_holding_nothing_yet_is_claimed_once(tmp_path: Path) -> None:
 
     assert claims.read_back(ITEM, CLAIM_ID) == ClaimAbsent()
     assert isinstance(
-        hold_prepared_claim(_intent(), WorkItemClaimLedger(claims, LEDGER_BINDING)),
+        hold_prepared_claim(
+            _intent(), WorkItemClaimLedger(claims, LEDGER_BINDING, _PolicyNeverRead())
+        ),
         WorkItemClaimHeld,
     )
     assert claimed_ledger(executable)[0].scope == tuple(
@@ -331,6 +385,13 @@ class _StartedBuilderNode:
     runtime: DbosRuntime
     revision_hash: WorkflowRevisionHash
     binding: AgentNodeBindingV2
+
+    def ledger(self, claims: WorkItemClaims) -> WorkItemClaimLedger:
+        """`claims` as this runtime's ledger, reading its own queue policy."""
+
+        return WorkItemClaimLedger(
+            claims, LEDGER_BINDING, DbosQueueProjectionStore(self.runtime.engine)
+        )
 
     def hold(self, ledger: WorkItemClaimLedger) -> str | None:
         return hold_work_item_claim(
@@ -408,6 +469,96 @@ def _started_node(
     return _StartedBuilderNode(runtime, revision_hash, binding)
 
 
+def _launched_from_the_queue(runtime: DbosRuntime, label: str | None) -> None:
+    """Bind the started run to its item as the sweep would, under a policy
+    naming `label` -- the durable trace that says the operator admitted it."""
+
+    queue = DbosQueueProjectionStore(runtime.engine)
+    lineage_id, revision_hash = found_lineage(runtime.engine)
+    assert isinstance(
+        queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, label), 0),
+        QueueProjectPolicyPublished,
+    )
+    reference = WorkItemReference(PROJECT, PUBLIC_ITEM)
+    observed_at = RecordedAt("2026-08-27T10:00:00Z")
+    assert isinstance(
+        queue.reconcile_open_items(
+            PROJECT,
+            ((reference, QueueItemTrackerObservation("Implement P3.", observed_at)),),
+            observed_at,
+        ),
+        QueueItemsReconciled,
+    )
+    proposed = queue.plan(
+        PlanQueueItem(
+            reference,
+            QueueProposal(
+                QueuePriorityRank(1),
+                lineage_id,
+                (),
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+                1,
+            ),
+            QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(proposed, QueueItemProposed)
+    assert isinstance(
+        queue.confirm(
+            ConfirmQueueProposal(
+                reference,
+                proposed.revision,
+                QueueAdmissionRationale("operator approved the inspected proposal"),
+            )
+        ),
+        QueueItemAdmitted,
+    )
+    assert isinstance(
+        queue.reserve_launch(
+            QueueLaunchBinding(reference.item_id, proposed.revision, RUN, revision_hash)
+        ),
+        QueueLaunchReserved,
+    )
+
+
+@pytest.mark.parametrize(
+    ("queue_launched", "label", "expected"),
+    (
+        (False, None, ClaimReasons(WHOLE_SCOPE_REASON, None)),
+        (
+            True,
+            "bereit",
+            ClaimReasons(WHOLE_SCOPE_REASON, out_of_order_reason("bereit")),
+        ),
+        (True, None, ClaimReasons(WHOLE_SCOPE_REASON, None)),
+    ),
+    ids=("started-by-hand", "queue-launched-under-a-label", "queue-launched-no-label"),
+)
+def test_the_claim_waives_board_order_only_for_a_run_the_queue_admitted(
+    started_node: _StartedBuilderNode,
+    tmp_path: Path,
+    queue_launched: bool,
+    label: str | None,
+    expected: ClaimReasons,
+) -> None:
+    """The whole-scope reason always travels; the out-of-order reason only
+    where a queue launch binding names this run and the policy names a label.
+
+    A hand-started run is refused by priority as a person would be, and so is
+    a queue-launched run under a policy that admits by no label.
+    """
+
+    if queue_launched:
+        _launched_from_the_queue(started_node.runtime, label)
+    executable = fake_agent_claim_executable(tmp_path)
+    ledger = started_node.ledger(AgentClaimCli(executable, tmp_path))
+
+    assert started_node.hold(ledger) is None
+
+    (claimed,) = claimed_ledger(executable)
+    assert claimed.reasons == expected
+
+
 def _refusing_everything() -> FakeWorkItemClaims:
     """A ledger that became unreadable and refuses every claim: the worst later answer."""
 
@@ -428,15 +579,13 @@ def test_a_recovery_replays_the_held_claim_without_asking_the_ledger_again(
     """
 
     executable = fake_agent_claim_executable(tmp_path)
-    first_drive = WorkItemClaimLedger(
-        AgentClaimCli(executable, tmp_path), LEDGER_BINDING
-    )
+    first_drive = started_node.ledger(AgentClaimCli(executable, tmp_path))
     assert started_node.hold(first_drive) is None
     assert len(claimed_ledger(executable)) == 1
     held = started_node.standing()
 
     replay = _refusing_everything()
-    assert started_node.hold(WorkItemClaimLedger(replay, LEDGER_BINDING)) is None
+    assert started_node.hold(started_node.ledger(replay)) is None
 
     assert (replay.read_back_requests, replay.claim_requests) == ([], [])
     assert held == (RunState.STARTED.value, 1, 0, 0)
@@ -453,15 +602,14 @@ def test_a_recovery_after_a_refusal_refuses_once_and_builds_on_no_later_grant(
     same terminal word -- so no attempt is started on a run already FAILED.
     """
 
-    first_drive = WorkItemClaimLedger(
-        FakeWorkItemClaims(claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY)),
-        LEDGER_BINDING,
+    first_drive = started_node.ledger(
+        FakeWorkItemClaims(claim_answer=ClaimRefusal(ClaimRefusalReason.PRIORITY))
     )
     assert started_node.hold(first_drive) == RunState.FAILED.value
     refused = started_node.standing()
 
     executable = fake_agent_claim_executable(tmp_path)
-    replay = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+    replay = started_node.ledger(AgentClaimCli(executable, tmp_path))
     assert started_node.hold(replay) == RunState.FAILED.value
 
     assert claimed_ledger(executable) == ()

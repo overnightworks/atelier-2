@@ -164,6 +164,43 @@ class OpenPullRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimReasons:
+    """Why the ledger may waive its two checks for this claim, in the run's words.
+
+    `whole` answers the width check: it is always given, because the scope is
+    the item body's own cut and the ledger ignores the sentence where nothing
+    trips. `out_of_order` answers the board-order check and exists only where
+    an operator's admission already decided the order; a run without one is
+    refused by priority as a person would be.
+    """
+
+    whole: str
+    out_of_order: str | None
+
+    def __post_init__(self) -> None:
+        if not self.whole:
+            raise ValueError("a claim always says why its scope does not split")
+        if self.out_of_order == "":
+            raise ValueError("an out-of-order reason is a sentence or absent")
+
+    def as_json(self) -> dict[str, str | None]:
+        return {"out_of_order": self.out_of_order, "whole": self.whole}
+
+    @classmethod
+    def from_json(cls, value: object) -> Self:
+        if not isinstance(value, dict):
+            raise TypeError("claim reasons are an object")
+        _fields(value, frozenset(("out_of_order", "whole")), "claim reasons")
+        whole = value["whole"]
+        out_of_order = value["out_of_order"]
+        if not isinstance(whole, str):
+            raise TypeError("a claim's whole-scope reason is text")
+        if out_of_order is not None and not isinstance(out_of_order, str):
+            raise TypeError("a claim's out-of-order reason is text or absent")
+        return cls(whole, out_of_order)
+
+
+@dataclass(frozen=True, slots=True)
 class ClaimWorkItem:
     """The lane claim one run holds on its work item before it edits anything.
 
@@ -171,13 +208,16 @@ class ClaimWorkItem:
     so a retry asks the ledger about the same claim instead of taking a second
     one, and the ledger answers under an identity this runtime can read back.
     The agent identity is not restated here: the intent's own binding names the
-    run, and the claim boundary renders `atelier2 run <run-id>` from it.
+    run, and the claim boundary renders `atelier2 run <run-id>` from it. The
+    reasons travel in the canonical bytes so a replay sends the ledger exactly
+    what was prepared, never a sentence composed afresh from later state.
     """
 
     item: int
     claim_id: str
     head_branch: HeadBranch
     scope: tuple[str, ...]
+    reasons: ClaimReasons
 
     def __post_init__(self) -> None:
         if self.item <= 0:
@@ -193,6 +233,7 @@ class ClaimWorkItem:
                 "claim_id": self.claim_id,
                 "head_branch": self.head_branch.value,
                 "item": self.item,
+                "reasons": self.reasons.as_json(),
                 "scope": list(self.scope),
             }
         )
@@ -202,7 +243,7 @@ class ClaimWorkItem:
         value = _object(request, "claim-work-item request")
         _fields(
             value,
-            frozenset(("claim_id", "head_branch", "item", "scope")),
+            frozenset(("claim_id", "head_branch", "item", "reasons", "scope")),
             "claim-work-item request",
         )
         item = value["item"]
@@ -218,6 +259,7 @@ class ClaimWorkItem:
             value["claim_id"],
             HeadBranch(value["head_branch"]),
             tuple(scope),
+            ClaimReasons.from_json(value["reasons"]),
         )
 
 
