@@ -237,65 +237,17 @@ class DbosDefinitionSources:
                 if adopted is not None:
                     return PathAdopted(intake, adopted)
                 return PathIntaken(intake)
-            case CatalogAdmissionExisting(lineage, _, _, held_name):
-                # Founding reaches the lineage these exact bytes started, whatever
-                # name it carries. Under another name they are somebody else's
-                # entry, not this path's: reporting them present would call a
-                # foreign catalog entry this source's delivery and let the paths
-                # already written commit behind it. Admitting into the path's own
-                # lineage has no such doubt -- the catalog answered
-                # `CatalogAdmissionRevisionOwned` before ever reaching here.
-                if previous is None and held_name != selected.display_name:
-                    return SourceIntakeRefused(
-                        selected.path,
-                        CatalogAdmissionRevisionOwned(
-                            published.revision_hash, lineage.lineage_id
-                        ),
-                    )
-                if previous is None and _a_source_has_fed(
-                    connection, lineage.lineage_id
-                ):
-                    # #660 A3 only lets an *unsourced* lineage be adopted.
-                    # Once any source -- this one included -- has fed this
-                    # lineage, its name is genuinely held: a further
-                    # byte-identical delivery does not get to attach its own
-                    # provenance to somebody else's continuity, or its next,
-                    # differing delivery could re-head that lineage as if it
-                    # had always been this source's own.
-                    return SourceIntakeRefused(
-                        selected.path,
-                        CatalogAdmissionNameHeld(held_name, lineage.lineage_id),
-                    )
-                if previous is None and published.revision_hash != (
-                    current_head_revision_hash(connection, lineage.lineage_id)
-                ):
-                    # These bytes founded the lineage, but a later revision
-                    # now stands as its head: the repository no longer
-                    # carries what this name serves, so reporting it present
-                    # would let a stale delivery answer for served bytes it
-                    # is not.
-                    return SourceIntakeRefused(
-                        selected.path,
-                        CatalogAdmissionRevisionOwned(
-                            published.revision_hash, lineage.lineage_id
-                        ),
-                    )
-                if previous is None:
-                    # A first intake byte-identical to the lineage's own
-                    # founding revision changes nothing in the catalog, but
-                    # this source has still taken the path in for the first
-                    # time and earns the same provenance any other first
-                    # intake would.
-                    _insert_intake(
-                        connection,
-                        _founding_intake(
-                            source_id, selected, commit, published.revision_hash
-                        ),
-                        actor,
-                        intaken_at,
-                    )
-                return PathAlreadyInCatalog(
-                    selected.path, RevisionKind.WORKFLOW, published.revision_hash
+            case CatalogAdmissionExisting():
+                return _existing_revision_outcome(
+                    connection,
+                    source_id,
+                    selected,
+                    commit,
+                    published,
+                    previous,
+                    admission,
+                    actor,
+                    intaken_at,
                 )
             case CatalogAdmissionRevisionOwned(revision_hash, owner) if (
                 previous is None
@@ -514,6 +466,67 @@ def _lineage_holding(
             "a recorded source intake names a revision no catalog lineage holds"
         )
     return owner
+
+
+def _existing_revision_outcome(
+    connection: Connection,
+    source_id: DefinitionSourceId,
+    selected: SelectedIntake,
+    commit: SourceCommit,
+    published: PublishedRevision,
+    previous: SourceIntake | None,
+    existing: CatalogAdmissionExisting,
+    actor: CatalogActor,
+    intaken_at: CatalogActivatedAt,
+) -> PathAlreadyInCatalog | SourceIntakeRefused:
+    """What bytes the catalog already holds mean for the path delivering them.
+
+    A re-intake is simply present: its own lineage already answered. A first
+    intake founded a lineage whose name may be somebody else's, and calling a
+    foreign entry this source's delivery would commit the paths behind it.
+    """
+
+    present = PathAlreadyInCatalog(
+        selected.path, RevisionKind.WORKFLOW, published.revision_hash
+    )
+    if previous is not None:
+        return present
+    lineage_id = existing.lineage.lineage_id
+    if existing.display_name != selected.display_name:
+        return SourceIntakeRefused(
+            selected.path,
+            CatalogAdmissionRevisionOwned(published.revision_hash, lineage_id),
+        )
+    if _a_source_has_fed(connection, lineage_id):
+        # ADR 0007 (A3) only lets an *unsourced* lineage be adopted. Once any
+        # source -- this one included -- has fed it, its name is genuinely held:
+        # a byte-identical delivery may not attach its own provenance to
+        # somebody else's continuity, or its next, differing delivery could
+        # re-head that lineage as if it had always been this source's own.
+        return SourceIntakeRefused(
+            selected.path,
+            CatalogAdmissionNameHeld(existing.display_name, lineage_id),
+        )
+    if published.revision_hash != current_head_revision_hash(connection, lineage_id):
+        # These bytes founded the lineage, but a later revision now stands as
+        # its head: the repository no longer carries what this name serves, so
+        # reporting it present would let a stale delivery answer for served
+        # bytes it is not.
+        return SourceIntakeRefused(
+            selected.path,
+            CatalogAdmissionRevisionOwned(published.revision_hash, lineage_id),
+        )
+    # A first intake byte-identical to the lineage's own founding revision
+    # changes nothing in the catalog, but this source has still taken the path
+    # in for the first time and earns the same provenance any other first
+    # intake would.
+    _insert_intake(
+        connection,
+        _founding_intake(source_id, selected, commit, published.revision_hash),
+        actor,
+        intaken_at,
+    )
+    return present
 
 
 def _founding_intake(
