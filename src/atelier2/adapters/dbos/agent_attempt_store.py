@@ -5,7 +5,7 @@ from typing import Any, assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from atelier2.adapters.dbos.agent_effect_grants import (
     agent_node_redeems_platform_effect,
@@ -147,7 +147,7 @@ from atelier2.contracts.process_endings import (
     process_exit_verdict,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
-from atelier2.contracts.run_bindings import RunV2, RunV3
+from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_cancellations import (
     CancelRunRequest,
     RunCancelCommandId,
@@ -487,22 +487,29 @@ def load_output_schema_refusal_receipt(
         or receipt.receipt_hash.value != str(record["receipt_hash"])
     ):
         raise RunTransitionConflict("output-schema refusal receipt binding differs")
+    _require_refusal_value_stored(connection, receipt)
+    return receipt
+
+
+def _require_refusal_value_stored(
+    connection: Connection, receipt: OutputSchemaRefusalReceipt
+) -> None:
+    """The bytes the refusal judged are on hand, or the refusal judged none."""
     if receipt.artifact_hash is None:
         if receipt.value_hash != Sha256Hash.of(b""):
             raise RunTransitionConflict(
                 "nonempty output-schema refusal has no artifact"
             )
-    else:
-        if receipt.artifact_hash.value != receipt.value_hash.value:
-            raise RunTransitionConflict(
-                "output-schema refusal artifact differs from its value hash"
-            )
-        artifact = read_stored_artifact(connection, receipt.artifact_hash)
-        if artifact is None or Sha256Hash.of(artifact.content) != receipt.value_hash:
-            raise RunTransitionConflict(
-                "output-schema refusal artifact is missing or differs"
-            )
-    return receipt
+        return
+    if receipt.artifact_hash.value != receipt.value_hash.value:
+        raise RunTransitionConflict(
+            "output-schema refusal artifact differs from its value hash"
+        )
+    artifact = read_stored_artifact(connection, receipt.artifact_hash)
+    if artifact is None or Sha256Hash.of(artifact.content) != receipt.value_hash:
+        raise RunTransitionConflict(
+            "output-schema refusal artifact is missing or differs"
+        )
 
 
 def load_prior_output_schema_refusal_receipt(
@@ -1189,6 +1196,12 @@ def _permission_receipt_from_record(record: Mapping[Any, Any]) -> PermissionRece
         ) from error
 
 
+_CANCELLATION_END_EVENT_BY_STATE = {
+    AgentAttemptState.CANCELLED: RunEventKind.AGENT_CANCELLED,
+    AgentAttemptState.INTERRUPTED: RunEventKind.AGENT_INTERRUPTED,
+}
+
+
 def _insert_attempt_event(
     connection: Any,
     attempt: AgentAttempt,
@@ -1374,6 +1387,24 @@ def _wait_cancellation_from_event_log(
     if ended is None:
         return None
     return RunCancellationEndedRun(load_run(connection, run_id))
+
+
+def _known_run_cancellation(
+    connection: Connection, run_id: RunId, attempt: AgentAttempt
+) -> RunCancellationResult:
+    """The answer a command already stamped on its attempt, whatever it reached."""
+    if attempt.state is AgentAttemptState.CANCEL_REQUESTED:
+        return RunCancellationAccepted(attempt)
+    if attempt.state in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}:
+        return RunCancellationTerminalRetry(load_run(connection, run_id))
+    return PortDurableStateCorrupt()
+
+
+def _resting_wait_run(run: AnyRun) -> RunV3 | None:
+    """The run when it rests at a pause a format-3 line wrote, else nothing."""
+    if run.state is RunState.WAITING_INPUT and isinstance(run, RunV3):
+        return run
+    return None
 
 
 def _cancel_resting_wait(
@@ -2116,22 +2147,13 @@ class DbosAgentAttemptStore:
             raise RunTransitionConflict(
                 "output-schema repair requires an application version"
             )
-        client = DBOSClient(
-            system_database_engine=self._engine, use_listen_notify=False
+        self._enqueue_workflow(
+            connection,
+            REPLACEMENT_WORKFLOW_NAME,
+            replacement_workflow_id_for(repair.attempt_id),
+            self._application_version,
+            repair.attempt_id.value,
         )
-        try:
-            client.enqueue_in_transaction(
-                connection,
-                {
-                    "workflow_name": REPLACEMENT_WORKFLOW_NAME,
-                    "queue_name": QUEUE_NAME,
-                    "workflow_id": replacement_workflow_id_for(repair.attempt_id),
-                    "app_version": self._application_version,
-                },
-                repair.attempt_id.value,
-            )
-        finally:
-            client.destroy()
         return failed
 
     def complete_success(
@@ -2404,30 +2426,16 @@ class DbosAgentAttemptStore:
                 return AgentAttemptCancellationTargetMissing()
             existing = attempt.cancellation
             if existing is not None:
-                if not existing.matches(request):
-                    return AgentAttemptCancellationCommandConflict()
-                return AgentAttemptCancellationAccepted(
-                    attempt,
-                    attempt.state
-                    in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED},
-                    self._replacement_attempt_id(connection, attempt),
+                return self._repeated_cancellation_answer(
+                    connection, attempt, existing, request
                 )
-            if attempt.state in {
-                AgentAttemptState.SUCCEEDED,
-                AgentAttemptState.FAILED,
-                AgentAttemptState.CANCELLED,
-                AgentAttemptState.INTERRUPTED,
-            }:
+            if attempt.state in TERMINAL_AGENT_ATTEMPT_STATES:
                 return AgentAttemptCancellationTerminalConflict()
             if attempt.state_version != request.expected_attempt_state_version:
                 return AgentAttemptCancellationStale()
-            if (
-                attempt.runner_manifest_id is not None
-                and request.replacement is AgentAttemptReplacement.ONE
-            ):
-                return AgentAttemptReplacementNotAllowed()
             if request.replacement is AgentAttemptReplacement.ONE and (
-                attempt.attempt_ordinal != 1
+                attempt.runner_manifest_id is not None
+                or attempt.attempt_ordinal != AGENT_ATTEMPT_ORDINAL
             ):
                 return AgentAttemptReplacementNotAllowed()
             current_ordinal = connection.scalar(
@@ -2447,6 +2455,23 @@ class DbosAgentAttemptStore:
             if committed is None:
                 return AgentAttemptCancellationStale()
             return AgentAttemptCancellationAccepted(committed, False)
+
+    def _repeated_cancellation_answer(
+        self,
+        connection: Connection,
+        attempt: AgentAttempt,
+        existing: AgentAttemptCancellation,
+        request: CancelAgentAttemptRequest,
+    ) -> AgentAttemptCancellationResult:
+        """A retried command reads the answer its first delivery already stamped."""
+        if not existing.matches(request):
+            return AgentAttemptCancellationCommandConflict()
+        return AgentAttemptCancellationAccepted(
+            attempt,
+            attempt.state
+            in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED},
+            self._replacement_attempt_id(connection, attempt),
+        )
 
     def request_run_cancellation(
         self, request: CancelRunRequest
@@ -2489,17 +2514,9 @@ class DbosAgentAttemptStore:
                 .one_or_none()
             )
             if record is not None:
-                attempt = attempt_from_record(record)
-                if attempt.state is AgentAttemptState.CANCEL_REQUESTED:
-                    return RunCancellationAccepted(attempt)
-                if attempt.state in {
-                    AgentAttemptState.CANCELLED,
-                    AgentAttemptState.INTERRUPTED,
-                }:
-                    return RunCancellationTerminalRetry(
-                        load_run(connection, request.run_id)
-                    )
-                return PortDurableStateCorrupt()
+                return _known_run_cancellation(
+                    connection, request.run_id, attempt_from_record(record)
+                )
 
             from_event_log = _run_cancellation_from_event_log(
                 connection, request.run_id, command_id
@@ -2519,11 +2536,7 @@ class DbosAgentAttemptStore:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.ALREADY_ENDED
                 )
-            resting_wait_run = (
-                run
-                if run.state is RunState.WAITING_INPUT and isinstance(run, RunV3)
-                else None
-            )
+            resting_wait_run = _resting_wait_run(run)
             waiting_for_a_person = run.state in {
                 RunState.WAITING_INPUT,
                 RunState.WAITING_RECONCILIATION,
@@ -2663,26 +2676,74 @@ class DbosAgentAttemptStore:
             raise RunTransitionConflict(
                 "cancellation submission requires the runtime application version"
             )
+        self._enqueue_workflow(
+            connection,
+            CANCELLATION_WORKFLOW_NAME,
+            workflow_id,
+            self._application_version,
+            attempt.run_id.value,
+            attempt.attempt_id.value,
+            request.command_id,
+        )
+        return accepted
+
+    def _enqueue_workflow(
+        self,
+        connection: Connection,
+        workflow_name: str,
+        workflow_id: str,
+        application_version: str,
+        *arguments: str,
+    ) -> None:
+        """Enqueue one workflow in the caller's transaction, so both land or neither."""
         client = DBOSClient(
             system_database_engine=self._engine, use_listen_notify=False
         )
         try:
             options: EnqueueOptions = {
-                "workflow_name": CANCELLATION_WORKFLOW_NAME,
+                "workflow_name": workflow_name,
                 "queue_name": QUEUE_NAME,
                 "workflow_id": workflow_id,
-                "app_version": self._application_version,
+                "app_version": application_version,
             }
-            client.enqueue_in_transaction(
-                connection,
-                options,
-                attempt.run_id.value,
-                attempt.attempt_id.value,
-                request.command_id,
-            )
+            client.enqueue_in_transaction(connection, options, *arguments)
         finally:
             client.destroy()
-        return accepted
+
+    def _submit_replacement_attempt(
+        self, connection: Connection, attempt: AgentAttempt
+    ) -> AgentAttemptId:
+        """Prepare the attempt that takes over this execution and enqueue its run."""
+        replacement = AgentAttempt(
+            AgentAttemptId.for_execution(
+                attempt.node_execution_id,
+                attempt.request_hash,
+                REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+            ),
+            attempt.node_execution_id,
+            attempt.request_hash,
+            attempt.executor_operational_identity,
+            attempt.run_id,
+            attempt.workflow_revision_hash,
+            attempt.node_id,
+            REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+            AgentAttemptState.PREPARED,
+            0,
+        )
+        connection.execute(agent_attempts.insert().values(_attempt_values(replacement)))
+        record_attempt_started(connection, replacement.attempt_id.value)
+        if self._application_version is None:
+            raise RunTransitionConflict(
+                "replacement submission requires the runtime application version"
+            )
+        self._enqueue_workflow(
+            connection,
+            REPLACEMENT_WORKFLOW_NAME,
+            replacement_workflow_id_for(replacement.attempt_id),
+            self._application_version,
+            replacement.attempt_id.value,
+        )
+        return replacement.attempt_id
 
     def attest_cancellation_cleanup(
         self,
@@ -2765,56 +2826,15 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict("cleanup attestation lost its attempt CAS")
             record_attempt_ended(connection, attempt.attempt_id.value)
             terminal = _load_attempt(connection, attempt.attempt_id)
-            replacement_attempt_id = None
-            if cancellation.replacement is AgentAttemptReplacement.ONE:
-                replacement_attempt_id = AgentAttemptId.for_execution(
-                    attempt.node_execution_id, attempt.request_hash, 2
-                )
-                replacement = AgentAttempt(
-                    replacement_attempt_id,
-                    attempt.node_execution_id,
-                    attempt.request_hash,
-                    attempt.executor_operational_identity,
-                    attempt.run_id,
-                    attempt.workflow_revision_hash,
-                    attempt.node_id,
-                    2,
-                    AgentAttemptState.PREPARED,
-                    0,
-                )
-                connection.execute(
-                    agent_attempts.insert().values(_attempt_values(replacement))
-                )
-                record_attempt_started(connection, replacement.attempt_id.value)
-                if self._application_version is None:
-                    raise RunTransitionConflict(
-                        "replacement submission requires the runtime application version"
-                    )
-                client = DBOSClient(
-                    system_database_engine=self._engine, use_listen_notify=False
-                )
-                try:
-                    options: EnqueueOptions = {
-                        "workflow_name": REPLACEMENT_WORKFLOW_NAME,
-                        "queue_name": QUEUE_NAME,
-                        "workflow_id": replacement_workflow_id_for(
-                            replacement_attempt_id
-                        ),
-                        "app_version": self._application_version,
-                    }
-                    client.enqueue_in_transaction(
-                        connection, options, replacement_attempt_id.value
-                    )
-                finally:
-                    client.destroy()
+            replacement_attempt_id = (
+                self._submit_replacement_attempt(connection, attempt)
+                if cancellation.replacement is AgentAttemptReplacement.ONE
+                else None
+            )
             _insert_attempt_event(
                 connection,
                 terminal,
-                (
-                    RunEventKind.AGENT_INTERRUPTED
-                    if terminal_state is AgentAttemptState.INTERRUPTED
-                    else RunEventKind.AGENT_CANCELLED
-                ),
+                _CANCELLATION_END_EVENT_BY_STATE[terminal_state],
                 command=terminal_cancellation,
                 replacement_attempt_id=replacement_attempt_id,
             )
