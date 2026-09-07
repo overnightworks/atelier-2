@@ -1,0 +1,8 @@
+claim_id = "e0474aedaa30461895aad081673132ee"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "990ccdc7c48caadcabc3dcc737180fe5296919cc"
+branch = "claude/issue-1400-claim-detail"
+scope = ["src/atelier2/ports/work_item_claims.py", "src/atelier2/adapters/agent_claim_cli.py", "src/atelier2/contracts/executions.py", "src/atelier2/adapters/dbos/work_item_claims.py", "src/atelier2/adapters/dbos/queries.py", "src/atelier2/api/wire/events.py", "src/atelier2/api/projection/events.py", "docs/product/interfaces.md", "tests/adapters", "tests/scenarios/work_item_claims.py", "tests/acceptance/test_v3_push_before_open_pr.py", "tests/integration/test_api.py", "tests/api", "tests/integration/test_v3_failed_event_reason.py"]
+opened_commit = "df2d29f711e15faf9dbd211b22334d11f9777856"
+whole_reason = "Ein Feld wandert vom Port bis zum Draht in einer Aussage; die Wire-Fixtures folgen ihm"
