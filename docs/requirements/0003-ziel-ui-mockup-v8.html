@@ -425,6 +425,69 @@ table.list tr.grp td .mark{margin-right:.2rem}
 .differs{color:var(--fail);font-weight:600}
 .sub{color:var(--ink-dim);font-weight:400;margin-left:.4rem}
 
+/* ── Settings as the real page (v8-23): tab strip, state glyphs, the grade grid, label/value rows ── */
+.stage>.tabs{margin:.2rem 0 1rem}
+/* State by shape and word: disc = wants nothing, triangle = wants a look, dashed square = never, ochre/brick only where ruled. */
+.state{display:inline-flex;align-items:center;gap:.45rem;font-weight:600;font-size:.88rem;white-space:nowrap;color:var(--ink-dim);min-height:var(--tap)}
+.state i{width:.7rem;height:.7rem;flex:none;display:inline-block;border-radius:50%;background:var(--ink-dim)}
+.state.need{color:var(--need)} .state.need i{background:var(--need-mark);border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)}
+.state.fail{color:var(--fail)} .state.fail i{background:var(--fail);border-radius:0;clip-path:polygon(50% 0,100% 100%,0 100%)}
+.state.off{color:var(--ink-faint)} .state.off i{background:none;border:1.6px dashed var(--ink-faint);border-radius:1px}
+/* The one explanation affordance: a drawn ⓘ, its text on hover and tap, never inline. */
+.info{display:inline-grid;place-items:center;width:1rem;height:1rem;border:1px solid var(--ink-faint);border-radius:50%;color:var(--ink-dim);font-size:.62rem;font-weight:700;font-style:normal;font-family:var(--sans);vertical-align:.1em;margin-left:.25rem;cursor:default}
+table.roles{width:100%;border-collapse:collapse;font-size:.9rem;table-layout:fixed}
+table.roles.providers th:nth-child(1){width:22%} table.roles.providers th:nth-child(2){width:26%} table.roles.providers th:nth-child(4){width:6rem}
+table.roles.grades th:nth-child(1){width:24%}
+table.roles th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
+table.roles th .mark{margin-right:.15rem}
+table.roles td{padding:.55rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+table.roles td.task b{font-weight:600}
+table.roles td small{display:block;color:var(--ink-dim);font-size:.78rem;white-space:normal}
+table.roles td.route{color:var(--ink-dim);font-size:.88rem;padding-top:.85rem}
+table.roles td[data-k="Provider"]{padding-top:.85rem}
+table.roles td.act{text-align:right}
+/* A cell: the selection, and beside it what just happened to it — a quiet Saved, or the triangle with Retry. */
+.cell{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.cell .in{flex:1 1 9rem;min-height:2.2rem;padding:.3rem .6rem}
+.cell .in .val{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.in.held{border-color:var(--line);color:var(--ink-dim);cursor:not-allowed}
+.in.held .val{color:var(--ink-dim)}
+.saved{color:var(--ink-dim);font-weight:600;font-size:.85rem}
+/* Label left, value right; the label column is wide enough for two words. */
+.fact.kv{grid-template-columns:8rem minmax(0,1fr);align-items:center;margin:.55rem 0;font-size:.92rem}
+.fact.kv b{color:var(--ink-dim)}
+.fact.kv .in{max-width:18rem}
+.fact.kv .in.num{max-width:6rem}
+.fact.kv .row-acts{gap:.8rem}
+.foot-row{display:flex;justify-content:flex-end;border-top:1px solid var(--line);margin-top:1.2rem;padding-top:.8rem}
+/* A 390 frame beside its 1280 sibling: its own width decides, not the window's, so both are measurable on one page. */
+#v8-23-models .frame{container-type:inline-size}
+/* The narrow frame is always narrow, so its own grid is static; a container query cannot restyle its container. */
+.frame.narrow{max-width:390px;grid-template-columns:minmax(0,1fr)}
+@container (max-width:44rem){
+  .rail{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:none;border-bottom:1px solid var(--line);padding:.5rem .6rem;gap:.1rem}
+  .rail .brand{padding:.2rem .4rem .2rem .2rem;font-size:1rem}
+  .rail a.place{padding:.45rem .4rem;font-size:.82rem;gap:.3rem;min-height:var(--tap)}
+  .rail a.place .glyph{width:auto}
+  .rail .grow{display:none}
+  .rail a.place.foot{border-top:none;margin:0 0 0 auto;padding-top:.45rem}
+  .rail .ctx{flex-basis:auto;padding-left:.15rem}
+  .stage{padding:1rem .9rem 1.1rem}
+  .head h4{font-size:1.2rem}
+  /* The tab strip scrolls sideways; a tab never wraps. */
+  .stage>.tabs{flex-wrap:nowrap;overflow-x:auto;mask-image:linear-gradient(to right,#000 calc(100% - 2rem),transparent)}
+  .stage>.tabs span{white-space:nowrap;flex:none}
+  /* The rows are cards: the name on top, each cell beneath with its word. */
+  table.roles tr:first-child{display:none}
+  table.roles,table.roles tbody{display:block}
+  table.roles tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem .7rem;padding:.65rem .8rem;margin:0 0 .45rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg)}
+  table.roles td{display:block;border:0;padding:0;min-width:0}
+  table.roles td.task,table.roles td.act,table.roles.grades td{grid-column:1 / -1}
+  table.roles td.act{text-align:left}
+  table.roles td[data-k]::before{content:attr(data-k);display:block;font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);font-weight:700;margin-bottom:.15rem}
+  .fact.kv{grid-template-columns:6.5rem minmax(0,1fr)}
+}
+
 /* ── Vocabulary ── */
 .swatches{display:flex;gap:.6rem;flex-wrap:wrap;margin:.6rem 0}
 .sw{display:flex;align-items:center;gap:.45rem;font-size:.84rem;border:1px solid var(--line);border-radius:var(--r);padding:.3rem .6rem;background:var(--panel2)}
@@ -513,13 +576,14 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.22 · 05.09.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.23 · 07.09.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
   <p class="note"><b>Changelog v8.20</b> · The Log tab shows where the time went. Elapsed between events leads; the recorded clock sits dim on the event. A long wait is a taller band. Events from before moments existed say so and invent no time.</p>
   <p class="note"><b>03.09.2026 · #962 Scheibe 8</b> · A search field in the start sheet's work item picker narrows the grouped list by number or title, live; "no match" and "all retired" speak in the chooser instead of opening nothing. Vorschlag zur Segnung.</p>
   <p class="note"><b>Changelog v8.21</b> · 03.09.2026 · #914 · A poisoned mutation journal gets its own frame: one honest sentence, one door — never called "Discard" — and the retire card's three answers (Disappears / Stays / Permanent), plus the line that a wait answer already sent stays sent. Vorschlag nach Ruling.</p>
   <p class="note"><b>Changelog v8.22</b> · 05.09.2026 · #1099 · Die Werkbank bekommt einen Terminal-Sitz: eine tmux-Sitzung mit laufender Agenten-CLI und Atelier-MCP tritt an die Stelle der Conductor-Unterhaltung, Bühne und Warteschlange bleiben unverändert daneben. Neuladen hängt sich an dieselbe Sitzung wieder an; ist ttyd nicht erreichbar, nennt eine ochrefarbene Absage den CLI/API-Ausweg. Die Conductor-Unterhaltung ist damit abgelöst. Vorschlag zur Segnung.</p>
+  <p class="note"><b>Changelog v8.23</b> · 07.09.2026 · #1352 · Settings drawn as the real page (operator rulings 07.09.2026): project switcher, a tab strip Providers · Grades · Source · Automation · Workbench, one question per tab. Providers is one row per provider the library knows with state by shape and word and a Check; Grades is a grid Grade 3 · 2 · 1 against the signed-in providers, a model per cell, Saved beside the cell, a failed probe as ▲ Retry in the cell, and the one rule sentence beneath; Source is label/value rows with Check connection and Disconnect in its own bottom row; Automation and Workbench are the existing controls and read-only rows. Nothing per task, no second choice, no registry table; explanation behind ⓘ. Supersedes the <code>#v8-17-*</code> registry frames. Blessed by the operator 07.09.2026.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -2305,6 +2369,181 @@ command stopped before an answer</div>
   <div><dt>schon vorhanden</dt><dd>"Did I add a second row?" — no: the existing source row and the existing model row say so; there is no second line.</dd></div>
   <div><dt>Empty</dt><dd>"What would stand here?" — the form: shelves, doors, and the three difficulty rows. No sentence about the emptiness.</dd></div>
 </dl>
+
+<section id="v8-23-models">
+<h3 class="frame-title">Settings · the page as it will look <small>— project switcher, one tab strip, one question per tab; nothing per task, no second choice, the family rule stays the workflow's (#1352, ruling 07.09.2026; blessed by the operator 07.09.2026, supersedes <code>#v8-17-*</code>)</small></h3>
+<div class="frame" id="v8-23-providers">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="on">Providers</span><span class="">Grades</span><span class="">Source</span><span class="">Automation</span><span class="">Workbench</span></div>
+    <table class="roles providers">
+      <tr><th>State</th><th>Provider</th><th>Account</th><th></th></tr>
+      <tr>
+        <td class="task"><span class="state "><i></i>Signed in</span></td>
+        <td data-k="Provider"><b><i class="mark" title="Claude">A</i> Anthropic</b></td>
+        <td class="route" data-k="Account">leonardo · subscription</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+      <tr>
+        <td class="task"><span class="state off"><i></i>Not signed in</span></td>
+        <td data-k="Provider"><b><i class="mark" title="Codex">O</i> OpenAI</b></td>
+        <td class="route" data-k="Account">—</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+      <tr>
+        <td class="task"><span class="state "><i></i>Signed in</span></td>
+        <td data-k="Provider"><b><i class="mark" title="Grok">X</i> xAI</b></td>
+        <td class="route" data-k="Account">leonardo · API key</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+    </table>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Providers</dt><dd>"Which providers can I use?" — one row per provider the provider library knows. State by shape and word: ● Signed in (ink, wants nothing), ▲ Key missing (ochre, one-line reason beneath), ◻ Not signed in (faint, dashed). Account names the profile and its auth mode; Check is today's canary (<code>host/provider_canary.py</code>). The model list per provider comes from the library, so the registry table of <code>#v8-17</code> is gone.</dd></div>
+  <div><dt>Title row</dt><dd>"Where am I?" — the project switcher, and nothing on the right: this page has no primary action, so none is invented.</dd></div>
+</dl>
+
+<h3 class="frame-title">Grades <small>— rows Grade 3 · 2 · 1, columns the signed-in providers, a model per cell</small></h3>
+<div class="frame" id="v8-23-grades">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="">Providers</span><span class="on">Grades</span><span class="">Source</span><span class="">Automation</span><span class="">Workbench</span></div>
+    <table class="roles grades">
+      <tr><th>Grade</th><th><i class="mark" title="Claude">A</i> Anthropic</th><th><i class="mark" title="Grok">X</i> xAI</th></tr>
+      <tr>
+        <td class="task"><b>Grade 3</b><small>Used by: trace-reviewer (other family)</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-opus-5</span><span>▾</span></div></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div><span class="state fail"><i></i></span><span class="btn sm">Retry</span></div></td>
+      </tr>
+      <tr>
+        <td class="task"><b>Grade 2</b><small>Used by: planner, reviewer, curator, visioner, requirement writer, greeter</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-sonnet-4-6</span><span>▾</span></div><span class="saved">Saved</span></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div></div></td>
+      </tr>
+      <tr>
+        <td class="task"><b>Grade 1</b><small>Used by: —</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-haiku-4-5</span><span>▾</span></div></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in held"><span class="val">—</span><span>▾</span></div></div></td>
+      </tr>
+    </table>
+    <p class="note">First filled cell runs the grade; a workflow that needs another family takes the next filled cell. <span class="info" aria-label="More" title="More">i</span></p>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>The grid</dt><dd>"Which model answers which difficulty?" — a cell is one model from that provider's list, or empty. The one sentence beneath is the rule people must know; the pin a workflow may write (<code>model: grok-4.6</code>) stands behind the ⓘ, not inline.</dd></div>
+  <div><dt>Saved beside the cell</dt><dd>"Did it take?" — a cell saves the moment it is chosen; "Saved" stands beside it for a moment. This is the one exemption from the one-save-surface law: there is no Save button on this page, and the grid is the only writer.</dd></div>
+  <div><dt>▲ Retry in the cell</dt><dd>"Is this model reachable?" — a failed probe stands brick with its triangle and an outline Retry inside the cell; the row is otherwise untouched.</dd></div>
+  <div><dt>Used by</dt><dd>"Who runs on this grade?" — one small line per row, derived from the catalog (<code>declared_roles_of</code>): every role without its own grade is Grade 2; trace-reviewer stands on Grade 3 because documentation-curation needs another family than its curator.</dd></div>
+</dl>
+
+<h3 class="frame-title">Source <small>— label left, value right; the destructive door in its own bottom row</small></h3>
+<div class="frame" id="v8-23-source">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="">Providers</span><span class="">Grades</span><span class="on">Source</span><span class="">Automation</span><span class="">Workbench</span></div>
+    <div class="fact kv"><b>Repository</b><span>github.com/overnightworks/atelier-2</span></div>
+    <div class="fact kv"><b>Credential</b><span><code>~/.local/state/atelier2/source-credentials/atelier-2/</code> <span class="info" aria-label="More" title="More">i</span></span></div>
+    <div class="fact kv"><b>Connection</b><span class="row-acts"><span class="state "><i></i>Reachable</span><span class="btn sm">Check connection</span></span></div>
+    <div class="fact kv"><b>Revision</b><span><code>cc86511a</code> <span class="sub">12 minutes ago</span></span></div>
+    <div class="foot-row"><span class="btn sm">Disconnect</span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Rows</dt><dd>"What is this project connected to, and does it work?" — Repository, Credential (a directory, never a value; the ⓘ says what lives there), Connection as glyph and word with Check connection beside it (reachable · access denied · unreachable · credential unresolvable, gitmirror's vocabulary), Revision as a short sha with its age.</dd></div>
+  <div><dt>Disconnect</dt><dd>"Can I undo the connection?" — an outline button in its own bottom row, never inline red; it confirms before it acts.</dd></div>
+</dl>
+
+<h3 class="frame-title">Automation <small>— the two existing controls</small></h3>
+<div class="frame short" id="v8-23-automation">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="">Providers</span><span class="">Grades</span><span class="">Source</span><span class="on">Automation</span><span class="">Workbench</span></div>
+    <div class="fact kv"><b>Label filter <span class="info" aria-label="More" title="More">i</span></b><span><div class="in"><span class="val">auto</span><span>▾</span></div></span></div>
+    <div class="fact kv"><b>Open runs cap</b><span><div class="in num"><span class="val">2</span></div></span></div>
+  </div>
+</div>
+<h3 class="frame-title">Workbench <small>— read-only: which CLI and account the seat runs</small></h3>
+<div class="frame short" id="v8-23-workbench">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="">Providers</span><span class="">Grades</span><span class="">Source</span><span class="">Automation</span><span class="on">Workbench</span></div>
+    <div class="fact kv"><b>Seat</b><span><i class="mark" title="Claude">A</i> <code>claude</code> · leonardo</span></div>
+    <div class="fact kv"><b>State</b><span><span class="state "><i></i>Attached</span></span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Automation</dt><dd>"What runs on its own?" — Label filter (<code>automation_label</code>; empty means nothing) and Open runs cap (<code>maximum_active_runs</code>). The ⓘ carries what the label does.</dd></div>
+  <div><dt>Workbench</dt><dd>"Which CLI sits in the terminal?" — Seat names the CLI and its account, State says whether the seat is attached; read-only rows render as text, never as disabled inputs.</dd></div>
+</dl>
+
+<h3 class="frame-title">Grades at 390 <small>— tabs scroll, cells stack per grade with the provider as label</small></h3>
+<div class="frame narrow" id="v8-23-grades-narrow">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="">Providers</span><span class="on">Grades</span><span class="">Source</span><span class="">Automation</span><span class="">Workbench</span></div>
+    <table class="roles grades">
+      <tr><th>Grade</th><th><i class="mark" title="Claude">A</i> Anthropic</th><th><i class="mark" title="Grok">X</i> xAI</th></tr>
+      <tr>
+        <td class="task"><b>Grade 3</b><small>Used by: trace-reviewer (other family)</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-opus-5</span><span>▾</span></div></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div><span class="state fail"><i></i></span><span class="btn sm">Retry</span></div></td>
+      </tr>
+      <tr>
+        <td class="task"><b>Grade 2</b><small>Used by: planner, reviewer, curator, visioner, requirement writer, greeter</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-sonnet-4-6</span><span>▾</span></div><span class="saved">Saved</span></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div></div></td>
+      </tr>
+      <tr>
+        <td class="task"><b>Grade 1</b><small>Used by: —</small></td>
+        <td class="model" data-k="Anthropic"><div class="cell"><div class="in"><span class="val">claude-haiku-4-5</span><span>▾</span></div></div></td>
+        <td class="model" data-k="xAI"><div class="cell"><div class="in held"><span class="val">—</span><span>▾</span></div></div></td>
+      </tr>
+    </table>
+    <p class="note">First filled cell runs the grade; a workflow that needs another family takes the next filled cell. <span class="info" aria-label="More" title="More">i</span></p>
+  </div>
+</div>
+<h3 class="frame-title">Providers, nobody signed in <small>— every row keeps its state and reason; nothing disappears</small></h3>
+<div class="frame" id="v8-23-providers-empty">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <div class="tabs"><span class="on">Providers</span><span class="">Grades</span><span class="">Source</span><span class="">Automation</span><span class="">Workbench</span></div>
+    <table class="roles providers">
+      <tr><th>State</th><th>Provider</th><th>Account</th><th></th></tr>
+      <tr>
+        <td class="task"><span class="state off"><i></i>Not signed in</span></td>
+        <td data-k="Provider"><b><i class="mark" title="Claude">A</i> Anthropic</b></td>
+        <td class="route" data-k="Account">—</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+      <tr>
+        <td class="task"><span class="state off"><i></i>Not signed in</span></td>
+        <td data-k="Provider"><b><i class="mark" title="Codex">O</i> OpenAI</b></td>
+        <td class="route" data-k="Account">—</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+      <tr>
+        <td class="task"><span class="state need"><i></i>Key missing</span><small>No API key on the host</small></td>
+        <td data-k="Provider"><b><i class="mark" title="Grok">X</i> xAI</b></td>
+        <td class="route" data-k="Account">—</td>
+        <td class="act"><span class="btn sm">Check</span></td>
+      </tr>
+    </table>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>390</dt><dd>"How does it read on a phone?" — the tab strip scrolls sideways under the switcher; each grade is a card with its cells stacked, the provider name as the cell's label; the rule sentence stays.</dd></div>
+  <div><dt>Nobody signed in</dt><dd>"What would stand here?" — the same three rows: ◻ for the two without a session, ▲ Key missing with its one-line reason for xAI; Check stays on every row, because checking is how a person finds out.</dd></div>
+</dl>
+
+</section>
 
 <h3 class="frame-title">The conversation's yes is a start override</h3>
 <div class="frame short">
