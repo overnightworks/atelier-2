@@ -1099,10 +1099,10 @@ def _decode_launch_request(
 
 
 def _launch_environment(value: object) -> dict[str, str]:
-    if type(value) is not list:
+    listed = value if isinstance(value, list) else None
+    if listed is None:
         raise ValueError("launch environment is malformed")
-    pairs: list[tuple[str, str]] = []
-    for pair in value:
+    for pair in listed:
         if (
             type(pair) is not list
             or len(pair) != 2
@@ -1111,9 +1111,8 @@ def _launch_environment(value: object) -> dict[str, str]:
             or type(pair[1]) is not str
         ):
             raise ValueError("launch environment is malformed")
-        pairs.append((pair[0], pair[1]))
-    environment = dict(pairs)
-    if len(environment) != len(pairs):
+    environment = {pair[0]: pair[1] for pair in listed}
+    if len(environment) != len(listed):
         raise ValueError("launch environment names are duplicated")
     return environment
 
