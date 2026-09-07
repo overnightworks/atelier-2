@@ -436,13 +436,7 @@ def hold_work_item_claim(
         raise RunBindingConflict(
             "a prepared work-item claim requires the ledger that bound it"
         )
-    if binding.project_source is None:
-        raise RunBindingConflict(
-            "a prepared work-item claim requires the project pin its node was bound to"
-        )
-    checkout = ledger.checkouts.open(
-        run_id, HeadBranch(prepared[BRANCH_FIELD]), binding.project_source
-    )
+    checkout = _opened_claim_checkout(ledger, binding, run_id, prepared)
     logical_key = prepared[LOGICAL_KEY_FIELD]
     outcome = _held_claim(datasource, ledger, logical_key, revision_hash, checkout)
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
@@ -451,6 +445,23 @@ def hold_work_item_claim(
     ledger.checkouts.close(run_id)
     return _refuse_claim(
         datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
+    )
+
+
+def _opened_claim_checkout(
+    ledger: WorkItemClaimLedger,
+    binding: AgentNodeBindingV2,
+    run_id: RunId,
+    prepared: dict[str, str],
+) -> Path:
+    """The run's claim checkout on the prepared lane branch at the node's pin."""
+
+    if binding.project_source is None:
+        raise RunBindingConflict(
+            "a prepared work-item claim requires the project pin its node was bound to"
+        )
+    return ledger.checkouts.open(
+        run_id, HeadBranch(prepared[BRANCH_FIELD]), binding.project_source
     )
 
 
