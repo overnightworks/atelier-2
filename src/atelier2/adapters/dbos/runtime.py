@@ -22,7 +22,10 @@ from atelier2.adapters.agent_processes import (
     AgentProcessSupervisor,
     delegated_cgroup_root,
 )
-from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
+from atelier2.adapters.agent_workspaces import (
+    LocalAgentAttemptWorkspaceOwner,
+    attested_directory,
+)
 from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -378,11 +381,7 @@ def _work_item_claim_ledger(
 ) -> WorkItemClaimLedger | None:
     """The claim boundary this instance holds, where it was given every part.
 
-    Without an executable or a served project there is no claim boundary, and
-    a node that owes a claim refuses rather than building unclaimed. The claim
-    checkouts stand beside the scratch root -- beside, because the scratch
-    owner refuses every entry of its root that is no attempt workspace -- and
-    the queue policy the door reads is the sweep's own store over the one engine.
+    Without an executable or a served project there is no claim boundary.
     """
 
     if executable is None or project_checkout is None:
@@ -402,7 +401,8 @@ def _work_item_claim_ledger(
         ),
         DbosQueueProjectionStore(engine),
         LocalClaimCheckouts(
-            project_checkout, scratch_root.with_name(CLAIM_CHECKOUT_ROOT_NAME)
+            project_checkout,
+            attested_directory(scratch_root.with_name(CLAIM_CHECKOUT_ROOT_NAME)),
         ),
     )
 

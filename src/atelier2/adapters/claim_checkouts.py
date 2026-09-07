@@ -17,9 +17,9 @@ another run's administration -- the claim tool keeps its own state in the
 worktree's git directory for as long as the claim stands -- and a directory
 that vanished out of band keeps its entry until its own run closes it.
 
-The root is resolved and refused inside the project working tree and held at
-mode 0700; its ownership is attested by the composition that opens the first
-checkout, the way the workspace owner attests its scratch root.
+The root is attested as the agent scratch root is: no symbolic link, not
+inside a git worktree, this process's own, mode 0700; and refused inside
+the project working tree.
 """
 
 from __future__ import annotations
@@ -28,6 +28,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from atelier2.adapters.agent_workspaces import (
+    SCRATCH_ROOT_MODE,
+    AgentScratchRootRefused,
+    attested_directory,
+    open_attested_root,
+)
 from atelier2.adapters.project_source import (
     GitRefused,
     answered_git,
@@ -42,7 +48,6 @@ from atelier2.ports.claim_checkouts import (
     ClaimCheckoutUnavailable,
 )
 
-_CHECKOUT_ROOT_MODE = 0o700
 _FILTER_DRIVER_CONFIGURATION_PREFIX = "filter."
 _ABSOLUTE_GIT_DIRECTORIES = (
     "rev-parse",
@@ -95,13 +100,17 @@ class LocalClaimCheckouts:
 
     def __init__(self, project_checkout: Path, root: Path) -> None:
         self._project_checkout = project_checkout.resolve()
-        self._root = root.resolve()
-        if self._root.is_relative_to(self._project_checkout):
+        absolute = Path(os.path.abspath(root))
+        if absolute.resolve().is_relative_to(self._project_checkout):
             raise ClaimCheckoutRootRefused(
                 f"the claim checkout root {root} lies inside the project checkout "
                 f"{self._project_checkout}: a worktree inside the working tree it "
                 "is linked to would be content of that tree"
             )
+        try:
+            self._root = attested_directory(absolute)
+        except AgentScratchRootRefused as error:
+            raise ClaimCheckoutRootRefused(str(error)) from error
 
     def open(self, run_id: RunId, branch: HeadBranch, pin: ProjectSourcePin) -> Path:
         path = self._root / _checkout_name(run_id)
@@ -111,8 +120,12 @@ class LocalClaimCheckouts:
             return path
         self._refuse_filter_drivers()
         self._forget(path, run_id)
-        self._root.mkdir(mode=_CHECKOUT_ROOT_MODE, parents=True, exist_ok=True)
-        os.chmod(self._root, _CHECKOUT_ROOT_MODE)
+        self._root.mkdir(mode=SCRATCH_ROOT_MODE, parents=True, exist_ok=True)
+        os.chmod(self._root, SCRATCH_ROOT_MODE)
+        try:
+            os.close(open_attested_root(self._root))
+        except AgentScratchRootRefused as error:
+            raise ClaimCheckoutUnavailable(str(error)) from error
         self._in_project(
             (
                 *_WHOLE_PIN_ARGUMENTS,
