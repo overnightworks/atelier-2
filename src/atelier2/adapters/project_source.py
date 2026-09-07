@@ -5,24 +5,32 @@ question -- does this pin still resolve, what does its manifest declare, what do
 the attempt work in -- is asked of that commit rather than of whatever the
 operator's checkout happens to hold at the time.
 
-What is unpacked into a lease is the tree alone. No `.git` travels with it, so the
-directory is material rather than a repository, and a provider that wants history
-has none. It is the *whole* tree, and it is the tree as the pin holds it: the
-material is checked out of a temporary index rather than exported, because an
-export honours `export-ignore` and would hand the attempt a directory that is
-quietly missing paths the pin carries -- paths whose absence a later reader could
-only read as the attempt having deleted them. The checkout runs inside a
-repository this boundary makes for it, so no `filter` the operator's own
-repository declares can rewrite a byte on the way in.
+What is put into a lease is a linked worktree of this repository at the pinned
+commit: on the lane branch where a run claims from it, detached at the pin
+otherwise. It is the *whole* tree as the pin holds it -- a worktree rather than an
+export, because an export honours `export-ignore` and would hand the attempt a
+directory quietly missing paths the pin carries, paths whose absence a later
+reader could only read as the attempt having deleted them. The checkout runs under
+the repository's own configuration, so a `filter` driver declared there is refused
+by name before a byte is written: its smudge would put content into the lease that
+the pinned tree does not carry, and that content would come home as work the
+attempt never did.
 
-Nothing here is isolation: the unpacking runs as this process's own user, into the
+The lease can be detached again: the worktree pointer is removed and the tree is
+kept, and from then on the directory is material rather than a repository --
+nothing in it can commit, fetch or push. What the repository keeps is its worktree
+administration and the lane-branch ref, and stale administration is pruned before
+every add and after every detach.
+
+Nothing here is isolation: the checkout runs as this process's own user, into the
 blank directory the attempt leased, and that directory's own sentence about not
 being a sandbox is left standing.
 
-The tree is entered through the identity the lease attested rather than through the
-path it was named by, because unpacking happens after the lease is taken and before
-the provider starts -- exactly the window in which a peer of this user could move
-its own directory into that path.
+The lease is attested through the identity it carries, held open across the call,
+and its path is read back once git has written there, because a worktree is added
+by path: the checkout happens after the lease is taken and before the provider
+starts -- exactly the window in which a peer of this user could move its own
+directory into that path.
 """
 
 from __future__ import annotations
@@ -35,7 +43,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO
 
-from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.adapters.leased_directory import (
+    LeasedDirectoryChanged,
+    entered_leased_directory,
+)
+from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.project_sources import GitObjectFormat, ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.project_source import ProjectSourceUnavailable
@@ -46,11 +58,10 @@ _GIT_EXECUTABLE_NAME = "git"
 _HEAD_REVISION = "HEAD"
 """What git calls the commit a checkout currently stands on."""
 
-_MATERIALIZED_INDEX_NAME = "materialize.index"
-_PLUMBING_REPOSITORY_NAME = "materialize.git"
+_WORKTREE_POINTER_NAME = ".git"
+"""The one file that makes a linked worktree a repository: `gitdir:` and a path."""
 
-_ALTERNATE_OBJECTS_FILE = ("objects", "info", "alternates")
-"""Where git is told the other object database a repository may read through."""
+_FILTER_DRIVER_CONFIGURATION_PREFIX = "filter."
 
 NO_GIT_TEMPLATE = "--template="
 """What keeps a repository this product creates free of anybody else's files.
@@ -400,92 +411,97 @@ class LocalGitProjectSource:
         return self._answered(("show", f"{pin.commit}:{path}"))
 
     def materialize(
-        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
-    ) -> None:
-        """Check the pinned tree out into the leased directory, whole and unfiltered.
-
-        A checkout rather than an export: `git archive` drops every path a
-        `.gitattributes` marks `export-ignore`, so the attempt would work on less
-        than it was pinned to -- and whoever compared its work against the pin
-        afterwards could only read those missing paths as the attempt having
-        deleted them.
-
-        And out of a repository this boundary made rather than out of the
-        operator's own, because a checkout carries its own `.git/config` too. That
-        configuration can declare a `filter` driver that the project's own
-        `.gitattributes` points paths at, and the driver's smudge would write
-        content into the lease that the pinned tree does not carry. What comes
-        back is captured under no filter at all, so that content would come home
-        as work the attempt never did.
-        """
-
-        with tempfile.TemporaryDirectory() as staging:
-            unfiltered = self._plumbing_repository(Path(staging))
-            index = Path(staging) / _MATERIALIZED_INDEX_NAME
-            with entered_leased_directory(
-                lease.working_directory, lease.device, lease.inode
-            ) as (entered, descriptor):
-                self._checked_out(
-                    LeasedIndex(entered, descriptor, index),
-                    str(unfiltered),
-                    pin,
-                    lease,
-                )
-
-    def _plumbing_repository(self, staging: Path) -> Path:
-        """A bare repository of this boundary's own making, borrowing the source's
-        objects.
-
-        It declares no filter and copies no template, so the only thing a
-        `.gitattributes` in the pinned tree can name is a driver that does not
-        exist -- which git skips. The pinned objects are read through an alternate
-        rather than copied, so nothing is duplicated to gain that.
-        """
-
-        borrowed = self._line(
-            ("rev-parse", "--path-format=absolute", "--git-path", "objects")
-        )
-        made = staging / _PLUMBING_REPOSITORY_NAME
-        try:
-            answered_git(
-                (
-                    "init",
-                    "--bare",
-                    "--quiet",
-                    NO_GIT_TEMPLATE,
-                    f"--object-format={object_format_of(str(self._project_root)).value}",
-                    str(made),
-                ),
-                working_directory=str(staging),
-                environment=isolated_git_environment(),
-            )
-            made.joinpath(*_ALTERNATE_OBJECTS_FILE).write_text(
-                f"{borrowed}\n", encoding="utf-8"
-            )
-        except (GitRefused, OSError) as error:
-            raise ProjectSourceUnavailable(
-                f"no filter-free repository could be made to check "
-                f"{self._project_root} out of: {error}"
-            ) from error
-        return made
-
-    def _checked_out(
         self,
-        leased: LeasedIndex,
-        git_directory: str,
         pin: ProjectSourcePin,
         lease: AgentAttemptWorkspaceLease,
+        branch: HeadBranch | None = None,
     ) -> None:
+        """Check the pinned commit out into the lease as a linked worktree.
+
+        On `branch` where one is named, reset to the pin so a lane whose earlier
+        lease was released starts again where this run was pinned; detached at
+        the pin otherwise. A branch another standing worktree still holds is
+        refused in git's own words rather than shared between two attempts.
+        """
+
+        self._refuse_filter_drivers()
+        self._prune_worktrees()
+        with entered_leased_directory(
+            lease.working_directory, lease.device, lease.inode
+        ) as (_entered, descriptor):
+            self._add_worktree(pin, lease, branch)
+            _refuse_a_lease_moved_under_git(lease, descriptor)
+
+    def detach_from_repository(self, lease: AgentAttemptWorkspaceLease) -> None:
+        """Take the repository out of the lease and leave its tree as it stands.
+
+        The worktree pointer is all that made the lease a repository; without
+        it the directory is material, and the administration this repository
+        kept for it is pruned at once. A lease already detached is left so.
+        """
+
+        with entered_leased_directory(
+            lease.working_directory, lease.device, lease.inode
+        ) as (_entered, descriptor):
+            try:
+                os.unlink(_WORKTREE_POINTER_NAME, dir_fd=descriptor)
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise ProjectSourceUnavailable(
+                    f"the worktree pointer could not be removed from the workspace "
+                    f"of attempt {lease.attempt_id.value}: {error}"
+                ) from error
+        self._prune_worktrees()
+
+    def _refuse_filter_drivers(self) -> None:
+        declared = sorted(
+            {
+                name
+                for name in self._line(("config", "--list", "--name-only")).splitlines()
+                if name.startswith(_FILTER_DRIVER_CONFIGURATION_PREFIX)
+            }
+        )
+        if declared:
+            raise ProjectSourceUnavailable(
+                f"the project source {self._project_root} declares the filter "
+                f"drivers {', '.join(declared)}: a smudge would write content into "
+                "the lease that the pinned tree does not carry, so no attempt is "
+                "checked out under one"
+            )
+
+    def _prune_worktrees(self) -> None:
         try:
-            for arguments in (
-                ("read-tree", pin.tree),
-                ("checkout-index", "--all", "--force"),
-            ):
-                answered_in_lease(arguments, leased=leased, git_directory=git_directory)
+            self._git(("worktree", "prune"))
         except GitRefused as error:
             raise ProjectSourceUnavailable(
-                f"the tree {pin.tree} of {self._project_root} could not be checked "
-                f"out into the workspace of attempt {lease.attempt_id.value}: {error}"
+                f"the worktree administration of {self._project_root} could not "
+                f"be pruned: {error}"
+            ) from error
+
+    def _add_worktree(
+        self,
+        pin: ProjectSourcePin,
+        lease: AgentAttemptWorkspaceLease,
+        branch: HeadBranch | None,
+    ) -> None:
+        checked_out = ("--detach",) if branch is None else ("-B", branch.value)
+        try:
+            self._git(
+                (
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    *checked_out,
+                    str(lease.working_directory),
+                    pin.commit,
+                )
+            )
+        except GitRefused as error:
+            raise ProjectSourceUnavailable(
+                f"the commit {pin.commit} of {self._project_root} could not be "
+                f"checked out into the workspace of attempt "
+                f"{lease.attempt_id.value}: {error}"
             ) from error
 
     def _object_name(self, revision: str) -> str:
@@ -496,12 +512,31 @@ class LocalGitProjectSource:
 
     def _answered(self, arguments: tuple[str, ...]) -> bytes:
         try:
-            return answered_git(
-                arguments,
-                working_directory=str(self._project_root),
-                environment=isolated_git_environment(),
-            )
+            return self._git(arguments)
         except GitRefused as error:
             raise ProjectSourceUnavailable(
                 f"the project source at {self._project_root} could not be read: {error}"
             ) from error
+
+    def _git(self, arguments: tuple[str, ...]) -> bytes:
+        return answered_git(
+            arguments,
+            working_directory=str(self._project_root),
+            environment=isolated_git_environment(),
+        )
+
+
+def _refuse_a_lease_moved_under_git(
+    lease: AgentAttemptWorkspaceLease, descriptor: int
+) -> None:
+    """Refuse a lease whose path led git somewhere other than the held directory."""
+
+    standing = os.stat(lease.working_directory, follow_symlinks=False)
+    held = os.fstat(descriptor)
+    if (standing.st_dev, standing.st_ino) != (held.st_dev, held.st_ino):
+        raise LeasedDirectoryChanged(
+            f"the directory at {lease.working_directory} is not the one attempt "
+            f"{lease.attempt_id.value} leased: its identity changed while the "
+            "pinned commit was checked out there, so the provider would start on "
+            "somebody else's ground"
+        )

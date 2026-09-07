@@ -2,9 +2,10 @@
 
 Two facts decide everything here. What is read is what the pinned commit carries,
 never what the operator's checkout holds now -- so a commit landing while a run is
-in flight cannot change what that run works on. And what an attempt is given is
-material rather than a repository: the tree without its history, in the directory
-the attempt leased, entered through the identity that lease attested.
+in flight cannot change what that run works on. And what an attempt is given is a
+linked worktree of the source at that commit, in the directory the attempt leased
+and entered through the identity that lease attested, detachable into material:
+the tree without its repository.
 
 A pin the source can no longer answer for is a refusal in the source's own words,
 never a run that quietly works on nothing.
@@ -32,6 +33,7 @@ from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import RunBindingConflict
@@ -58,16 +60,48 @@ from tests.scenarios.projects import (
     commit_to_project,
     declared_in_checkout,
     git_project,
+    run_git,
     write_into_checkout,
 )
 
 MANIFEST = PurePosixPath("pyproject.toml")
 COMMITTED = "[project]\nname = 'as it was committed'\n"
 EDITED_AFTERWARDS = "[project]\nname = 'only in the checkout'\n"
+LANE = HeadBranch("atelier2/work-item/lease")
 
 
 def lease(tmp_path: Path, name: str = "lease") -> AgentAttemptWorkspaceLease:
     return leased_directory_identity(AgentAttemptId("a1" * 32), tmp_path / name)
+
+
+def worktree_facts(working_directory: Path) -> dict[str, str]:
+    """What git says a checkout is: where its repository is, what it stands on."""
+
+    return {
+        "git_dir": run_git(working_directory, "rev-parse", "--git-dir"),
+        "common_dir": run_git(working_directory, "rev-parse", "--git-common-dir"),
+        "branch": run_git(working_directory, "branch", "--show-current"),
+        "head": run_git(working_directory, "rev-parse", "HEAD"),
+        "status": run_git(working_directory, "status", "--porcelain"),
+        "files": run_git(working_directory, "ls-files"),
+    }
+
+
+def registered_worktrees(root: Path) -> set[str]:
+    listed = run_git(root, "worktree", "list", "--porcelain").splitlines()
+    return {
+        line.removeprefix("worktree ")
+        for line in listed
+        if line.startswith("worktree ")
+    }
+
+
+def tree_of(directory: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
 
 
 @pytest.mark.proves("what-a-project-declares-and-where-it-runs-are-one-commit")
@@ -100,9 +134,14 @@ def test_a_later_commit_moves_the_head_and_leaves_the_earlier_pin_readable(
     assert source.read(second, MANIFEST).decode("utf-8") == EDITED_AFTERWARDS
 
 
+@pytest.mark.parametrize(
+    ("branch", "shown"),
+    [(LANE, LANE.value), (None, "")],
+    ids=["on the lane branch", "detached at the pin"],
+)
 @pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
-def test_the_pinned_tree_is_unpacked_into_the_lease_without_its_repository(
-    tmp_path: Path,
+def test_the_pinned_commit_is_checked_out_into_the_lease_as_a_linked_worktree(
+    tmp_path: Path, branch: HeadBranch | None, shown: str
 ) -> None:
     root = tmp_path / "project"
     pin = git_project(
@@ -111,14 +150,64 @@ def test_the_pinned_tree_is_unpacked_into_the_lease_without_its_repository(
     write_into_checkout(root, {"src/tool.py": "print('only in the checkout')\n"})
     leased = lease(tmp_path)
 
-    LocalGitProjectSource(root).materialize(pin, leased)
+    LocalGitProjectSource(root).materialize(pin, leased, branch)
 
-    unpacked = leased.working_directory
-    assert (unpacked / MANIFEST.name).read_text(encoding="utf-8") == COMMITTED
-    assert (unpacked / "src/tool.py").read_text(
+    checked_out = leased.working_directory
+    assert (checked_out / MANIFEST.name).read_text(encoding="utf-8") == COMMITTED
+    assert (checked_out / "src/tool.py").read_text(
         encoding="utf-8"
     ) == "print('committed')\n"
-    assert not (unpacked / ".git").exists()
+    facts = worktree_facts(checked_out)
+    assert facts["git_dir"] != facts["common_dir"]
+    assert (facts["branch"], facts["head"], facts["status"]) == (shown, pin.commit, "")
+    assert facts["files"] != ""
+
+
+@pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
+def test_detaching_the_lease_removes_the_worktree_pointer_and_keeps_the_tree(
+    tmp_path: Path,
+) -> None:
+    """Detached, the lease is material: what stands there stays, minus `.git`."""
+
+    root = tmp_path / "project"
+    pin = git_project(root, {MANIFEST.name: COMMITTED})
+    leased = lease(tmp_path)
+    source = LocalGitProjectSource(root)
+    source.materialize(pin, leased, LANE)
+    write_into_checkout(leased.working_directory, {"made.py": "by the attempt\n"})
+    standing = tree_of(leased.working_directory)
+    assert ".git" in standing
+
+    source.detach_from_repository(leased)
+    source.detach_from_repository(leased)
+
+    assert tree_of(leased.working_directory) == {
+        name: body for name, body in standing.items() if name != ".git"
+    }
+    assert registered_worktrees(root) == {str(root)}
+    assert run_git(root, "rev-parse", LANE.full_ref) == pin.commit
+
+
+@pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
+def test_a_lane_branch_a_standing_worktree_holds_refuses_the_next_lease(
+    tmp_path: Path,
+) -> None:
+    """Two attempts never share a branch; a detached lease frees it at the pin."""
+
+    root = tmp_path / "project"
+    pin = git_project(root, {MANIFEST.name: COMMITTED})
+    source = LocalGitProjectSource(root)
+    first, second = lease(tmp_path, "first"), lease(tmp_path, "second")
+    source.materialize(pin, first, LANE)
+
+    with pytest.raises(ProjectSourceUnavailable, match=LANE.value):
+        source.materialize(pin, second, LANE)
+    assert list(second.working_directory.iterdir()) == []
+
+    source.detach_from_repository(first)
+    source.materialize(pin, second, LANE)
+
+    assert worktree_facts(second.working_directory)["head"] == pin.commit
 
 
 POISONED_SMUDGE = "sed s/./X/g"
@@ -126,10 +215,10 @@ POISONED_SMUDGE = "sed s/./X/g"
 
 
 @pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
-def test_a_filter_the_checkout_declares_never_rewrites_what_the_lease_receives(
+def test_a_filter_the_checkout_declares_refuses_the_lease_by_name(
     tmp_path: Path,
 ) -> None:
-    """The lease holds the pinned tree, not what a smudge would have made of it.
+    """No lease is checked out under a driver that could rewrite the pinned tree.
 
     A checkout's own `.git/config` can declare a `filter` driver that its
     `.gitattributes` points paths at. What comes back out of a lease is read
@@ -146,11 +235,11 @@ def test_a_filter_the_checkout_declares_never_rewrites_what_the_lease_receives(
     )
     leased = lease(tmp_path)
 
-    LocalGitProjectSource(root).materialize(pin, leased)
+    with pytest.raises(ProjectSourceUnavailable, match="filter.poison.smudge"):
+        LocalGitProjectSource(root).materialize(pin, leased, LANE)
 
-    assert (leased.working_directory / "src/tool.py").read_text(
-        encoding="utf-8"
-    ) == COMMITTED
+    assert list(leased.working_directory.iterdir()) == []
+    assert run_git(root, "branch", "--list", LANE.value) == ""
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
@@ -227,6 +316,7 @@ def test_a_directory_swapped_under_its_lease_is_never_unpacked_into(
         LocalGitProjectSource(root).materialize(pin, leased)
 
     assert list(leased.working_directory.iterdir()) == []
+    assert registered_worktrees(root) == {str(root)}
 
 
 REPORT_THE_TREE = (
@@ -266,7 +356,11 @@ class TreeReportingExecutor(PrintModeExecutor):
 def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
     tmp_path: Path,
 ) -> None:
-    """The whole point of the pin: the work happens on the material it named."""
+    """The whole point of the pin: the work happens on the material it named.
+
+    The worktree pointer stands beside the pinned tree until the lease is
+    detached; nothing between the lease and this provider detaches it here.
+    """
 
     pin = git_project(
         tmp_path / "project",
@@ -292,7 +386,9 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
 
         assert isinstance(outcome, AgentAttemptSucceeded)
         assert executor.reported == [
-            json.dumps([["pyproject.toml", "src"], "print('committed')\n"]).encode()
+            json.dumps(
+                [[".git", "pyproject.toml", "src"], "print('committed')\n"]
+            ).encode()
         ]
     finally:
         runtime.close()

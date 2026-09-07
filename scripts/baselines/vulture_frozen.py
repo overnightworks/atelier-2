@@ -17,6 +17,19 @@ Read as data by the gate; never imported at runtime.
 WAITING_FOR_A_CALLER = (
     {
         "names": (
+            "ports/project_source.py:detach_from_repository",
+            "adapters/project_source.py:detach_from_repository",
+        ),
+        "why": (
+            "The lease is a linked worktree so a claim can be held from it; the "
+            "operation that removes its worktree pointer again is called by the "
+            "build node once the claim is held, and that ordering (lease -> "
+            "branch -> claim -> provider) is its own slice."
+        ),
+        "item": "#1271 Zeile 12 (Scheibe D, Reihenfolge Lease -> Claim -> Provider)",
+    },
+    {
+        "names": (
             "ports/agent_executions.py:terminal_outcome",
             "adapters/agent_client_protocol.py:AgentClientProtocolConversation",
         ),
