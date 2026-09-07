@@ -25,7 +25,10 @@ from yaml.tokens import (
     Token,
 )
 
-from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
+from atelier2.contracts.workflow_documents import (
+    WORKFLOW_DOCUMENT_FORMATS,
+    WorkflowDocumentFormat,
+)
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
@@ -141,36 +144,8 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
                 "document",
                 "workflow document is empty",
             )
-        if isinstance(loaded, dict) and isinstance(loaded.get("nodes"), list):
-            nodes = loaded["nodes"]
-            for node in nodes:
-                if isinstance(node, dict) and isinstance(node.get("operands"), list):
-                    node["operands"] = tuple(node["operands"])
-            loaded["nodes"] = tuple(nodes)
-        if (
-            not isinstance(loaded, dict)
-            or type(loaded.get("format_version")) is not int
-        ):
-            raise _refused(
-                WorkflowRefusalReason.INVALID_VALUE,
-                "format_version",
-                "workflow format version must be a strict integer",
-            )
-        declared = loaded["format_version"]
-        try:
-            version = WorkflowFormatVersion(declared)
-        except ValueError:
-            version = None
-        document_format = (
-            None if version is None else WORKFLOW_DOCUMENT_FORMATS.get(version)
-        )
-        if document_format is None:
-            raise _refused(
-                WorkflowRefusalReason.INVALID_VALUE,
-                "format_version",
-                f"workflow format version {declared} is unsupported",
-            )
-        return document_format.read(loaded)
+        _freeze_node_sequences(loaded)
+        return _document_format_of(loaded).read(loaded)
     except InvalidWorkflowDocument:
         raise
     except WorkflowDocumentRefused as refused:
@@ -181,6 +156,40 @@ def parse_workflow_document(document: bytes) -> AnyWorkflowDocument:
             "syntax",
             "workflow document violates safe YAML v1",
         ) from error
+
+
+def _freeze_node_sequences(loaded: object) -> None:
+    if not isinstance(loaded, dict) or not isinstance(loaded.get("nodes"), list):
+        return
+    nodes = loaded["nodes"]
+    for node in nodes:
+        if isinstance(node, dict) and isinstance(node.get("operands"), list):
+            node["operands"] = tuple(node["operands"])
+    loaded["nodes"] = tuple(nodes)
+
+
+def _document_format_of(loaded: object) -> WorkflowDocumentFormat:
+    if not isinstance(loaded, dict) or type(loaded.get("format_version")) is not int:
+        raise _refused(
+            WorkflowRefusalReason.INVALID_VALUE,
+            "format_version",
+            "workflow format version must be a strict integer",
+        )
+    declared = loaded["format_version"]
+    try:
+        version = WorkflowFormatVersion(declared)
+    except ValueError:
+        version = None
+    document_format = (
+        None if version is None else WORKFLOW_DOCUMENT_FORMATS.get(version)
+    )
+    if document_format is None:
+        raise _refused(
+            WorkflowRefusalReason.INVALID_VALUE,
+            "format_version",
+            f"workflow format version {declared} is unsupported",
+        )
+    return document_format
 
 
 def _decoded_text(document: bytes) -> str:

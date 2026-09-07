@@ -736,19 +736,7 @@ class Watchdog:
         self._drop_unwritten_input()
         self._close_provider_stream("stdin")
         if self._process is None:
-            self._termination_disposition = "NEVER_LAUNCHED"
-            if owner == "CANCEL":
-                self._publish_wait({"type": "STOPPED"}, now)
-                self._publish_cancel(now)
-            elif owner == "OWNER_DEATH":
-                self._state = _CoordinatorState.FINALIZING
-            else:
-                arm = (
-                    "OUTPUT_LIMIT_EXCEEDED"
-                    if owner == "OVERFLOW"
-                    else "SUPERVISION_FAILED"
-                )
-                self._publish_wait({"type": arm}, now)
+            self._end_before_launch(owner, now)
             return
         self._state = {
             "CANCEL": _CoordinatorState.CANCEL_TERMINATING,
@@ -762,18 +750,21 @@ class Watchdog:
                 self._process.wait()
                 self._finish_termination(now)
                 return
-            self._termination_deadline = now + self._grace
-            return
-        signalled = False
-        if self._process.poll() is None:
-            try:
-                os.killpg(self._process.pid, signal.SIGTERM)
-                signalled = True
-            except ProcessLookupError:
-                pass
-        if signalled:
+        elif self._process.poll() is None and _killpg(self._process, signal.SIGTERM):
             self._termination_disposition = "REAPED_AFTER_TERM"
         self._termination_deadline = now + self._grace
+
+    def _end_before_launch(self, owner: str, now: float) -> None:
+        self._termination_disposition = "NEVER_LAUNCHED"
+        if owner == "CANCEL":
+            self._publish_wait({"type": "STOPPED"}, now)
+            self._publish_cancel(now)
+        elif owner == "OWNER_DEATH":
+            self._state = _CoordinatorState.FINALIZING
+        elif owner == "OVERFLOW":
+            self._publish_wait({"type": "OUTPUT_LIMIT_EXCEEDED"}, now)
+        else:
+            self._publish_wait({"type": "SUPERVISION_FAILED"}, now)
 
     def _escalate_termination(self, now: float) -> None:
         if self._termination_escalated:
@@ -785,10 +776,7 @@ class Watchdog:
             (self._cgroup / "cgroup.kill").write_text("1", encoding="ascii")
             self._termination_disposition = "REAPED_AFTER_KILL"
         if self._process is not None and self._process.poll() is None:
-            try:
-                os.killpg(self._process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _killpg(self._process, signal.SIGKILL)
         self._termination_deadline = now + max(1.0, self._grace)
 
     def _finish_termination(self, now: float) -> None:
@@ -1073,11 +1061,8 @@ def _decode_launch_request(
         or any(type(value) is not str or not value for value in arguments_value)
     ):
         raise ValueError("launch arguments are malformed")
-    working_directory_value = request["working_directory"]
-    if (
-        type(working_directory_value) is not str
-        or not Path(working_directory_value).is_absolute()
-    ):
+    working_directory = request["working_directory"]
+    if type(working_directory) is not str or not Path(working_directory).is_absolute():
         raise ValueError("launch working directory is malformed")
     identity_value = request["working_directory_identity"]
     if (
@@ -1086,23 +1071,7 @@ def _decode_launch_request(
         or any(type(value) is not int or value < 0 for value in identity_value)
     ):
         raise ValueError("launch working directory identity is malformed")
-    environment_value = request["environment"]
-    if type(environment_value) is not list:
-        raise ValueError("launch environment is malformed")
-    environment_pairs: list[tuple[str, str]] = []
-    for pair in environment_value:
-        if (
-            type(pair) is not list
-            or len(pair) != 2
-            or type(pair[0]) is not str
-            or not pair[0]
-            or type(pair[1]) is not str
-        ):
-            raise ValueError("launch environment is malformed")
-        environment_pairs.append((pair[0], pair[1]))
-    environment = dict(environment_pairs)
-    if len(environment) != len(environment_pairs):
-        raise ValueError("launch environment names are duplicated")
+    environment = _launch_environment(request["environment"])
     standard_input_value = request["standard_input"]
     if type(standard_input_value) is not str:
         raise ValueError("launch standard input is malformed")
@@ -1117,13 +1086,31 @@ def _decode_launch_request(
         raise ValueError("launch conversation flag is malformed")
     return (
         tuple(arguments_value),
-        working_directory_value,
+        working_directory,
         (identity_value[0], identity_value[1]),
         environment,
         standard_input,
         standard_output_frame_bytes,
         duplex,
     )
+
+
+def _launch_environment(value: object) -> dict[str, str]:
+    if isinstance(value, list):
+        pairs = [_environment_pair(pair) for pair in value]
+        environment = dict(pairs)
+        if len(environment) != len(pairs):
+            raise ValueError("launch environment names are duplicated")
+        return environment
+    raise ValueError("launch environment is malformed")
+
+
+def _environment_pair(pair: object) -> tuple[str, str]:
+    if isinstance(pair, list) and len(pair) == 2:
+        name, content = pair
+        if isinstance(name, str) and name and isinstance(content, str):
+            return (name, content)
+    raise ValueError("launch environment is malformed")
 
 
 def _decode_exchange_request(
@@ -1170,6 +1157,14 @@ def _decode_exchange_request(
         cancellation_frame,
         close_input,
     )
+
+
+def _killpg(process: subprocess.Popen[bytes], signal_number: int) -> bool:
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _cgroup_populated(cgroup: Path) -> bool:

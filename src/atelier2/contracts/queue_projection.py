@@ -8,7 +8,7 @@ twice.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import Final
 
@@ -201,6 +201,21 @@ class QueueBlockerKind(StrEnum):
     REQUIRED_ORDER_UNAVAILABLE = "REQUIRED_ORDER_UNAVAILABLE"
     START_REFUSED = "START_REFUSED"
     LEGACY_REVIEW_REQUIRED = "LEGACY_REVIEW_REQUIRED"
+
+
+class QueueRestartRefusal(StrEnum):
+    """Why the sweep left an ended launch bound instead of buying its item a run.
+
+    A restart is an unattended, paid decision, so it needs the authority an
+    automatic admission needs (REQ-QUEUE-08): the tracker, read at the instant
+    the sweep decides, still lists the item open and carrying the automation
+    label. Each member names which part of that authority was missing.
+    """
+
+    AUTOMATION_LABEL_UNSET = "AUTOMATION_LABEL_UNSET"
+    TRACKER_UNREADABLE = "TRACKER_UNREADABLE"
+    TRACKER_ITEM_CLOSED = "TRACKER_ITEM_CLOSED"
+    LABEL_REMOVED = "LABEL_REMOVED"
 
 
 @dataclass(frozen=True)
@@ -588,6 +603,19 @@ class QueueItemSnapshot:
                 raise ValueError("a launch binding must name its queue item")
             if self.launch_binding.proposal_revision != admission.proposal_revision:
                 raise ValueError("a launch binding must name the admitted proposal")
+
+    def revalidated(self) -> QueueItemSnapshot:
+        """This snapshot built again through its own constructor, every field kept.
+
+        `fields()` names every field the class declares -- including one a
+        later change adds -- rather than a fixed positional list that would
+        carry on quietly forgetting it, so the constructor's validation runs
+        over exactly what this instance holds.
+        """
+
+        return QueueItemSnapshot(
+            **{member.name: getattr(self, member.name) for member in fields(self)}
+        )
 
     def plan(self, command: PlanQueueItem) -> QueueProposalOutcome:
         if command.item_reference != self.item_reference:

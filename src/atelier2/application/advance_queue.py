@@ -10,11 +10,21 @@ govern the start, never the admission.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import logging
+from dataclasses import dataclass
 from typing import Final, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
 from atelier2.application.plan_queue_item import plan_queue_item
+from atelier2.application.queue_sweep_reads import (
+    QueueAdvanceCorrupt,
+    QueueAdvanceUnavailable,
+    RestartAuthority,
+    active_policy,
+    open_tracker_items,
+    projected_items,
+    validated_snapshot,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
@@ -56,8 +66,8 @@ from atelier2.contracts.queue_projection import (
     QueueProposal,
     QueueProposalAlreadyCurrent,
     QueueProposalSource,
+    QueueRestartRefusal,
     ReleaseQueueLaunch,
-    WorkItemReference,
     queue_start_order_key,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -77,7 +87,6 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.issue_observation import (
-    OpenTrackerItemsObserved,
     TrackerItemSource,
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
@@ -91,8 +100,6 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
-    QueueItemsPage,
-    QueueItemsReader,
     QueueLaunchAlreadyBound,
     QueueLaunchBlocked,
     QueueLaunchReleased,
@@ -102,27 +109,18 @@ from atelier2.ports.queue_projection import (
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
     QueueLaunchRuns,
-    QueuePolicyReader,
     QueueProjection,
-    QueueProjectPolicyAbsent,
-    QueueProjectPolicyFound,
     QueueReadUnavailable,
 )
 from atelier2.ports.workflow_revisions import WorkflowDocumentParser
+
+_LOG = logging.getLogger("atelier2")
 
 _QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
 # The durable reason an automatic admission records, followed by the label that
 # authorized it: the record says which rule admitted the item, not merely that
 # some rule did.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
-
-
-class QueueAdvanceUnavailable(RuntimeError):
-    """Durable queue or catalog truth could not be read safely."""
-
-
-class QueueAdvanceCorrupt(RuntimeError):
-    """Durable queue, catalog, or run truth contradicted its contract."""
 
 
 @dataclass(frozen=True)
@@ -165,12 +163,28 @@ class QueueItemRestartsExhausted:
     restarts_spent: int
 
 
+@dataclass(frozen=True)
+class QueueItemRestartWithheld:
+    """The item keeps its ended run: the tracker no longer authorizes a restart.
+
+    Nothing durable changes -- the binding stays exactly as it ended -- so the
+    item stays admitted and bound, as one past the cap does, and the next sweep
+    asks the tracker again. Re-labelling an open item is what lets it restart.
+    """
+
+    item_id: QueueItemId
+    binding: QueueLaunchBinding
+    ended_state: RunState
+    refusal: QueueRestartRefusal
+
+
 type QueueAdvanceOutcome = (
     QueueRunStarted
     | QueueRunAlreadyActive
     | QueueItemBlocked
     | QueueItemRestarting
     | QueueItemRestartsExhausted
+    | QueueItemRestartWithheld
 )
 
 
@@ -247,22 +261,22 @@ def admit_queue_items_by_label(
     the item stays observed and the admission says so, exactly as before.
     """
 
-    policy = _active_policy(queue, project)
+    policy = active_policy(queue, project)
     if policy is None or policy.automation_label is None:
         return QueueAutomationLabelUnset()
     label = policy.automation_label
-    labelled = _labelled_item_ids(tracker, project, label)
-    if isinstance(labelled, QueueAutomationSourceUnreadable):
-        return labelled
+    listing = open_tracker_items(tracker, project, label)
+    if isinstance(listing, TrackerSourceUnavailable | TrackerPayloadMalformed):
+        return QueueAutomationSourceUnreadable(listing.detail)
     rationale = QueueAdmissionRationale(_AUTOMATION_ADMISSION_REASON + label)
     admitted: list[QueueItemId] = []
     declined: list[QueueLabelAdmissionDeclined] = []
-    for item in _projected_items(queue, page_limit):
+    for item in projected_items(queue, page_limit):
         item_id = item.item_reference.item_id
         # A retired item has left the pullable set (ADR 0016, 2026-09-01
         # amendment); admitting one would write a decision the sweep then
         # refuses to act on.
-        if item.retired_at is not None or item_id not in labelled:
+        if item.retired_at is not None or item_id not in listing.labelled:
             continue
         expected_revision = _proposed_from_policy_defaults(queue, item, policy)
         outcome = _confirmed_by_rule(queue, item, expected_revision, rationale)
@@ -271,38 +285,6 @@ def admit_queue_items_by_label(
         else:
             declined.append(QueueLabelAdmissionDeclined(item_id, outcome))
     return QueueLabelAdmissionsDecided(tuple(admitted), tuple(declined))
-
-
-def _active_policy(
-    queue: QueuePolicyReader, project: ProjectId
-) -> QueueProjectPolicyRevision | None:
-    match queue.current_policy(project):
-        case QueueProjectPolicyFound(policy):
-            return policy
-        case QueueProjectPolicyAbsent():
-            return None
-        case QueueReadUnavailable():
-            raise QueueAdvanceUnavailable("the queue policy could not be read")
-        case PortDurableStateCorrupt():
-            raise QueueAdvanceCorrupt("the queue policy is corrupt and cannot be read")
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _labelled_item_ids(
-    tracker: TrackerItemSource, project: ProjectId, label: str
-) -> frozenset[QueueItemId] | QueueAutomationSourceUnreadable:
-    match tracker.open_items():
-        case OpenTrackerItemsObserved() as listing:
-            return frozenset(
-                WorkItemReference(project, item.reference).item_id
-                for item in listing.items
-                if label in item.labels
-            )
-        case TrackerSourceUnavailable(detail) | TrackerPayloadMalformed(detail):
-            return QueueAutomationSourceUnreadable(detail)
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def _proposed_from_policy_defaults(
@@ -396,13 +378,14 @@ def advance_queue(
     """
     admitted_items = [
         item
-        for item in _projected_items(queue, page_limit)
+        for item in projected_items(queue, page_limit)
         # A retired item has left the pullable set (ADR 0016, 2026-09-01
         # amendment): it stays visible in the projection, but the pull never
         # starts it again.
         if item.retired_at is None and item.state is QueueItemState.ADMITTED
     ]
     ordered = sorted(admitted_items, key=queue_start_order_key)
+    restart_authority = RestartAuthority(queue, served_project, tracker)
     outcomes = (
         _released_or_advanced(
             item,
@@ -412,6 +395,7 @@ def advance_queue(
             workflow_document_parser,
             served_project,
             tracker,
+            restart_authority,
         )
         for item in ordered
     )
@@ -426,6 +410,7 @@ def _released_or_advanced(
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
+    restart_authority: RestartAuthority,
 ) -> QueueAdvanceOutcome | None:
     """Give back an ended launch before deciding anything else about the item.
 
@@ -436,7 +421,7 @@ def _released_or_advanced(
 
     if served_project is not None and item.item_reference.project != served_project:
         return None
-    released = _release_ended_launch(item, queue)
+    released = _release_ended_launch(item, queue, restart_authority)
     if released is not None:
         return released
     return _advance_one(
@@ -445,14 +430,17 @@ def _released_or_advanced(
 
 
 def _release_ended_launch(
-    item: QueueItemSnapshot, queue: QueueLaunchRuns
-) -> QueueItemRestarting | QueueItemRestartsExhausted | None:
+    item: QueueItemSnapshot, queue: QueueLaunchRuns, authority: RestartAuthority
+) -> QueueItemRestarting | QueueItemRestartsExhausted | QueueItemRestartWithheld | None:
     """Give back the binding of a run that ended without an answer.
 
     `None` for every launch this sweep treats exactly as it always did: an item
     with no binding, a run still going, a reservation whose start never landed,
     and a COMPLETED run -- that run is the item's answer, and a second one
     would spend money on a question already answered.
+
+    The tracker is asked before the cap and before the release, so a launch
+    the tracker no longer authorizes never reaches a write.
     """
 
     binding = item.launch_binding
@@ -462,6 +450,20 @@ def _release_ended_launch(
     if ended is None or ended.state not in UNSUCCESSFUL_TERMINAL_RUN_STATES:
         return None
     item_id = binding.item_id
+    refusal = authority.refusal_for(item_id)
+    if refusal is not None:
+        _LOG.info(
+            "Queue item %s keeps its %s run: not restarted (%s).",
+            item_id.value,
+            ended.state.value,
+            refusal.value,
+            extra={
+                "event": "queue_restart_withheld",
+                "item_id": item_id.value,
+                "refusal": refusal.value,
+            },
+        )
+        return QueueItemRestartWithheld(item_id, binding, ended.state, refusal)
     # The release holds the cap itself; this answer only spares the transaction.
     if ended.restarts_spent >= MAXIMUM_QUEUE_LAUNCH_RESTARTS:
         return QueueItemRestartsExhausted(
@@ -498,27 +500,6 @@ def _ended_launch(
             raise QueueAdvanceCorrupt("a bound run contradicted its own contract")
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def _projected_items(
-    queue: QueueItemsReader, page_limit: int
-) -> tuple[QueueItemSnapshot, ...]:
-    """Every item of the whole projection, page by page, each re-validated."""
-
-    items: list[QueueItemSnapshot] = []
-    after: QueueItemId | None = None
-    while True:
-        page = queue.list_items(after, page_limit)
-        if isinstance(page, QueueReadUnavailable):
-            raise QueueAdvanceUnavailable("the queue could not be read for the sweep")
-        if isinstance(page, PortDurableStateCorrupt):
-            raise QueueAdvanceCorrupt("the queue is corrupt and cannot be swept")
-        if not isinstance(page, QueueItemsPage):
-            raise QueueAdvanceCorrupt("the queue answered an unknown projection")
-        items.extend(_validated_snapshot(item) for item in page.items)
-        if page.next_after is None:
-            return tuple(items)
-        after = page.next_after
 
 
 def _advance_one(
@@ -578,7 +559,7 @@ def _advance_one(
             case QueueLaunchAlreadyBound(binding=reserved):
                 binding = reserved
             case QueueLaunchBlocked(item=blocked):
-                blocked = _validated_snapshot(blocked)
+                blocked = validated_snapshot(blocked)
                 return QueueItemBlocked(
                     blocked.item_reference.item_id, blocked.blockers
                 )
@@ -738,22 +719,6 @@ def _resolve_document(
             )
         case _:
             raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
-
-
-def _validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
-    """Re-run the snapshot's own validation without silently dropping a field.
-
-    `dataclasses.replace` reads every field `QueueItemSnapshot` declares --
-    including one a later change adds -- rather than a fixed positional list
-    that would carry on quietly forgetting it.
-    """
-
-    try:
-        return replace(item)
-    except (AttributeError, TypeError, ValueError) as error:
-        raise QueueAdvanceCorrupt(
-            "the queue projection returned an inconsistent item"
-        ) from error
 
 
 def _derive_run_id(item_id: QueueItemId, proposal_revision: int) -> RunId:

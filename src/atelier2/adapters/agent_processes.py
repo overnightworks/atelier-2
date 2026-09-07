@@ -92,6 +92,23 @@ class _OwnedWatchdog:
     finalized: bool = False
 
 
+def _leads_attempt(
+    owned: _OwnedWatchdog, frame: bytes, revision: AgentExecutorRevision | None
+) -> bool:
+    with owned.condition:
+        if owned.closed or owned.finalized:
+            raise AgentProcessOwnerNotLocal
+        if owned.launch_frame is None:
+            owned.launch_frame = frame
+            owned.conversation_revision = revision
+            return True
+        if owned.launch_frame != frame or owned.conversation_revision != revision:
+            # A conversation is live state this armed session cannot share: two
+            # revisions speaking into one child read each other's frames as their own.
+            raise RuntimeError("local watchdog invocation changed")
+        return False
+
+
 @dataclass(frozen=True)
 class _ConversationEvidence:
     """What a conversation left for the completion: its steps and its outcome."""
@@ -414,23 +431,7 @@ class AgentProcessSupervisor(AgentSession):
                 raise AgentProcessOwnerNotLocal
             conversation = invocation.conversation
             revision = None if conversation is None else conversation.executor_revision
-            with owned.condition:
-                if owned.closed or owned.finalized:
-                    raise AgentProcessOwnerNotLocal
-                if owned.launch_frame is None:
-                    owned.launch_frame = launch_frame
-                    owned.conversation_revision = revision
-                    leads_attempt = True
-                elif (
-                    owned.launch_frame != launch_frame
-                    or owned.conversation_revision != revision
-                ):
-                    # A conversation is live state this armed session cannot
-                    # share: two revisions speaking into one child would each
-                    # read the other's frames as their own.
-                    raise RuntimeError("local watchdog invocation changed")
-                else:
-                    leads_attempt = False
+            leads_attempt = _leads_attempt(owned, launch_frame, revision)
         if not leads_attempt:
             return self._await_shared_completion(owned)
         try:
