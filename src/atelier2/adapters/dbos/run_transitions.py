@@ -608,6 +608,43 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
+def _refuse_unfit_target(
+    graph: AnyWorkflowDocument, target_state: RunState, node_id: str, terminal: bool
+) -> None:
+    node = graph.node(node_id)
+    if target_state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
+        raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
+    if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
+        node, (ActionNodeV3, AgentNodeV3)
+    ):
+        raise RunTransitionConflict(
+            "WAITING_RECONCILIATION target is not an effect-owning node"
+        )
+    # Which words end a run has one owner, and CANCELLED is one of them: a run
+    # resting at a pause ends here, under its own attestation, rather than
+    # standing WAITING_INPUT forever because no attempt existed to stop.
+    if terminal != (target_state in TERMINAL_RUN_STATES):
+        raise RunTransitionConflict("terminal transition shape disagrees")
+    if (
+        terminal
+        and target_state is RunState.COMPLETED
+        and not is_sink_node(graph, node_id)
+    ):
+        raise RunTransitionConflict("terminal transition must finish the run's sink")
+
+
+def _event_hashes(session: Any, run_id: RunId) -> tuple[Sha256Hash, ...]:
+    """Every event hash this run has written, in the order the terminal hash folds."""
+    return tuple(
+        Sha256Hash(str(value))
+        for value in session.execute(
+            sa.select(run_events.c.event_hash)
+            .where(run_events.c.run_id == run_id.value)
+            .order_by(run_events.c.event_sequence)
+        ).scalars()
+    )
+
+
 def _commit_event(
     session: Any,
     run_id: RunId,
@@ -653,28 +690,7 @@ def _commit_event(
     ):
         raise RunTransitionConflict("run is not at the transition's exact source")
     graph = load_graph(session, revision_hash)
-    target_node = graph.node(target_node_id)
-    if target_state is RunState.WAITING_INPUT and not isinstance(
-        target_node, WaitNodeV3
-    ):
-        raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
-    if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
-        target_node, (ActionNodeV3, AgentNodeV3)
-    ):
-        raise RunTransitionConflict(
-            "WAITING_RECONCILIATION target is not an effect-owning node"
-        )
-    # Which words end a run has one owner, and CANCELLED is one of them (#668):
-    # a run resting at a pause ends here, under its own attestation, rather than
-    # standing WAITING_INPUT forever because no attempt existed to stop.
-    if terminal != (target_state in TERMINAL_RUN_STATES):
-        raise RunTransitionConflict("terminal transition shape disagrees")
-    if (
-        terminal
-        and target_state is RunState.COMPLETED
-        and not is_sink_node(graph, target_node_id)
-    ):
-        raise RunTransitionConflict("terminal transition must finish the run's sink")
+    _refuse_unfit_target(graph, target_state, target_node_id, terminal)
     instant = recorded_instant()
     sequence = current.last_event_sequence + 1
     if (agent_attempt_id is None) != (attempt_ordinal is None):
@@ -702,15 +718,7 @@ def _commit_event(
     terminal_hash: Sha256Hash | None = None
     if terminal:
         _insert_event(session, event, at=instant)
-        prior_hashes = tuple(
-            Sha256Hash(str(value))
-            for value in session.execute(
-                sa.select(run_events.c.event_hash)
-                .where(run_events.c.run_id == run_id.value)
-                .order_by(run_events.c.event_sequence)
-            ).scalars()
-        )
-        terminal_hash = terminal_hash_for(revision_hash, prior_hashes)
+        terminal_hash = terminal_hash_for(revision_hash, _event_hashes(session, run_id))
     updated = session.execute(
         runs.update()
         .where(
@@ -735,7 +743,7 @@ def _commit_event(
         raise RunTransitionConflict("run transition lost its state/version CAS")
     if terminal:
         record_run_ended(session, run_id.value, at=instant)
-    if not terminal:
+    else:
         _insert_event(session, event, at=instant)
     return TransitionSnapshot(
         run_id,
@@ -867,15 +875,7 @@ def lift_started_run(
 
     `False` still means the caller's snapshot no longer names the run's live row.
     """
-    event_hashes = tuple(
-        Sha256Hash(str(value))
-        for value in connection.execute(
-            sa.select(run_events.c.event_hash)
-            .where(run_events.c.run_id == run_id.value)
-            .order_by(run_events.c.event_sequence)
-        ).scalars()
-    )
-    terminal_hash = terminal_hash_for(revision_hash, event_hashes)
+    terminal_hash = terminal_hash_for(revision_hash, _event_hashes(connection, run_id))
     updated = connection.execute(
         runs.update()
         .where(
