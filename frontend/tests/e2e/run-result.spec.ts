@@ -21,17 +21,18 @@ const api = "/atelier/api/v1";
  *   test-results/result-666/result-{1280,390}-{light,dark}.png
  *
  * The vector is the exact one the issue was filed against: the harness's fake
- * conductor executor (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
- * answers with `CONDUCTOR_REPORT_SCHEMA`'s own shape -- the same declared
+ * conductor executor (`/__e2e/seed-fixed-report-agent` in
+ * `tests/e2e/serve_cockpit.py`) answers with `CONDUCTOR_REPORT_SCHEMA`'s own
+ * shape -- the same declared
  * object the bug report's screenshot showed printed as a raw JSON line. It
  * answers the one node of the run below, which is also that run's sink, so
  * this journey is the duplicate-answer case; the node panel's ordinary
  * rendering of a non-sink node's own answer is proven at the component level
  * in `tests/app/readableResultDisplay.test.ts`.
  *
- * `/__e2e/seed-conductor` durably mutates the one shared harness server's
- * state for every spec that runs after it, so this spec owns the state it
- * drives instead of depending on file order: it resets that server to its
+ * `/__e2e/seed-fixed-report-agent` durably mutates the one shared harness
+ * server's state for every spec that runs after it, so this spec owns the
+ * state it drives instead of depending on file order: it resets that server to its
  * cold-boot baseline and seeds its own conductor executor (below), whatever
  * another spec already did to the shared server.
  */
@@ -86,7 +87,7 @@ async function settledConductorReportRun(page: Page): Promise<void> {
   // would conflict on the model registry. Reset to the cold-boot baseline,
   // then seed, so this journey owns its own conductor executor.
   await resetToKnownStore(page);
-  const seeded = await page.request.post("/__e2e/seed-conductor");
+  const seeded = await page.request.post("/__e2e/seed-fixed-report-agent");
   expect(seeded.ok(), await seeded.text()).toBeTruthy();
   const configurationHash = ((await seeded.json()) as { configuration_hash: string })
     .configuration_hash;

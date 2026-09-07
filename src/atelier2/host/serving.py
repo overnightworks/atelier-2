@@ -124,12 +124,9 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, is_loopback_host
-from atelier2.host.conductor_workflow import (
-    CONDUCTOR_DOOR_SERVER_NAME,
-    CONDUCTOR_DOOR_TOOLS,
-)
 from atelier2.host.logging import configure_process_logging
 from atelier2.host.mcp_command import stdio_door_command
+from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
 from atelier2.host.provider_canary import (
     default_provider_canary_state_directory,
     provider_layer_digest,
@@ -609,24 +606,29 @@ def _subscription_registration(
     )
 
 
+ATELIER_DOOR_TOOLS: tuple[McpToolName, ...] = (
+    McpToolName.LIST_WORKFLOWS,
+    McpToolName.START_RUN,
+    McpToolName.RUN_STATUS,
+)
+
+
 def _atelier_doors_settings(
     claude_subscription: ClaudeSubscriptionSettings, settings: HostSettings
 ) -> ClaudeAtelierDoorsSettings:
     """The doors deployment, composed from facts each of their own owners holds.
 
-    The door tools and server name come from the conductor contract
-    (`atelier2.host.conductor_workflow`), which draws them from the MCP door
-    vocabulary -- no literal is re-spelled here. The door command is this
-    serving process launching its own stdio door (`atelier2 mcp`, the
-    subcommand `atelier2.host` itself defines) with the same interpreter that
-    serves, against the same loopback address this deployment binds. Whether
-    that address is really loopback stays the door child's own refusal.
+    The grant is the three read-and-start doors of the MCP vocabulary, never a
+    re-spelled literal: humans answer the waits of started runs, so a
+    choose/start/observe role gets no write door. The door command launches
+    this process's own stdio door (`atelier2 mcp`) with the serving interpreter
+    against this deployment's address; that it is loopback is the child's refusal.
     """
 
     return ClaudeAtelierDoorsSettings(
         claude_subscription,
-        CONDUCTOR_DOOR_SERVER_NAME,
-        tuple(tool.value for tool in CONDUCTOR_DOOR_TOOLS),
+        MCP_SERVER_NAME,
+        tuple(tool.value for tool in ATELIER_DOOR_TOOLS),
         stdio_door_command(_own_service_url(settings)),
     )
 

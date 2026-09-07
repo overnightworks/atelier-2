@@ -50,11 +50,8 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
-from atelier2.host.conductor_workflow import (
-    CONDUCTOR_DOOR_SERVER_NAME,
-    CONDUCTOR_DOOR_TOOLS,
-)
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
+from atelier2.host.serving import ATELIER_DOOR_TOOLS
 from atelier2.ports.agent_executions import AgentProcessInvocation
 from tests.integration.test_claude_subscription import (
     INTROSPECTING_CLAUDE,
@@ -105,9 +102,10 @@ _SAMPLE_OUTPUT_SCHEMA = json.dumps(
 def doors_deployment(root: Path, name: str, program: str) -> ClaudeAtelierDoorsSettings:
     """One atelier-doors deployment composed the way the serving host does.
 
-    The server name and door tools come from the conductor contract's typed
-    owners, and the door command launches this test's interpreter as the stdio
-    door -- the same shape `_atelier_doors_settings` composes in production.
+    The server name is the MCP vocabulary's own (`host.mcp_tools`), the door
+    tools are the composition root's grant (`host.serving`), and the door
+    command launches this test's interpreter as the stdio door -- the same
+    shape `_atelier_doors_settings` composes in production.
     """
 
     directory = root / name
@@ -123,8 +121,8 @@ def doors_deployment(root: Path, name: str, program: str) -> ClaudeAtelierDoorsS
     )
     return ClaudeAtelierDoorsSettings(
         claude_subscription_deployment(directory, program),
-        CONDUCTOR_DOOR_SERVER_NAME,
-        tuple(tool.value for tool in CONDUCTOR_DOOR_TOOLS),
+        MCP_SERVER_NAME,
+        tuple(tool.value for tool in ATELIER_DOOR_TOOLS),
         door_command,
     )
 
@@ -189,7 +187,7 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
     command = executor.prepare_process(request)
 
     allowlist = ",".join(
-        f"mcp__{MCP_SERVER_NAME}__{tool.value}" for tool in CONDUCTOR_DOOR_TOOLS
+        f"mcp__{MCP_SERVER_NAME}__{tool.value}" for tool in ATELIER_DOOR_TOOLS
     )
     assert command.arguments == (
         str(settings.deployment.executable),

@@ -31,10 +31,8 @@ from atelier2.adapters.claude_subscription import (
 )
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.contracts.agents import AgentExecutionResult
-from atelier2.host.conductor_workflow import (
-    CONDUCTOR_DOOR_SERVER_NAME,
-    CONDUCTOR_DOOR_TOOLS,
-)
+from atelier2.host.mcp_tools import MCP_SERVER_NAME
+from atelier2.host.serving import ATELIER_DOOR_TOOLS
 from atelier2.ports.agent_executions import (
     AgentExecutorV2,
     AgentProcessCompletion,
@@ -101,8 +99,8 @@ def _atelier_doors_executor(directory: Path) -> AgentExecutorV2:
     return ClaudeAtelierDoorsExecutorFactory(
         ClaudeAtelierDoorsSettings(
             _deployment(directory),
-            CONDUCTOR_DOOR_SERVER_NAME,
-            tuple(tool.value for tool in CONDUCTOR_DOOR_TOOLS),
+            MCP_SERVER_NAME,
+            tuple(tool.value for tool in ATELIER_DOOR_TOOLS),
             (
                 sys.executable,
                 "-m",
