@@ -425,27 +425,25 @@ table.list tr.grp td .mark{margin-right:.2rem}
 .differs{color:var(--fail);font-weight:600}
 .sub{color:var(--ink-dim);font-weight:400;margin-left:.4rem}
 
-/* ── Settings · Models by task (v8-23): one row per role the catalog declares ── */
+/* ── Settings · Klassen und Aufgaben (v8-23): three configured classes, one read-only row per role the catalog declares ── */
 table.roles{width:100%;border-collapse:collapse;font-size:.9rem;table-layout:fixed}
 /* Five answers share the stage width: fixed columns, so no cell can push the status off the edge. */
-table.roles th:nth-child(1){width:18%} table.roles th:nth-child(2){width:25%} table.roles th:nth-child(3){width:13%} table.roles th:nth-child(4){width:24%}
+table.roles.classes th:nth-child(1){width:18%} table.roles.classes th:nth-child(2){width:25%} table.roles.classes th:nth-child(3){width:13%} table.roles.classes th:nth-child(4){width:24%}
+table.roles.tasks th:nth-child(1){width:26%} table.roles.tasks th:nth-child(2){width:24%} table.roles.tasks th:nth-child(3){width:26%}
 table.roles th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
 table.roles td{padding:.5rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
 table.roles td.task b{font-weight:600}
-table.roles td.task small{display:block;color:var(--ink-dim);font-size:.78rem}
-table.roles .in{min-height:2rem;padding:.3rem .6rem;width:100%;flex-wrap:wrap;row-gap:.15rem}
-/* Value and caret share the first line; a provenance pill takes its own line beneath, content-wide. */
+table.roles .in{min-height:2rem;padding:.3rem .6rem;width:100%}
 table.roles .in .val{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-table.roles .in .origin{order:1;flex-basis:100%;line-height:1}
 /* The open selection lifts over the row like a sheet: wider than its cell, because the reasons need room. */
 table.roles .menu{position:relative;z-index:2;width:17rem;box-shadow:var(--shadow-lift)}
 /* A choice the row cannot make right now keeps its box, dim: the pin or the missing account says why. */
 .in.held{border-color:var(--line);color:var(--ink-dim);cursor:not-allowed}
 .in.held .val{color:var(--ink-dim)}
-/* The route is read, never chosen: the node's mode and the account's auth mode decide it. */
+/* Read cells — the route, and what a task runs over — stand dim: nothing here is chosen. */
 table.roles td.route{color:var(--ink-dim);font-size:.84rem}
+table.roles td small{display:block;color:var(--ink-dim);font-size:.78rem}
 table.roles td.status .word{display:inline-flex;align-items:center;min-height:var(--tap)}
-table.roles td.status small{display:block;color:var(--ink-dim);font-size:.76rem}
 table.roles td.status small a{font-weight:600}
 table.roles td.status .err{margin:0}
 /* The receipt of a save stands where the status stood — one moment, one cell, never a toast. */
@@ -467,10 +465,11 @@ table.roles td.status .err{margin:0}
   .rail .ctx{flex-basis:auto;padding-left:.15rem}
   .stage{padding:1rem .9rem 1.1rem}
   .head h4{font-size:1.2rem}
-  /* The rows are cards: task on top, the four answers beneath with their word, the status full width. */
+  /* The rows are cards: the name on top, the middle answers beneath with their word, model and status full width. */
   table.roles tr:first-child{display:none}
   table.roles,table.roles tbody{display:block}
   table.roles tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:.4rem .7rem;padding:.65rem .8rem;margin:0 0 .45rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg)}
+  table.roles.tasks tr{grid-template-columns:repeat(2,minmax(0,1fr))}
   table.roles td{display:block;border:0;padding:0;min-width:0}
   table.roles td.task,table.roles td.model,table.roles td.status{grid-column:1 / -1}
   table.roles td[data-k]:not(.task)::before{content:attr(data-k);display:block;font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);font-weight:700;margin-bottom:.15rem}
@@ -572,7 +571,7 @@ table.roles td.status .err{margin:0}
   <p class="note"><b>03.09.2026 · #962 Scheibe 8</b> · A search field in the start sheet's work item picker narrows the grouped list by number or title, live; "no match" and "all retired" speak in the chooser instead of opening nothing. Vorschlag zur Segnung.</p>
   <p class="note"><b>Changelog v8.21</b> · 03.09.2026 · #914 · A poisoned mutation journal gets its own frame: one honest sentence, one door — never called "Discard" — and the retire card's three answers (Disappears / Stays / Permanent), plus the line that a wait answer already sent stays sent. Vorschlag nach Ruling.</p>
   <p class="note"><b>Changelog v8.22</b> · 05.09.2026 · #1099 · Die Werkbank bekommt einen Terminal-Sitz: eine tmux-Sitzung mit laufender Agenten-CLI und Atelier-MCP tritt an die Stelle der Conductor-Unterhaltung, Bühne und Warteschlange bleiben unverändert daneben. Neuladen hängt sich an dieselbe Sitzung wieder an; ist ttyd nicht erreichbar, nennt eine ochrefarbene Absage den CLI/API-Ausweg. Die Conductor-Unterhaltung ist damit abgelöst. Vorschlag zur Segnung.</p>
-  <p class="note"><b>Changelog v8.23</b> · 07.09.2026 · #1352 · Settings › Models antwortet „wer macht was, und läuft es?": eine Tabelle, eine Zeile je Aufgabe — Aufgabe · Anbieter · Route · Modell · Status — nach dem Bild „Songmaker Models Fassung 2". Gründe stehen in der Auswahl, Erreichbarkeit als Status in der Zeile statt eines Anbieter-Blocks, Speichern je Zeile mit „Gespeichert.", Fehlschlag mit Retry in der Zeile, bei 390 gestapelte Karten; ist kein Konto angemeldet, verschwindet nichts. Die Registry-Frames <code>#v8-17-*</code> bleiben stehen, bis der Operator segnet. Vorschlag zur Segnung.</p>
+  <p class="note"><b>Changelog v8.23</b> · 07.09.2026 · #1352 · Settings › Models antwortet „wer macht was, und läuft es?": konfiguriert werden die drei Klassen (Stufe 3 · 2 · 1, Ruling 07.09.2026) — Anbieter · Route · Modell · Status je Zeile, Gründe in der Auswahl, Erreichbarkeit als Status in der Zeile statt eines Anbieter-Blocks, Speichern je Zeile mit „Gespeichert.", Fehlschlag mit Retry in der Zeile. Darunter lesen die Aufgaben (eine Zeile je Rolle des Katalogs), welche Klasse sie trägt. Bei 390 gestapelte Karten; ist kein Konto angemeldet, verschwindet nichts. Die Registry-Frames <code>#v8-17-*</code> bleiben stehen, bis der Operator segnet. Vorschlag zur Segnung.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -2360,292 +2359,316 @@ command stopped before an answer</div>
 </dl>
 
 <section id="v8-23-models">
-<h3 class="frame-title">Settings · Models je Aufgabe <small>— „wer macht was, und läuft es?": eine Zeile je Rolle, die der Katalog vergibt; Anbieter und Modell wählbar in der Zeile, Route und Status gelesen (#1352, Vorschlag zur Segnung; löst <code>#v8-17-*</code> erst mit der Segnung ab)</small></h3>
+<h3 class="frame-title">Settings · Klassen und Aufgaben <small>— „wer macht was, und läuft es?": konfiguriert werden die drei Klassen (Stufe 3 · 2 · 1); die Aufgaben darunter lesen nur, welche Klasse sie trägt (#1352, Ruling 07.09.2026, Vorschlag zur Segnung; löst <code>#v8-17-*</code> erst mit der Segnung ab)</small></h3>
 <div class="frame" id="v8-23-models-full">
   <nav class="rail" data-on="settings"></nav>
   <div class="stage">
     <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
-    <p class="shelf">Models</p>
-    <table class="roles">
-      <tr><th>Aufgabe</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
+    <p class="shelf">Klassen</p>
+    <table class="roles classes">
+      <tr><th>Klasse</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val"><i class="mark" title="Grok">X</i> xAI · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI mit Werkzeugen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">grok-4.6</span><span class="origin"><span class="pill">im Workflow gepinnt</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft · Stufe 2 · andere Familie als Bauer</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div><div class="menu"><div class="grp">Konten</div><div class="opt on"><i class="mark" title="Claude">A</i>&nbsp;Anthropic · leonardo</div><div class="opt held"><i class="mark" title="Codex">O</i>&nbsp;OpenAI<span class="why">nicht angemeldet</span></div><div class="opt held"><i class="mark" title="Grok">X</i>&nbsp;xAI · leonardo<span class="why">gleiche Familie wie Bauer</span></div></div></td>
+        <td class="task" data-k="Klasse"><b>Stufe 3</b><small>die schwerste Arbeit</small></td>
+        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Grok">X</i> xAI · leonardo</span><span>▾</span></div><div class="menu"><div class="grp">Konten</div><div class="opt on"><i class="mark" title="Grok">X</i>&nbsp;xAI · leonardo</div><div class="opt held"><i class="mark" title="Claude">A</i>&nbsp;Anthropic · leonardo<span class="why">gleiche Familie wie Stufe 2</span></div><div class="opt held"><i class="mark" title="Codex">O</i>&nbsp;OpenAI<span class="why">nicht angemeldet</span></div></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-opus-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">für diese Aufgabe gewählt</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="saved">Gespeichert.</span><small>Bereit · geprüft</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft · Stufe 2 · andere Familie als Kurator</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Codex">O</i> OpenAI · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">gpt-5.3-codex</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><div class="err">Probe fehlgeschlagen. <a href="#">Retry</a></div><small>die CLI antwortete nicht</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-opus-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div></td>
         <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small><a href="#">Jetzt proben</a></small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 2</b><small>jede Rolle ohne eigene Stufe</small></td>
         <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span>▾</span></div></td>
+        <td class="status" data-k="Status"><span class="saved">Gespeichert.</span><small>Bereit · geprüft</small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 1</b><small>die leichteste Arbeit</small></td>
         <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-haiku-4-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word live">Prüft</span><small>erste Verwendung von claude-haiku-4-5</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val">alle Konten</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">je Sonde: CLI · mit Werkzeugen · Atelier-Türen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">alle startbaren</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>zuletzt heute 06:10 · 4 von 5 Vektoren</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank · <span class="pill dash">außerhalb der Registry</span></small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val"><i class="mark" title="Claude">A</i> Anthropic</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI im tmux</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">die der CLI</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>ttyd erreichbar</small></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-haiku-4-5</span><span>▾</span></div></td>
+        <td class="status" data-k="Status"><div class="err">Probe fehlgeschlagen. <a href="#">Retry</a></div><small>die CLI antwortete nicht</small></td>
       </tr>
     </table>
     <div style="margin:.5rem 0 .4rem"><span class="btn sm">Modell hinzufügen</span></div>
-    <p class="shelf">Stufen-Vorgaben</p>
-    <div class="tw"><table class="list">
-      <tr><th>Stufe</th><th>Modell</th></tr>
-      <tr><td class="ord"><b>3</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-opus-5</span><span class="sub">Konto leonardo</span><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>2</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-sonnet-4-6</span><span class="sub">Konto leonardo</span><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>1</b></td><td><div class="in"><span>▾</span></div></td></tr>
-    </table></div>
+    <p class="shelf">Aufgaben</p>
+    <table class="roles tasks">
+      <tr><th>Aufgabe</th><th>Klasse</th><th>läuft über</th><th>Status</th></tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut</small></td>
+        <td data-k="Klasse">Pin im Workflow: <code>grok-4.6</code></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Grok">X</i> xAI · grok-4.6</td>
+        <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small>wie Stufe 3</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>andere Familie als Bauer · erfüllt</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft</small></td>
+        <td data-k="Klasse">Stufe 3 statt 2<small>andere Familie als Kurator</small></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Grok">X</i> xAI · grok-4.6</td>
+        <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small>wie Stufe 3</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über">alle Konten</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>zuletzt heute 06:10 · 4 von 5 Vektoren</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Claude-CLI im tmux</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>ttyd erreichbar</small></td>
+      </tr>
+    </table>
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Eine Zeile je Aufgabe</dt><dd>„Wer macht was?" — die Aufgaben sind die Rollen, die die Katalog-Workflows erklären (<code>declared_roles_of</code> in <code>contracts/workflows_v3.py</code>, Katalog <code>workflows/*.yaml</code>); die kleine Zeile nennt Workflows, Art (baut/prüft), Stufe und die Familienregel. Derselbe Rollenname in zwei Workflows ist eine Zeile, solange beide dasselbe verlangen — was bei abweichender Stufe oder Pin gilt, ist offen und wartet auf ein Ruling.</dd></div>
-  <div><dt>Anbieter: der Grund steht in der Auswahl</dt><dd>„Warum kann ich das nicht wählen?" — die Option bleibt sichtbar und trägt ihren Grund: nicht angemeldet, gleiche Familie wie Bauer (<code>family_differs_from</code>), Modell nicht registriert. Ein Konto ist der Anbieter mit Anmeldung (Abo oder Schlüssel, <code>AuthMode</code>); ein Anmelde-Sheet gibt es hier nicht, die CLI auf dem Host meldet an.</dd></div>
-  <div><dt>Route wird gelesen, nie gewählt</dt><dd>„Wie erreicht die Aufgabe ihr Modell?" — der Modus des Knotens (<code>headless</code> → CLI, <code>headless_with_tools</code> → CLI mit Werkzeugen, Atelier-Türen) und der Anmeldeweg des Kontos ergeben sie; welcher Executor genau lief (<code>grok-subscription-tools/v1</code>) steht im Lauf unter Technisch, nie in der Zeile.</dd></div>
-  <div><dt>Modell und seine Herkunft</dt><dd>„Woher kommt dieses Modell?" — die Pille sagt es, nur wo es vom Standard abweicht: „im Workflow gepinnt" (die Auswahl ist gehalten, den Pin ändert nur der Workflow oder ein Start-Override), „aus Stufe 2" (die Stufen-Vorgabe hat geantwortet), „für diese Aufgabe gewählt" (die Wahl in dieser Zeile). Reihenfolge wie <code>cast_unbound_roles</code>: Start-Override · Pin · Aufgabe · Stufe · höhere Stufe — die Zeile „Aufgabe" ist neu und der Kern dieses Vorschlags.</dd></div>
-  <div><dt>Status ist Erreichbarkeit, in der Zeile</dt><dd>„Läuft es?" — Bereit (registriert, geprüft, letzte Sonde gut), Prüft (Erstprüfung der Id, live), Noch nicht geprobt (ochre, Jetzt proben), Probe fehlgeschlagen (brick, Retry in der Zeile), Nicht angemeldet (ochre, nächster Schritt). Alles aus <code>AgentConfigurationNotStartableReason</code>, <code>ProviderModelCheck</code> und dem Sonden-Beleg; kein Anbieter-Block über der Tabelle.</dd></div>
-  <div><dt>Gespeichert.</dt><dd>„Hat es die Wahl genommen?" — je Zeile, an der Stelle des Status, einen Moment lang; die Zeile speichert bei der Wahl, es gibt keinen Knopf. Schlägt das Schreiben fehl, steht in derselben Zelle „Nicht gespeichert“ mit Retry.</dd></div>
-  <div><dt>Kanarienvogel und Terminal-Sitz</dt><dd>„Sind das Aufgaben?" — der Kanarienvogel ist die Sonde selbst (<code>host/provider_canary.py</code>), er wählt nichts und sondiert alle Konten; der Terminal-Sitz (<code>host/terminal_seat.py</code>) läuft mit der Claude-CLI des Hosts an der Registry vorbei. Beide stehen, weil der Operator nach „wer macht was" fragt — ob sie Zeilen bleiben, ist offen.</dd></div>
-  <div><dt>Stufen-Vorgaben bleiben</dt><dd>„Und die Aufgaben, für die ich nichts gewählt habe?" — die drei Stufenzeilen antworten weiter; sie stehen unter der Tabelle wie in <code>#v8-17-source-row</code>, nur der Registry-Block darüber ist ersetzt.</dd></div>
+  <div><dt>Klassen sind die Konfiguration</dt><dd>„Was stelle ich ein?" — drei Zeilen, Stufe 3 · 2 · 1 (<code>ProjectModelDefault</code>, <code>contracts/host_configuration.py</code>): je Klasse ein Konto und ein Modell; das ist dieselbe Vorgabe wie „Model defaults" in <code>#v8-17-source-row</code>, nur mit Route und Status in der Zeile und dem Grund in der Auswahl. Eine Rolle ohne eigene Stufe ist Stufe 2 (<code>DEFAULT_ROLE_DIFFICULTY</code>).</dd></div>
+  <div><dt>Anbieter: der Grund steht in der Auswahl</dt><dd>„Warum kann ich das nicht wählen?" — die Option bleibt sichtbar und trägt ihren Grund: „nicht angemeldet" (kein Konto), „gleiche Familie wie Stufe 2" (eine Rolle mit <code>family_differs_from</code> in Stufe 2 muss auf Stufe 3 ausweichen — <code>cast_unbound_roles</code> nimmt die höhere Stufe, wenn die eigene die Familie nicht trennt). Ein Anmelde-Sheet gibt es nicht; die CLI auf dem Host meldet an.</dd></div>
+  <div><dt>Route wird gelesen, nie gewählt</dt><dd>„Wie erreicht die Klasse ihr Modell?" — der Anmeldeweg des Kontos (Abo oder Schlüssel, <code>AuthMode</code>) und die CLI; ob mit Werkzeugen oder Atelier-Türen, verlangt der Knoten (<code>mode</code>), nicht die Klasse. Der genaue Executor steht im Lauf unter Technisch, nie in der Zeile.</dd></div>
+  <div><dt>Status ist Erreichbarkeit, in der Zeile</dt><dd>„Läuft es?" — Bereit (registriert, geprüft, letzte Sonde gut), Noch nicht geprobt (ochre, Jetzt proben), Probe fehlgeschlagen (brick, Retry in der Zeile), Nicht angemeldet (ochre, nächster Schritt). Aus <code>AgentConfigurationNotStartableReason</code>, <code>ProviderModelCheck</code> und dem Sonden-Beleg; kein Anbieter-Block über der Tabelle.</dd></div>
+  <div><dt>Gespeichert.</dt><dd>„Hat es die Wahl genommen?" — je Zeile, an der Stelle des Status, einen Moment lang; die Zeile speichert bei der Wahl, es gibt keinen Knopf. Schlägt das Schreiben fehl, steht in derselben Zelle „Nicht gespeichert" mit Retry.</dd></div>
+  <div><dt>Aufgaben lesen nur</dt><dd>„Wer macht was?" — eine Zeile je Rolle, die die Katalog-Workflows erklären (<code>declared_roles_of</code>, Katalog <code>workflows/*.yaml</code>); die Klasse ist die Stufe der Rolle oder der Pin des Workflows („Pin im Workflow: grok-4.6"), „läuft über" ist das Konto und Modell der Klasse, dim; der Status ist der der Klasse. Keine Auswahl in diesem Block: was hier steht, ändert man oben.</dd></div>
+  <div><dt>Die Familienregel zeigt sich in der Aufgabe</dt><dd>„Warum steht beim Nachweis-Reviewer Stufe 3?" — er muss eine andere Familie haben als der Kurator, beide sind Stufe 2, also weicht er auf die nächsthöhere Klasse aus („Stufe 3 statt 2"); beim Reviewer ist die Regel gegen den Bauer-Pin erfüllt und steht klein darunter.</dd></div>
+  <div><dt>Kanarienvogel und Terminal-Sitz</dt><dd>„Sind das Aufgaben?" — beide stehen außerhalb der Klassen: der Kanarienvogel ist die Sonde selbst (<code>host/provider_canary.py</code>) und sondiert alle Konten; der Terminal-Sitz (<code>host/terminal_seat.py</code>) läuft mit der Claude-CLI des Hosts an der Registry vorbei. Ob sie Zeilen bleiben, ist offen.</dd></div>
 </dl>
 
-<h3 class="frame-title">Bei 390: Karten <small>— dieselben Zeilen gestapelt, jede Antwort mit ihrem Wort, Status volle Breite</small></h3>
+<h3 class="frame-title">Bei 390: Karten <small>— beide Blöcke gestapelt, jede Antwort mit ihrem Wort, Status volle Breite</small></h3>
 <div class="frame narrow" id="v8-23-models-narrow">
   <nav class="rail" data-on="settings"></nav>
   <div class="stage">
     <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
-    <p class="shelf">Models</p>
-    <table class="roles">
-      <tr><th>Aufgabe</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
+    <p class="shelf">Klassen</p>
+    <table class="roles classes">
+      <tr><th>Klasse</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val"><i class="mark" title="Grok">X</i> xAI · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI mit Werkzeugen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">grok-4.6</span><span class="origin"><span class="pill">im Workflow gepinnt</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft · Stufe 2 · andere Familie als Bauer</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
+        <td class="task" data-k="Klasse"><b>Stufe 3</b><small>die schwerste Arbeit</small></td>
+        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Grok">X</i> xAI · leonardo</span><span>▾</span></div><div class="menu"><div class="grp">Konten</div><div class="opt on"><i class="mark" title="Grok">X</i>&nbsp;xAI · leonardo</div><div class="opt held"><i class="mark" title="Claude">A</i>&nbsp;Anthropic · leonardo<span class="why">gleiche Familie wie Stufe 2</span></div><div class="opt held"><i class="mark" title="Codex">O</i>&nbsp;OpenAI<span class="why">nicht angemeldet</span></div></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-opus-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">für diese Aufgabe gewählt</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="saved">Gespeichert.</span><small>Bereit · geprüft</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft · Stufe 2 · andere Familie als Kurator</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Codex">O</i> OpenAI · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">gpt-5.3-codex</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><div class="err">Probe fehlgeschlagen. <a href="#">Retry</a></div><small>die CLI antwortete nicht</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-opus-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">grok-4.6</span><span>▾</span></div></td>
         <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small><a href="#">Jetzt proben</a></small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 2</b><small>jede Rolle ohne eigene Stufe</small></td>
         <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>geprüft · Probe heute 06:10</small></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-sonnet-4-6</span><span>▾</span></div></td>
+        <td class="status" data-k="Status"><span class="saved">Gespeichert.</span><small>Bereit · geprüft</small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 1</b><small>die leichteste Arbeit</small></td>
         <td data-k="Anbieter"><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></td>
         <td class="route" data-k="Route">Abo · CLI</td>
-        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-haiku-4-5</span><span class="origin"><span class="pill">aus Stufe 2</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word live">Prüft</span><small>erste Verwendung von claude-haiku-4-5</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val">alle Konten</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">je Sonde: CLI · mit Werkzeugen · Atelier-Türen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">alle startbaren</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>zuletzt heute 06:10 · 4 von 5 Vektoren</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank · <span class="pill dash">außerhalb der Registry</span></small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val"><i class="mark" title="Claude">A</i> Anthropic</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI im tmux</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">die der CLI</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>ttyd erreichbar</small></td>
+        <td class="model" data-k="Modell"><div class="in"><span class="val">claude-haiku-4-5</span><span>▾</span></div></td>
+        <td class="status" data-k="Status"><div class="err">Probe fehlgeschlagen. <a href="#">Retry</a></div><small>die CLI antwortete nicht</small></td>
       </tr>
     </table>
     <div style="margin:.5rem 0 .4rem"><span class="btn sm">Modell hinzufügen</span></div>
-    <p class="shelf">Stufen-Vorgaben</p>
-    <div class="tw"><table class="list">
-      <tr><th>Stufe</th><th>Modell</th></tr>
-      <tr><td class="ord"><b>3</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-opus-5</span><span class="sub">Konto leonardo</span><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>2</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-sonnet-4-6</span><span class="sub">Konto leonardo</span><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>1</b></td><td><div class="in"><span>▾</span></div></td></tr>
-    </table></div>
+    <p class="shelf">Aufgaben</p>
+    <table class="roles tasks">
+      <tr><th>Aufgabe</th><th>Klasse</th><th>läuft über</th><th>Status</th></tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut</small></td>
+        <td data-k="Klasse">Pin im Workflow: <code>grok-4.6</code></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Grok">X</i> xAI · grok-4.6</td>
+        <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small>wie Stufe 3</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>andere Familie als Bauer · erfüllt</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft</small></td>
+        <td data-k="Klasse">Stufe 3 statt 2<small>andere Familie als Kurator</small></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Grok">X</i> xAI · grok-4.6</td>
+        <td class="status" data-k="Status"><span class="word need">Noch nicht geprobt</span><small>wie Stufe 3</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Anthropic · claude-sonnet-4-6</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>wie Stufe 2</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über">alle Konten</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>zuletzt heute 06:10 · 4 von 5 Vektoren</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Claude-CLI im tmux</td>
+        <td class="status" data-k="Status"><span class="word quiet">Bereit</span><small>ttyd erreichbar</small></td>
+      </tr>
+    </table>
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Karte statt Zeile</dt><dd>„Wie lese ich das auf dem Telefon?" — der Spaltenkopf ist weg; jede Aufgabe ist eine Karte: Name und kleine Zeile oben, Anbieter und Route nebeneinander mit ihrem Wort, Modell und Status volle Breite. Nichts fällt weg, kein Rand blendet aus.</dd></div>
+  <div><dt>Karte statt Zeile</dt><dd>„Wie lese ich das auf dem Telefon?" — der Spaltenkopf ist weg; jede Klasse und jede Aufgabe ist eine Karte: Name und kleine Zeile oben, die beiden mittleren Antworten nebeneinander mit ihrem Wort, Modell und Status volle Breite. Nichts fällt weg, kein Rand blendet aus.</dd></div>
   <div><dt>Der Rahmen misst 390</dt><dd>„Ist das wirklich die schmale Breite?" — ja: der Rahmen ist 390 px breit neben seinem 1280-Geschwister; seine eigene Breite entscheidet (<code>@container</code>), nicht das Fenster, damit beide auf einer Seite messbar sind.</dd></div>
 </dl>
 
-<h3 class="frame-title">Kein Konto angemeldet <small>— jede Zeile nennt den Grund und den nächsten Schritt; nichts verschwindet</small></h3>
+<h3 class="frame-title">Kein Konto angemeldet <small>— jede Klasse nennt den Grund und den nächsten Schritt, jede Aufgabe wartet auf ihre Klasse; nichts verschwindet</small></h3>
 <div class="frame" id="v8-23-models-empty">
   <nav class="rail" data-on="settings"></nav>
   <div class="stage">
     <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
-    <p class="shelf">Models</p>
-    <table class="roles">
-      <tr><th>Aufgabe</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
+    <p class="shelf">Klassen</p>
+    <table class="roles classes">
+      <tr><th>Klasse</th><th>Anbieter</th><th>Route</th><th>Modell</th><th>Status</th></tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in held warn"><span class="val"><i class="mark" title="Grok">X</i> xAI</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI mit Werkzeugen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">grok-4.6</span><span class="origin"><span class="pill">im Workflow gepinnt</span></span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Grok-CLI anmelden auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft · Stufe 2 · andere Familie als Bauer</small></td>
-        <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI</td>
-        <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 3</b><small>die schwerste Arbeit</small></td>
         <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div><div class="menu"><div class="grp">Konten</div><div class="opt held"><i class="mark" title="Claude">A</i>&nbsp;Anthropic<span class="why">nicht angemeldet</span></div><div class="opt held"><i class="mark" title="Codex">O</i>&nbsp;OpenAI<span class="why">nicht angemeldet</span></div><div class="opt held"><i class="mark" title="Grok">X</i>&nbsp;xAI<span class="why">nicht angemeldet</span></div></div></td>
         <td class="route" data-k="Route">CLI</td>
         <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
         <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut · Stufe 2</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 2</b><small>jede Rolle ohne eigene Stufe</small></td>
         <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
         <td class="route" data-k="Route">CLI</td>
         <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
         <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
       </tr>
       <tr>
-        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft · Stufe 2 · andere Familie als Kurator</small></td>
+        <td class="task" data-k="Klasse"><b>Stufe 1</b><small>die leichteste Arbeit</small></td>
         <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
         <td class="route" data-k="Route">CLI</td>
         <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
         <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI</td>
-        <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI</td>
-        <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut · Stufe 2</small></td>
-        <td data-k="Anbieter"><div class="in warn"><span class="val">Kein Konto</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI</td>
-        <td class="model" data-k="Modell"><div class="in held"><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small>Anmeldung auf dem Host, dann <a href="#">Retry</a></small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val">alle Konten</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">je Sonde: CLI · mit Werkzeugen · Atelier-Türen</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">alle startbaren</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nichts zu sondieren</span><small>kein Konto angemeldet</small></td>
-      </tr>
-      <tr>
-        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank · <span class="pill dash">außerhalb der Registry</span></small></td>
-        <td data-k="Anbieter"><div class="in held"><span class="val"><i class="mark" title="Claude">A</i> Anthropic</span><span>▾</span></div></td>
-        <td class="route" data-k="Route">CLI im tmux</td>
-        <td class="model" data-k="Modell"><div class="in held"><span class="val">die der CLI</span><span>▾</span></div></td>
-        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small><code>claude login</code> auf dem Host, dann <a href="#">Retry</a></small></td>
       </tr>
     </table>
     <div style="margin:.5rem 0 .4rem"><span class="btn sm">Modell hinzufügen</span></div>
-    <p class="shelf">Stufen-Vorgaben</p>
-    <div class="tw"><table class="list">
-      <tr><th>Stufe</th><th>Modell</th></tr>
-      <tr><td class="ord"><b>3</b></td><td><div class="in"><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>2</b></td><td><div class="in"><span>▾</span></div></td></tr>
-      <tr><td class="ord"><b>1</b></td><td><div class="in"><span>▾</span></div></td></tr>
-    </table></div>
+    <p class="shelf">Aufgaben</p>
+    <table class="roles tasks">
+      <tr><th>Aufgabe</th><th>Klasse</th><th>läuft über</th><th>Status</th></tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Bauer</b><small>issue-to-pr · push-before-open-pr · baut</small></td>
+        <td data-k="Klasse">Pin im Workflow: <code>grok-4.6</code></td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf ein xAI-Konto</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Reviewer</b><small>issue-to-pr · code-review · diff-review · plan-review · prüft</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Planer</b><small>breakdown · refine · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Kurator</b><small>documentation-curation · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Nachweis-Reviewer</b><small>documentation-curation · prüft</small></td>
+        <td data-k="Klasse">Stufe 3 statt 2<small>andere Familie als Kurator</small></td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 3</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Visionär</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Anforderungsschreiber</b><small>vision-variants · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Grüßer</b><small>hello-atelier · baut</small></td>
+        <td data-k="Klasse">Stufe 2</td>
+        <td class="route" data-k="läuft über">—</td>
+        <td class="status" data-k="Status"><span class="word need">wartet auf Stufe 2</span></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Provider-Kanarienvogel</b><small>provider-canary-headless · -workspace-tools · -atelier-doors · sondiert jedes Konto</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über">alle Konten</td>
+        <td class="status" data-k="Status"><span class="word need">Nichts zu sondieren</span><small>kein Konto angemeldet</small></td>
+      </tr>
+      <tr>
+        <td class="task" data-k="Aufgabe"><b>Terminal-Sitz</b><small>Werkbank</small></td>
+        <td data-k="Klasse"><span class="pill dash">außerhalb der Klassen</span></td>
+        <td class="route" data-k="läuft über"><i class="mark" title="Claude">A</i> Claude-CLI im tmux</td>
+        <td class="status" data-k="Status"><span class="word need">Nicht angemeldet</span><small><code>claude login</code> auf dem Host</small></td>
+      </tr>
+    </table>
   </div>
 </div>
 <dl class="uq">
   <div><dt>Nichts verschwindet</dt><dd>„Was würde hier stehen?" — dieselben Zeilen, dieselben Spalten: die Anbieter-Auswahl steht ochre ohne Konto, die geöffnete zeigt jedes Konto mit seinem Grund; Modell gehalten, Route ohne Anmeldeweg; der Status nennt die Anmeldung als nächsten Schritt und Retry, weil die Anmeldung auf dem Host geschieht.</dd></div>
-  <div><dt>Der Pin bleibt sichtbar</dt><dd>„Warum steht bei Bauer schon xAI?" — der Workflow pinnt <code>grok-4.6</code>; das Konto fehlt, der Pin nicht.</dd></div>
+  <div><dt>Aufgaben warten</dt><dd>„Und die Aufgaben?" — jede sagt, auf welche Stufe sie wartet; der Bauer wartet auf das Konto seines Pins, denn der Pin bleibt sichtbar.</dd></div>
 </dl>
 </section>
 
