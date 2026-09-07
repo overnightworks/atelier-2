@@ -92,8 +92,8 @@ tools are not what will run.
 **Switching provider means casting the role with a different agent**, not porting
 a file, and #8's scorecard measures which casting performs better: competition at
 the role rather than asserted portability. This record makes no "runs anywhere"
-claim. What the atelier writes neutrally is what it owns — the conductor and the
-house's core workflows (`host/conductor_workflow.py`).
+claim. What the atelier writes neutrally is what it owns — the house's core
+workflows in the catalog (`workflows/*.yaml`) and the seat.
 
 **A casting may name a whole plugin, not only one agent** (PROPOSED, on §4's
 unmeasured operation). The role says what the occurrence may do; the casting

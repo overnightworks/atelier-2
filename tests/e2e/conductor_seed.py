@@ -1,12 +1,12 @@
 """The e2e harness's own copy of the conductor conversation-loop document.
 
 No production caller publishes this document, so this module is its only
-owner. `/__e2e/seed-conductor` (`serve_cockpit.py`) publishes it to give one
-served instance a real "conductor" catalog revision and a role bound to the
-harness's fixed-answer executor. It carries exactly what that seeding needs:
-the wait and agent node ids, the message schema the wait's answer is checked
-against, and the report schema `CONDUCTOR_FAKE_REPORT` (`serve_cockpit.py`)
-answers with.
+owner. `/__e2e/seed-fixed-report-agent` (`serve_cockpit.py`) publishes it to
+give one served instance a real "conductor" catalog revision and a role bound
+to the harness's fixed-answer executor. It carries exactly what that seeding
+needs: the wait and agent node ids, the message schema the wait's answer is
+checked against, and the report schema `CONDUCTOR_FAKE_REPORT`
+(`serve_cockpit.py`) answers with.
 """
 
 from __future__ import annotations
