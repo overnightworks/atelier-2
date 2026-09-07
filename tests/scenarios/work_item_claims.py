@@ -28,6 +28,7 @@ class ClaimRequest:
     scope: tuple[PurePosixPath, ...]
     claim_id: str
     reasons: ClaimReasons
+    checkout: Path
 
 
 @dataclass
@@ -38,7 +39,7 @@ class FakeWorkItemClaims:
     read_back_answer: ClaimReadback = field(default_factory=ClaimAbsent)
     release_answer: ClaimRefusal | None = None
     claim_requests: list[ClaimRequest] = field(default_factory=list)
-    read_back_requests: list[tuple[int, str]] = field(default_factory=list)
+    read_back_requests: list[tuple[int, str, Path]] = field(default_factory=list)
     release_requests: list[tuple[int, RunId, str, ClaimReleaseOutcome]] = field(
         default_factory=list
     )
@@ -51,16 +52,17 @@ class FakeWorkItemClaims:
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
         reasons: ClaimReasons,
+        checkout: Path,
     ) -> ClaimReceipt | ClaimRefusal:
         self.claim_requests.append(
-            ClaimRequest(item, agent, branch, scope, claim_id, reasons)
+            ClaimRequest(item, agent, branch, scope, claim_id, reasons, checkout)
         )
         if self.claim_answer is None:
             raise AssertionError("this scenario did not arrange a claim answer")
         return self.claim_answer
 
-    def read_back(self, item: int, claim_id: str) -> ClaimReadback:
-        self.read_back_requests.append((item, claim_id))
+    def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
+        self.read_back_requests.append((item, claim_id, checkout))
         return self.read_back_answer
 
     def release(
@@ -78,11 +80,54 @@ _LEDGER_STUB = '''
 """A pinned `agent-claim` stand-in: one JSON ledger file, no network."""
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 LEDGER = Path(__file__).with_name("claim-ledger.json")
 ANSWER = Path(__file__).with_name("claim-answer")
+INVOCATIONS = Path(__file__).with_name("claim-invocations")
+GIT_ENVIRONMENT = {
+    **os.environ,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "LC_ALL": "C",
+}
+
+
+class CheckoutRefused(Exception):
+    pass
+
+
+def _git(*arguments: str) -> str:
+    completed = subprocess.run(
+        ("git", *arguments), capture_output=True, text=True, env=GIT_ENVIRONMENT
+    )
+    if completed.returncode != 0:
+        raise CheckoutRefused(completed.stderr.strip() or "git failed")
+    return completed.stdout.strip()
+
+
+def _checkout_refusal(branch: str) -> str | None:
+    """agent-coordination's checkout checks against the working directory."""
+
+    try:
+        _git("rev-parse", "HEAD")
+        current = _git("branch", "--show-current")
+        if current != branch:
+            return f"claim branch {branch!r} does not match checkout branch {current!r}"
+        git_directory = Path(_git("rev-parse", "--git-dir")).resolve()
+        common_directory = Path(_git("rev-parse", "--git-common-dir")).resolve()
+        if git_directory == common_directory:
+            return "build claims require a linked isolated worktree checkout"
+        if _git("status", "--porcelain"):
+            return "claim must be acquired before the first worktree edit"
+        if not _git("ls-files"):
+            return "the checkout holds no tracked file"
+    except CheckoutRefused as refused:
+        return str(refused)
+    return None
 
 
 def _scripted() -> str:
@@ -110,6 +155,11 @@ def _claim(arguments: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    if scripted == "checkout":
+        refusal = _checkout_refusal(_option(arguments, "--branch"))
+        if refusal is not None:
+            print(f"ERROR: {refusal}", file=sys.stderr)
+            return 2
     if scripted == "priority":
         json.dump(
             {
@@ -174,7 +224,7 @@ def _claim(arguments: list[str]) -> int:
         "whole": _option(arguments, "--whole"),
         "out_of_order": _optional(arguments, "--out-of-order"),
     }
-    standing.append({**claim, "reasons": reasons})
+    standing.append({**claim, "reasons": reasons, "checkout": os.getcwd()})
     LEDGER.write_text(json.dumps(standing))
     json.dump(claim, sys.stdout)
     return 0
@@ -213,6 +263,8 @@ def _status() -> int:
 
 
 def main(arguments: list[str]) -> int:
+    with INVOCATIONS.open("a") as log:
+        log.write(f"{arguments[0]}\\n")
     if arguments[0] == "claim":
         return _claim(arguments)
     if arguments[0] == "status":
@@ -244,8 +296,10 @@ def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     `priority` refuses it with the tool's own out-of-order check, `unknown`
     refuses it without one, `checkout-refused` refuses it before any JSON
     exists with one `ERROR:` line on standard error, as the tool does for a
-    checkout that fails its preconditions, and `touches` grants it while
-    naming a foreign lane on the same paths.
+    checkout that fails its preconditions, `checkout` runs the tool's own
+    checks against its working directory -- a clean linked worktree on the
+    lane branch with a tracked file -- and grants only what passes them, and
+    `touches` grants it while naming a foreign lane on the same paths.
     """
 
     executable = root / "agent-claim"
@@ -253,6 +307,13 @@ def fake_agent_claim_executable(root: Path, answer: str = "grant") -> Path:
     executable.chmod(0o755)
     (root / "claim-answer").write_text(answer)
     return executable
+
+
+def ledger_invocations(executable: Path) -> tuple[str, ...]:
+    """Every command the stub ledger was asked, in order."""
+
+    log = executable.with_name("claim-invocations")
+    return tuple(log.read_text().split()) if log.is_file() else ()
 
 
 def claimed_ledger(executable: Path) -> tuple[ClaimRequest, ...]:
@@ -271,6 +332,7 @@ def claimed_ledger(executable: Path) -> tuple[ClaimRequest, ...]:
             ClaimReasons(
                 str(claim["reasons"]["whole"]), claim["reasons"]["out_of_order"]
             ),
+            Path(str(claim["checkout"])),
         )
         for claim in json.loads(ledger.read_text())
     )

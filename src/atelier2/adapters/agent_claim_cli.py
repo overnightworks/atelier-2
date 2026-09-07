@@ -113,7 +113,12 @@ class _StandingClaim:
 
 
 class AgentClaimCli:
-    """Runs the claim command in the checkout whose ledger it owns."""
+    """Runs the claim command in the run's claim checkout.
+
+    `working_directory` is the project checkout whose ledger the command owns;
+    a release runs there, a claim and its read-back in the checkout they are
+    given.
+    """
 
     def __init__(
         self,
@@ -134,6 +139,7 @@ class AgentClaimCli:
         scope: tuple[PurePosixPath, ...],
         claim_id: str,
         reasons: ClaimReasons,
+        checkout: Path,
     ) -> ClaimReceipt | ClaimRefusal:
         arguments = [
             "claim",
@@ -152,7 +158,7 @@ class AgentClaimCli:
         arguments.extend(("--whole", reasons.whole))
         if reasons.out_of_order is not None:
             arguments.extend(("--out-of-order", reasons.out_of_order))
-        payload, diagnostics = self._command(*arguments, _JSON_FLAG)
+        payload, diagnostics = self._command(*arguments, _JSON_FLAG, cwd=checkout)
         if payload is None:
             return _diagnostic_refusal(diagnostics)
         if _is_claim_refusal(payload):
@@ -173,8 +179,8 @@ class AgentClaimCli:
             )
         return acquired
 
-    def read_back(self, item: int, claim_id: str) -> ClaimReadback:
-        payload, diagnostics = self._command("status", _JSON_FLAG)
+    def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
+        payload, diagnostics = self._command("status", _JSON_FLAG, cwd=checkout)
         if payload is None:
             return _diagnostic_refusal(diagnostics)
         try:
@@ -234,7 +240,9 @@ class AgentClaimCli:
             arguments.extend(("--merged", str(outcome.pull_request)))
         elif isinstance(outcome, Abandoned):
             arguments.extend(("--abandoned", outcome.reason))
-        payload, diagnostics = self._command(*arguments, _JSON_FLAG)
+        payload, diagnostics = self._command(
+            *arguments, _JSON_FLAG, cwd=self._working_directory
+        )
         if payload is None:
             return _diagnostic_refusal(diagnostics)
         other_release = ClaimRefusal(
@@ -263,11 +271,13 @@ class AgentClaimCli:
             return other_release
         return None
 
-    def _command(self, *arguments: str) -> tuple[dict[str, object] | None, str]:
+    def _command(
+        self, *arguments: str, cwd: Path
+    ) -> tuple[dict[str, object] | None, str]:
         try:
             process = subprocess.Popen(
                 (str(self._executable), *arguments),
-                cwd=self._working_directory,
+                cwd=cwd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
