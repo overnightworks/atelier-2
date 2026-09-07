@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -109,6 +109,18 @@ _QUEUE_START_ORDER_COLUMNS = (
 )
 
 
+def _queue_item_record(
+    connection: Connection, item_id: QueueItemId
+) -> RowMapping | None:
+    return (
+        connection.execute(
+            sa.select(queue_items).where(queue_items.c.item_id == item_id.value)
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 def _snapshot_from_record(
     connection: Connection, record: Mapping[Any, Any]
 ) -> QueueItemSnapshot:
@@ -119,48 +131,20 @@ def _snapshot_from_record(
     if item_reference.item_id.value != record["item_id"]:
         raise ValueError("durable queue item id disagrees with its derived identity")
     state = QueueItemState(str(record["state"]))
-    lineage_id = record["workflow_lineage_id"]
-    rationale = record["admission_rationale"]
     proposal_revision = record["current_proposal_revision"]
-    state_version = record["state_version"]
-    decision_authority = record["decision_authority"]
-    admission = None
-    if state is not QueueItemState.ADMITTED:
-        if (
-            lineage_id is not None
-            or rationale is not None
-            or decision_authority is not None
-        ):
-            raise ValueError("a non-admitted queue item cannot carry admission fields")
-        if state is QueueItemState.OBSERVED and proposal_revision is not None:
-            raise ValueError("an observed queue item cannot carry a proposal revision")
-        if state is QueueItemState.PROPOSED and state_version != proposal_revision:
-            raise ValueError("a proposed queue item must name its current revision")
+    if state is QueueItemState.ADMITTED:
+        admission = _admission_from_admitted_record(record)
     else:
-        if not isinstance(lineage_id, str) or not isinstance(rationale, str):
-            raise ValueError(
-                "an admitted queue item must carry its lineage and rationale"
-            )
-        legacy_admission = proposal_revision is None and decision_authority is None
-        proposed_admission = (
-            proposal_revision is not None and decision_authority is not None
-        )
-        if not legacy_admission and not proposed_admission:
-            raise ValueError("an admitted queue item has a partial proposal decision")
-        if proposed_admission and not isinstance(decision_authority, str):
-            raise ValueError("an admitted queue item decision authority must be text")
-        admission = QueueAdmission(
-            CatalogLineageId(lineage_id),
-            QueueAdmissionRationale(rationale),
-        )
+        _refuse_admission_fields_outside_admitted(state, record)
+        admission = None
     proposal = None
     if proposal_revision is not None:
+        revision = int(proposal_revision)
         proposal_record = (
             connection.execute(
                 sa.select(queue_proposal_revisions).where(
                     queue_proposal_revisions.c.item_id == item_reference.item_id.value,
-                    queue_proposal_revisions.c.proposal_revision
-                    == int(proposal_revision),
+                    queue_proposal_revisions.c.proposal_revision == revision,
                 )
             )
             .mappings()
@@ -174,45 +158,29 @@ def _snapshot_from_record(
                 sa.select(queue_dependency_edges.c.prerequisite_item_id)
                 .where(
                     queue_dependency_edges.c.item_id == item_reference.item_id.value,
-                    queue_dependency_edges.c.proposal_revision
-                    == int(proposal_revision),
+                    queue_dependency_edges.c.proposal_revision == revision,
                 )
                 .order_by(queue_dependency_edges.c.prerequisite_item_id)
             )
         )
         proposal = proposal_from_record(proposal_record, prerequisites)
-        if admission is not None:
-            admission = QueueAdmission(
-                admission.workflow_lineage_id,
-                admission.rationale,
-                QueueDecisionAuthority(decision_authority),
-                QueueProjectionRevision(int(proposal_revision)),
-            )
     launch_binding = held_binding(connection, item_reference.item_id)
-    blocker = _blocker_for(
-        connection,
-        item_reference,
-        state,
-        proposal,
-        launch_binding,
-    )
+    blocker = _blocker_for(connection, item_reference, state, proposal, launch_binding)
     blockers = () if blocker is None else (blocker,)
     observed_title = record["observed_title"]
     title_observed_at = record["title_observed_at"]
     if (observed_title is None) != (title_observed_at is None):
         raise ValueError("a queue item observation must pair its title and marker")
-    observation = (
-        None
-        if observed_title is None
-        else QueueItemTrackerObservation(
+    observation = None
+    if observed_title is not None:
+        observation = QueueItemTrackerObservation(
             str(observed_title), RecordedAt(str(title_observed_at))
         )
-    )
     retired_at = record["retired_at"]
     return QueueItemSnapshot(
         item_reference,
         state,
-        QueueProjectionRevision(int(state_version)),
+        QueueProjectionRevision(int(record["state_version"])),
         admission,
         proposal,
         launch_binding,
@@ -220,6 +188,49 @@ def _snapshot_from_record(
         observation,
         None if retired_at is None else RecordedAt(str(retired_at)),
     )
+
+
+def _refuse_admission_fields_outside_admitted(
+    state: QueueItemState, record: Mapping[Any, Any]
+) -> None:
+    if (
+        record["workflow_lineage_id"] is not None
+        or record["admission_rationale"] is not None
+        or record["decision_authority"] is not None
+    ):
+        raise ValueError("a non-admitted queue item cannot carry admission fields")
+    proposal_revision = record["current_proposal_revision"]
+    if state is QueueItemState.OBSERVED and proposal_revision is not None:
+        raise ValueError("an observed queue item cannot carry a proposal revision")
+    if (
+        state is QueueItemState.PROPOSED
+        and record["state_version"] != proposal_revision
+    ):
+        raise ValueError("a proposed queue item must name its current revision")
+
+
+def _admission_from_admitted_record(record: Mapping[Any, Any]) -> QueueAdmission:
+    lineage_id = record["workflow_lineage_id"]
+    rationale = record["admission_rationale"]
+    names_its_binding = isinstance(lineage_id, str) and isinstance(rationale, str)
+    if not names_its_binding:
+        raise ValueError("an admitted queue item must carry its lineage and rationale")
+    proposal_revision = record["current_proposal_revision"]
+    decision_authority = record["decision_authority"]
+    if (proposal_revision is None) != (decision_authority is None):
+        raise ValueError("an admitted queue item has a partial proposal decision")
+    if proposal_revision is None:
+        return QueueAdmission(
+            CatalogLineageId(lineage_id), QueueAdmissionRationale(rationale)
+        )
+    if isinstance(decision_authority, str):
+        return QueueAdmission(
+            CatalogLineageId(lineage_id),
+            QueueAdmissionRationale(rationale),
+            QueueDecisionAuthority(decision_authority),
+            QueueProjectionRevision(int(proposal_revision)),
+        )
+    raise ValueError("an admitted queue item decision authority must be text")
 
 
 def _blocker_for(
@@ -447,15 +458,7 @@ class DbosQueueProjectionStore:
         reference = command.item_reference
         try:
             with canonical_write_transaction(self._engine) as connection:
-                record = (
-                    connection.execute(
-                        sa.select(queue_items).where(
-                            queue_items.c.item_id == reference.item_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                record = _queue_item_record(connection, reference.item_id)
                 if record is None:
                     return DurableStateCorrupt()
                 snapshot = _snapshot_from_record(connection, record)
@@ -550,15 +553,7 @@ class DbosQueueProjectionStore:
                 existing = held_binding(connection, binding.item_id)
                 if existing is not None:
                     return QueueLaunchAlreadyBound(existing)
-                record = (
-                    connection.execute(
-                        sa.select(queue_items).where(
-                            queue_items.c.item_id == binding.item_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                record = _queue_item_record(connection, binding.item_id)
                 if record is None:
                     return DurableStateCorrupt()
                 snapshot = _snapshot_from_record(connection, record)

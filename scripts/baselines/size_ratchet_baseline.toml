@@ -226,10 +226,6 @@ qualified_name = "atelier2.adapters.dbos.attention_events.load_attention_event_p
 lines = 82
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.catalog_store.DbosCatalogStore.resolve_name"
-lines = 91
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.definition_source_store.DbosDefinitionSources._take_in"
 lines = 154
 
@@ -288,10 +284,6 @@ lines = 62
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
 lines = 223
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.queue_projection_store.DbosQueueProjectionStore.reserve_launch"
-lines = 72
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.queue_projection_store._snapshot_from_record"
@@ -384,10 +376,6 @@ lines = 133
 [[function]]
 qualified_name = "atelier2.adapters.dbos.starter.DbosDurableRunStarter._start"
 lines = 335
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.starter._refused_order"
-lines = 92
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.uncontinuable_runs._attempt_family_target_state"
@@ -624,10 +612,6 @@ complexity = 17
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
 complexity = 30
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.run_fork_store.DbosRunForkStore.fork_run"
-complexity = 18
 
 [[complexity]]
 qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
