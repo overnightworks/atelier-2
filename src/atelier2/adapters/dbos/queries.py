@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
@@ -91,6 +92,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.catalog_v3 import CatalogActivatedAt
@@ -627,49 +629,83 @@ def _cancellation_disposition(
     return None if value is None else AgentAttemptCancellationDisposition(str(value))
 
 
-def _current_attempt_projection(
+@dataclass(frozen=True)
+class _AttemptShape:
+    """What a durable attempt row must look like while it is in one state."""
+
+    name: str
+    lowest_state_version: int | None = None
+    highest_state_version: int | None = None
+    receipt_present: bool = False
+    cancellation_command_present: bool = False
+
+    def disagrees_with(self, record: Mapping[Any, Any]) -> bool:
+        state_version = int(record["state_version"])
+        return (
+            (
+                self.lowest_state_version is not None
+                and state_version < self.lowest_state_version
+            )
+            or (
+                self.highest_state_version is not None
+                and state_version > self.highest_state_version
+            )
+            or (record["receipt_hash"] is not None) is not self.receipt_present
+            or (
+                self.cancellation_command_present
+                and record["cancellation_command_id"] is None
+            )
+        )
+
+
+_CANCELLED_ATTEMPT_SHAPE = _AttemptShape("cancelled", cancellation_command_present=True)
+_ATTEMPT_SHAPE_BY_STATE: Mapping[AgentAttemptState, _AttemptShape] = {
+    AgentAttemptState.PREPARED: _AttemptShape(
+        "prepared", lowest_state_version=0, highest_state_version=1
+    ),
+    AgentAttemptState.LAUNCH_ARMED: _AttemptShape("armed", lowest_state_version=1),
+    AgentAttemptState.FAILED: _AttemptShape("failed", lowest_state_version=2),
+    AgentAttemptState.SUCCEEDED: _AttemptShape(
+        "succeeded", lowest_state_version=2, receipt_present=True
+    ),
+    AgentAttemptState.CANCEL_REQUESTED: _CANCELLED_ATTEMPT_SHAPE,
+    AgentAttemptState.CANCELLED: _CANCELLED_ATTEMPT_SHAPE,
+    AgentAttemptState.INTERRUPTED: _CANCELLED_ATTEMPT_SHAPE,
+}
+
+
+def _refuse_attempt_shape_disagreement(
+    durable_state: AgentAttemptState, record: Mapping[Any, Any]
+) -> None:
+    shape = _ATTEMPT_SHAPE_BY_STATE.get(durable_state)
+    if shape is None:
+        raise RunTransitionConflict("agent attempt state has no projected shape")
+    if shape.disagrees_with(record):
+        raise RunTransitionConflict(f"{shape.name} agent attempt shape disagrees")
+
+
+def _exact_current_attempt_request(
+    session: Connection,
     record: Mapping[Any, Any],
     *,
-    session: Connection,
     run: RunV2 | RunV3,
     graph: WorkflowGraphV3,
-    effect_awaits_reconciliation: bool,
-) -> AgentAttemptProjection:
-    node = graph.node(run.current_node_id)
-    if not isinstance(node, AgentNodeV3):
-        raise RunTransitionConflict("current attempt does not belong to an agent")
-    binding = next(
-        (binding for binding in run.agent_bindings if binding.role.value == node.role),
-        None,
-    )
-    if binding is None:
-        raise RunTransitionConflict("current agent has no exact durable binding")
+    node: AgentNodeV3,
+    binding: ResolvedAgentBinding,
+    execution_id: NodeExecutionId,
+) -> AgentExecutionRequestV2:
+    """The request this attempt was armed from, recomputed exactly.
+
+    Recomputed through the one composition owner, with everything that owner
+    is given: the orders the run was started with and the work earlier nodes
+    handed on. A recomputation that knew only part of it would answer a run
+    that really was a chain with a conflict about its own identity.
+    """
     operational_identity = AgentExecutorOperationalIdentity(
         str(record["executor_operational_identity"])
     )
-    execution_id = _node_execution_id(run, graph, run.current_node_id)
-    # Recomputed through the one composition owner, with everything that owner
-    # is given: the orders the run was started with and the work earlier nodes
-    # handed on. A recomputation that knew only part of it would answer a run
-    # that really was a chain with a conflict about its own identity.
-    request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
     ordinal = int(record["attempt_ordinal"])
     output_schema = _declared_output_schema_document(session, node)
-
-    def request_for(authored_job: bytes) -> AgentExecutionRequestV2:
-        return AgentExecutionRequestV2(
-            execution_id,
-            run.run_id,
-            run.revision_hash,
-            run.current_node_id,
-            binding,
-            operational_identity,
-            authored_job,
-            None if output_schema is None else output_schema.encode("utf-8"),
-            run.current_round_ordinal,
-            _pinned_maximum_assistant_turns(session, node),
-        )
-
     orders = load_run_inputs(session, run.run_id, node)
     results = load_node_outputs(
         session,
@@ -679,26 +715,47 @@ def _current_attempt_projection(
         node,
         run.current_round_ordinal,
     )
-    attempt_id = AgentAttemptId(str(record["attempt_id"]))
     repair_receipt = load_prior_output_schema_refusal_receipt(
         session,
-        target_attempt_id=attempt_id,
+        target_attempt_id=AgentAttemptId(str(record["attempt_id"])),
         target_node_execution_id=execution_id,
         target_attempt_ordinal=ordinal,
         expected_schema_revision=PublishedRevisionHash(
             node.outputs[0].schema_reference.revision
         ),
     )
-    exact_request = request_for(
-        compose_agent_node_job_for_attempt(
-            node,
-            orders,
-            results,
-            target_node_execution_id=execution_id,
-            target_attempt_ordinal=ordinal,
-            prior_refusal_receipt=repair_receipt,
-        )
+    authored_job = compose_agent_node_job_for_attempt(
+        node,
+        orders,
+        results,
+        target_node_execution_id=execution_id,
+        target_attempt_ordinal=ordinal,
+        prior_refusal_receipt=repair_receipt,
     )
+    return AgentExecutionRequestV2(
+        execution_id,
+        run.run_id,
+        run.revision_hash,
+        run.current_node_id,
+        binding,
+        operational_identity,
+        authored_job,
+        None if output_schema is None else output_schema.encode("utf-8"),
+        run.current_round_ordinal,
+        _pinned_maximum_assistant_turns(session, node),
+    )
+
+
+def _refuse_current_attempt_binding_disagreement(
+    record: Mapping[Any, Any],
+    *,
+    run: RunV2 | RunV3,
+    execution_id: NodeExecutionId,
+    attempt_id: AgentAttemptId,
+    request_hash: AgentExecutionRequestHash,
+    ordinal: int,
+    exact_request: AgentExecutionRequestV2,
+) -> None:
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )
@@ -725,6 +782,62 @@ def _current_attempt_projection(
             f"workflow_revision_hash durable={str(record['workflow_revision_hash'])!r} "
             f"expected={run.revision_hash.value!r}"
         )
+
+
+def _attempt_cancellation_projection(
+    record: Mapping[Any, Any],
+) -> AgentAttemptCancellationProjection | None:
+    disposition = _cancellation_disposition(record["cancellation_disposition"])
+    command_id = record["cancellation_command_id"]
+    if command_id is None:
+        return None
+    return AgentAttemptCancellationProjection(
+        str(command_id),
+        AgentAttemptReplacement(str(record["replacement"])),
+        AgentAttemptRedriveState(str(record["redrive_state"])),
+        disposition,
+    )
+
+
+def _current_attempt_projection(
+    record: Mapping[Any, Any],
+    *,
+    session: Connection,
+    run: RunV2 | RunV3,
+    graph: WorkflowGraphV3,
+    effect_awaits_reconciliation: bool,
+) -> AgentAttemptProjection:
+    node = graph.node(run.current_node_id)
+    if not isinstance(node, AgentNodeV3):
+        raise RunTransitionConflict("current attempt does not belong to an agent")
+    binding = next(
+        (binding for binding in run.agent_bindings if binding.role.value == node.role),
+        None,
+    )
+    if binding is None:
+        raise RunTransitionConflict("current agent has no exact durable binding")
+    execution_id = _node_execution_id(run, graph, run.current_node_id)
+    request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    ordinal = int(record["attempt_ordinal"])
+    attempt_id = AgentAttemptId(str(record["attempt_id"]))
+    exact_request = _exact_current_attempt_request(
+        session,
+        record,
+        run=run,
+        graph=graph,
+        node=node,
+        binding=binding,
+        execution_id=execution_id,
+    )
+    _refuse_current_attempt_binding_disagreement(
+        record,
+        run=run,
+        execution_id=execution_id,
+        attempt_id=attempt_id,
+        request_hash=request_hash,
+        ordinal=ordinal,
+        exact_request=exact_request,
+    )
     durable_state = _durable_attempt_state(record["state"])
     public_state = public_agent_attempt_state(
         durable_state, effect_awaits_reconciliation=effect_awaits_reconciliation
@@ -734,47 +847,15 @@ def _current_attempt_projection(
             "successful current attempt has neither an atomic successor transition "
             "nor an effect awaiting reconciliation"
         )
+    _refuse_attempt_shape_disagreement(durable_state, record)
     failure_value = record["failure_code"]
-    receipt_value = record["receipt_hash"]
-    state_version = int(record["state_version"])
-    failure: AgentAttemptFailureCode | None = None
-    if durable_state is AgentAttemptState.PREPARED:
-        if state_version not in (0, 1) or receipt_value is not None:
-            raise RunTransitionConflict("prepared agent attempt shape disagrees")
-    elif durable_state is AgentAttemptState.LAUNCH_ARMED:
-        if state_version < 1 or receipt_value is not None:
-            raise RunTransitionConflict("armed agent attempt shape disagrees")
-    elif durable_state is AgentAttemptState.FAILED:
-        if state_version < 2 or receipt_value is not None:
-            raise RunTransitionConflict("failed agent attempt shape disagrees")
-        failure = AgentAttemptFailureCode(str(failure_value))
-    elif durable_state is AgentAttemptState.SUCCEEDED:
-        if state_version < 2 or receipt_value is None:
-            raise RunTransitionConflict("succeeded agent attempt shape disagrees")
-    elif durable_state in {
-        AgentAttemptState.CANCEL_REQUESTED,
-        AgentAttemptState.CANCELLED,
-        AgentAttemptState.INTERRUPTED,
-    }:
-        if receipt_value is not None or record["cancellation_command_id"] is None:
-            raise RunTransitionConflict("cancelled agent attempt shape disagrees")
-    else:
-        raise RunTransitionConflict("agent attempt state has no projected shape")
+    failure = (
+        AgentAttemptFailureCode(str(failure_value))
+        if durable_state is AgentAttemptState.FAILED
+        else None
+    )
     if (failure_value is None) != (failure is None):
         raise RunTransitionConflict("current agent attempt failure shape disagrees")
-    command_id = record["cancellation_command_id"]
-    disposition = record["cancellation_disposition"]
-    disposition_value = _cancellation_disposition(disposition)
-    cancellation = (
-        None
-        if command_id is None
-        else AgentAttemptCancellationProjection(
-            str(command_id),
-            AgentAttemptReplacement(str(record["replacement"])),
-            AgentAttemptRedriveState(str(record["redrive_state"])),
-            disposition_value,
-        )
-    )
     return AgentAttemptProjection(
         attempt_id,
         execution_id,
@@ -782,7 +863,7 @@ def _current_attempt_projection(
         ordinal,
         public_state,
         failure,
-        cancellation,
+        _attempt_cancellation_projection(record),
     )
 
 
