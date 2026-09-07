@@ -40,15 +40,18 @@ from atelier2.adapters.dbos.names import (
     WORK_ITEM_CLAIM_PREPARE_STEP_NAME,
     WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
 )
+from atelier2.adapters.dbos.queue_launch_runs import launch_binding_of_run
 from atelier2.adapters.dbos.run_transitions import _commit_event, load_graph
 from atelier2.adapters.dbos.work_item_intents import (
     head_branch_for_work_item,
     issue_work_item_order,
 )
 from atelier2.adapters.github.tracker_reference import github_issue_number_or_none
+from atelier2.application.queue_sweep_reads import active_policy
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
     ClaimedLanePath,
+    ClaimReasons,
     ClaimWorkItem,
     ClaimWorkItemReceipt,
     work_item_claim_id,
@@ -73,6 +76,7 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.ports.queue_projection import QueuePolicyReader
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
     ClaimReceipt,
@@ -84,6 +88,22 @@ from atelier2.ports.work_item_claims import (
 LOGICAL_KEY_FIELD = "logical_key"
 REFUSAL_FIELD = "refusal"
 HELD_FIELD = "held"
+WHOLE_SCOPE_REASON = (
+    "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` "
+    "regelt; der Schnitt ist der des Items"
+)
+"""Why the ledger's width check is waived: the scope is the item's own cut."""
+
+
+def out_of_order_reason(label: str) -> str:
+    """Why the ledger's board-order check is waived for a queue-launched run."""
+
+    return (
+        f"vom Operator per Label `{label}` zugelassen; die Board-Reihenfolge war "
+        "bei der Zulassung entschieden"
+    )
+
+
 _UNCONFIGURED_CLAIM_LEDGER = AgentExecutionRefusal.WORK_ITEM_CLAIM_UNCONFIGURED.value
 
 _REFUSAL_WORDS = {
@@ -99,10 +119,12 @@ _REFUSAL_WORDS = {
 
 @dataclass(frozen=True, slots=True)
 class WorkItemClaimLedger:
-    """The claim boundary this runtime holds, and the binding it records with."""
+    """The claim boundary this runtime holds, the binding it records with, and
+    the queue policy that says which label admits a run out of board order."""
 
     claims: WorkItemClaims
     binding: EffectAdapterBinding
+    policy: QueuePolicyReader
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +176,7 @@ def prepare_work_item_claim(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int,
-    ledger_binding: EffectAdapterBinding | None,
+    ledger: WorkItemClaimLedger | None,
     project_id: ProjectId | None,
 ) -> dict[str, str] | None:
     """Record the claim this node owes before any command runs, or name why not.
@@ -175,9 +197,9 @@ def prepare_work_item_claim(
     )
     if effect_receipt_exists(session, logical_key.value):
         return {HELD_FIELD: logical_key.value}
-    if ledger_binding is None or project_id is None:
+    if ledger is None or project_id is None:
         return {REFUSAL_FIELD: _UNCONFIGURED_CLAIM_LEDGER}
-    request = _requested_claim(session, run_id, project_id)
+    request = _requested_claim(session, run_id, project_id, ledger.policy)
     if isinstance(request, AgentExecutionRefusal):
         return {REFUSAL_FIELD: request.value}
     # The claim's own binding is held beside the graph's effect adapters rather
@@ -187,9 +209,9 @@ def prepare_work_item_claim(
         logical_key,
         run_id,
         revision_hash,
-        ledger_binding.adapter_revision,
-        ledger_binding.destination,
-        ledger_binding.operational_identity,
+        ledger.binding.adapter_revision,
+        ledger.binding.destination,
+        ledger.binding.operational_identity,
         AdapterOperationName.CLAIM_WORK_ITEM,
     )
     intent = EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
@@ -198,7 +220,7 @@ def prepare_work_item_claim(
 
 
 def _requested_claim(
-    session: Any, run_id: RunId, project_id: ProjectId
+    session: Any, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
 ) -> ClaimWorkItem | AgentExecutionRefusal:
     """The claim this run's own work-item order asks for, or why it asks none."""
 
@@ -213,7 +235,28 @@ def _requested_claim(
         work_item_claim_id(run_id, item),
         head_branch_for_work_item(order, project_id),
         order.scope.paths,
+        ClaimReasons(
+            WHOLE_SCOPE_REASON, _admission_reason(session, run_id, project_id, queue)
+        ),
     )
+
+
+def _admission_reason(
+    session: Any, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
+) -> str | None:
+    """The out-of-order reason a queue admission gives this run, or none.
+
+    Only a run the queue started under a policy that names its label was
+    admitted by the operator; a hand-started run carries no such decision and
+    is refused by priority as a person would be.
+    """
+
+    if launch_binding_of_run(session.connection(), run_id) is None:
+        return None
+    policy = active_policy(queue, project_id)
+    if policy is None or policy.automation_label is None:
+        return None
+    return out_of_order_reason(policy.automation_label)
 
 
 def hold_prepared_claim(
@@ -241,7 +284,7 @@ def hold_prepared_claim(
             request.head_branch,
             scope,
             request.claim_id,
-            None,
+            request.reasons,
         )
         if isinstance(standing, ClaimRefusal):
             return WorkItemClaimRefused(
@@ -409,7 +452,7 @@ def _prepared_claim(
                 revision_hash,
                 node_id,
                 round_ordinal,
-                None if ledger is None else ledger.binding,
+                ledger,
                 project_id,
             ),
         ),

@@ -134,7 +134,6 @@ from atelier2.ports.issue_observation import (
     TrackerSourceUnavailable,
 )
 from atelier2.ports.published_revisions import (
-    CatalogLineageFounded,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
@@ -158,6 +157,10 @@ from tests.scenarios.api import (
     durable_api_client,
     event_poll_backoff,
 )
+from tests.scenarios.catalog_lineages import (
+    BINDING_FREE_WORKFLOW,
+    found_lineage,
+)
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
 
@@ -165,33 +168,6 @@ PROJECT = ProjectId("project1")
 FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
 SECOND_READ = RecordedAt("2026-09-02T09:00:00Z")
 THIRD_READ = RecordedAt("2026-09-03T09:00:00Z")
-BINDING_FREE_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
-"""The one schema a wait-only document needs published before it is executable.
-
-`evaluate_executability` resolves every reference a V3 document pins, including
-a Wait's declared output schema, before the start admits it -- so a line with no
-agent role binding still needs this one pinned revision published, which
-`_found_lineage` does for every document it seats.
-"""
-
-BINDING_FREE_WORKFLOW = f"""format_version: 3
-name: Binding-free wait line
-nodes:
-  - id: approve
-    type: wait
-    prompt: Add [2, 3].
-    outputs:
-      - name: approval
-        schema: {{ref: approval-schema, revision: {BINDING_FREE_SCHEMA.revision_hash.value}}}
-""".encode()
-"""A wait-only document: startable without resolving any agent role binding.
-
-No node here declares a role, so no agent executor is ever needed to admit it --
-exactly what these queue-launch tests want to hold constant while they vary the
-admission machinery around it. The bracketed pair inside the prompt plays the
-role a differing operand pair once did: `.replace(...)` on it is what gives a
-test a second, distinguishable revision of the same shape.
-"""
 
 
 def _runtime(
@@ -221,25 +197,6 @@ def _runtime(
         ),
         tracker_item_source=tracker,
     )
-
-
-def _found_lineage(
-    engine: Engine, document: bytes = BINDING_FREE_WORKFLOW
-) -> tuple[CatalogLineageId, WorkflowRevisionHash]:
-    revision = WorkflowRevision(document)
-    publish_revision(engine, revision)
-    catalog = DbosCatalogStore(engine)
-    catalog.publish_revision(BINDING_FREE_SCHEMA)
-    published = PublishedRevision(RevisionKind.WORKFLOW, document)
-    catalog.publish_revision(published)
-    founded = catalog.found_lineage(
-        published,
-        CatalogLineageDisplayName(f"phase-d-{revision.revision_hash.value[:8]}"),
-        CatalogActor("operator"),
-        CatalogActivatedAt("2026-08-27T10:00:00Z"),
-    )
-    assert isinstance(founded, CatalogLineageFounded)
-    return founded.lineage.lineage_id, revision.revision_hash
 
 
 def _proposal(
@@ -550,7 +507,7 @@ def test_a_retired_item_stays_visible_and_is_never_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     monkeypatch.setattr(advance_queue_module, "start_published_run", _run_started)
@@ -634,7 +591,7 @@ def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:79"))
     _seed_open_items(queue, reference)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
@@ -803,7 +760,7 @@ def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     policy = queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     assert isinstance(policy, QueueProjectPolicyPublished)
     references = tuple(
@@ -838,7 +795,7 @@ def test_a_policy_less_project_reserves_and_launches_its_admitted_item(
 ) -> None:
     """No published policy revision means no cap, not corruption (ruling 28.08.2026)."""
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     reference = _prepare_admitted(
         queue, lineage_id, "gh:no-policy", policy_revision=None
     )
@@ -867,7 +824,7 @@ def test_unreadable_capacity_count_fails_the_reservation_loud(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     scalar = cast(Any, sa.engine.Connection.scalar)
@@ -901,7 +858,7 @@ def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 3, None), 0)
     prerequisite = _prepare_admitted(queue, lineage_id, "gh:prerequisite", rank=3)
     dependent = _prepare_admitted(
@@ -1007,7 +964,7 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
     """
 
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 10, None), 0)
     best = _prepare_admitted(queue, lineage_id, "gh:27", rank=1)
     middle = _prepare_admitted(queue, lineage_id, "gh:22", rank=2)
@@ -1077,7 +1034,7 @@ def test_a_page_walk_repeats_an_item_that_gains_a_proposal_between_pages(
     """
 
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 10, None), 0)
     ranked = _prepare_admitted(queue, lineage_id, "gh:ranked", rank=5)
     after_item = WorkItemReference(PROJECT, TrackerItemReference("gh:after-item"))
@@ -1133,7 +1090,7 @@ def test_unknown_prerequisite_run_state_fails_loud(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 2, None), 0)
     prerequisite = _prepare_admitted(queue, lineage_id, "gh:corrupt-run")
     _prepare_admitted(
@@ -1180,7 +1137,7 @@ def test_plan_fails_loud_when_derived_identity_collides_with_another_reference(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:identity"))
     with engine.begin() as connection:
         connection.execute(
@@ -1204,7 +1161,7 @@ def test_dependency_cycle_check_ignores_superseded_same_project_edges(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     first = WorkItemReference(PROJECT, TrackerItemReference("gh:first"))
     second = WorkItemReference(PROJECT, TrackerItemReference("gh:second"))
@@ -1243,7 +1200,7 @@ def test_dependency_cycle_check_ignores_current_cross_project_edges(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     other_project = ProjectId("other-project")
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     queue.put_policy(QueueProjectPolicyRevision(other_project, 1, 1, None), 0)
@@ -1294,7 +1251,7 @@ def test_queue_proposal_refusals_are_closed_typed_decisions(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
 
     def plan(
@@ -1517,7 +1474,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     engine.dispose()
     _restore_v43(database_path)
     reference = WorkItemReference(PROJECT, TrackerItemReference("gh:legacy"))
@@ -1628,7 +1585,7 @@ def test_one_manually_approved_item_starts_once_across_a_crash(
     database_path = tmp_path / "atelier.sqlite"
     first = _runtime(database_path)
     first.initialize_storage()
-    lineage_id, _revision_hash = _found_lineage(first.engine)
+    lineage_id, _revision_hash = found_lineage(first.engine)
     queue = DbosQueueProjectionStore(first.engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
@@ -1677,7 +1634,7 @@ def test_a_serve_launch_starts_an_admitted_item_in_a_policy_less_project(
     database_path = tmp_path / "atelier.sqlite"
     runtime = _runtime(database_path)
     runtime.initialize_storage()
-    lineage_id, _revision_hash = _found_lineage(runtime.engine)
+    lineage_id, _revision_hash = found_lineage(runtime.engine)
     queue = DbosQueueProjectionStore(runtime.engine)
     reference = _prepare_admitted(queue, lineage_id, policy_revision=None)
 
@@ -1728,7 +1685,7 @@ def test_a_serve_launch_proposes_a_label_only_item_from_the_policy_defaults(
         tracker=FakeTrackerItemSource(open_items_answer=listing),
     )
     try:
-        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        lineage_id, _revision_hash = found_lineage(runtime.engine)
         queue = DbosQueueProjectionStore(runtime.engine)
         assert isinstance(
             queue.put_policy(
@@ -1805,7 +1762,7 @@ def test_a_serve_launch_admits_the_labelled_item_and_starts_it_in_the_same_sweep
         tracker=FakeTrackerItemSource(open_items_answer=listing),
     )
     try:
-        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        lineage_id, _revision_hash = found_lineage(runtime.engine)
         queue = DbosQueueProjectionStore(runtime.engine)
         assert isinstance(
             queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, label), 0),
@@ -1879,7 +1836,7 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
         tracker=FakeTrackerItemSource(open_items_answer=unreadable),
     )
     try:
-        lineage_id, _revision_hash = _found_lineage(runtime.engine)
+        lineage_id, _revision_hash = found_lineage(runtime.engine)
         queue = DbosQueueProjectionStore(runtime.engine)
         queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, "bereit"), 0)
         proposed = _prepare_proposed(
@@ -1935,7 +1892,7 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     binding = QueueLaunchBinding(
@@ -2020,7 +1977,7 @@ def test_advance_refuses_incomplete_phase_d_projection_before_blockers(
     corruption: str,
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id, f"gh:{corruption}")
     page = queue.list_items(None, 50)
@@ -2085,7 +2042,7 @@ def test_advance_classifies_launch_reservation_failures(
     expected_error: type[RuntimeError],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     _prepare_admitted(queue, lineage_id)
     page = queue.list_items(None, 50)
@@ -2121,7 +2078,7 @@ def test_advance_classifies_catalog_resolution_failures(
     expected_error: type[RuntimeError],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     _prepare_admitted(queue, lineage_id)
 
@@ -2153,7 +2110,7 @@ def test_advance_classifies_reserved_run_start_failures(
     expected_error: type[RuntimeError],
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     assert isinstance(
@@ -2186,7 +2143,7 @@ def test_advance_classifies_reserved_run_start_failures(
 def test_a_moved_lineage_head_does_not_launch_the_item_again(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     first = _runtime(database_path)
-    lineage_id, original_revision = _found_lineage(first.engine)
+    lineage_id, original_revision = found_lineage(first.engine)
     queue = DbosQueueProjectionStore(first.engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     _prepare_admitted(queue, lineage_id)
@@ -2228,7 +2185,7 @@ def test_queue_api_exposes_one_typed_projection_and_confirmation_matrix(
     runtime = _runtime(tmp_path / "atelier.sqlite")
     runtime.initialize_storage()
     api: TestClient = durable_api_client(runtime)
-    lineage_id, _revision_hash = _found_lineage(runtime.engine)
+    lineage_id, _revision_hash = found_lineage(runtime.engine)
     public_project = encode_public_project_reference(PROJECT)
     policy_path = PROJECT_QUEUE_POLICY_PATH.replace(
         "{public_project_reference}", public_project
@@ -2346,7 +2303,7 @@ def test_the_admission_door_asks_for_a_sweep_of_its_own_admission(
     """An admitted item does not wait out the sweep's tick to start."""
 
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     proposed = _prepare_proposed(queue, lineage_id, "gh:admitted-then-swept")
     asked: list[None] = []
@@ -2407,7 +2364,7 @@ def test_queue_api_fails_loud_for_illegal_raw_lifecycle_shapes(
     corruption: str,
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, _revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
     reference = WorkItemReference(PROJECT, TrackerItemReference(f"gh:{corruption}"))
     if corruption.startswith("admitted"):
@@ -2499,8 +2456,8 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
-    other_lineage_id, _other_revision = _found_lineage(
+    lineage_id, revision_hash = found_lineage(engine)
+    other_lineage_id, _other_revision = found_lineage(
         engine, BINDING_FREE_WORKFLOW.replace(b"[2, 3]", b"[4, 5]")
     )
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
@@ -2616,7 +2573,7 @@ def test_a_failed_launch_is_released_onto_the_next_proposal_it_carries_forward(
     """
 
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
     prerequisite = _prepare_admitted(queue, lineage_id, "gh:pre")
     _bound_and_ended(
@@ -2675,7 +2632,7 @@ def test_two_sweeps_release_the_same_ended_launch_exactly_once(
     """
 
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     binding = _bound_and_ended(
@@ -2713,7 +2670,7 @@ def test_a_store_that_refuses_the_items_advance_releases_nothing(
     """A half-released item would be bound to nothing and startable twice."""
 
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     binding = _bound_and_ended(
@@ -2767,7 +2724,7 @@ def test_the_release_itself_refuses_a_restart_past_the_cap(
     """
 
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, None), 0)
     reference = _prepare_admitted(queue, lineage_id)
     for restart in range(MAXIMUM_QUEUE_LAUNCH_RESTARTS):
@@ -2858,7 +2815,7 @@ def test_two_concurrent_sweeps_restart_only_what_the_tracker_still_authorizes(
     """
 
     queue, engine = store
-    lineage_id, revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = found_lineage(engine)
     queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, "bereit"), 0)
     reference = _prepare_admitted(queue, lineage_id)
     binding = _bound_and_ended(

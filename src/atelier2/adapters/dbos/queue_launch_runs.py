@@ -62,12 +62,30 @@ def held_binding(
 ) -> QueueLaunchBinding | None:
     """The one binding this item holds now, or `None` while it holds none."""
 
+    return _one_binding(
+        connection, queue_launch_bindings.c.item_id == item_id.value, HELD_BINDING
+    )
+
+
+def launch_binding_of_run(
+    connection: Connection, run_id: RunId
+) -> QueueLaunchBinding | None:
+    """The binding under which the queue started this run, or `None` for a run
+    started by hand.
+
+    A run id names at most one binding, and that the queue started the run
+    stays true after the run ends, so the reader does not ask whether the
+    binding is still held.
+    """
+
+    return _one_binding(connection, queue_launch_bindings.c.run_id == run_id.value)
+
+
+def _one_binding(
+    connection: Connection, *conditions: sa.ColumnElement[bool]
+) -> QueueLaunchBinding | None:
     record = (
-        connection.execute(
-            sa.select(queue_launch_bindings).where(
-                queue_launch_bindings.c.item_id == item_id.value, HELD_BINDING
-            )
-        )
+        connection.execute(sa.select(queue_launch_bindings).where(*conditions))
         .mappings()
         .one_or_none()
     )

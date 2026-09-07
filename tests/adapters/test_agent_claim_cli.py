@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
-from atelier2.contracts.effect_requests import HeadBranch
+from atelier2.contracts.effect_requests import ClaimReasons, HeadBranch
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.work_item_claims import (
@@ -30,6 +30,9 @@ AGENT = "atelier2 run run-42"
 BRANCH = HeadBranch("atelier2/work-item/claim-port")
 SCOPE = (PurePosixPath("src/atelier2/ports/work_item_claims.py"),)
 OTHER_SCOPE = (PurePosixPath("src/atelier2/adapters/agent_claim_cli.py"),)
+WHOLE = "the scope is the item body's own cut"
+OUT_OF_ORDER = "admitted by the operator through the queue label `bereit`"
+REASONS = ClaimReasons(WHOLE, None)
 
 
 @dataclass
@@ -182,16 +185,31 @@ def _adapter() -> AgentClaimCli:
     return AgentClaimCli(Path("agent-claim"), Path("/workspace"))
 
 
+@pytest.mark.parametrize(
+    ("reasons", "reason_flags"),
+    (
+        (ClaimReasons(WHOLE, None), ("--whole", WHOLE)),
+        (
+            ClaimReasons(WHOLE, OUT_OF_ORDER),
+            ("--whole", WHOLE, "--out-of-order", OUT_OF_ORDER),
+        ),
+    ),
+    ids=("whole-only", "whole-and-out-of-order"),
+)
 def test_adapter_builds_the_pinned_argv_for_each_operation(
     recorded_process: RecordedProcess,
+    reasons: ClaimReasons,
+    reason_flags: tuple[str, ...],
 ) -> None:
+    """`--whole` always travels; `--out-of-order` exactly when a reason exists."""
+
     recorded_process.outputs.extend(
         (_claim_payload(), _status_payload(), _release_payload())
     )
     adapter = _adapter()
 
     assert isinstance(
-        adapter.claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None), ClaimReceipt
+        adapter.claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, reasons), ClaimReceipt
     )
     assert isinstance(adapter.read_back(ITEM, CLAIM_ID), ClaimReceipt)
     assert adapter.release(ITEM, RUN_ID, CLAIM_ID, Merged(44)) is None
@@ -211,6 +229,7 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
             CLAIM_ID,
             "--scope",
             SCOPE[0].as_posix(),
+            *reason_flags,
             "--json",
         ),
         ("agent-claim", "status", "--json"),
@@ -227,21 +246,6 @@ def test_adapter_builds_the_pinned_argv_for_each_operation(
             "--json",
         ),
     ]
-
-
-def test_adapter_forwards_the_out_of_order_reason_to_argv(
-    recorded_process: RecordedProcess,
-) -> None:
-    recorded_process.outputs.append(_claim_payload())
-
-    _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, "fixing a live outage first"
-    )
-
-    assert recorded_process.commands[0][-3:-1] == (
-        "--out-of-order",
-        "fixing a live outage first",
-    )
 
 
 PINNED_CONTRACT_VIOLATION = "agent-claim returned fields outside its pinned contract"
@@ -269,7 +273,7 @@ def test_adapter_refuses_claim_output_outside_the_pinned_json_contract(
     recorded_process.outputs.append(payload())
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
@@ -428,7 +432,7 @@ def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> N
     )
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(
         ClaimRefusalReason.PRIORITY,
         "higher-priority actionable item #42 (score 7) is free: fix the flake; "
@@ -453,7 +457,7 @@ def test_adapter_maps_a_ledger_unreadable_diagnostic_refusal(
     recorded_process.errors.append(f"ERROR: {sentence}\n".encode())
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(ClaimRefusalReason.LEDGER_UNREADABLE, sentence)
 
 
@@ -474,7 +478,7 @@ def test_a_checkout_precondition_the_tool_refuses_names_its_sentence(
     )
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(
         ClaimRefusalReason.UNKNOWN,
         "claim branch 'x' does not match checkout branch 'main'",
@@ -496,8 +500,8 @@ def test_a_refusal_detail_carries_no_credential_and_stays_bounded(
         )
     )
 
-    scrubbed = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
-    cut = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+    scrubbed = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS)
+    cut = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS)
 
     assert isinstance(scrubbed, ClaimRefusal)
     assert scrubbed.detail == f"origin refused the token {REDACTION_MARKER}"
@@ -524,7 +528,7 @@ def test_adapter_accepts_an_allocated_resource_value(
     )
 
     assert isinstance(
-        _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None), ClaimReceipt
+        _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS), ClaimReceipt
     )
     assert isinstance(_adapter().read_back(ITEM, CLAIM_ID), ClaimReceipt)
 
@@ -544,7 +548,7 @@ def test_adapter_refuses_infeasible_resource_pairs(
     )
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(
         ClaimRefusalReason.UNKNOWN, "agent-claim returned an invalid resource pair"
     )
@@ -573,7 +577,7 @@ def test_adapter_refuses_claim_receipts_that_do_not_match_the_request(
     recorded_process.outputs.append(payload())
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, detail)
 
 
@@ -602,7 +606,7 @@ def test_a_claim_receipt_carries_the_scope_the_ledger_recorded(
 
     recorded_process.outputs.append(_claim_payload(scope=["src/other.py"]))
 
-    receipt = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+    receipt = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS)
 
     assert isinstance(receipt, ClaimReceipt)
     assert receipt.claimed_scope == (PurePosixPath("src/other.py"),)
@@ -625,7 +629,7 @@ def test_adapter_returns_unknown_refusal_when_the_bounded_process_times_out(
     )
 
     assert _adapter().claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
     ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN)
 
 
@@ -670,8 +674,8 @@ def test_fake_and_adapter_meet_the_same_port_expectations(
         )
     )
 
-    assert fake.claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None) == expected
-    receipt = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+    assert fake.claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS) == expected
+    receipt = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS)
 
     assert receipt == expected
     assert not isinstance(receipt, ClaimRefusal)
@@ -694,8 +698,8 @@ def test_fake_and_adapter_meet_the_same_port_expectations(
     )
 
     assert refusing.claim(
-        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None
-    ) == _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, None)
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS
+    ) == _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS)
 
 
 def test_adapter_builds_an_abandon_release(recorded_process: RecordedProcess) -> None:

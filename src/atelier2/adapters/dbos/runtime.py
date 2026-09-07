@@ -366,14 +366,15 @@ class _BoundRuntime:
 
 
 def _work_item_claim_ledger(
-    executable: Path | None, project_checkout: Path | None
+    executable: Path | None, project_checkout: Path | None, engine: Engine
 ) -> WorkItemClaimLedger | None:
     """The claim boundary this instance holds, where it was given both halves.
 
     The command runs beside the project's own checkout, because the ledger it
     writes belongs to that repository. Without an executable or without a
     served project there is no claim boundary at all, and a node that owes a
-    claim then refuses rather than building unclaimed.
+    claim then refuses rather than building unclaimed. The queue policy the
+    door reads is the same store the sweep reads, over the one engine.
     """
 
     if executable is None or project_checkout is None:
@@ -386,6 +387,7 @@ def _work_item_claim_ledger(
             AdapterOperationalIdentity(str(executable)),
             AdapterOperationName.CLAIM_WORK_ITEM,
         ),
+        DbosQueueProjectionStore(engine),
     )
 
 
@@ -733,7 +735,7 @@ def _open_binding(
             project_checkout, settings.database_path
         )
         work_item_claims = _work_item_claim_ledger(
-            settings.agent_claim_executable, project_checkout
+            settings.agent_claim_executable, project_checkout, engine
         )
         if work_item_claims is not None:
             effect_bindings = (*effect_bindings, work_item_claims.binding)
