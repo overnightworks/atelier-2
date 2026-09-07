@@ -154,16 +154,9 @@ def _pin_authored_orders(
     refuses the start by name rather than failing an unforeseen attempt later.
     """
     declared = {entry.name for entry in graph.graph_inputs}
-    names = [order.name for order in authored]
-    if len(set(names)) != len(names):
-        duplicated = next(
-            name for index, name in enumerate(names) if name in names[:index]
-        )
-        return DurableV3StartInputRefused(
-            duplicated,
-            V3InputRefusal.DUPLICATED,
-            "one name answers one order, and this start supplied it twice",
-        )
+    duplicated = _duplicated_order_refusal([order.name for order in authored])
+    if duplicated is not None:
+        return duplicated
     pinned_orders: list[RunInput] = []
     for order in authored:
         if order.name not in declared:
@@ -255,84 +248,91 @@ def _refused_order(
     the document never declared, one whose schema is not the schema the document
     pinned, and a value that schema does not admit -- each before any row exists,
     because an order nobody could read is not a run to clean up.
-
-    A schema that is not readable as a schema is not answered here. The reference
-    that pins it was already resolved to build the configuration this reads, and
-    that resolution refuses unusable schema bytes at the document -- so reaching
-    this point means the pinned schema is one this product enforces.
     """
     declared = {entry.name: entry for entry in graph.graph_inputs}
     supplied = {order.name: order for order in orders}
-    if len(supplied) != len(orders):
-        duplicated = next(
-            order.name
-            for index, order in enumerate(orders)
-            if order.name in {other.name for other in orders[:index]}
-        )
-        return DurableV3StartInputRefused(
-            duplicated,
-            V3InputRefusal.DUPLICATED,
-            "one name answers one order, and this start supplied it twice",
-        )
+    duplicated = _duplicated_order_refusal([order.name for order in orders])
+    if duplicated is not None:
+        return duplicated
     for name in declared:
         if name not in supplied:
             return DurableV3StartInputRefused(name, V3InputRefusal.MISSING)
     for name, order in supplied.items():
         if name not in declared:
             return DurableV3StartInputRefused(name, V3InputRefusal.UNDECLARED)
-        pinned = _resolved_graph_input_schema(run_configuration, name)
-        if pinned != order.schema_revision:
+        refused = _refused_supplied_order(connection, run_configuration, order)
+        if refused is not None:
+            return refused
+    return None
+
+
+def _duplicated_order_refusal(names: list[str]) -> DurableV3StartInputRefused | None:
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
             return DurableV3StartInputRefused(
                 name,
-                V3InputRefusal.SCHEMA_MISMATCH,
-                f"the document pinned {'nothing' if pinned is None else pinned.value}",
+                V3InputRefusal.DUPLICATED,
+                "one name answers one order, and this start supplied it twice",
             )
-        if (
-            order.schema_revision == WORK_ITEM_ORDER_SCHEMA_REVISION
-            and read_work_item_order_document(order.value) is None
-        ):
-            # The schema alone admits a shape; this door admits only the whole
-            # document a tracker read produces, digest and all. That is what
-            # makes every stored row under this schema one whose identity can
-            # be read back as the item it names.
-            return DurableV3StartInputRefused(
-                name,
-                V3InputRefusal.VALUE_REFUSED,
-                "this input is a work item, so its value is one the start read: "
-                "name the item instead of writing its bytes",
-            )
-        document = connection.scalar(
-            sa.select(published_revisions.c.document).where(
-                published_revisions.c.kind == RevisionKind.SCHEMA.value,
-                published_revisions.c.revision_hash == order.schema_revision.value,
-            )
+        seen.add(name)
+    return None
+
+
+def _refused_supplied_order(
+    connection: Connection, run_configuration: RunConfigurationRevision, order: RunInput
+) -> DurableV3StartInputRefused | None:
+    """A schema that is not readable as a schema is not answered here. The reference
+    that pins it was already resolved to build the configuration this reads, and
+    that resolution refuses unusable schema bytes at the document -- so reaching
+    this point means the pinned schema is one this product enforces.
+    """
+    pinned = _resolved_graph_input_schema(run_configuration, order.name)
+    if pinned != order.schema_revision:
+        return DurableV3StartInputRefused(
+            order.name,
+            V3InputRefusal.SCHEMA_MISMATCH,
+            f"the document pinned {'nothing' if pinned is None else pinned.value}",
         )
-        if document is None:
-            raise RuntimeError("a resolved schema revision is absent from the store")
-        match read_schema_document(bytes(document)):
-            case SchemaRefused() as unreadable:
-                # The reference that pins this schema resolved before the run
-                # configuration was built, and that resolution reads the bytes.
-                # Reaching this means the store answered differently twice.
-                raise RuntimeError(
-                    f"a resolved schema revision is not one: {unreadable}"
-                )
-            case schema:
-                # The value is judged as it will be read, which for an ordered
-                # artifact is its full content: the route it arrived by already
-                # bounded it, and refusing it a second time under the inline
-                # bound would refuse what the artifact door admitted. It is
-                # judged as an *authored* value, not a produced one: a caller
-                # supplying an order owes no JSON-encoding promise an executor
-                # would, so a `"string"`-typed schema reads this order's raw
-                # text directly (`schemas_v3.read_authored_instance_document`).
-                verdict = read_authored_instance_document(
-                    order.value, schema, MAXIMUM_ARTIFACT_BYTES
-                )
-        if isinstance(verdict, InstanceRefused):
-            return DurableV3StartInputRefused(
-                name, V3InputRefusal.VALUE_REFUSED, str(verdict), verdict.violation
+    is_work_item = order.schema_revision == WORK_ITEM_ORDER_SCHEMA_REVISION
+    if is_work_item and read_work_item_order_document(order.value) is None:
+        # The schema alone admits a shape; this door admits only the whole
+        # document a tracker read produces, digest and all. That is what
+        # makes every stored row under this schema one whose identity can
+        # be read back as the item it names.
+        return DurableV3StartInputRefused(
+            order.name,
+            V3InputRefusal.VALUE_REFUSED,
+            "this input is a work item, so its value is one the start read: "
+            "name the item instead of writing its bytes",
+        )
+    document = connection.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.SCHEMA.value,
+            published_revisions.c.revision_hash == order.schema_revision.value,
+        )
+    )
+    if document is None:
+        raise RuntimeError("a resolved schema revision is absent from the store")
+    match read_schema_document(bytes(document)):
+        case SchemaRefused() as unreadable:
+            raise RuntimeError(f"a resolved schema revision is not one: {unreadable}")
+        case schema:
+            # The value is judged as it will be read, which for an ordered
+            # artifact is its full content: the route it arrived by already
+            # bounded it, and refusing it a second time under the inline
+            # bound would refuse what the artifact door admitted. It is
+            # judged as an *authored* value, not a produced one: a caller
+            # supplying an order owes no JSON-encoding promise an executor
+            # would, so a `"string"`-typed schema reads this order's raw
+            # text directly (`schemas_v3.read_authored_instance_document`).
+            verdict = read_authored_instance_document(
+                order.value, schema, MAXIMUM_ARTIFACT_BYTES
             )
+    if isinstance(verdict, InstanceRefused):
+        return DurableV3StartInputRefused(
+            order.name, V3InputRefusal.VALUE_REFUSED, str(verdict), verdict.violation
+        )
     return None
 
 
