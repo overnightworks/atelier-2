@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
 from dbos import DBOSClient
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -112,6 +113,10 @@ class _PrefixNotReusable(RuntimeError):
     pass
 
 
+def _one_record(connection: Connection, statement: sa.Select[Any]) -> RowMapping | None:
+    return connection.execute(statement).mappings().one_or_none()
+
+
 class DbosRunForkStore:
     """One serialized fork decision, including its DBOS enqueue."""
 
@@ -148,31 +153,10 @@ class DbosRunForkStore:
                     successor = validate_stored_fork(connection, existing)
                     return DurableRunForkExisting(existing, successor)
 
-                origin_record = (
-                    connection.execute(
-                        sa.select(runs).where(
-                            runs.c.run_id == request.origin_run_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if origin_record is None:
-                    return DurableRunForkOriginMissing()
-                origin = run_from_record_with_bindings(connection, origin_record)
-                if origin.state not in TERMINAL_RUN_STATES:
-                    return DurableRunForkOriginNotTerminal()
-                if not isinstance(origin, RunV3) or origin.terminal_hash is None:
-                    return DurableRunForkStateCorrupt()
-                graph = load_graph(connection, origin.revision_hash)
-                if not isinstance(graph, WorkflowGraphV3):
-                    return DurableRunForkStateCorrupt()
-                if graph.loops:
-                    return DurableRunForkLoopUnsupported()
-                try:
-                    graph.node(request.restart_from_node_id)
-                except KeyError:
-                    return DurableRunForkNodeMissing()
+                restart = _fork_origin(connection, request)
+                if not isinstance(restart, _ForkOrigin):
+                    return restart
+                origin, graph = restart.run, restart.graph
                 executor_refusal = self._executor_refusal(origin)
                 if executor_refusal is not None:
                     return executor_refusal
@@ -199,7 +183,7 @@ class DbosRunForkStore:
                 fork = RunFork(
                     command_id,
                     origin.run_id,
-                    origin.terminal_hash,
+                    restart.terminal_hash,
                     successor_run_id,
                     origin.revision_hash,
                     origin.run_configuration_revision_hash,
@@ -319,6 +303,48 @@ class DbosRunForkStore:
         return None
 
 
+@dataclass(frozen=True)
+class _ForkOrigin:
+    """A finished V3 run and the loop-free graph a fork restarts from."""
+
+    run: RunV3
+    terminal_hash: Sha256Hash
+    graph: WorkflowGraphV3
+
+
+def _fork_origin(
+    connection: Connection, request: ForkRunRequest
+) -> (
+    _ForkOrigin
+    | DurableRunForkOriginMissing
+    | DurableRunForkOriginNotTerminal
+    | DurableRunForkStateCorrupt
+    | DurableRunForkLoopUnsupported
+    | DurableRunForkNodeMissing
+):
+    origin_record = _one_record(
+        connection,
+        sa.select(runs).where(runs.c.run_id == request.origin_run_id.value),
+    )
+    if origin_record is None:
+        return DurableRunForkOriginMissing()
+    origin = run_from_record_with_bindings(connection, origin_record)
+    if origin.state not in TERMINAL_RUN_STATES:
+        return DurableRunForkOriginNotTerminal()
+    if not isinstance(origin, RunV3) or origin.terminal_hash is None:
+        return DurableRunForkStateCorrupt()
+    graph = load_graph(connection, origin.revision_hash)
+    if not isinstance(graph, WorkflowGraphV3):
+        return DurableRunForkStateCorrupt()
+    if graph.loops:
+        return DurableRunForkLoopUnsupported()
+    try:
+        graph.node(request.restart_from_node_id)
+    except KeyError:
+        return DurableRunForkNodeMissing()
+    return _ForkOrigin(origin, origin.terminal_hash, graph)
+
+
 def _linear_node_ids(graph: WorkflowGraphV3) -> tuple[str, ...]:
     node_id = graph.entry_node_ids[0]
     walked: list[str] = []
@@ -396,16 +422,13 @@ def _resolve_reused_node(
     node_id: str,
     position: int,
 ) -> RunForkReusedNode:
-    inherited = (
-        connection.execute(
-            sa.select(run_fork_reused_nodes).where(
-                run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
-                run_fork_reused_nodes.c.node_id == node_id,
-                run_fork_reused_nodes.c.round_ordinal == 1,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    inherited = _one_record(
+        connection,
+        sa.select(run_fork_reused_nodes).where(
+            run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
+            run_fork_reused_nodes.c.node_id == node_id,
+            run_fork_reused_nodes.c.round_ordinal == 1,
+        ),
     )
     if inherited is not None:
         reference = _reused_node_from_record(inherited)
@@ -415,24 +438,18 @@ def _resolve_reused_node(
         origin.run_id, origin.revision_hash, node_id
     )
     event_kind = _successful_event_kind(graph.node(node_id))
-    event_record = (
-        connection.execute(
-            sa.select(run_events).where(
-                run_events.c.node_execution_id == execution_id.value,
-                run_events.c.event_kind == event_kind.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    event_record = _one_record(
+        connection,
+        sa.select(run_events).where(
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == event_kind.value,
+        ),
     )
-    receipt_record = (
-        connection.execute(
-            sa.select(node_receipts_v3).where(
-                node_receipts_v3.c.node_execution_id == execution_id.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    receipt_record = _one_record(
+        connection,
+        sa.select(node_receipts_v3).where(
+            node_receipts_v3.c.node_execution_id == execution_id.value
+        ),
     )
     if event_record is None or receipt_record is None:
         raise _PrefixNotReusable(
@@ -476,40 +493,29 @@ def _successful_event_kind(node: object) -> RunEventKind:
 def _validate_reused_source(
     connection: Connection, reference: RunForkReusedNode, graph: WorkflowGraphV3
 ) -> None:
-    event_record = (
-        connection.execute(
-            sa.select(run_events).where(
-                run_events.c.run_id == reference.source_run_id.value,
-                run_events.c.revision_hash
-                == reference.source_workflow_revision_hash.value,
-                run_events.c.node_execution_id
-                == reference.source_node_execution_id.value,
-                run_events.c.event_hash == reference.source_event_hash.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    event_record = _one_record(
+        connection,
+        sa.select(run_events).where(
+            run_events.c.run_id == reference.source_run_id.value,
+            run_events.c.revision_hash == reference.source_workflow_revision_hash.value,
+            run_events.c.node_execution_id == reference.source_node_execution_id.value,
+            run_events.c.event_hash == reference.source_event_hash.value,
+        ),
     )
-    receipt_record = (
-        connection.execute(
-            sa.select(node_receipts_v3).where(
-                node_receipts_v3.c.node_execution_id
-                == reference.source_node_execution_id.value,
-                node_receipts_v3.c.receipt_hash == reference.source_receipt_hash.value,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    receipt_record = _one_record(
+        connection,
+        sa.select(node_receipts_v3).where(
+            node_receipts_v3.c.node_execution_id
+            == reference.source_node_execution_id.value,
+            node_receipts_v3.c.receipt_hash == reference.source_receipt_hash.value,
+        ),
     )
-    request_record = (
-        connection.execute(
-            sa.select(node_execution_requests_v3).where(
-                node_execution_requests_v3.c.node_execution_id
-                == reference.source_node_execution_id.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    request_record = _one_record(
+        connection,
+        sa.select(node_execution_requests_v3).where(
+            node_execution_requests_v3.c.node_execution_id
+            == reference.source_node_execution_id.value
+        ),
     )
     package_manifest = connection.scalar(
         sa.select(context_packages_v3.c.manifest).where(
@@ -608,15 +614,12 @@ def _effective_node_succeeded(
     )
     if direct is not None:
         return True
-    inherited = (
-        connection.execute(
-            sa.select(run_fork_reused_nodes).where(
-                run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
-                run_fork_reused_nodes.c.node_id == node_id,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    inherited = _one_record(
+        connection,
+        sa.select(run_fork_reused_nodes).where(
+            run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
+            run_fork_reused_nodes.c.node_id == node_id,
+        ),
     )
     if inherited is None:
         return False
@@ -633,39 +636,30 @@ def _effective_receipt_record(
     logical_key = logical_effect_key_for_node(
         origin.run_id, origin.revision_hash, node_id
     )
-    direct = (
-        connection.execute(
-            sa.select(effect_receipts).where(
-                effect_receipts.c.logical_key == logical_key.value
-            )
-        )
-        .mappings()
-        .one_or_none()
+    direct = _one_record(
+        connection,
+        sa.select(effect_receipts).where(
+            effect_receipts.c.logical_key == logical_key.value
+        ),
     )
     if direct is not None:
         return direct
-    inherited = (
-        connection.execute(
-            sa.select(run_fork_reused_nodes).where(
-                run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
-                run_fork_reused_nodes.c.node_id == node_id,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    inherited = _one_record(
+        connection,
+        sa.select(run_fork_reused_nodes).where(
+            run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
+            run_fork_reused_nodes.c.node_id == node_id,
+        ),
     )
     if inherited is None:
         return None
     reference = _reused_node_from_record(inherited)
     _validate_reused_source(connection, reference, graph)
-    source_event = (
-        connection.execute(
-            sa.select(run_events).where(
-                run_events.c.event_hash == str(inherited["source_event_hash"])
-            )
-        )
-        .mappings()
-        .one_or_none()
+    source_event = _one_record(
+        connection,
+        sa.select(run_events).where(
+            run_events.c.event_hash == str(inherited["source_event_hash"])
+        ),
     )
     if source_event is None:
         raise RuntimeError("reused effect source event is missing")
@@ -689,17 +683,14 @@ def _effective_receipt_record(
                 == reference.source_agent_receipt_hash.value,
             )
         ).one_or_none()
-        source_receipt = (
-            connection.execute(
-                sa.select(effect_receipts).where(
-                    effect_receipts.c.logical_key == source_logical_key.value,
-                    effect_receipts.c.run_id == reference.source_run_id.value,
-                    effect_receipts.c.workflow_revision_hash
-                    == reference.source_workflow_revision_hash.value,
-                )
-            )
-            .mappings()
-            .one_or_none()
+        source_receipt = _one_record(
+            connection,
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == source_logical_key.value,
+                effect_receipts.c.run_id == reference.source_run_id.value,
+                effect_receipts.c.workflow_revision_hash
+                == reference.source_workflow_revision_hash.value,
+            ),
         )
         if source_receipt is None:
             return None
@@ -889,12 +880,9 @@ def _effect_fence_values(
 def _stored_fork_for_command(
     connection: Connection, command_id: RunForkCommandId
 ) -> RunFork | None:
-    record = (
-        connection.execute(
-            sa.select(run_forks).where(run_forks.c.command_id == command_id.value)
-        )
-        .mappings()
-        .one_or_none()
+    record = _one_record(
+        connection,
+        sa.select(run_forks).where(run_forks.c.command_id == command_id.value),
     )
     if record is None:
         return None
@@ -1008,17 +996,14 @@ def _load_successor(connection: Connection, run_id: RunId) -> RunV3:
 def _validate_stored_fork_header(
     connection: Connection, fork: RunFork, successor: RunV3
 ) -> None:
-    origin = (
-        connection.execute(
-            sa.select(
-                runs.c.terminal_hash,
-                runs.c.revision_hash,
-                runs.c.agent_binding_set_hash,
-                runs.c.run_configuration_revision_hash,
-            ).where(runs.c.run_id == fork.origin_run_id.value)
-        )
-        .mappings()
-        .one_or_none()
+    origin = _one_record(
+        connection,
+        sa.select(
+            runs.c.terminal_hash,
+            runs.c.revision_hash,
+            runs.c.agent_binding_set_hash,
+            runs.c.run_configuration_revision_hash,
+        ).where(runs.c.run_id == fork.origin_run_id.value),
     )
     bootstrap_workflow_id = connection.scalar(
         sa.select(runs.c.bootstrap_workflow_id).where(
