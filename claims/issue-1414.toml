@@ -1,8 +1,0 @@
-claim_id = "95344f7cbeae43aca651795f4154fa4d"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "5a9472b309fa47f724d24a6746252315c6e4d5bc"
-branch = "claude/issue-1414-claim-order"
-scope = ["src/atelier2/ports/work_item_claims.py", "src/atelier2/adapters/agent_claim_cli.py", "src/atelier2/adapters/dbos/work_item_claims.py", "src/atelier2/adapters/dbos/workflow.py", "src/atelier2/adapters/dbos/runtime.py", "src/atelier2/application/execute_agent_attempt.py", "scripts/baselines/vulture_frozen.py", "tests/adapters", "tests/scenarios/work_item_claims.py", "tests/acceptance/test_v3_push_before_open_pr.py", "tests/application/test_execute_agent_attempt.py", "tests/crash/test_git_transport_effect_recovery.py", "docs/product/runtime.md"]
-opened_commit = "79986e7827bf7ce570d9a40f1a3f7ad83ff1b337"
-whole_reason = "Die Reihenfolge Attest → Claim-Checkout → Claim → Provider ist eine Aussage über vier Owner; der Crash-Test spiegelt die Port-Signatur"
