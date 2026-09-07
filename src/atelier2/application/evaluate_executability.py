@@ -45,6 +45,7 @@ from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
+    VersionedReference,
     WorkflowGraphV3,
     what_a_v3_document_still_waits_for,
 )
@@ -145,24 +146,32 @@ def _looped_platform_effect_grant_refusal(
         loop = graph.loop_of(node.id)
         if loop is None:
             continue
-        for reference in node.tools:
-            try:
-                revision_hash = PublishedRevisionHash(reference.revision)
-            except ValueError:
-                continue
-            resolved = resolver.resolve(RevisionKind.TOOL, revision_hash)
-            if not isinstance(resolved, PublishedRevisionFound):
-                continue
-            grant = read_tool_grant_document(resolved.revision.document)
-            if isinstance(grant, ToolGrantAccepted) and redeems_as_platform_effect(
-                grant.capability
-            ):
-                return (
-                    f"node {node.id!r} is a member of loop {loop.id!r} and pins "
-                    "an effect grant; this runtime has no round-aware external "
-                    "marker contract"
-                )
+        if _pins_a_platform_effect_grant(node, resolver):
+            return (
+                f"node {node.id!r} is a member of loop {loop.id!r} and pins "
+                "an effect grant; this runtime has no round-aware external "
+                "marker contract"
+            )
     return None
+
+
+def _pins_a_platform_effect_grant(
+    node: AgentNodeV3, resolver: PublishedRevisionResolver
+) -> bool:
+    for reference in node.tools:
+        try:
+            revision_hash = PublishedRevisionHash(reference.revision)
+        except ValueError:
+            continue
+        resolved = resolver.resolve(RevisionKind.TOOL, revision_hash)
+        if not isinstance(resolved, PublishedRevisionFound):
+            continue
+        grant = read_tool_grant_document(resolved.revision.document)
+        if isinstance(grant, ToolGrantAccepted) and redeems_as_platform_effect(
+            grant.capability
+        ):
+            return True
+    return False
 
 
 EFFECT_SHAPED_TOOL_RESOLUTION_FIELD = "tools:effect-shaped"
@@ -205,79 +214,127 @@ def resolve_document_references(
         resolution, revision = _settled_resolution(declared, resolver, cache)
         match resolution:
             case ResolvedReference():
-                if revision is None or declared.kind is not RevisionKind.TOOL:
-                    resolutions.append(resolution)
-                else:
-                    grant = read_tool_grant_document(revision.document)
-                    if isinstance(grant, ToolGrantAccepted):
-                        conflict = _second_grant_of_one_shape(
-                            redeemed_grant_shapes, declared.site.node, grant.capability
-                        )
-                        if conflict is not None:
-                            return DocumentNotExecutable(conflict)
-                        pinning_node = (
-                            None
-                            if declared.site.node is None
-                            else graph.node(declared.site.node)
-                        )
-                        if redeems_as_platform_effect(grant.capability) and (
-                            isinstance(pinning_node, AgentNodeV3)
-                            and len(pinning_node.tools) > 1
-                        ):
-                            # The durable node-execution binding still binds one
-                            # `tools` id, the exec-shaped one, where a node now
-                            # pins two (#1101 plan review: "no schema hop") -- an
-                            # effect-shaped grant needs no `project_source` and is
-                            # read straight from the immutable workflow revision
-                            # when its effect is prepared (`agent_effect_grants.py`).
-                            # A lone effect-shaped grant is unaffected: it stays the
-                            # one `tools` id, exactly as before this node could pin
-                            # a second. Marking it here, the one place its
-                            # capability is already read, is what lets
-                            # `bind_node_execution.py` keep reading resolved
-                            # references as pure data.
-                            resolution = dataclasses.replace(
-                                resolution,
-                                site=dataclasses.replace(
-                                    resolution.site,
-                                    field=EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
-                                ),
-                            )
-                    resolutions.append(resolution)
-                    if (
-                        isinstance(grant, ToolGrantAccepted)
-                        and grant.operation is not None
-                    ):
-                        transitive = DeclaredReference(
-                            ReferenceSite(
-                                "operation",
-                                declared.site.node,
-                                chain=(*declared.site.chain, declared.reference),
-                            ),
-                            RevisionKind.ADAPTER_OPERATION,
-                            grant.operation,
-                        )
-                        nested, _operation_revision = _settled_resolution(
-                            transitive, resolver, cache
-                        )
-                        match nested:
-                            case ResolvedReference():
-                                resolutions.append(nested)
-                            case ReferenceRefusal():
-                                return DocumentNotExecutable(
-                                    public_reason(nested), nested
-                                )
-                            case ReadUnavailable() | DurableStateCorrupt():
-                                return nested
-                            case _ as unreachable:
-                                assert_never(unreachable)
+                pass
             case ReferenceRefusal():
                 return DocumentNotExecutable(public_reason(resolution), resolution)
             case ReadUnavailable() | DurableStateCorrupt():
                 return resolution
             case _ as unreachable:
                 assert_never(unreachable)
+        if revision is None or declared.kind is not RevisionKind.TOOL:
+            resolutions.append(resolution)
+            continue
+        pinned = _pinned_tool_grant(
+            graph,
+            declared,
+            resolution,
+            revision,
+            resolver,
+            cache,
+            redeemed_grant_shapes,
+        )
+        if not isinstance(pinned, _PinnedToolGrant):
+            return pinned
+        resolutions.append(pinned.resolution)
+        if pinned.operation is not None:
+            resolutions.append(pinned.operation)
     return ExecutableDocument(tuple(resolutions))
+
+
+@dataclass(frozen=True)
+class _PinnedToolGrant:
+    """One resolved tool grant and, for a push grant, the adapter operation it pins."""
+
+    resolution: ResolvedReference
+    operation: ResolvedReference | None = None
+
+
+def _pinned_tool_grant(
+    graph: WorkflowGraphV3,
+    declared: DeclaredReference,
+    resolution: ResolvedReference,
+    revision: PublishedRevision,
+    resolver: PublishedRevisionResolver,
+    cache: ReferenceSettlementCache,
+    redeemed_grant_shapes: set[tuple[str, bool]],
+) -> _PinnedToolGrant | DocumentNotExecutable | ReadUnavailable | DurableStateCorrupt:
+    grant = read_tool_grant_document(revision.document)
+    if not isinstance(grant, ToolGrantAccepted):
+        return _PinnedToolGrant(resolution)
+    conflict = _second_grant_of_one_shape(
+        redeemed_grant_shapes, declared.site.node, grant.capability
+    )
+    if conflict is not None:
+        return DocumentNotExecutable(conflict)
+    resolution = _sited_by_grant_shape(graph, declared, resolution, grant.capability)
+    if grant.operation is None:
+        return _PinnedToolGrant(resolution)
+    operation = _pinned_operation_resolution(declared, grant.operation, resolver, cache)
+    if isinstance(operation, ResolvedReference):
+        return _PinnedToolGrant(resolution, operation)
+    return operation
+
+
+def _sited_by_grant_shape(
+    graph: WorkflowGraphV3,
+    declared: DeclaredReference,
+    resolution: ResolvedReference,
+    capability: ToolGrantCapability,
+) -> ResolvedReference:
+    """An effect-shaped grant beside an exec-shaped one resolves under its own site.
+
+    The durable node-execution binding binds one `tools` id per node, so where
+    a node pins two grants the effect-shaped one is renamed here, at the one
+    place its capability is read; `EFFECT_SHAPED_TOOL_RESOLUTION_FIELD` says
+    why. A lone effect-shaped grant keeps the authored field name.
+    """
+    pinning_node = (
+        None if declared.site.node is None else graph.node(declared.site.node)
+    )
+    if not (
+        redeems_as_platform_effect(capability)
+        and isinstance(pinning_node, AgentNodeV3)
+        and len(pinning_node.tools) > 1
+    ):
+        return resolution
+    return ResolvedReference(
+        ReferenceSite(
+            field=EFFECT_SHAPED_TOOL_RESOLUTION_FIELD,
+            node=resolution.site.node,
+            entry=resolution.site.entry,
+            chain=resolution.site.chain,
+        ),
+        resolution.kind,
+        resolution.reference,
+        resolution.revision_hash,
+    )
+
+
+def _pinned_operation_resolution(
+    declared: DeclaredReference,
+    operation: VersionedReference,
+    resolver: PublishedRevisionResolver,
+    cache: ReferenceSettlementCache,
+) -> ResolvedReference | DocumentNotExecutable | ReadUnavailable | DurableStateCorrupt:
+    transitive = DeclaredReference(
+        ReferenceSite(
+            "operation",
+            declared.site.node,
+            chain=(*declared.site.chain, declared.reference),
+        ),
+        RevisionKind.ADAPTER_OPERATION,
+        operation,
+    )
+    nested, _operation_revision = _settled_resolution(transitive, resolver, cache)
+    match nested:
+        case ResolvedReference():
+            return nested
+        case ReferenceRefusal():
+            return DocumentNotExecutable(public_reason(nested), nested)
+        case ReadUnavailable() | DurableStateCorrupt():
+            return nested
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _second_grant_of_one_shape(

@@ -798,14 +798,16 @@ def _in_place_subschemas(schema: object) -> Iterator[tuple[str, object]]:
             yield f"/{keyword}", schema[keyword]
     for keyword in _IN_PLACE_SUBSCHEMA_LISTS:
         entries = schema.get(keyword)
-        if isinstance(entries, list):
-            for index, entry in enumerate(entries):
-                yield f"/{keyword}/{index}", entry
+        if not isinstance(entries, list):
+            continue
+        for index, entry in enumerate(entries):
+            yield f"/{keyword}/{index}", entry
     for keyword in _IN_PLACE_SUBSCHEMA_MAPS:
         entries = schema.get(keyword)
-        if isinstance(entries, dict):
-            for name, entry in entries.items():
-                yield f"/{keyword}/{name}", entry
+        if not isinstance(entries, dict):
+            continue
+        for name, entry in entries.items():
+            yield f"/{keyword}/{name}", entry
 
 
 def _every_position(value: object, pointer: str = "") -> Iterator[str]:
@@ -834,48 +836,44 @@ def _refused_reference_graph(root: Schema) -> SchemaRefused | None:
     """
     for pointer in _every_position(root):
         node = _resolved_pointer(root, pointer)
-        if not isinstance(node, dict):
-            continue
-        reference = node.get("$ref")
-        if (
-            isinstance(reference, str)
-            and _resolved_pointer(root, reference[len(_LOCAL_REFERENCE_PREFIX) :])
-            is None
+        reference = node.get("$ref") if isinstance(node, dict) else None
+        if isinstance(reference, str) and (
+            _resolved_pointer(root, reference[len(_LOCAL_REFERENCE_PREFIX) :]) is None
         ):
             return SchemaRefused(
                 SchemaDocumentRefusal.UNRESOLVABLE_REFERENCE, reference
             )
-
     settled: set[str] = set()
-
-    def walk(pointer: str, on_path: frozenset[str]) -> SchemaRefused | None:
-        if pointer in on_path:
-            return SchemaRefused(
-                SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
-                f"#{pointer}" if pointer else "#",
-            )
-        if pointer in settled:
-            return None
-        node = _resolved_pointer(root, pointer)
-        reached = on_path | {pointer}
-        for step, _ in _in_place_subschemas(node):
-            refused = walk(pointer + step, reached)
-            if refused is not None:
-                return refused
-        if isinstance(node, dict):
-            reference = node.get("$ref")
-            if isinstance(reference, str):
-                refused = walk(reference[len(_LOCAL_REFERENCE_PREFIX) :], reached)
-                if refused is not None:
-                    return refused
-        settled.add(pointer)
-        return None
-
     for pointer in _every_position(root):
         if isinstance(_resolved_pointer(root, pointer), dict):
-            refused = walk(pointer, frozenset())
+            refused = _non_terminating_cycle(root, pointer, frozenset(), settled)
             if refused is not None:
                 return refused
+    return None
+
+
+def _non_terminating_cycle(
+    root: Schema, pointer: str, on_path: frozenset[str], settled: set[str]
+) -> SchemaRefused | None:
+    """Walk the in-place edges from this position; `settled` are positions that end."""
+    if pointer in on_path:
+        return SchemaRefused(
+            SchemaDocumentRefusal.NON_TERMINATING_REFERENCE_CYCLE,
+            f"#{pointer}" if pointer else "#",
+        )
+    if pointer in settled:
+        return None
+    node = _resolved_pointer(root, pointer)
+    reached = on_path | {pointer}
+    next_pointers = [pointer + step for step, _ in _in_place_subschemas(node)]
+    reference = node.get("$ref") if isinstance(node, dict) else None
+    if isinstance(reference, str):
+        next_pointers.append(reference[len(_LOCAL_REFERENCE_PREFIX) :])
+    for next_pointer in next_pointers:
+        refused = _non_terminating_cycle(root, next_pointer, reached, settled)
+        if refused is not None:
+            return refused
+    settled.add(pointer)
     return None
 
 

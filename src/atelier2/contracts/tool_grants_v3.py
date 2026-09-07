@@ -153,24 +153,9 @@ _OPERATION_FIELD = "operation"
 
 def read_tool_grant_document(document: bytes) -> ToolGrantVerdict:
     """Whether these exact published bytes grant a capability this runtime redeems."""
-    if len(document) > MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES:
-        return ToolGrantRefused(
-            ToolGrantRefusal.DOCUMENT_TOO_LARGE,
-            f"{len(document)} bytes exceeds {MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES}",
-        )
-    try:
-        text = document.decode("utf-8")
-    except UnicodeDecodeError as broken:
-        return ToolGrantRefused(ToolGrantRefusal.DOCUMENT_NOT_UTF8, broken.reason)
-    try:
-        decoded = json.loads(text)
-    except ValueError as broken:
-        return ToolGrantRefused(ToolGrantRefusal.NOT_A_GRANT_OBJECT, str(broken))
-    if not isinstance(decoded, dict):
-        return ToolGrantRefused(
-            ToolGrantRefusal.NOT_A_GRANT_OBJECT,
-            f"a tool grant is an object, not {type(decoded).__name__}",
-        )
+    decoded = _decoded_grant_object(document)
+    if isinstance(decoded, ToolGrantRefused):
+        return decoded
     named = decoded.get(_CAPABILITY_FIELD)
     if not isinstance(named, str):
         return ToolGrantRefused(
@@ -207,7 +192,35 @@ def read_tool_grant_document(document: bytes) -> ToolGrantVerdict:
         )
     if capability is not ToolGrantCapability.PUSH_ATELIER_COMMIT:
         return ToolGrantAccepted(capability)
-    operation = decoded[_OPERATION_FIELD]
+    return _accepted_with_pinned_operation(capability, decoded[_OPERATION_FIELD])
+
+
+def _decoded_grant_object(document: bytes) -> dict[str, object] | ToolGrantRefused:
+    if len(document) > MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES:
+        return ToolGrantRefused(
+            ToolGrantRefusal.DOCUMENT_TOO_LARGE,
+            f"{len(document)} bytes exceeds {MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES}",
+        )
+    try:
+        text = document.decode("utf-8")
+    except UnicodeDecodeError as broken:
+        return ToolGrantRefused(ToolGrantRefusal.DOCUMENT_NOT_UTF8, broken.reason)
+    try:
+        decoded = json.loads(text)
+    except ValueError as broken:
+        return ToolGrantRefused(ToolGrantRefusal.NOT_A_GRANT_OBJECT, str(broken))
+    if not isinstance(decoded, dict):
+        return ToolGrantRefused(
+            ToolGrantRefusal.NOT_A_GRANT_OBJECT,
+            f"a tool grant is an object, not {type(decoded).__name__}",
+        )
+    return decoded
+
+
+def _accepted_with_pinned_operation(
+    capability: ToolGrantCapability, operation: object
+) -> ToolGrantVerdict:
+    """A push grant names the one adapter operation it pins, by ref and exact revision."""
     if not isinstance(operation, dict) or set(operation) != {"ref", "revision"}:
         return ToolGrantRefused(
             ToolGrantRefusal.NOT_A_GRANT_OBJECT,

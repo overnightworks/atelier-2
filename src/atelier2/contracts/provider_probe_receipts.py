@@ -113,6 +113,10 @@ class ProviderProbeReceipt:
     problem_code: ProviderProbeProblemCode | None = None
 
     def __post_init__(self) -> None:
+        self._require_well_formed_fields()
+        self._require_result_evidence()
+
+    def _require_well_formed_fields(self) -> None:
         if not isinstance(self.vector, ProviderProbeVectorId):
             raise TypeError("a provider probe receipt names a typed vector")
         if not isinstance(self.configuration_hash, AgentConfigurationRevisionHash):
@@ -139,6 +143,8 @@ class ProviderProbeReceipt:
             )
         if not isinstance(self.run_reference, RunId):
             raise TypeError("a provider probe receipt names a typed run reference")
+
+    def _require_result_evidence(self) -> None:
         if self.result is ProviderProbeResult.SUCCEEDED:
             if not isinstance(self.terminal_hash, Sha256Hash):
                 raise ValueError("a succeeded provider probe carries a terminal hash")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, TypeVar, assert_never, get_args
 from urllib.parse import quote
@@ -253,6 +253,172 @@ def _projection_bounds_failure(
     )
 
 
+class _StreamEnded(Exception):
+    """The stream ends here; `frame` is the last thing it says, if anything.
+
+    A refusal is decided wherever a page, a run or an event is read, but only
+    the one generator may yield the frame it becomes, so the decision travels
+    up to it this way rather than as a second return channel on every helper.
+    """
+
+    def __init__(self, frame: ServerSentEvent | None) -> None:
+        super().__init__()
+        self.frame = frame
+
+
+async def _admitted[Answer](
+    runner: BoundedQueryRunner, query: Callable[[], Answer]
+) -> Answer:
+    """One durable read under the query bound; backpressure ends the stream regularly.
+
+    Not being admitted in time is not a failure: the client's own reconnect is
+    the answer, so the stream ends with no frame.
+    """
+    try:
+        return await runner.run(query)
+    except QueryAdmissionTimeout as timeout:
+        raise _StreamEnded(None) from timeout
+
+
+def _run_events_page(result: ReadRunEventsResult) -> RunEventsRead:
+    """The page this read answered, or the ending the stream takes instead."""
+    match result:
+        case RunEventsRead() as page:
+            return page
+        case ReadUnavailable():
+            # Transient unavailability is answered by the client's own reconnect.
+            raise _StreamEnded(None)
+        case ProjectionTooLarge():
+            raise _StreamEnded(_stream_failure("durable-projection-unrepresentable"))
+        case RunEventPageOversized():
+            raise _StreamEnded(_stream_failure("internal-error"))
+        case DurableStateCorrupt():
+            raise _StreamEnded(_stream_failure("durable-state-corrupt"))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _attention_page(result: ReadAttentionEventsResult) -> AttentionEventsRead:
+    match result:
+        case AttentionEventsRead() as page:
+            return page
+        case AttentionCursorUnknown() | DurableStateCorrupt():
+            raise _StreamEnded(_stream_failure("durable-state-corrupt"))
+        case ReadUnavailable():
+            raise _StreamEnded(None)
+        case ProjectionTooLarge():
+            raise _StreamEnded(_stream_failure("durable-projection-unrepresentable"))
+        case AttentionEventPageOversized():
+            raise _StreamEnded(_stream_failure("internal-error"))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _attention_events_of(page: AttentionEventsRead) -> tuple[PersistedRunEvent, ...]:
+    return tuple(
+        bounded_event_summary(item.event)
+        for item in page.events
+        if isinstance(item, AttentionEvent)
+    )
+
+
+def _attention_identity(
+    item: AttentionEvent | AttentionEventCorrupt,
+) -> tuple[RunId, int]:
+    match item:
+        case AttentionEventCorrupt(run_id=run_id, event_sequence=event_sequence):
+            return run_id, event_sequence
+        case AttentionEvent(event=persisted):
+            return persisted.event.run_id, persisted.event.event_sequence
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _require_page_projectable(
+    events: Iterable[PersistedRunEvent], limits: ApiLimits
+) -> None:
+    """Every event of a page fits the wire before any of it is sent."""
+    for persisted in events:
+        try:
+            limits.require_event_projection(persisted)
+        except ApiLimitExceeded as error:
+            raise _StreamEnded(_projection_bounds_failure(error, persisted)) from error
+        except ValueError as error:
+            raise _StreamEnded(_stream_failure("durable-state-corrupt")) from error
+
+
+def _run_event_frame(
+    persisted: PersistedRunEvent,
+    projection: RunProjection,
+    streamed: Sequence[PersistedRunEvent],
+) -> ServerSentEvent:
+    try:
+        resource = run_event_resource(
+            persisted, node_rail_resources(project_node_rail(projection, streamed))
+        )
+    except (ValueError, NodeRailUnprojectable) as error:
+        raise _StreamEnded(_stream_failure("durable-state-corrupt")) from error
+    except AssertionError as error:
+        raise _StreamEnded(_stream_failure("internal-error")) from error
+    return ServerSentEvent(id=resource.cursor, data=resource)
+
+
+async def _attention_item_frame(
+    item: AttentionEvent | AttentionEventCorrupt,
+    get_run: Callable[[RunId], GetRunResult],
+    runner: BoundedQueryRunner,
+    limits: ApiLimits,
+) -> ServerSentEvent:
+    """The one frame this row becomes: its event on its run's rail, or its run named corrupt."""
+    match item:
+        case AttentionEventCorrupt(run_id=run_id, event_sequence=event_sequence):
+            return _run_projection_corrupt(run_id, event_sequence)
+        case AttentionEvent(event=event):
+            persisted = bounded_event_summary(event)
+        case _ as unreachable:
+            assert_never(unreachable)
+    run_result = await _admitted(
+        runner, lambda current_run_id=persisted.event.run_id: get_run(current_run_id)
+    )
+    match run_result:
+        case RunRead(projection):
+            pass
+        case RunNotFound() | DurableStateCorrupt():
+            return _run_projection_corrupt(
+                persisted.event.run_id, persisted.event.event_sequence
+            )
+        case ReadUnavailable():
+            raise _StreamEnded(None)
+        case ProjectionTooLarge():
+            raise _StreamEnded(_stream_failure("durable-projection-unrepresentable"))
+        case _ as unreachable:
+            assert_never(unreachable)
+    try:
+        limits.require_run_projection(projection)
+        resource = run_event_resource(
+            persisted,
+            node_rail_resources(project_node_rail(projection, (persisted,))),
+        )
+    except ApiLimitExceeded as error:
+        raise _StreamEnded(_projection_bounds_failure(error, persisted)) from error
+    except (ValueError, NodeRailUnprojectable, AssertionError) as error:
+        raise _StreamEnded(_stream_failure("internal-error")) from error
+    return ServerSentEvent(id=resource.cursor, data=resource)
+
+
+async def _delay_before_next_poll(
+    page_had_events: bool,
+    delay: float,
+    backoff: EventPollBackoff,
+    sleep: Callable[[float], Awaitable[None]],
+) -> float:
+    """Ask again at once after a page with events; otherwise wait, longer each time."""
+    if page_had_events:
+        return backoff.initial_delay_seconds
+    await sleep(delay)
+    return min(backoff.maximum_delay_seconds, delay * backoff.multiplier)
+
+
 async def stream_server_events(
     prepared: PreparedEventStream,
     read_page: Callable[[RunId, int, int], ReadRunEventsResult],
@@ -279,72 +445,31 @@ async def stream_server_events(
         return
     while True:
         try:
-            result = await runner.run(
-                lambda current_after_sequence=after_sequence: read_page(
-                    prepared.run_id, current_after_sequence, page_size.value
-                )
-            )
-        except QueryAdmissionTimeout:
-            # Backpressure is not a failure: end regularly and let the client reconnect.
-            return
-        match result:
-            case RunEventsRead() as page:
-                pass
-            case ReadUnavailable():
-                # Transient unavailability is answered by the client's own reconnect.
-                return
-            case ProjectionTooLarge():
-                yield _stream_failure("durable-projection-unrepresentable")
-                return
-            case RunEventPageOversized():
-                yield _stream_failure("internal-error")
-                return
-            case DurableStateCorrupt():
-                yield _stream_failure("durable-state-corrupt")
-                return
-            case _ as unreachable:
-                assert_never(unreachable)
-        for event in page.events:
-            persisted = bounded_event_summary(event)
-            try:
-                limits.require_event_projection(persisted)
-            except ApiLimitExceeded as error:
-                yield _projection_bounds_failure(error, persisted)
-                return
-            except ValueError:
-                yield _stream_failure("durable-state-corrupt")
-                return
-        if page.events:
-            next_poll_delay = poll_backoff.initial_delay_seconds
-        for persisted in page.events:
-            persisted = bounded_event_summary(persisted)
-            streamed.append(persisted)
-            try:
-                resource = run_event_resource(
-                    persisted,
-                    node_rail_resources(
-                        project_node_rail(prepared.projection, streamed)
+            page = _run_events_page(
+                await _admitted(
+                    runner,
+                    lambda current_after_sequence=after_sequence: read_page(
+                        prepared.run_id, current_after_sequence, page_size.value
                     ),
                 )
-            except (ValueError, NodeRailUnprojectable):
-                yield _stream_failure("durable-state-corrupt")
-                return
-            except AssertionError:
-                yield _stream_failure("internal-error")
-                return
-            yield ServerSentEvent(
-                id=resource.cursor,
-                data=resource,
             )
-            after_sequence = resource.sequence
+            persisted_events = tuple(
+                bounded_event_summary(event) for event in page.events
+            )
+            _require_page_projectable(persisted_events, limits)
+            for persisted in persisted_events:
+                streamed.append(persisted)
+                yield _run_event_frame(persisted, prepared.projection, streamed)
+                after_sequence = persisted.event.event_sequence
+        except _StreamEnded as ended:
+            if ended.frame is not None:
+                yield ended.frame
+            return
         if page.terminal_seen:
             return
-        if not page.events:
-            await sleep(next_poll_delay)
-            next_poll_delay = min(
-                poll_backoff.maximum_delay_seconds,
-                next_poll_delay * poll_backoff.multiplier,
-            )
+        next_poll_delay = await _delay_before_next_poll(
+            bool(page.events), next_poll_delay, poll_backoff, sleep
+        )
 
 
 async def stream_attention_events(
@@ -388,143 +513,39 @@ async def stream_attention_events(
             if identity != (after_run_id, after_sequence)
         )
         try:
-            result = await runner.run(
-                lambda current_run_id=after_run_id, current_sequence=after_sequence, current_excluded=excluded: (
-                    read_page(
-                        current_run_id,
-                        current_sequence,
-                        page_size.value,
-                        current_excluded,
-                    )
+            page = _attention_page(
+                await _admitted(
+                    runner,
+                    lambda current_run_id=after_run_id, current_sequence=after_sequence, current_excluded=excluded: (
+                        read_page(
+                            current_run_id,
+                            current_sequence,
+                            page_size.value,
+                            current_excluded,
+                        )
+                    ),
                 )
             )
-        except QueryAdmissionTimeout:
+            _require_page_projectable(_attention_events_of(page), limits)
+            for item in page.events:
+                yield await _attention_item_frame(item, get_run, runner, limits)
+                run_id, event_sequence = _attention_identity(item)
+                (
+                    current_instant,
+                    after_run_id,
+                    after_sequence,
+                    emitted_at_instant,
+                ) = _remember_attention_identity(
+                    item.recorded_at,
+                    run_id,
+                    event_sequence,
+                    current_instant,
+                    emitted_at_instant,
+                )
+        except _StreamEnded as ended:
+            if ended.frame is not None:
+                yield ended.frame
             return
-        match result:
-            case AttentionEventsRead() as page:
-                pass
-            case AttentionCursorUnknown() | DurableStateCorrupt():
-                yield _stream_failure("durable-state-corrupt")
-                return
-            case ReadUnavailable():
-                return
-            case ProjectionTooLarge():
-                yield _stream_failure("durable-projection-unrepresentable")
-                return
-            case AttentionEventPageOversized():
-                yield _stream_failure("internal-error")
-                return
-            case _ as unreachable:
-                assert_never(unreachable)
-        for item in page.events:
-            match item:
-                case AttentionEventCorrupt():
-                    continue
-                case AttentionEvent(event=event):
-                    persisted = bounded_event_summary(event)
-                case _ as unreachable:
-                    assert_never(unreachable)
-            try:
-                limits.require_event_projection(persisted)
-            except ApiLimitExceeded as error:
-                yield _projection_bounds_failure(error, persisted)
-                return
-            except ValueError:
-                yield _stream_failure("durable-state-corrupt")
-                return
-        if page.events:
-            next_poll_delay = poll_backoff.initial_delay_seconds
-        for item in page.events:
-            match item:
-                case AttentionEventCorrupt(
-                    run_id=corrupt_run_id,
-                    event_sequence=corrupt_sequence,
-                    recorded_at=recorded_at,
-                ):
-                    yield _run_projection_corrupt(corrupt_run_id, corrupt_sequence)
-                    (
-                        current_instant,
-                        after_run_id,
-                        after_sequence,
-                        emitted_at_instant,
-                    ) = _remember_attention_identity(
-                        recorded_at,
-                        corrupt_run_id,
-                        corrupt_sequence,
-                        current_instant,
-                        emitted_at_instant,
-                    )
-                    continue
-                case AttentionEvent(event=event, recorded_at=recorded_at):
-                    persisted = bounded_event_summary(event)
-                case _ as unreachable:
-                    assert_never(unreachable)
-            try:
-                run_result = await runner.run(
-                    lambda current_run_id=persisted.event.run_id: get_run(
-                        current_run_id
-                    )
-                )
-            except QueryAdmissionTimeout:
-                return
-            match run_result:
-                case RunRead(projection):
-                    pass
-                case RunNotFound() | DurableStateCorrupt():
-                    yield _run_projection_corrupt(
-                        persisted.event.run_id, persisted.event.event_sequence
-                    )
-                    (
-                        current_instant,
-                        after_run_id,
-                        after_sequence,
-                        emitted_at_instant,
-                    ) = _remember_attention_identity(
-                        recorded_at,
-                        persisted.event.run_id,
-                        persisted.event.event_sequence,
-                        current_instant,
-                        emitted_at_instant,
-                    )
-                    continue
-                case ReadUnavailable():
-                    return
-                case ProjectionTooLarge():
-                    yield _stream_failure("durable-projection-unrepresentable")
-                    return
-                case _ as unreachable:
-                    assert_never(unreachable)
-            try:
-                limits.require_run_projection(projection)
-                resource = run_event_resource(
-                    persisted,
-                    node_rail_resources(project_node_rail(projection, (persisted,))),
-                )
-            except ApiLimitExceeded as error:
-                yield _projection_bounds_failure(error, persisted)
-                return
-            except (ValueError, NodeRailUnprojectable, AssertionError):
-                yield _stream_failure("internal-error")
-                return
-            yield ServerSentEvent(
-                id=resource.cursor,
-                data=resource,
-            )
-            (
-                current_instant,
-                after_run_id,
-                after_sequence,
-                emitted_at_instant,
-            ) = _remember_attention_identity(
-                recorded_at,
-                persisted.event.run_id,
-                persisted.event.event_sequence,
-                current_instant,
-                emitted_at_instant,
-            )
-        if not page.events:
-            await sleep(next_poll_delay)
-            next_poll_delay = min(
-                poll_backoff.maximum_delay_seconds,
-                next_poll_delay * poll_backoff.multiplier,
-            )
+        next_poll_delay = await _delay_before_next_poll(
+            bool(page.events), next_poll_delay, poll_backoff, sleep
+        )
