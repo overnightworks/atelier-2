@@ -1,0 +1,8 @@
+claim_id = "b19a2308209646478c1065d4dbdac961"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "49551584e696f999c2d1692475f8cdfe87954db1"
+branch = "claude/issue-1407-s3776-queries"
+scope = ["src/atelier2/adapters/dbos/queries.py", "tests/integration", "tests/api", "scripts/baselines/size_ratchet_baseline.toml"]
+opened_commit = "d5bcb40b3cbf99fddc187a80aed9faa507d7c689"
+whole_reason = "Drei S3776-Riesen in einer Datei; die Tests beider Ebenen sind der Beweis"
