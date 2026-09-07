@@ -94,7 +94,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.artifacts import ArtifactHash
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.catalog_v3 import CatalogActivatedAt
 from atelier2.contracts.definition_sources import (
     DefinitionSourceId,
@@ -1539,30 +1539,76 @@ def _node_answer(
     return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
 
 
-def _run_terminal_results(
+@dataclass(frozen=True)
+class _RefusedValueAddress:
+    """Where a refused terminal value's bytes are, once the page's artifacts are read.
+
+    `artifact_hash` is None for the empty value, which no artifact stores.
+    """
+
+    value_hash: Sha256Hash
+    artifact_hash: str | None
+    missing_artifact_message: str
+
+    def answer(self, artifacts_by_hash: Mapping[str, Artifact]) -> NodeAnswer:
+        if self.artifact_hash is None:
+            return NodeAnswer(b"", self.value_hash)
+        artifact = artifacts_by_hash.get(self.artifact_hash)
+        if artifact is None:
+            raise RuntimeError(self.missing_artifact_message)
+        text = artifact.content.decode("utf-8")
+        return NodeAnswer(
+            redact_credentials(text).text.encode("utf-8"), self.value_hash
+        )
+
+
+def _receipt_refusal_address(
+    receipt_record: Mapping[Any, Any],
+) -> _RefusedValueAddress | None:
+    """The refused value a terminal `node-receipt/v3` row names, if any."""
+    disposition = PersistedReceiptDisposition(str(receipt_record["disposition"]))
+    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+        return None
+    _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(receipt_record["reason"])
+    )
+    if value_hash is None:
+        return None
+    artifact_hash = None if value_hash == Sha256Hash.of(b"") else value_hash.value
+    return _RefusedValueAddress(
+        value_hash, artifact_hash, "refused node output artifact is missing"
+    )
+
+
+def _attempt_receipt_refusal_address(
+    attempt_receipt: Mapping[Any, Any],
+) -> _RefusedValueAddress:
+    """The refused value an ordinal-one attempt's own receipt names."""
+    artifact_hash = attempt_receipt["artifact_hash"]
+    value_hash = str(attempt_receipt["value_hash"])
+    missing = "output-schema refusal artifact is missing"
+    if artifact_hash is None:
+        if value_hash != Sha256Hash.of(b"").value:
+            raise RunTransitionConflict(
+                "nonempty output-schema refusal has no artifact"
+            )
+        return _RefusedValueAddress(Sha256Hash(value_hash), None, missing)
+    # The mirror of `load_output_schema_refusal_receipt`'s own check
+    # (agent_attempt_store.py): the artifact an attempt names is always
+    # addressed by the same hash it judged, so the two disagreeing is the
+    # store contradicting itself, not a value this projection may show.
+    if str(artifact_hash) != value_hash:
+        raise RunTransitionConflict(
+            "output-schema refusal artifact differs from its value hash"
+        )
+    return _RefusedValueAddress(Sha256Hash(value_hash), str(artifact_hash), missing)
+
+
+def _terminal_answers(
     connection: Connection,
-    ended_runs: Sequence[RunV3],
-    graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
-) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
-    """Every ended run's own terminal answer and refusal, batched once per page.
-
-    A page of History rows used to cost at least two statements per ended run,
-    and every receiptless or refused row added one more on top of that (#1045
-    REVISE C1, twice). Every ended run's terminal execution id is the same
-    deterministic identity `current_node_execution_id` already names on the
-    wire -- `current_node_id` at `current_round_ordinal` -- so every source
-    below is read once for the whole page, keyed by that identity, and
-    assembled per run afterward with no further query:
-
-    - the answer-bearing event (`run_events`);
-    - the terminal `node-receipt/v3` disposition and reason;
-    - for an execution no terminal receipt names yet, its ordinal-one
-      `agent_attempts` row -- the node kind is read from `graphs`, already
-      parsed for this same page, never a second workflow-revision read;
-    - that attempt's own `agent_attempt_receipts_v3` row, when its node is an
-      agent node (only those ever write one);
-    - every artifact either refusal path names, in one final read keyed by
-      hash (`read_stored_artifacts`).
+    answer_kinds_by_execution: Mapping[str, tuple[RunEventKind, RunEventKind | None]],
+) -> dict[str, NodeAnswer]:
+    """Every listed execution's own answer, read once for the whole page.
 
     A node execution that wrote more than one answer-bearing event of a kind
     its own declared type -- or its one recognized embedded platform-effect
@@ -1571,6 +1617,99 @@ def _run_terminal_results(
     refuses that loudly, and this batched read keeps the same refusal rather
     than a dict silently keeping the last one seen or a companion's own row
     silently masking the disagreement.
+    """
+    answers_by_execution: dict[str, NodeAnswer] = {}
+    for record in connection.execute(
+        sa.select(
+            run_events.c.node_execution_id,
+            run_events.c.event_kind,
+            run_events.c.payload,
+            run_events.c.payload_hash,
+        ).where(
+            run_events.c.node_execution_id.in_(tuple(answer_kinds_by_execution)),
+            run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
+        )
+    ):
+        execution_value = str(record.node_execution_id)
+        event_kind = str(record.event_kind)
+        own_kind, embedded_kind = answer_kinds_by_execution[execution_value]
+        if event_kind == own_kind.value:
+            if execution_value in answers_by_execution:
+                raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
+            answers_by_execution[execution_value] = NodeAnswer(
+                bytes(record.payload), Sha256Hash(str(record.payload_hash))
+            )
+            continue
+        if embedded_kind is None or event_kind != embedded_kind.value:
+            raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
+    return answers_by_execution
+
+
+def _ordinal_one_attempt_receipts(
+    connection: Connection,
+    receiptless_execution_values: Sequence[str],
+    ended_runs: Sequence[RunV3],
+    graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
+) -> dict[str, Mapping[Any, Any]]:
+    """Each receiptless agent execution's own `agent_attempt_receipts_v3` row.
+
+    Only agent nodes ever write one; the node kind is read from `graphs`,
+    already parsed for this same page, never a second workflow-revision read.
+    """
+    if not receiptless_execution_values:
+        return {}
+    run_by_id = {run.run_id.value: run for run in ended_runs}
+    execution_by_attempt_id: dict[str, str] = {}
+    for record in connection.execute(
+        sa.select(
+            agent_attempts.c.node_execution_id,
+            agent_attempts.c.attempt_id,
+            agent_attempts.c.node_id,
+            agent_attempts.c.run_id,
+        ).where(
+            agent_attempts.c.node_execution_id.in_(receiptless_execution_values),
+            agent_attempts.c.attempt_ordinal == 1,
+        )
+    ).mappings():
+        run = run_by_id[str(record["run_id"])]
+        node = graphs[run.revision_hash].node(str(record["node_id"]))
+        if isinstance(node, AgentNodeV3):
+            execution_by_attempt_id[str(record["attempt_id"])] = str(
+                record["node_execution_id"]
+            )
+    if not execution_by_attempt_id:
+        return {}
+    return {
+        execution_by_attempt_id[str(record["attempt_id"])]: record
+        for record in connection.execute(
+            sa.select(
+                agent_attempt_receipts_v3.c.attempt_id,
+                agent_attempt_receipts_v3.c.value_hash,
+                agent_attempt_receipts_v3.c.artifact_hash,
+            ).where(
+                agent_attempt_receipts_v3.c.attempt_id.in_(
+                    tuple(execution_by_attempt_id)
+                )
+            )
+        ).mappings()
+    }
+
+
+def _run_terminal_results(
+    connection: Connection,
+    ended_runs: Sequence[RunV3],
+    graphs: Mapping[WorkflowRevisionHash, AnyWorkflowDocument],
+) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
+    """Every ended run's own terminal answer and refusal, batched once per page.
+
+    Every ended run's terminal execution id is the same deterministic identity
+    `current_node_execution_id` already names on the wire -- `current_node_id`
+    at `current_round_ordinal` -- so every source is read once for the whole
+    page, keyed by that identity, and assembled per run afterward with no
+    further query: the answer-bearing events, the terminal `node-receipt/v3`
+    dispositions, the ordinal-one attempt receipts of executions no terminal
+    receipt names yet, and finally every artifact either refusal path names,
+    keyed by hash (`read_stored_artifacts`).
 
     This omits `load_output_schema_refusal_receipt`'s own re-verification of
     an attempt's schema revision and receipt hash against its expectations
@@ -1583,8 +1722,7 @@ def _run_terminal_results(
     if not ended_runs:
         return {}
     execution_by_run_id: dict[str, NodeExecutionId] = {}
-    own_answer_kind_by_execution: dict[str, RunEventKind] = {}
-    embedded_effect_kind_by_execution: dict[str, RunEventKind | None] = {}
+    answer_kinds_by_execution: dict[str, tuple[RunEventKind, RunEventKind | None]] = {}
     for run in ended_runs:
         execution = NodeExecutionId.for_node(
             run.run_id,
@@ -1594,169 +1732,62 @@ def _run_terminal_results(
         )
         node = graphs[run.revision_hash].node(run.current_node_id)
         execution_by_run_id[run.run_id.value] = execution
-        own_answer_kind_by_execution[execution.value] = _own_answer_event_kind(node)
-        embedded_effect_kind_by_execution[execution.value] = (
-            _embedded_platform_effect_kind(node)
+        answer_kinds_by_execution[execution.value] = (
+            _own_answer_event_kind(node),
+            _embedded_platform_effect_kind(node),
         )
-    execution_values = tuple(
-        execution.value for execution in execution_by_run_id.values()
-    )
-
-    answers_by_execution: dict[str, NodeAnswer] = {}
-    for record in connection.execute(
-        sa.select(
-            run_events.c.node_execution_id,
-            run_events.c.event_kind,
-            run_events.c.payload,
-            run_events.c.payload_hash,
-        ).where(
-            run_events.c.node_execution_id.in_(execution_values),
-            run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
-        )
-    ):
-        execution_value = str(record.node_execution_id)
-        event_kind = str(record.event_kind)
-        if event_kind == own_answer_kind_by_execution[execution_value].value:
-            if execution_value in answers_by_execution:
-                raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
-            answers_by_execution[execution_value] = NodeAnswer(
-                bytes(record.payload), Sha256Hash(str(record.payload_hash))
-            )
-            continue
-        embedded_kind = embedded_effect_kind_by_execution[execution_value]
-        if embedded_kind is None or event_kind != embedded_kind.value:
-            raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
-
+    answers_by_execution = _terminal_answers(connection, answer_kinds_by_execution)
     receipts_by_execution = {
-        str(record.node_execution_id): record
+        str(record["node_execution_id"]): record
         for record in connection.execute(
             sa.select(
                 node_receipts_v3.c.node_execution_id,
                 node_receipts_v3.c.disposition,
                 node_receipts_v3.c.reason,
-            ).where(node_receipts_v3.c.node_execution_id.in_(execution_values))
-        )
+            ).where(
+                node_receipts_v3.c.node_execution_id.in_(
+                    tuple(answer_kinds_by_execution)
+                )
+            )
+        ).mappings()
     }
-
-    run_by_id = {run.run_id.value: run for run in ended_runs}
-    receiptless_execution_values = tuple(
-        execution.value
-        for execution in execution_by_run_id.values()
-        if execution.value not in receipts_by_execution
+    attempt_receipts_by_execution = _ordinal_one_attempt_receipts(
+        connection,
+        tuple(
+            execution_value
+            for execution_value in answer_kinds_by_execution
+            if execution_value not in receipts_by_execution
+        ),
+        ended_runs,
+        graphs,
     )
-
-    attempts_by_execution: dict[str, Mapping[Any, Any]] = {}
-    if receiptless_execution_values:
-        for record in connection.execute(
-            sa.select(
-                agent_attempts.c.node_execution_id,
-                agent_attempts.c.attempt_id,
-                agent_attempts.c.node_id,
-                agent_attempts.c.run_id,
-            ).where(
-                agent_attempts.c.node_execution_id.in_(receiptless_execution_values),
-                agent_attempts.c.attempt_ordinal == 1,
-            )
-        ).mappings():
-            attempts_by_execution[str(record["node_execution_id"])] = record
-
-    agent_attempt_id_by_execution: dict[str, str] = {}
-    for execution_value, attempt_record in attempts_by_execution.items():
-        run = run_by_id[str(attempt_record["run_id"])]
-        node = graphs[run.revision_hash].node(str(attempt_record["node_id"]))
-        if isinstance(node, AgentNodeV3):
-            agent_attempt_id_by_execution[execution_value] = str(
-                attempt_record["attempt_id"]
-            )
-
-    attempt_receipts_by_execution: dict[str, Mapping[Any, Any]] = {}
-    if agent_attempt_id_by_execution:
-        execution_by_attempt_id = {
-            attempt_id: execution_value
-            for execution_value, attempt_id in agent_attempt_id_by_execution.items()
-        }
-        for record in connection.execute(
-            sa.select(
-                agent_attempt_receipts_v3.c.attempt_id,
-                agent_attempt_receipts_v3.c.value_hash,
-                agent_attempt_receipts_v3.c.artifact_hash,
-            ).where(
-                agent_attempt_receipts_v3.c.attempt_id.in_(
-                    tuple(agent_attempt_id_by_execution.values())
-                )
-            )
-        ).mappings():
-            execution_value = execution_by_attempt_id[str(record["attempt_id"])]
-            attempt_receipts_by_execution[execution_value] = record
-
-    artifact_hashes: set[str] = set()
-    for receipt_record in receipts_by_execution.values():
-        disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
-        if disposition is PersistedReceiptDisposition.SUCCEEDED:
-            continue
-        _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
-            str(receipt_record.reason)
+    refusal_addresses: dict[str, _RefusedValueAddress] = {}
+    for execution_value, receipt_record in receipts_by_execution.items():
+        address = _receipt_refusal_address(receipt_record)
+        if address is not None:
+            refusal_addresses[execution_value] = address
+    for execution_value, attempt_receipt in attempt_receipts_by_execution.items():
+        refusal_addresses[execution_value] = _attempt_receipt_refusal_address(
+            attempt_receipt
         )
-        if value_hash is not None and value_hash != Sha256Hash.of(b""):
-            artifact_hashes.add(value_hash.value)
-    for attempt_receipt in attempt_receipts_by_execution.values():
-        artifact_hash = attempt_receipt["artifact_hash"]
-        attempt_value_hash = str(attempt_receipt["value_hash"])
-        if artifact_hash is None:
-            if attempt_value_hash != Sha256Hash.of(b"").value:
-                raise RunTransitionConflict(
-                    "nonempty output-schema refusal has no artifact"
-                )
-            continue
-        # The mirror of `load_output_schema_refusal_receipt`'s own check
-        # (agent_attempt_store.py): the artifact an attempt names is always
-        # addressed by the same hash it judged, so the two disagreeing is the
-        # store contradicting itself, not a value this projection may show.
-        if str(artifact_hash) != attempt_value_hash:
-            raise RunTransitionConflict(
-                "output-schema refusal artifact differs from its value hash"
-            )
-        artifact_hashes.add(str(artifact_hash))
-
     artifacts_by_hash = read_stored_artifacts(
-        connection, tuple(ArtifactHash(value) for value in artifact_hashes)
+        connection,
+        tuple(
+            ArtifactHash(artifact_hash)
+            for artifact_hash in {
+                address.artifact_hash
+                for address in refusal_addresses.values()
+                if address.artifact_hash is not None
+            }
+        ),
     )
-
-    def refusal_output_for(execution_value: str) -> NodeAnswer | None:
-        receipt_record = receipts_by_execution.get(execution_value)
-        if receipt_record is not None:
-            disposition = PersistedReceiptDisposition(str(receipt_record.disposition))
-            if disposition is PersistedReceiptDisposition.SUCCEEDED:
-                return None
-            _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
-                str(receipt_record.reason)
-            )
-            if value_hash is None:
-                return None
-            if value_hash == Sha256Hash.of(b""):
-                return NodeAnswer(b"", value_hash)
-            artifact = artifacts_by_hash.get(value_hash.value)
-            if artifact is None:
-                raise RuntimeError("refused node output artifact is missing")
-            text = artifact.content.decode("utf-8")
-            return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
-        attempt_receipt = attempt_receipts_by_execution.get(execution_value)
-        if attempt_receipt is None:
-            return None
-        value_hash = Sha256Hash(str(attempt_receipt["value_hash"]))
-        artifact_hash = attempt_receipt["artifact_hash"]
-        if artifact_hash is None:
-            return NodeAnswer(b"", value_hash)
-        artifact = artifacts_by_hash.get(str(artifact_hash))
-        if artifact is None:
-            raise RuntimeError("output-schema refusal artifact is missing")
-        text = artifact.content.decode("utf-8")
-        return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
-
     results: dict[str, tuple[NodeAnswer | None, NodeAnswer | None]] = {}
     for run_id, execution in execution_by_run_id.items():
-        answer = answers_by_execution.get(execution.value)
-        results[run_id] = (answer, refusal_output_for(execution.value))
+        address = refusal_addresses.get(execution.value)
+        results[run_id] = (
+            answers_by_execution.get(execution.value),
+            None if address is None else address.answer(artifacts_by_hash),
+        )
     return results
 
 
