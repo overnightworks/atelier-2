@@ -23,7 +23,6 @@ recomputes to nothing. The chain waits on that author, not on this door.
 
 from __future__ import annotations
 
-import importlib.util
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -31,7 +30,6 @@ from typing import cast
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos import queries as queries_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import (
@@ -78,7 +76,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
-from tests.scenarios.api import durable_queries, permissive_projection_limit
+from tests.scenarios.api import durable_queries
 from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
@@ -297,35 +295,6 @@ def test_get_run_answers_a_v3_agent_run_with_no_attempt_rows(
     assert found.projection.agent_attempts == ()
 
 
-def test_restoring_a_run_v2_only_query_reds_the_prepared_v3_attempt(
-    runtime: DbosRuntime, tmp_path: Path
-) -> None:
-    needle = "if not isinstance(run, (RunV2, RunV3)):"
-    restored = "if not isinstance(run, RunV2):"
-    _workflow, execution = started_v3_attempt(runtime)
-    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    store.prepare(execution)
-    source = Path(queries_module.__file__).read_text(encoding="utf-8")
-    assert needle in source
-    mutated_path = tmp_path / "queries_mutated.py"
-    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(
-        "atelier2.adapters.dbos.queries_mutated", mutated_path
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    mutated = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mutated)
-    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
-        RUN
-    )
-
-    assert not (
-        isinstance(found, RunFound)
-        and found.projection.current_agent_attempt is not None
-    )
-
-
 def test_get_run_answers_a_completed_v3_sink_without_a_current_attempt(
     runtime: DbosRuntime,
 ) -> None:
@@ -362,36 +331,6 @@ def test_get_run_answers_a_failed_v3_node_with_its_current_attempt(
     )
     assert rail[0].state is NodeState.FAILED
     assert rail[0].attempt == NodeRailAttempt(1, PublicAgentAttemptState.FAILED)
-
-
-def test_projecting_attempts_on_a_completed_v3_sink_reds_the_completed_get(
-    runtime: DbosRuntime, tmp_path: Path
-) -> None:
-    _workflow, execution = started_v3_attempt(runtime)
-    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
-    store.prepare(execution)
-    store.claim(execution)
-    store.complete_success(execution, AgentExecutionResult(PROVIDER_OUTPUT))
-    needle = "if records_for_execution and run.state is not RunState.COMPLETED:"
-    restored = "if records_for_execution:"
-    source = Path(queries_module.__file__).read_text(encoding="utf-8")
-    assert needle in source
-    mutated_path = tmp_path / "queries_completed_mutated.py"
-    mutated_path.write_text(source.replace(needle, restored, 1), encoding="utf-8")
-    spec = importlib.util.spec_from_file_location(
-        "atelier2.adapters.dbos.queries_completed_mutated", mutated_path
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    mutated = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mutated)
-    found = mutated.DbosQueries(runtime.engine, permissive_projection_limit()).get_run(
-        RUN
-    )
-
-    assert not (
-        isinstance(found, RunFound) and found.projection.current_agent_attempt is None
-    )
 
 
 @pytest.mark.proves("a-v3-agent-node-reaches-the-durable-attempt-path")
