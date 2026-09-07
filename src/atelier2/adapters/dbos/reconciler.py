@@ -19,6 +19,7 @@ from atelier2.contracts.effects import (
     EffectIntentState,
     OperatorFoundEffect,
     ReconcileCommand,
+    ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
@@ -102,20 +103,7 @@ class DbosEffectReconcileCommander:
                     intent_snapshot_from_record(stored_intent_record).intent,
                 )
                 if inserted.rowcount == 0:
-                    if snapshot.command == command:
-                        return DurableReconciliationExisting(snapshot)
-                    if (
-                        snapshot.command.command_id == command.command_id
-                        and snapshot.command.intent_reference
-                        == command.intent_reference
-                        and snapshot.command.expected_intent_state_version
-                        == command.expected_intent_state_version
-                        and snapshot.command.actor == command.actor
-                        and snapshot.command.evidence == command.evidence
-                        and snapshot.command.determination != command.determination
-                    ):
-                        return DurableReconciliationDeterminationConflict()
-                    return DurableReconciliationCommandConflict()
+                    return _stored_command_result(snapshot, command)
                 if not accepted:
                     return DurableReconciliationCreated(snapshot)
 
@@ -187,3 +175,28 @@ class DbosEffectReconcileCommander:
                 state=state.value,
             )
         )
+
+
+def _stored_command_result(
+    snapshot: ReconcileCommandSnapshot, command: ReconcileCommand
+) -> (
+    DurableReconciliationExisting
+    | DurableReconciliationDeterminationConflict
+    | DurableReconciliationCommandConflict
+):
+    """What a command id the store already holds means for this submission."""
+
+    stored = snapshot.command
+    if stored == command:
+        return DurableReconciliationExisting(snapshot)
+    if (
+        stored.command_id == command.command_id
+        and stored.intent_reference == command.intent_reference
+        and stored.expected_intent_state_version
+        == command.expected_intent_state_version
+        and stored.actor == command.actor
+        and stored.evidence == command.evidence
+        and stored.determination != command.determination
+    ):
+        return DurableReconciliationDeterminationConflict()
+    return DurableReconciliationCommandConflict()
