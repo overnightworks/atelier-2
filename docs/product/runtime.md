@@ -115,6 +115,17 @@ Removal never follows a symbolic link out and never touches the root itself. Thi
 is a directory holding pinned material, not an operating-system sandbox: the
 process still runs as the serving user and can name other paths.
 
+A builder node whose grant publishes a commit holds its work item's lane claim
+before any of that: after the executor is found and the pin attested, the claim
+door opens a claim checkout -- a locked linked worktree of the project checkout
+on the lane branch at the pin, under `claim-checkouts/` beside the scratch root
+-- and runs the claim command from it, because the ledger reads a clean
+worktree on the lane branch before it acts. The provider never works there: it
+still gets the git-less lease above. A refused claim removes the checkout; a
+held claim keeps it, locked, until the claim is released. Opening it is no
+durable step -- it is idempotent by run, so a replay finds it again or makes it
+anew, and the one memoized ledger answer still stands.
+
 What an attempt made now outlives the directory it was made in. Its finished
 work is captured into the project's own candidate store
 (`.atelier2-candidates.git`, ADR 0011 decision 2) after any granted check has
