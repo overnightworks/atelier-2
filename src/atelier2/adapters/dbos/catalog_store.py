@@ -240,14 +240,10 @@ def _derived_lineage_or_mismatch(
     return lineage
 
 
-def _name_holder(
-    connection: sa.Connection,
-    kind: RevisionKind,
-    display_name: CatalogLineageDisplayName,
-    *,
-    except_lineage_id: CatalogLineageId | None = None,
-) -> CatalogLineageId | None:
-    statement = (
+def _name_holder_statement(
+    kind: RevisionKind, display_name: CatalogLineageDisplayName
+) -> sa.Select[tuple[Any]]:
+    return (
         sa.select(catalog_lineage_aliases.c.lineage_id)
         .select_from(
             catalog_lineage_aliases.join(
@@ -261,6 +257,38 @@ def _name_holder(
         )
         .distinct()
     )
+
+
+def _lineage_for_query(
+    connection: sa.Connection, kind: RevisionKind, query: CatalogLineageQuery
+) -> CatalogLineage | None:
+    """The lineage a name or id resolves to under this kind, or nothing."""
+
+    if isinstance(query, CatalogLineageId):
+        record = _lineage_record(connection, query)
+        if record is None:
+            return None
+        lineage = catalog_lineage_from_record(record)
+        return lineage if lineage.kind is kind else None
+    holders = connection.execute(_name_holder_statement(kind, query)).scalars().all()
+    if len(holders) > 1:
+        raise ValueError("catalog name is held by more than one lineage of one kind")
+    if not holders:
+        return None
+    record = _lineage_record(connection, CatalogLineageId(str(holders[0])))
+    if record is None:
+        raise ValueError("catalog alias names a lineage that is missing")
+    return catalog_lineage_from_record(record)
+
+
+def _name_holder(
+    connection: sa.Connection,
+    kind: RevisionKind,
+    display_name: CatalogLineageDisplayName,
+    *,
+    except_lineage_id: CatalogLineageId | None = None,
+) -> CatalogLineageId | None:
+    statement = _name_holder_statement(kind, display_name)
     if except_lineage_id is not None:
         statement = statement.where(
             catalog_lineage_aliases.c.lineage_id != except_lineage_id.value
@@ -997,48 +1025,9 @@ class DbosCatalogStore:
     ) -> ResolveCatalogNameResult:
         try:
             with self._engine.connect() as connection:
-                if isinstance(lineage_id_or_name, CatalogLineageId):
-                    record = _lineage_record(connection, lineage_id_or_name)
-                    if record is None:
-                        return CatalogNameMissing(lineage_id_or_name, position)
-                    lineage = catalog_lineage_from_record(record)
-                    if lineage.kind is not kind:
-                        return CatalogNameMissing(lineage_id_or_name, position)
-                else:
-                    holders = (
-                        connection.execute(
-                            sa.select(catalog_lineage_aliases.c.lineage_id)
-                            .select_from(
-                                catalog_lineage_aliases.join(
-                                    catalog_lineages,
-                                    catalog_lineages.c.lineage_id
-                                    == catalog_lineage_aliases.c.lineage_id,
-                                )
-                            )
-                            .where(
-                                catalog_lineage_aliases.c.name
-                                == lineage_id_or_name.value,
-                                catalog_lineages.c.kind == kind.value,
-                            )
-                            .distinct()
-                        )
-                        .scalars()
-                        .all()
-                    )
-                    if len(holders) > 1:
-                        raise ValueError(
-                            "catalog name is held by more than one lineage of one kind"
-                        )
-                    if not holders:
-                        return CatalogNameMissing(lineage_id_or_name, position)
-                    record = _lineage_record(
-                        connection, CatalogLineageId(str(holders[0]))
-                    )
-                    if record is None:
-                        raise ValueError(
-                            "catalog alias names a lineage that is missing"
-                        )
-                    lineage = catalog_lineage_from_record(record)
+                lineage = _lineage_for_query(connection, kind, lineage_id_or_name)
+                if lineage is None:
+                    return CatalogNameMissing(lineage_id_or_name, position)
                 member_statement = sa.select(catalog_lineage_members).where(
                     catalog_lineage_members.c.lineage_id == lineage.lineage_id.value
                 )
