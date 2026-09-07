@@ -1,0 +1,8 @@
+claim_id = "11f9baace4174d18aecfbebfafa3cb4f"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "c9100ce4b7b520f329744aac8d71bcfa1a2cf317"
+branch = "claude/issue-1420-giants"
+scope = ["src/atelier2/adapters/dbos/workflow.py", "src/atelier2/adapters/dbos/runtime.py", "scripts/baselines/size_ratchet_baseline.toml", "tests/integration", "tests/adapters"]
+opened_commit = "4a20f78eb105431c8a6d601354e7ed4f6077a695"
+whole_reason = "Zwei heisse Riesen, je ein Commit; die Tuer- und Serve-Start-Tests sind der Beweis"
