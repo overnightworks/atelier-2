@@ -2850,7 +2850,8 @@ def test_two_concurrent_sweeps_restart_only_what_the_tracker_still_authorizes(
     """The tracker decides before the release, against the real rows.
 
     An open, labelled item's ended launch is released exactly once across the
-    two sweeps; a closed or unlabelled item, and one the tracker could not be
+    two sweeps, and started again at most once, one revision on; a closed or
+    unlabelled item, and one the tracker could not be
     asked about, are released by neither: the binding row keeps its NULL
     ending, the item keeps its revision and its binding, and both sweeps name
     the same refusal.
@@ -2897,9 +2898,16 @@ def test_two_concurrent_sweeps_restart_only_what_the_tracker_still_authorizes(
     if refusal is None:
         assert len(restarting) == 1
         assert withheld == []
-        assert _stored_bindings(engine) == [("failed-run", RunState.FAILED.value, 0)]
+        # A sweep that lists the item after the other's release may already
+        # start it again: one release, and at most one fresh launch beside it.
+        ended, *relaunched = _stored_bindings(engine)
+        assert ended == ("failed-run", RunState.FAILED.value, 0)
+        assert [(ending, ordinal) for _run, ending, ordinal in relaunched] in (
+            [],
+            [(None, 1)],
+        )
         assert item.admission.proposal_revision == QueueProjectionRevision(2)
-        assert item.launch_binding is None
+        assert (item.launch_binding is None) == (relaunched == [])
     else:
         assert restarting == []
         assert [outcome.refusal for outcome in withheld] == [refusal, refusal]
