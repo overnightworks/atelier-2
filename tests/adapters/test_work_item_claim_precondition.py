@@ -11,6 +11,7 @@ import sqlalchemy as sa
 
 from atelier2.adapters.agent_claim_cli import AgentClaimCli
 from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -19,12 +20,14 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.work_item_claims import (
+    WHOLE_SCOPE_REASON,
     ConfirmedWorkItemClaim,
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
     hold_prepared_claim,
     hold_work_item_claim,
+    out_of_order_reason,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
@@ -48,7 +51,28 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
+from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    PlanQueueItem,
+    QueueAdmissionRationale,
+    QueueAutomationDisposition,
+    QueueItemAdmitted,
+    QueueItemProposed,
+    QueueItemTrackerObservation,
+    QueueLaunchBinding,
+    QueuePriorityRank,
+    QueueProjectionRevision,
+    QueueProjectPolicyRevision,
+    QueueProposal,
+    WorkItemReference,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.when import RecordedAt
+from atelier2.ports.queue_projection import (
+    QueueItemsReconciled,
+    QueueLaunchReserved,
+    QueueProjectPolicyPublished,
+)
 from atelier2.ports.work_item_claims import (
     ClaimAbsent,
     ClaimReceipt,
@@ -64,6 +88,10 @@ from tests.acceptance.test_v3_push_before_open_pr import (
     _repositories,
     _start_public_run,
 )
+from tests.acceptance.test_v3_push_before_open_pr import (
+    ITEM as PUBLIC_ITEM,
+)
+from tests.integration.test_phase_d_admission import _found_lineage
 from tests.scenarios.work_item_claims import (
     FakeWorkItemClaims,
     claimed_ledger,
@@ -412,6 +440,96 @@ def _started_node(
         _RecordedSteps(runtime.datasource.run_tx_step).run_tx_step,
     )
     return _StartedBuilderNode(runtime, revision_hash, binding)
+
+
+def _launched_from_the_queue(runtime: DbosRuntime, label: str | None) -> None:
+    """Bind the started run to its item as the sweep would, under a policy
+    naming `label` -- the durable trace that says the operator admitted it."""
+
+    queue = DbosQueueProjectionStore(runtime.engine)
+    lineage_id, revision_hash = _found_lineage(runtime.engine)
+    assert isinstance(
+        queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 5, label), 0),
+        QueueProjectPolicyPublished,
+    )
+    reference = WorkItemReference(PROJECT, PUBLIC_ITEM)
+    observed_at = RecordedAt("2026-08-27T10:00:00Z")
+    assert isinstance(
+        queue.reconcile_open_items(
+            PROJECT,
+            ((reference, QueueItemTrackerObservation("Implement P3.", observed_at)),),
+            observed_at,
+        ),
+        QueueItemsReconciled,
+    )
+    proposed = queue.plan(
+        PlanQueueItem(
+            reference,
+            QueueProposal(
+                QueuePriorityRank(1),
+                lineage_id,
+                (),
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+                1,
+            ),
+            QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(proposed, QueueItemProposed)
+    assert isinstance(
+        queue.confirm(
+            ConfirmQueueProposal(
+                reference,
+                proposed.revision,
+                QueueAdmissionRationale("operator approved the inspected proposal"),
+            )
+        ),
+        QueueItemAdmitted,
+    )
+    assert isinstance(
+        queue.reserve_launch(
+            QueueLaunchBinding(reference.item_id, proposed.revision, RUN, revision_hash)
+        ),
+        QueueLaunchReserved,
+    )
+
+
+@pytest.mark.parametrize(
+    ("queue_launched", "label", "expected"),
+    (
+        (False, None, ClaimReasons(WHOLE_SCOPE_REASON, None)),
+        (
+            True,
+            "bereit",
+            ClaimReasons(WHOLE_SCOPE_REASON, out_of_order_reason("bereit")),
+        ),
+        (True, None, ClaimReasons(WHOLE_SCOPE_REASON, None)),
+    ),
+    ids=("started-by-hand", "queue-launched-under-a-label", "queue-launched-no-label"),
+)
+def test_the_claim_waives_board_order_only_for_a_run_the_queue_admitted(
+    started_node: _StartedBuilderNode,
+    tmp_path: Path,
+    queue_launched: bool,
+    label: str | None,
+    expected: ClaimReasons,
+) -> None:
+    """The whole-scope reason always travels; the out-of-order reason only
+    where a queue launch binding names this run and the policy names a label.
+
+    A hand-started run is refused by priority as a person would be, and so is
+    a queue-launched run under a policy that admits by no label.
+    """
+
+    if queue_launched:
+        _launched_from_the_queue(started_node.runtime, label)
+    executable = fake_agent_claim_executable(tmp_path)
+    ledger = WorkItemClaimLedger(AgentClaimCli(executable, tmp_path), LEDGER_BINDING)
+
+    assert started_node.hold(ledger) is None
+
+    (claimed,) = claimed_ledger(executable)
+    assert claimed.reasons == expected
 
 
 def _refusing_everything() -> FakeWorkItemClaims:
