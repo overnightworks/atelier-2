@@ -138,10 +138,6 @@ qualified_name = "atelier2.adapters.agent_process_watchdog.Watchdog._handle_laun
 lines = 98
 
 [[function]]
-qualified_name = "atelier2.adapters.agent_process_watchdog._decode_launch_request"
-lines = 77
-
-[[function]]
 qualified_name = "atelier2.adapters.agent_processes.AgentProcessSupervisor.launch_and_wait"
 lines = 91
 
@@ -448,10 +444,6 @@ lines = 66
 [[function]]
 qualified_name = "atelier2.adapters.github.project_connections.GitHubProjectSourceConnector.validate"
 lines = 61
-
-[[function]]
-qualified_name = "atelier2.adapters.grok_subscription._discovered_surfaces"
-lines = 60
 
 [[function]]
 qualified_name = "atelier2.adapters.grok_subscription.attest_grok_containment"
