@@ -1,7 +1,0 @@
-claim_id = "4496765f52654c2aa25090e530e18cc2"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "b36b23b95ead73e950b5b71fcf1727a92e02d34d"
-branch = "fix/agent-claim-pin-c2"
-scope = [".github/workflows/ci.yml"]
-opened_commit = "948223a943191065a224f8ab190113bd9da10f8a"
