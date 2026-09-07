@@ -122,11 +122,8 @@ def test_open_makes_a_clean_linked_worktree_on_the_lane_branch_at_the_pin(
 
     facts = worktree_facts(opened)
     assert facts["git_dir"] != facts["common_dir"]
-    assert (facts["branch"], facts["head"], facts["status"]) == (
-        LANE.value,
-        project.pin.commit,
-        "",
-    )
+    standing = (facts["branch"], facts["head"], facts["status"])
+    assert standing == (LANE.value, project.pin.commit, "")
     assert tracked_files(opened) == set(A_PROJECT)
     assert opened.parent == project.root
     assert project.registered_worktrees() == {str(project.checkout), str(opened)}
@@ -141,7 +138,8 @@ def test_a_sparse_source_still_yields_the_whole_pin(tmp_path: Path) -> None:
 
     opened = project.checkouts.open(A_RUN, LANE, project.pin)
 
-    assert {name for name in A_PROJECT if (opened / name).is_file()} == set(A_PROJECT)
+    present = {name for name in A_PROJECT if (opened / name).is_file()}
+    assert present == set(A_PROJECT)
     assert worktree_facts(opened)["status"] == ""
 
 
@@ -261,11 +259,8 @@ def test_what_is_not_this_runs_checkout_is_refused_untouched(
     with pytest.raises(ClaimCheckoutRefused, match=refused_as):
         project.checkouts.open(A_RUN, LANE, project.pin)
 
-    assert (
-        working_tree(project.checkout),
-        snapshot(occupied),
-        project.state(),
-    ) == before
+    after = (working_tree(project.checkout), snapshot(occupied), project.state())
+    assert after == before
 
 
 def test_a_lane_branch_a_standing_checkout_holds_refuses_the_next_run(
@@ -329,7 +324,8 @@ def test_open_and_close_leave_the_project_checkout_where_it_stood(
     project.checkouts.open(A_RUN, LANE, project.pin)
     project.checkouts.close(A_RUN)
 
-    assert (project.state(), working_tree(project.checkout)) == before
+    after = (project.state(), working_tree(project.checkout))
+    assert after == before
 
 
 def test_a_root_inside_the_project_checkout_is_refused(tmp_path: Path) -> None:
