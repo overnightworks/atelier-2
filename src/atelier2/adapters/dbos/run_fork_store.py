@@ -7,13 +7,14 @@ from typing import Any
 
 import sqlalchemy as sa
 from dbos import DBOSClient
-from sqlalchemy.engine import Connection, Engine, RowMapping
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from atelier2.adapters.dbos.agent_effect_grants import (
     agent_node_redeems_platform_effect,
 )
+from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.effect_store import receipt_from_record
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
@@ -111,10 +112,6 @@ from atelier2.ports.durable_run_forks import (
 
 class _PrefixNotReusable(RuntimeError):
     pass
-
-
-def _one_record(connection: Connection, statement: sa.Select[Any]) -> RowMapping | None:
-    return connection.execute(statement).mappings().one_or_none()
 
 
 class DbosRunForkStore:
@@ -322,7 +319,7 @@ def _fork_origin(
     | DurableRunForkLoopUnsupported
     | DurableRunForkNodeMissing
 ):
-    origin_record = _one_record(
+    origin_record = one_record(
         connection,
         sa.select(runs).where(runs.c.run_id == request.origin_run_id.value),
     )
@@ -422,7 +419,7 @@ def _resolve_reused_node(
     node_id: str,
     position: int,
 ) -> RunForkReusedNode:
-    inherited = _one_record(
+    inherited = one_record(
         connection,
         sa.select(run_fork_reused_nodes).where(
             run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
@@ -438,14 +435,14 @@ def _resolve_reused_node(
         origin.run_id, origin.revision_hash, node_id
     )
     event_kind = _successful_event_kind(graph.node(node_id))
-    event_record = _one_record(
+    event_record = one_record(
         connection,
         sa.select(run_events).where(
             run_events.c.node_execution_id == execution_id.value,
             run_events.c.event_kind == event_kind.value,
         ),
     )
-    receipt_record = _one_record(
+    receipt_record = one_record(
         connection,
         sa.select(node_receipts_v3).where(
             node_receipts_v3.c.node_execution_id == execution_id.value
@@ -493,7 +490,7 @@ def _successful_event_kind(node: object) -> RunEventKind:
 def _validate_reused_source(
     connection: Connection, reference: RunForkReusedNode, graph: WorkflowGraphV3
 ) -> None:
-    event_record = _one_record(
+    event_record = one_record(
         connection,
         sa.select(run_events).where(
             run_events.c.run_id == reference.source_run_id.value,
@@ -502,7 +499,7 @@ def _validate_reused_source(
             run_events.c.event_hash == reference.source_event_hash.value,
         ),
     )
-    receipt_record = _one_record(
+    receipt_record = one_record(
         connection,
         sa.select(node_receipts_v3).where(
             node_receipts_v3.c.node_execution_id
@@ -510,7 +507,7 @@ def _validate_reused_source(
             node_receipts_v3.c.receipt_hash == reference.source_receipt_hash.value,
         ),
     )
-    request_record = _one_record(
+    request_record = one_record(
         connection,
         sa.select(node_execution_requests_v3).where(
             node_execution_requests_v3.c.node_execution_id
@@ -614,7 +611,7 @@ def _effective_node_succeeded(
     )
     if direct is not None:
         return True
-    inherited = _one_record(
+    inherited = one_record(
         connection,
         sa.select(run_fork_reused_nodes).where(
             run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
@@ -636,7 +633,7 @@ def _effective_receipt_record(
     logical_key = logical_effect_key_for_node(
         origin.run_id, origin.revision_hash, node_id
     )
-    direct = _one_record(
+    direct = one_record(
         connection,
         sa.select(effect_receipts).where(
             effect_receipts.c.logical_key == logical_key.value
@@ -644,7 +641,7 @@ def _effective_receipt_record(
     )
     if direct is not None:
         return direct
-    inherited = _one_record(
+    inherited = one_record(
         connection,
         sa.select(run_fork_reused_nodes).where(
             run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
@@ -655,7 +652,7 @@ def _effective_receipt_record(
         return None
     reference = _reused_node_from_record(inherited)
     _validate_reused_source(connection, reference, graph)
-    source_event = _one_record(
+    source_event = one_record(
         connection,
         sa.select(run_events).where(
             run_events.c.event_hash == str(inherited["source_event_hash"])
@@ -683,7 +680,7 @@ def _effective_receipt_record(
                 == reference.source_agent_receipt_hash.value,
             )
         ).one_or_none()
-        source_receipt = _one_record(
+        source_receipt = one_record(
             connection,
             sa.select(effect_receipts).where(
                 effect_receipts.c.logical_key == source_logical_key.value,
@@ -880,7 +877,7 @@ def _effect_fence_values(
 def _stored_fork_for_command(
     connection: Connection, command_id: RunForkCommandId
 ) -> RunFork | None:
-    record = _one_record(
+    record = one_record(
         connection,
         sa.select(run_forks).where(run_forks.c.command_id == command_id.value),
     )
@@ -996,7 +993,7 @@ def _load_successor(connection: Connection, run_id: RunId) -> RunV3:
 def _validate_stored_fork_header(
     connection: Connection, fork: RunFork, successor: RunV3
 ) -> None:
-    origin = _one_record(
+    origin = one_record(
         connection,
         sa.select(
             runs.c.terminal_hash,

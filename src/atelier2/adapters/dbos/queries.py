@@ -25,13 +25,13 @@ from atelier2.adapters.dbos.artifact_store import (
     read_stored_artifacts,
 )
 from atelier2.adapters.dbos.attention_events import load_attention_event_page
+from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
     intent_snapshot_from_record,
     receipt_from_record,
 )
 from atelier2.adapters.dbos.run_fork_store import (
-    _one_record,
     _stored_fork_for_command,
     validate_stored_fork,
 )
@@ -510,7 +510,7 @@ class _BoundedTable:
         projection_limit: DurableProjectionLimit,
         *where: sa.ColumnElement[bool],
     ) -> RowMapping | None:
-        record = _one_record(connection, self.select(projection_limit).where(*where))
+        record = one_record(connection, self.select(projection_limit).where(*where))
         if record is not None:
             self.validate(record, projection_limit)
         return record
@@ -947,7 +947,7 @@ def _attempt_output_schema_refusal(
     execution_id: NodeExecutionId,
     attempt_id: AgentAttemptId | None = None,
 ) -> OutputSchemaRefusalReceipt | None:
-    attempt_record = _one_record(
+    attempt_record = one_record(
         connection,
         sa.select(agent_attempts).where(
             agent_attempts.c.node_execution_id == execution_id.value,
@@ -979,7 +979,7 @@ def _attempt_output_schema_refusal(
 def _terminal_receipt_record(
     connection: Connection, execution_id: NodeExecutionId
 ) -> RowMapping | None:
-    return _one_record(
+    return one_record(
         connection,
         sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
             node_receipts_v3.c.node_execution_id == execution_id.value
@@ -1304,7 +1304,7 @@ def _waiting_input_event(
     connection: Connection, execution_id: NodeExecutionId
 ) -> RunEvent | None:
     """The exact durable pause for this Wait execution, integrity-checked."""
-    record = _one_record(
+    record = one_record(
         connection,
         sa.select(run_events).where(
             run_events.c.node_execution_id == execution_id.value,
@@ -1355,7 +1355,7 @@ def _node_detail_execution(
     ):
         return current_round, current_execution
 
-    record = _one_record(
+    record = one_record(
         connection,
         sa.select(run_events)
         .where(
@@ -1747,7 +1747,7 @@ def _node_provenance(
 ) -> NodeProvenance | None:
     """Which agent produced this node's answer, as its receipt recorded it."""
 
-    record = _one_record(
+    record = one_record(
         connection,
         sa.select(agent_receipts_v2).where(
             agent_receipts_v2.c.node_execution_id == execution_id.value,
@@ -2010,7 +2010,7 @@ def _run_instants(
 def _event_stream_run_record(
     connection: Connection, run_id: RunId
 ) -> RowMapping | None:
-    return _one_record(
+    return one_record(
         connection,
         sa.select(
             runs.c.state,
@@ -2203,7 +2203,7 @@ class DbosQueries:
     ) -> GetWorkflowRevisionResult:
         try:
             with self._connection() as connection:
-                record = _one_record(
+                record = one_record(
                     connection,
                     _BOUNDED_REVISIONS.select(self._projection_limit)
                     .add_columns(*_REVISION_PROVENANCE_COLUMNS)
