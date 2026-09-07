@@ -602,18 +602,6 @@ qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__
 lines = 84
 
 [[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries.DbosQueries._run_projections"
-complexity = 43
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries._current_attempt_projection"
-complexity = 17
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.queries._run_terminal_results"
-complexity = 30
-
-[[complexity]]
 qualified_name = "atelier2.adapters.dbos.run_store.DbosWaitAnswerer.submit_result"
 complexity = 46
 

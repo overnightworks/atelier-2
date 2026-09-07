@@ -132,7 +132,6 @@ from atelier2.contracts.run_events import (
 )
 from atelier2.contracts.run_forks import (
     MAXIMUM_RUN_FORK_SUCCESSORS,
-    RunFork,
     RunForkCommandId,
 )
 from atelier2.contracts.run_projections import (
@@ -637,7 +636,7 @@ class _AttemptShape:
     """What a durable attempt row must look like while it is in one state."""
 
     name: str
-    lowest_state_version: int | None = None
+    lowest_state_version: int = 0
     highest_state_version: int | None = None
     receipt_present: bool = False
     cancellation_command_present: bool = False
@@ -645,10 +644,7 @@ class _AttemptShape:
     def disagrees_with(self, record: Mapping[Any, Any]) -> bool:
         state_version = int(record["state_version"])
         return (
-            (
-                self.lowest_state_version is not None
-                and state_version < self.lowest_state_version
-            )
+            state_version < self.lowest_state_version
             or (
                 self.highest_state_version is not None
                 and state_version > self.highest_state_version
@@ -663,9 +659,7 @@ class _AttemptShape:
 
 _CANCELLED_ATTEMPT_SHAPE = _AttemptShape("cancelled", cancellation_command_present=True)
 _ATTEMPT_SHAPE_BY_STATE: Mapping[AgentAttemptState, _AttemptShape] = {
-    AgentAttemptState.PREPARED: _AttemptShape(
-        "prepared", lowest_state_version=0, highest_state_version=1
-    ),
+    AgentAttemptState.PREPARED: _AttemptShape("prepared", highest_state_version=1),
     AgentAttemptState.LAUNCH_ARMED: _AttemptShape("armed", lowest_state_version=1),
     AgentAttemptState.FAILED: _AttemptShape("failed", lowest_state_version=2),
     AgentAttemptState.SUCCEEDED: _AttemptShape(
@@ -704,9 +698,7 @@ def _exact_current_attempt_request(
     handed on. A recomputation that knew only part of it would answer a run
     that really was a chain with a conflict about its own identity.
     """
-    operational_identity = AgentExecutorOperationalIdentity(
-        str(record["executor_operational_identity"])
-    )
+    operational_identity = str(record["executor_operational_identity"])
     ordinal = int(record["attempt_ordinal"])
     output_schema = _declared_output_schema_document(session, node)
     orders = load_run_inputs(session, run.run_id, node)
@@ -741,7 +733,7 @@ def _exact_current_attempt_request(
         run.revision_hash,
         run.current_node_id,
         binding,
-        operational_identity,
+        AgentExecutorOperationalIdentity(operational_identity),
         authored_job,
         None if output_schema is None else output_schema.encode("utf-8"),
         run.current_round_ordinal,
@@ -945,54 +937,6 @@ def _node_receipt_refusal(
     return reason
 
 
-def _refusal_output_without_terminal_receipt(
-    connection: Connection,
-    execution_id: NodeExecutionId,
-) -> NodeAnswer | None:
-    """Ordinal one's own immutable Attempt receipt, before any `node-receipt/v3` exists.
-
-    Shared tail of `_node_receipt_refusal_output` (single execution) and the
-    page-batched terminal-result assembly (#1045): both fall back here only
-    once the batched or single `node_receipts_v3` read named no row.
-    """
-    refusal = _attempt_output_schema_refusal(connection, execution_id)
-    if refusal is None:
-        return None
-    value_hash = refusal.value_hash
-    if refusal.artifact_hash is None:
-        return NodeAnswer(b"", value_hash)
-    artifact = read_stored_artifact(connection, refusal.artifact_hash)
-    if artifact is None:
-        raise RuntimeError("output-schema refusal artifact is missing")
-    text = artifact.content.decode("utf-8")
-    return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
-
-
-def _refusal_output_from_receipt_reason(
-    connection: Connection, reason: str
-) -> NodeAnswer | None:
-    """A redacted presentation of a terminal `node-receipt/v3` row's own reason.
-
-    Shared tail of `_node_receipt_refusal_output` (single execution) and the
-    page-batched terminal-result assembly (#1045): both already know the
-    receipt's own `reason` column -- one from its own query, the other from a
-    single batched read over the whole page -- so this is the one place that
-    turns it into artifact bytes and redacts them (#664). A nonempty hash
-    whose artifact is absent or disagrees is corrupt durable state, never an
-    absent answer.
-    """
-    _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(reason)
-    if value_hash is None:
-        return None
-    artifact = read_stored_artifact(connection, ArtifactHash(value_hash.value))
-    if artifact is None:
-        if value_hash == Sha256Hash.of(b""):
-            return NodeAnswer(b"", value_hash)
-        raise RuntimeError("refused node output artifact is missing")
-    text = artifact.content.decode("utf-8")
-    return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
-
-
 def _node_receipt_refusal_output(
     connection: Connection,
     execution_id: NodeExecutionId,
@@ -1001,34 +945,35 @@ def _node_receipt_refusal_output(
 
     A terminal ordinal-two refusal names its value hash in `node-receipt/v3`;
     before that terminal row exists, ordinal one's immutable Attempt receipt
-    names the same evidence for its nonterminal repair event
-    (`_refusal_output_without_terminal_receipt`). A plain reason, an unjudged
-    failure, or absence from both receipt families has nothing to resolve and
-    reads honestly absent. Where either receipt names a hash, its failure
-    transaction also published these exact bytes as an artifact under that
-    same address (#664) -- so a reader who wants to see what was refused, not
-    just that it was, reads them back through the one content-addressed store
-    every other artifact uses (`_refusal_output_from_receipt_reason`).
-
-    A provider's refused output is untrusted text on its way to a browser, and
-    a schema refusal is exactly the shape of episode where a provider might
-    have echoed a credential it was handed -- so `redact_credentials` runs over
-    it here, at the read boundary, before this projection's caller ever builds
-    a wire resource from it (#664). Bytes that do not decode as UTF-8 cannot be
-    scanned for a credential shape at all, so the durable read fails loud
-    instead of hiding or exposing them.
+    names the same evidence for its nonterminal repair event. A plain reason,
+    an unjudged failure, or absence from both receipt families has nothing to
+    resolve and reads honestly absent. Where either receipt names a hash, its
+    failure transaction also published these exact bytes as an artifact under
+    that same address, read back through the one content-addressed store
+    every other artifact uses and redacted at this read boundary: a provider's
+    refused output is untrusted text on its way to a browser, and a schema
+    refusal is exactly the shape of episode where a provider might have
+    echoed a credential it was handed. Bytes that do not decode as UTF-8
+    cannot be scanned for a credential shape at all, so the durable read
+    fails loud instead of hiding or exposing them.
     """
-    record = connection.execute(
-        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
-            node_receipts_v3.c.node_execution_id == execution_id.value
+    record = (
+        connection.execute(
+            sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == execution_id.value
+            )
         )
-    ).one_or_none()
-    if record is None:
-        return _refusal_output_without_terminal_receipt(connection, execution_id)
-    disposition = PersistedReceiptDisposition(str(record.disposition))
-    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+        .mappings()
+        .one_or_none()
+    )
+    if record is not None:
+        address = _receipt_refusal_address(record)
+    else:
+        refusal = _attempt_output_schema_refusal(connection, execution_id)
+        address = None if refusal is None else _RefusedValueAddress.of(refusal)
+    if address is None:
         return None
-    return _refusal_output_from_receipt_reason(connection, str(record.reason))
+    return address.answer(_refused_artifacts(connection, (address,)))
 
 
 def _node_transcript(
@@ -1510,36 +1455,13 @@ def _node_answer(
     node: object,
     execution_id: NodeExecutionId,
 ) -> NodeAnswer | None:
-    """The value this node wrote, or nothing when it has written none yet.
+    """The value this node wrote, or nothing when it has written none yet."""
+    answer_kinds = (_own_answer_event_kind(node), _embedded_platform_effect_kind(node))
+    answers = _terminal_answers(connection, {execution_id.value: answer_kinds})
+    return answers.get(execution_id.value)
 
-    Matched against this node's own declared completion kind rather than any
-    answer-bearing kind: a node execution can carry a second, embedded
-    platform-effect confirmation that is not this node's answer (see
-    `_embedded_platform_effect_kind`) and is skipped here; any other, wider
-    disagreement -- a kind neither the node's own nor that one recognized
-    companion -- still refuses loudly rather than being read past.
-    """
 
-    own_kind = _own_answer_event_kind(node)
-    embedded_kind = _embedded_platform_effect_kind(node)
-    record = None
-    for candidate in connection.execute(
-        sa.select(
-            run_events.c.event_kind, run_events.c.payload, run_events.c.payload_hash
-        ).where(
-            run_events.c.node_execution_id == execution_id.value,
-            run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
-        )
-    ):
-        if str(candidate.event_kind) == own_kind.value:
-            if record is not None:
-                raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
-            record = candidate
-        elif embedded_kind is None or str(candidate.event_kind) != embedded_kind.value:
-            raise RunTransitionConflict(_MORE_THAN_ONE_ANSWER_BEARING_EVENT)
-    if record is None:
-        return None
-    return NodeAnswer(bytes(record.payload), Sha256Hash(str(record.payload_hash)))
+_OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING = "output-schema refusal artifact is missing"
 
 
 @dataclass(frozen=True)
@@ -1553,6 +1475,15 @@ class _RefusedValueAddress:
     artifact_hash: str | None
     missing_artifact_message: str
 
+    @classmethod
+    def of(cls, refusal: OutputSchemaRefusalReceipt) -> _RefusedValueAddress:
+        artifact_hash = refusal.artifact_hash
+        return cls(
+            refusal.value_hash,
+            None if artifact_hash is None else artifact_hash.value,
+            _OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING,
+        )
+
     def answer(self, artifacts_by_hash: Mapping[str, Artifact]) -> NodeAnswer:
         if self.artifact_hash is None:
             return NodeAnswer(b"", self.value_hash)
@@ -1563,6 +1494,20 @@ class _RefusedValueAddress:
         return NodeAnswer(
             redact_credentials(text).text.encode("utf-8"), self.value_hash
         )
+
+
+def _refused_artifacts(
+    connection: Connection, addresses: Iterable[_RefusedValueAddress]
+) -> dict[str, Artifact]:
+    """One read of every artifact these addresses name, keyed by hash."""
+    named_hashes = {
+        address.artifact_hash
+        for address in addresses
+        if address.artifact_hash is not None
+    }
+    return read_stored_artifacts(
+        connection, tuple(ArtifactHash(value) for value in named_hashes)
+    )
 
 
 def _receipt_refusal_address(
@@ -1589,7 +1534,7 @@ def _attempt_receipt_refusal_address(
     """The refused value an ordinal-one attempt's own receipt names."""
     artifact_hash = attempt_receipt["artifact_hash"]
     value_hash = str(attempt_receipt["value_hash"])
-    missing = "output-schema refusal artifact is missing"
+    missing = _OUTPUT_SCHEMA_REFUSAL_ARTIFACT_MISSING
     if artifact_hash is None:
         if value_hash != Sha256Hash.of(b"").value:
             raise RunTransitionConflict(
@@ -1613,13 +1558,12 @@ def _terminal_answers(
 ) -> dict[str, NodeAnswer]:
     """Every listed execution's own answer, read once for the whole page.
 
-    A node execution that wrote more than one answer-bearing event of a kind
-    its own declared type -- or its one recognized embedded platform-effect
-    companion, `_embedded_platform_effect_kind` -- does not own is durable
-    state disagreeing with itself: the single-execution `_node_answer` already
-    refuses that loudly, and this batched read keeps the same refusal rather
-    than a dict silently keeping the last one seen or a companion's own row
-    silently masking the disagreement.
+    Each answer is matched against its node's own declared completion kind:
+    an execution may also carry its one recognized embedded platform-effect
+    confirmation (`_embedded_platform_effect_kind`), which is skipped, while
+    any other second answer-bearing event -- or a second of its own kind --
+    is durable state disagreeing with itself and refuses loudly rather than
+    a dict silently keeping the last one seen.
     """
     answers_by_execution: dict[str, NodeAnswer] = {}
     for record in connection.execute(
@@ -1705,22 +1649,14 @@ def _run_terminal_results(
 ) -> dict[str, tuple[NodeAnswer | None, NodeAnswer | None]]:
     """Every ended run's own terminal answer and refusal, batched once per page.
 
-    Every ended run's terminal execution id is the same deterministic identity
-    `current_node_execution_id` already names on the wire -- `current_node_id`
-    at `current_round_ordinal` -- so every source is read once for the whole
-    page, keyed by that identity, and assembled per run afterward with no
-    further query: the answer-bearing events, the terminal `node-receipt/v3`
-    dispositions, the ordinal-one attempt receipts of executions no terminal
-    receipt names yet, and finally every artifact either refusal path names,
-    keyed by hash (`read_stored_artifacts`).
-
-    This omits `load_output_schema_refusal_receipt`'s own re-verification of
-    an attempt's schema revision and receipt hash against its expectations
-    (`agent_attempt_store.py`): those defend the *live* repair path a fresh
-    attempt is armed from. This projection only shows a reader what a
-    finished run already wrote, and the one property that read depends on --
-    the artifact's own bytes hashing to its address -- is still checked by
-    `read_stored_artifacts`.
+    An ended run's terminal execution id is the deterministic identity
+    `current_node_execution_id` already names on the wire, so every source is
+    read once for the whole page, keyed by that identity, and assembled per
+    run afterward with no further query. The attempt receipt's schema
+    revision and receipt hash are not re-verified here as
+    `load_output_schema_refusal_receipt` does: that defends the live repair
+    path; this read shows what a finished run already wrote, and the artifact
+    bytes hashing to their address is still checked by `read_stored_artifacts`.
     """
     if not ended_runs:
         return {}
@@ -1773,17 +1709,7 @@ def _run_terminal_results(
         refusal_addresses[execution_value] = _attempt_receipt_refusal_address(
             attempt_receipt
         )
-    artifacts_by_hash = read_stored_artifacts(
-        connection,
-        tuple(
-            ArtifactHash(artifact_hash)
-            for artifact_hash in {
-                address.artifact_hash
-                for address in refusal_addresses.values()
-                if address.artifact_hash is not None
-            }
-        ),
-    )
+    artifacts_by_hash = _refused_artifacts(connection, refusal_addresses.values())
     results: dict[str, tuple[NodeAnswer | None, NodeAnswer | None]] = {}
     for run_id, execution in execution_by_run_id.items():
         address = refusal_addresses.get(execution.value)
@@ -1919,11 +1845,13 @@ def _fork_records(
     return fork_records
 
 
-def _stored_forks(
-    connection: Connection, fork_records: Sequence[RowMapping]
-) -> tuple[RunFork, ...]:
+def _page_forks(
+    connection: Connection,
+    projection_limit: DurableProjectionLimit,
+    run_ids: Sequence[str],
+) -> _PageForks:
     stored_forks = []
-    for record in fork_records:
+    for record in _fork_records(connection, projection_limit, run_ids):
         # A same-snapshot invariant check, not a live race: `record` was
         # read from `run_forks` under this call's one SQLite snapshot
         # (`_connection` opens one `BEGIN DEFERRED` transaction for the
@@ -1941,17 +1869,6 @@ def _stored_forks(
             raise RunTransitionConflict("run fork disappeared during projection")
         validate_stored_fork(connection, fork)
         stored_forks.append(fork)
-    return tuple(stored_forks)
-
-
-def _page_forks(
-    connection: Connection,
-    projection_limit: DurableProjectionLimit,
-    run_ids: Sequence[str],
-) -> _PageForks:
-    stored_forks = _stored_forks(
-        connection, _fork_records(connection, projection_limit, run_ids)
-    )
     origin_by_successor = {
         fork.successor_run_id.value: RunForkOriginProjection(
             fork.origin_run_id,
@@ -2173,22 +2090,6 @@ def _waiting_run_reconciliation(
     return WaitingReconciliationProjection(intent, None)
 
 
-def _ended_run_reconciliation(
-    run: AnyRun, logical_key: LogicalEffectKey, intent_record: RowMapping
-) -> WaitingReconciliationProjection | None:
-    intent = _bound_intent_snapshot(
-        intent_record,
-        run,
-        logical_key,
-        "ended run intent binding disagrees with its logical key",
-    )
-    if intent.state is not EffectIntentState.ABANDONED:
-        return None
-    if intent_record["reconciliation_owner_command_id"] is not None:
-        raise RunTransitionConflict("abandoned intent has a command owner")
-    return WaitingReconciliationProjection(intent, None)
-
-
 def _run_reconciliation(
     run: AnyRun,
     logical_keys_by_run: Mapping[RunId, LogicalEffectKey],
@@ -2205,7 +2106,17 @@ def _run_reconciliation(
     intent_record = intent_records.get(logical_key.value)
     if intent_record is None:
         return None
-    return _ended_run_reconciliation(run, logical_key, intent_record)
+    intent = _bound_intent_snapshot(
+        intent_record,
+        run,
+        logical_key,
+        "ended run intent binding disagrees with its logical key",
+    )
+    if intent.state is not EffectIntentState.ABANDONED:
+        return None
+    if intent_record["reconciliation_owner_command_id"] is not None:
+        raise RunTransitionConflict("abandoned intent has a command owner")
+    return WaitingReconciliationProjection(intent, None)
 
 
 def _current_attempt_projections(
