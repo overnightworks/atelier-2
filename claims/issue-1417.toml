@@ -1,8 +1,0 @@
-claim_id = "87d25c9456734587a392b3d9d0cd5712"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "777bc7606aa00bdb67763e490a69cc2b3e334087"
-branch = "claude/issue-1417-aco-v1"
-scope = [".github/workflows/ci.yml", "src/atelier2/adapters/agent_claim_cli.py", "src/atelier2/host/__init__.py", "src/atelier2/host/serving.py", "src/atelier2/adapters/dbos/runtime.py", "scripts/baselines", "docs/OPERATIONS.md", "AGENTS.md", "tests/adapters", "tests/tooling", "tests/host", "src/atelier2/contracts/effect_requests.py", "src/atelier2/adapters/github/pull_request_prose.py", "scripts/check_root_layout.py", "tests/acceptance", "tests/crash", "tests/scenarios", "tests/integration/test_github_open_pr_live.py"]
-opened_commit = "1715378ca8fa3c180bfbdb69e5598246912d430a"
-whole_reason = "Ein Werkzeugname wandert vom CI-Pin ueber Adapter und Flag bis in Doku und Tests; getrennt gelandet waere jede Haelfte rot"
