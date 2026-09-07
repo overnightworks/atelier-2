@@ -1,8 +1,0 @@
-claim_id = "739f0db615304c22b4cdcac83fce6bee"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "990ccdc7c48caadcabc3dcc737180fe5296919cc"
-branch = "claude/issue-1401-lease-worktree"
-scope = ["src/atelier2/adapters/project_source.py", "docs/decisions", "tests/integration", "scripts/baselines/vulture_frozen.py", "src/atelier2/ports/claim_checkouts.py", "src/atelier2/adapters/claim_checkouts.py", "tests/integration/test_claim_checkouts.py", "scripts/check_architecture.py"]
-opened_commit = "df2d29f711e15faf9dbd211b22334d11f9777856"
-whole_reason = "Ein Owner für den Claim-Checkout der Tür; der Modulzähler folgt den zwei neuen Modulen"
