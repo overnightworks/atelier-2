@@ -5810,8 +5810,58 @@ def _v44_project_source_connection_revision_hash(
     ).hexdigest()
 
 
+@dataclass(frozen=True)
+class _V44ConnectionRevisionRow:
+    """One row of the V44 connection history, read before its table is rebuilt."""
+
+    project_id: str
+    source_kind: str
+    revision_number: int
+    source_address: str
+    credential_directory: str
+    auth_method: str
+    connected_by: str
+    revision_hash: str
+
+    @classmethod
+    def from_values(cls, values: Sequence[str | int]) -> _V44ConnectionRevisionRow:
+        """Build from one selected row, in `_V44_CONNECTION_REVISION_SELECT` order."""
+        (
+            project_id,
+            source_kind,
+            revision_number,
+            source_address,
+            credential_directory,
+            auth_method,
+            connected_by,
+            revision_hash,
+        ) = values
+        return cls(
+            str(project_id),
+            str(source_kind),
+            int(revision_number),
+            str(source_address),
+            str(credential_directory),
+            str(auth_method),
+            str(connected_by),
+            str(revision_hash),
+        )
+
+    @property
+    def key(self) -> tuple[str, str, int]:
+        return (self.project_id, self.source_kind, self.revision_number)
+
+
+_V44_CONNECTION_REVISION_SELECT = (
+    "SELECT project_id, source_kind, revision_number, source_address, "
+    "credential_directory, auth_method, connected_by, revision_hash "
+    "FROM host_project_source_connection_revisions "
+    "ORDER BY project_id, source_kind, revision_number"
+)
+
+
 def _v44_connected_revision_keys(
-    records: tuple[sqlite3.Row, ...],
+    rows: tuple[_V44ConnectionRevisionRow, ...],
 ) -> frozenset[tuple[str, str, int]]:
     """The one revision per project that stays connected after the hop.
 
@@ -5819,19 +5869,14 @@ def _v44_connected_revision_keys(
     project's newest is the connected one, and every other row is history.
     """
 
-    latest_by_history: dict[tuple[str, str], int] = {}
-    for record in records:
-        history = (str(record["project_id"]), str(record["source_kind"]))
-        latest_by_history[history] = max(
-            latest_by_history.get(history, 0), int(record["revision_number"])
+    latest_by_project: dict[str, dict[str, int]] = {}
+    for row in rows:
+        latest_by_kind = latest_by_project.setdefault(row.project_id, {})
+        latest_by_kind[row.source_kind] = max(
+            latest_by_kind.get(row.source_kind, 0), row.revision_number
         )
     connected: set[tuple[str, str, int]] = set()
-    for project_id in sorted({project_id for project_id, _ in latest_by_history}):
-        latest_by_kind = {
-            source_kind: revision_number
-            for (owner, source_kind), revision_number in latest_by_history.items()
-            if owner == project_id
-        }
+    for project_id, latest_by_kind in sorted(latest_by_project.items()):
         project_maximum = max(latest_by_kind.values())
         current_kinds = tuple(
             source_kind
@@ -5859,45 +5904,35 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
             f"schema version 44 already has {_V44_PROJECT_SOURCE_CONNECTIONS}; "
             "this command will not alter it"
         )
-    cursor = connection.cursor()
-    cursor.row_factory = sqlite3.Row
-    records = tuple(
-        cursor.execute(
-            "SELECT * FROM host_project_source_connection_revisions "
-            "ORDER BY project_id, source_kind, revision_number"
-        ).fetchall()
+    rows = tuple(
+        _V44ConnectionRevisionRow.from_values(values)
+        for values in connection.execute(_V44_CONNECTION_REVISION_SELECT).fetchall()
     )
-    connected_keys = _v44_connected_revision_keys(records)
+    connected_keys = _v44_connected_revision_keys(rows)
     migrated_location_by_revision: dict[
         tuple[str, str, int], tuple[SourceAddress, SourceReference | None]
     ] = {}
-    for record in records:
-        project_id = str(record["project_id"])
-        source_kind = SourceKind(str(record["source_kind"]))
-        revision_number = int(record["revision_number"])
-        source_address = SourceAddress(str(record["source_address"]))
+    for row in rows:
+        source_kind = SourceKind(row.source_kind)
+        source_address = SourceAddress(row.source_address)
         expected_hash = _v44_project_source_connection_revision_hash(
-            ProjectId(project_id),
-            revision_number,
+            ProjectId(row.project_id),
+            row.revision_number,
             source_kind,
             source_address,
-            str(record["credential_directory"]),
-            SourceConnectionAuthMethod(str(record["auth_method"])),
-            ConnectionActor(str(record["connected_by"])),
+            row.credential_directory,
+            SourceConnectionAuthMethod(row.auth_method),
+            ConnectionActor(row.connected_by),
         )
-        if record["revision_hash"] != expected_hash:
+        if row.revision_hash != expected_hash:
             raise StoreMigrationRefused(
                 "schema version 44 project-source connection hash does not "
                 "match its fields; this command will not alter it"
             )
         try:
-            migrated_location_by_revision[
-                (
-                    project_id,
-                    source_kind.value,
-                    revision_number,
-                )
-            ] = migrate_v44_github_source_location(source_kind, source_address)
+            migrated_location_by_revision[row.key] = migrate_v44_github_source_location(
+                source_kind, source_address
+            )
         except (TypeError, ValueError) as error:
             raise StoreMigrationRefused(
                 "schema version 44 has a malformed GitHub project-source "
@@ -5924,22 +5959,19 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
             )
         )
     )
-    for record in records:
-        project_id = str(record["project_id"])
-        source_kind = str(record["source_kind"])
-        key = (project_id, source_kind, int(record["revision_number"]))
-        source_address, source_ref = migrated_location_by_revision[key]
+    for row in rows:
+        source_address, source_ref = migrated_location_by_revision[row.key]
         revision = ProjectSourceConnectionRevision(
-            ProjectId(project_id),
-            _legacy_project_source_id(project_id, source_kind),
-            int(record["revision_number"]),
-            SourceKind(source_kind),
+            ProjectId(row.project_id),
+            _legacy_project_source_id(row.project_id, row.source_kind),
+            row.revision_number,
+            SourceKind(row.source_kind),
             source_address,
-            Path(str(record["credential_directory"])),
-            SourceConnectionAuthMethod(str(record["auth_method"])),
-            ConnectionActor(str(record["connected_by"])),
+            Path(row.credential_directory),
+            SourceConnectionAuthMethod(row.auth_method),
+            ConnectionActor(row.connected_by),
             ProjectSourceConnectionLifecycle.CONNECTED
-            if key in connected_keys
+            if row.key in connected_keys
             else ProjectSourceConnectionLifecycle.DISCONNECTED,
             None,
             source_ref,
