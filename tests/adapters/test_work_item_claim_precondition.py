@@ -228,7 +228,7 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() 
     outcome = _held(claims)
 
     assert claims.read_back_requests == [(ITEM, CLAIM_ID, CHECKOUT)]
-    assert [
+    asked = [
         (
             request.item,
             request.agent,
@@ -239,7 +239,8 @@ def test_the_claim_asks_the_ledger_for_this_run_item_branch_scope_and_reasons() 
             request.checkout,
         )
         for request in claims.claim_requests
-    ] == [
+    ]
+    assert asked == [
         (
             ITEM,
             RUN_ID,
@@ -340,10 +341,14 @@ def test_a_claim_the_ledger_recorded_differently_refuses(answer: ClaimReceipt) -
     assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
     assert outcome.confirmed is not None
     assert outcome.confirmed.receipt.claim_id == CLAIM_ID
-    assert (
+    recorded = (
         outcome.confirmed.receipt.branch,
         outcome.confirmed.receipt.claimed_scope,
-    ) == (answer.branch, tuple(path.as_posix() for path in answer.claimed_scope))
+    )
+    assert recorded == (
+        answer.branch,
+        tuple(path.as_posix() for path in answer.claimed_scope),
+    )
 
 
 def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:
@@ -388,7 +393,8 @@ def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
     assert second == WorkItemClaimHeld(
         ConfirmedWorkItemClaim(receipt, ConfirmationSource.ADAPTER_READBACK)
     )
-    assert [request.claim_id for request in claimed_ledger(executable)] == [CLAIM_ID]
+    claim_ids = [request.claim_id for request in claimed_ledger(executable)]
+    assert claim_ids == [CLAIM_ID]
 
 
 def test_a_ledger_holding_nothing_yet_is_claimed_once(tmp_path: Path) -> None:
@@ -665,7 +671,8 @@ def test_a_recovery_replays_the_held_claim_without_asking_the_ledger_again(
     replay = _refusing_everything()
     assert started_node.hold(started_node.ledger(replay)) is None
 
-    assert (replay.read_back_requests, replay.claim_requests) == ([], [])
+    asked_again = (replay.read_back_requests, replay.claim_requests)
+    assert asked_again == ([], [])
     assert held == (RunState.STARTED.value, 1, 0, 0)
     assert started_node.standing() == held
 
@@ -793,7 +800,8 @@ def test_a_standing_claim_checkout_refuses_the_next_run_of_the_same_item(
         first_drive = second.hold(ledger)
         replay = second.hold(ledger)
 
-        assert (first_drive, replay) == (RunState.FAILED.value, RunState.FAILED.value)
+        answers = (first_drive, replay)
+        assert answers == (RunState.FAILED.value, RunState.FAILED.value)
         with runtime.engine.connect() as connection:
             payload = connection.execute(
                 sa.select(run_events.c.payload).where(
@@ -806,7 +814,8 @@ def test_a_standing_claim_checkout_refuses_the_next_run_of_the_same_item(
         assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
         assert record.detail
         assert _LANE_BRANCH.value in record.detail
-        assert (worktree_facts(held), snapshot(held)) == before
+        occupant = (worktree_facts(held), snapshot(held))
+        assert occupant == before
         assert first.claim_checkout() == held
     finally:
         runtime.close()
