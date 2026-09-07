@@ -1,8 +1,0 @@
-claim_id = "atelier2-db806e009ea2785abde59668be27f7870db370ece36519bc6c43368dde53de8a"
-agent = "atelier2 run 1a0b5ce9f438583a7973f8ae36b860853f006b866983ca3e0421b1f518722d7c"
-role = "builder"
-base = "c9100ce4b7b520f329744aac8d71bcfa1a2cf317"
-branch = "atelier2/work-item/a4fe6fe2ed7a6d9fde3ade46c0c7f8b5aad9f99a31bb07004aecb4969ba9fe71"
-scope = ["src/atelier2/adapters/dbos/effect_store.py", "tests/integration"]
-opened_commit = "60c72d54fcf0b83f3ab640bf3e6898b6f85e8dee"
-whole_reason = "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` regelt; der Schnitt ist der des Items"
