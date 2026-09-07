@@ -32,7 +32,6 @@ from atelier2.adapters.candidate_store import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.schema import run_events
-from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import declared_project
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
@@ -44,7 +43,6 @@ from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.candidate_reports import ReadPatch
-from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.executions import AgentAttemptExecution, RunEventKind
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import (
@@ -77,7 +75,6 @@ from tests.integration.test_candidate_store import carried
 from tests.scenarios.agents import (
     SCENARIO_PROVIDER_FRAME_BYTES,
     agent_attempt_execution,
-    leased_directory_identity,
     runtime_workspace_owner,
     workspace_files_nobody_opens,
 )
@@ -321,35 +318,6 @@ def test_a_succeeded_attempt_left_its_work_where_the_store_still_reads_it(
     assert isinstance(outcome, AgentAttemptSucceeded)
     kept = attempt.kept
     assert kept is not None
-    assert carried(attempt.store_path, kept.tree) == {
-        **A_PROJECT,
-        WHAT_THE_AGENT_MADE: MADE_BY_THE_AGENT,
-    }
-
-
-@pytest.mark.parametrize(
-    "detached", [False, True], ids=["still a worktree", "detached"]
-)
-def test_a_worktree_lease_is_captured_as_its_tree_and_never_its_repository(
-    attempt: Attempt, tmp_path: Path, detached: bool
-) -> None:
-    """The lease is a linked worktree of the checkout; the candidate is the tree.
-
-    The worktree pointer is what lets a claim be held from the lease, and it is
-    no work of the attempt: captured, it would come home as a file the pin never
-    carried and put a second `.git` into whoever checked the candidate out.
-    """
-
-    pin = attempt.project(A_PROJECT)
-    source = LocalGitProjectSource(attempt.checkout)
-    lease = leased_directory_identity(AgentAttemptId("b2" * 32), tmp_path / "lease")
-    source.materialize(pin, lease, HeadBranch("atelier2/work-item/capture"))
-    if detached:
-        source.detach_from_repository(lease)
-    (lease.working_directory / WHAT_THE_AGENT_MADE).write_text(MADE_BY_THE_AGENT)
-
-    kept = attempt.candidates.capture(pin, lease)
-
     assert carried(attempt.store_path, kept.tree) == {
         **A_PROJECT,
         WHAT_THE_AGENT_MADE: MADE_BY_THE_AGENT,

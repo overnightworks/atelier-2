@@ -201,9 +201,7 @@ path a project's runtime opens is derived from that project's root, so the
 installation can be read whole and no byte of A found outside A. That is what makes
 deletion complete (decision 3), what makes a bad store one project's outage instead
 of the installation's (decision 5), and it is provable by a canary read rather than
-argued. The project's source checkout is read, plus worktree administration: an
-attempt's lease is a linked worktree of it, so `.git/worktrees/<attempt>` and the
-lane-branch ref are written there and pruned when the lease is detached.
+argued.
 
 **What the root is not.** The root is not an access-control boundary, and this
 record refuses to claim it is one. A directory does not stop a process: an attempt

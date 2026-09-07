@@ -103,15 +103,9 @@ Claude CLI materializes a set of empty configuration and lock files there even
 tool-free, which is why a provider is never handed the operator's own checkout.
 What it is handed instead, where a project is declared, is that project's source
 at one commit: the source is resolved to a commit when the node's durable binding
-is composed and never again, and that commit is checked out into the leased
-directory before the provider starts, as a linked worktree of the source -- on
-the lane branch where the run claims from it, detached at the pin otherwise. The
-worktree exists for the claim, and the source can detach it again: the `.git`
-pointer is removed and the tree stays, so a detached lease can neither commit,
-fetch nor push. The source keeps only its worktree administration and the
-lane-branch ref, prunes stale administration whenever it adds or detaches a
-lease, and refuses every attempt by name while its configuration declares a
-`filter` driver that could rewrite the pinned tree on the way in. An attempt
+is composed and never again, and the tree that commit names is unpacked into the
+leased directory before the provider starts. The tree travels without its
+repository, so nothing in the lease can commit, fetch or push, and an attempt
 whose pinned commit the source can no longer answer for is refused in that
 source's own words before the attempt is claimed. The directory is removed once
 the process and its descendants are proven gone and the attempt is durably

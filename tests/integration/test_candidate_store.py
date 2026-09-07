@@ -812,8 +812,8 @@ def test_no_hook_of_either_repository_runs_during_a_capture(tmp_path: Path) -> N
     project.store.capture(project.pin, project.workspace(AN_ATTEMPT))
     install_hooks(project.checkout / ".git", CHECKOUT_HOOK_NAMES)
     install_hooks(project.store_path, STORE_HOOK_NAMES)
-    lease = project.workspace(ANOTHER_ATTEMPT)
     standing = every_file_under(project.checkout)
+    lease = project.workspace(ANOTHER_ATTEMPT)
     (lease.working_directory / "tool.py").write_text(WORKED_ON, encoding="utf-8")
 
     candidate = project.store.capture(project.pin, lease)

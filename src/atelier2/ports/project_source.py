@@ -7,11 +7,10 @@ while a run is in flight without that run changing under it.
 
 This port is how an attempt reaches that tree: pin the source, refuse a pin the
 source can no longer answer for, read one declaration out of the pinned tree
-without unpacking it, check the tree out into the directory the attempt leased as
-a linked worktree of the source -- on the lane branch a run claims from -- and
-detach that lease again. Detached, the lease is material and not a repository:
-nothing in it can commit, fetch or push. That is a stated limit and not isolation
--- the lease's own sentence about that still stands.
+without unpacking it, and unpack the tree into the directory the attempt leased.
+What is unpacked is material, not a repository: no history travels with it, so
+nothing in the lease can commit or fetch. That is a stated limit and not
+isolation -- the lease's own sentence about that still stands.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Protocol
 
-from atelier2.contracts.effect_requests import HeadBranch
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 
@@ -44,15 +42,7 @@ class ProjectSourceRepository(Protocol):
         ...
 
     def materialize(
-        self,
-        pin: ProjectSourcePin,
-        lease: AgentAttemptWorkspaceLease,
-        branch: HeadBranch | None = None,
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> None:
-        """Check the pinned commit out into the leased directory as a linked
-        worktree of this source: on `branch`, reset to the pin, or detached at it."""
-        ...
-
-    def detach_from_repository(self, lease: AgentAttemptWorkspaceLease) -> None:
-        """Remove the worktree pointer from the lease and keep its tree untouched."""
+        """Unpack the pinned tree into the directory this attempt leased."""
         ...

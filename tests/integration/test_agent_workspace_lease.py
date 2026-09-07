@@ -402,59 +402,15 @@ def test_an_attempt_and_its_replacement_lease_directories_of_their_own(
     assert leased_directories(owner.scratch_root) == {
         attempt_id.value for attempt_id in attempt_ids
     }
-
-
-@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
-def test_a_second_acquire_of_one_attempt_adopts_its_lease_and_creates_nothing(
-    tmp_path: Path,
-) -> None:
-    """The directory this owner leased is answered again, never made twice."""
-
-    owner = agent_workspace_owner(tmp_path)
-    attempt_id = AgentAttemptId.of(b"lease/adopted")
-    first = owner.acquire(attempt_id)
-    (first.working_directory / "kept.txt").write_text("standing", encoding="utf-8")
-    before = snapshot(owner.scratch_root)
-
-    second = owner.acquire(attempt_id)
-
-    assert second == first
-    assert snapshot(owner.scratch_root) == before
-    assert workspace_names(owner.scratch_root) == {
-        attempt_id.value,
-        f"{attempt_id.value}.lease",
-    }
-
-
-@pytest.mark.proves("every-attempt-runs-in-a-blank-directory-of-its-own")
-def test_a_directory_swapped_under_its_mark_is_not_adopted(tmp_path: Path) -> None:
-    """Adoption goes by the identity the mark names, never by the name alone."""
-
-    owner = agent_workspace_owner(tmp_path)
-    attempt_id = AgentAttemptId.of(b"lease/swapped-under-its-mark")
-    leased = owner.acquire(attempt_id).working_directory
-    impostor = tmp_path / "impostor"
-    impostor.mkdir(mode=SCRATCH_ROOT_MODE)
-    (impostor / ".env").write_text("the operator's own secret", encoding="utf-8")
-    leased.rmdir()
-    impostor.rename(leased)
-
-    with pytest.raises(AgentAttemptWorkspaceRefused, match="not the directory"):
-        owner.acquire(attempt_id)
-
-    assert (leased / ".env").read_text(encoding="utf-8") == "the operator's own secret"
+    with pytest.raises(AgentAttemptWorkspaceRefused, match="already exists"):
+        owner.acquire(attempt_ids[0])
 
 
 @pytest.mark.proves("a-lost-claim-leaves-no-directory-behind")
 def test_two_callers_acquiring_one_attempt_leave_exactly_one_directory(
     tmp_path: Path,
 ) -> None:
-    """A race after the preflight is settled at the atomic no-replace creation.
-
-    The caller that lost the creation reads the winner's mark: standing already,
-    it adopts the one directory; not yet written, it is refused. Either way one
-    directory exists and every lease handed out names it.
-    """
+    """A race after the preflight loses at the atomic no-replace creation."""
 
     owner = agent_workspace_owner(tmp_path)
     attempt_id = AgentAttemptId.for_execution(
@@ -480,8 +436,8 @@ def test_two_callers_acquiring_one_attempt_leave_exactly_one_directory(
     for caller in callers:
         caller.join(timeout=10)
 
-    assert len(leases) + len(refusals) == 2
-    assert len({(lease.device, lease.inode) for lease in leases}) == 1
+    assert len(leases) == 1
+    assert len(refusals) == 1
     assert leased_directories(owner.scratch_root) == {attempt_id.value}
 
 
