@@ -1,0 +1,8 @@
+claim_id = "fde250b43ffe4bca96e89fe9c01aad81"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "4853b7b8efb1392e423e82d61942eb08e9337f37"
+branch = "claude/issue-1418-one-record"
+scope = ["src/atelier2/adapters/dbos/run_store.py", "src/atelier2/adapters/dbos/starter.py", "src/atelier2/adapters/dbos/run_fork_store.py", "src/atelier2/adapters/dbos/queries.py", "src/atelier2/adapters/dbos/bound_reads.py", "tests/integration"]
+opened_commit = "119c039610926d8bbcb15f4c7d8e0eb7bc9effbd"
+whole_reason = "Eine Lesung, ein Owner: vier Kopien fallen in einem Zug"
