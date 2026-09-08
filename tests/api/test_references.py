@@ -96,6 +96,7 @@ def test_event_cursor_round_trips_signed_int64_boundaries(sequence: int) -> None
         "event1.YQ.01",
         "event1.YQ.-1",
         "event1.YQ.+1",
+        "event1.YQ.1٢",
         f"event1.YQ.{MAX_SIGNED_INT64 + 1}",
         "event2.YQ.1",
         "event1.YQ==.1",

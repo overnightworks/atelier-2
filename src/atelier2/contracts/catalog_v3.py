@@ -22,7 +22,8 @@ CATALOG_ACTIVATED_AT_PATTERN = (
 )
 _LINEAGE_DISPLAY_NAME = re.compile(r"[a-z][a-z0-9._-]*")
 _CATALOG_ACTIVATED_AT = re.compile(
-    r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z"
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z",
+    re.ASCII,
 )
 
 

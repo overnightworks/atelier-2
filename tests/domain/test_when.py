@@ -15,6 +15,7 @@ def test_a_recorded_instant_is_rfc3339_utc_at_second_precision() -> None:
         "2026-08-18T15:05:52+00:00",
         "2026-08-18 15:05:52Z",
         "2026-13-01T00:00:00Z",
+        "٢٠٢٦-٠٨-١٨T١٥:٠٥:٥٢Z",
         "not-a-time",
         1,
     ),

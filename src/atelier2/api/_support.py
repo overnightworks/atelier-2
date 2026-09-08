@@ -232,7 +232,10 @@ def require_sse_accept(request: Request) -> None:
         if len(quality_parameters) > 1:
             continue
         quality = quality_parameters[0]
-        if re.fullmatch(r"q=(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)", quality) is None:
+        if (
+            re.fullmatch(r"q=(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)", quality, re.ASCII)
+            is None
+        ):
             continue
         if re.fullmatch(r"q=0(?:\.0{0,3})?", quality) is None:
             return

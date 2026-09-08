@@ -269,7 +269,7 @@ class RequestBodyLimitMiddleware:
         if content_lengths:
             if (
                 len(content_lengths) != 1
-                or re.fullmatch(rb"[0-9]+", content_lengths[0]) is None
+                or re.fullmatch(rb"\d+", content_lengths[0]) is None
             ):
                 await self._problem(scope, receive, send, limit_code)
                 return
