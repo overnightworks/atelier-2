@@ -1,8 +1,0 @@
-claim_id = "atelier2-0d176d955967ad6f694d114e4a6f7f64bced710b0df8c0ff8e34d740e05364d4"
-agent = "atelier2 run 7ed69a82d878b5626965382a10d6650e459fc33989870e89aad8c7a25e5dc09b"
-role = "builder"
-base = "66c10dedd719a6f240b4c46d10f6be9ca69405c2"
-branch = "atelier2/work-item/2af22e823c8e9c69f8d7e45fbe378ceb0ec34a149b78db6a93c3ba2bf7224ae2"
-scope = ["src/atelier2/application/import_project_source_issues.py", "tests/application"]
-opened_commit = "ddbf3d22ec4954fa39792cf165e28237e7071cae"
-whole_reason = "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` regelt; der Schnitt ist der des Items"
