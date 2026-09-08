@@ -1,0 +1,8 @@
+claim_id = "5a84ff0377684a1ebd845bbaa3346787"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "dfb35602bcf9835f9a6379ef9a046ec74acb4b85"
+branch = "claude/issue-1446-sonar-types"
+scope = ["src/atelier2/api/projection/events.py", "src/atelier2/application/execute_agent_attempt.py", "src/atelier2/host/__init__.py", "src/atelier2/host/run_command.py", "src/atelier2/adapters/dbos/table_vocabulary.py", "src/atelier2/contracts/host_configuration.py", "src/atelier2/ports/project_verification.py"]
+opened_commit = "5d167be418885e11948dc5884b8e432507e4cf2b"
+whole_reason = "drei Typ-Regelfamilien in sieben Dateien, je Stelle ein eigenes Urteil"
