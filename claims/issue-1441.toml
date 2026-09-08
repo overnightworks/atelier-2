@@ -1,0 +1,8 @@
+claim_id = "atelier2-ac39624f0b05056520bb440d889d00ad0c6a95107f15d35a6f18d0099bc17c88"
+agent = "atelier2 run e98aa5401956d4d6e4d835d8cad21c0c5045fb74f7bdb3a1e276e45f610205c1"
+role = "builder"
+base = "bd2fb267ebaa3246c31803e20f5c7708715c5e48"
+branch = "atelier2/work-item/92e0678f309aefce4048a5028b92627128cd44caa50471e8b0c16f2f675fbd77"
+scope = ["src/atelier2/api/wire/resources.py"]
+opened_commit = "50719c7d79bfa7dea49bf9bee107e9050ebca342"
+whole_reason = "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` regelt; der Schnitt ist der des Items"
