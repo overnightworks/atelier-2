@@ -272,7 +272,7 @@ def _seed_public_run(root: Path) -> None:
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
+            b"Implement P3.\n\n## Bereich\none.txt\n",
             WorkItemChangeMarker("issue-642-crash-v1"),
             RecordedAt("2026-08-27T12:00:00Z"),
         )

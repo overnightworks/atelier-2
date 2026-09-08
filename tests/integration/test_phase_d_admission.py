@@ -121,6 +121,11 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+)
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
@@ -132,6 +137,7 @@ from atelier2.ports.issue_observation import (
     OpenTrackerItemsObserved,
     TrackerItemSource,
     TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionsUnavailable,
@@ -168,6 +174,15 @@ PROJECT = ProjectId("project1")
 FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
 SECOND_READ = RecordedAt("2026-09-02T09:00:00Z")
 THIRD_READ = RecordedAt("2026-09-03T09:00:00Z")
+_SCOPED_SNAPSHOT = WorkItemRevisionObserved(
+    ObservedWorkItemRevision(
+        TrackerItemReference("gh:scoped"),
+        WorkItemKind.ISSUE,
+        b"## Bereich\nsrc/atelier2/contracts/work_items.py\n",
+        WorkItemChangeMarker('W/"1"'),
+        FIRST_READ,
+    )
+)
 
 
 def _runtime(
@@ -1682,7 +1697,9 @@ def test_a_serve_launch_proposes_a_label_only_item_from_the_policy_defaults(
     runtime = _runtime(
         tmp_path / "atelier.sqlite",
         project_root=project_root,
-        tracker=FakeTrackerItemSource(open_items_answer=listing),
+        tracker=FakeTrackerItemSource(
+            open_items_answer=listing, snapshot_answer=_SCOPED_SNAPSHOT
+        ),
     )
     try:
         lineage_id, _revision_hash = found_lineage(runtime.engine)
@@ -1759,7 +1776,9 @@ def test_a_serve_launch_admits_the_labelled_item_and_starts_it_in_the_same_sweep
     runtime = _runtime(
         tmp_path / "atelier.sqlite",
         project_root=project_root,
-        tracker=FakeTrackerItemSource(open_items_answer=listing),
+        tracker=FakeTrackerItemSource(
+            open_items_answer=listing, snapshot_answer=_SCOPED_SNAPSHOT
+        ),
     )
     try:
         lineage_id, _revision_hash = found_lineage(runtime.engine)
