@@ -767,8 +767,8 @@ class WorkflowGraphResourceV3(ApiModel):
         names = tuple(order.name for order in self.orders)
         if len(set(names)) != len(names):
             raise ValueError("each declared order has one name")
-        wait_ids = tuple(node.id for node in self.node_previews if node.kind == "wait")
-        schema_ids = tuple(entry.node_id for entry in self.wait_answer_schemas)
+        wait_ids = (node.id for node in self.node_previews if node.kind == "wait")
+        schema_ids = (entry.node_id for entry in self.wait_answer_schemas)
         if sorted(schema_ids) != sorted(wait_ids):
             raise ValueError("every wait node preview names exactly one answer schema")
         preview_ids = {node.id for node in self.node_previews}
