@@ -147,7 +147,7 @@ _PUBLIC_PROJECT_REFERENCE_PREFIX = "project1."
 _PUBLIC_SOURCE_REFERENCE_PREFIX = "source1."
 _EVENT_CURSOR_PREFIX = "event1."
 _UNPADDED_BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
-_POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
+_POSITIVE_DECIMAL = re.compile(r"[1-9]\d*", re.ASCII)
 
 
 class InvalidPublicRunReference(ValueError):

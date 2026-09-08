@@ -193,3 +193,5 @@ def test_catalog_actor_and_activation_time_refuse_invalid_text() -> None:
         CatalogActivatedAt("2026-08-16T12:00:00+00:00")
     with pytest.raises(ValueError):
         CatalogActivatedAt("2026-13-01T00:00:00Z")
+    with pytest.raises(ValueError):
+        CatalogActivatedAt("٢٠٢٦-٠٨-١٦T١٢:٠٠:٠٠Z")

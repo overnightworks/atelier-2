@@ -240,6 +240,7 @@ def test_encoded_projection_limit_branches_are_explicit(
         [(b"content-length", b"1"), (b"content-length", b"1")],
         [(b"content-length", b"one")],
         [(b"content-length", b"-1")],
+        [(b"content-length", "٢".encode())],
     ],
 )
 def test_body_limit_rejects_noncanonical_content_length_directly(
