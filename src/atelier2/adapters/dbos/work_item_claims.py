@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+import sqlalchemy as sa
 from dbos import SQLAlchemyDatasource
+from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.advancer import (
     effect_receipt_exists,
@@ -42,6 +44,7 @@ from atelier2.adapters.dbos.names import (
 )
 from atelier2.adapters.dbos.queue_launch_runs import launch_binding_of_run
 from atelier2.adapters.dbos.run_transitions import _commit_event, load_graph
+from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.work_item_intents import (
     head_branch_for_work_item,
     issue_work_item_order,
@@ -77,7 +80,12 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.claim_checkouts import (
     ClaimCheckoutRefused,
     ClaimCheckouts,
@@ -509,7 +517,7 @@ def hold_work_item_claim(
     node's pin. Opening it is no durable step: it is idempotent by run, so a
     replay finds the checkout again or makes it anew, and the memoized hold
     still answers without the ledger. A refusal closes it; a held claim keeps
-    it until the claim is released.
+    it until the run is terminal.
 
     Answers `None` where the node may work, and the run's own terminal state
     where it may not.
@@ -585,10 +593,7 @@ def _drive_prepared_claim(
     if isinstance(outcome, WorkItemClaimHeld):
         return None
     _release_unworked_claim(ledger, run_id, outcome)
-    try:
-        ledger.checkouts.close(run_id)
-    except ClaimCheckoutUnavailable:
-        pass
+    _close_checkout_best_effort(ledger.checkouts, run_id)
     return _refuse_claim(
         datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
     )
@@ -745,3 +750,45 @@ def _refuse_claim(
             ),
         )
     )
+
+
+def close_checkouts_of_terminal_runs(
+    engine: Engine,
+    checkouts: ClaimCheckouts,
+    run_ids: tuple[RunId, ...],
+) -> None:
+    """Close each named checkout whose run the store already records as ended.
+
+    The store state is the decision, not a workflow return: a failed attempt
+    can already have written FAILED while the node still answers STARTED.
+    Best-effort: a close that cannot finish leaves the run as it stands so
+    the next tick can try again. Callers pass only the runs they already
+    hold a checkout for -- never the run history.
+    """
+
+    if not run_ids:
+        return
+    ended = _terminal_run_ids(engine, run_ids)
+    for run_id in run_ids:
+        if run_id in ended:
+            _close_checkout_best_effort(checkouts, run_id)
+
+
+def _terminal_run_ids(engine: Engine, run_ids: tuple[RunId, ...]) -> frozenset[RunId]:
+    values = tuple(run_id.value for run_id in run_ids)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.select(runs.c.run_id, runs.c.state).where(runs.c.run_id.in_(values))
+        )
+    return frozenset(
+        RunId(str(row.run_id))
+        for row in rows
+        if RunState(str(row.state)) in TERMINAL_RUN_STATES
+    )
+
+
+def _close_checkout_best_effort(checkouts: ClaimCheckouts, run_id: RunId) -> None:
+    try:
+        checkouts.close(run_id)
+    except ClaimCheckoutUnavailable:
+        pass

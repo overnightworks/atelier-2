@@ -275,6 +275,22 @@ def test_a_lane_branch_a_standing_checkout_holds_refuses_the_next_run(
     assert len(project.registered_worktrees()) == 2
 
 
+def test_standing_run_ids_are_the_locked_checkouts_under_the_root(
+    tmp_path: Path,
+) -> None:
+    project = Project(tmp_path)
+    project.checkouts.open(A_RUN, LANE, project.pin)
+    project.checkouts.open(
+        ANOTHER_RUN, HeadBranch("atelier2/work-item/other"), project.pin
+    )
+
+    standing = project.checkouts.standing_run_ids()
+
+    assert standing == (ANOTHER_RUN, A_RUN)
+    project.checkouts.close(A_RUN)
+    assert project.checkouts.standing_run_ids() == (ANOTHER_RUN,)
+
+
 def test_close_removes_the_checkout_and_its_administration_and_keeps_the_lane_ref(
     tmp_path: Path,
 ) -> None:

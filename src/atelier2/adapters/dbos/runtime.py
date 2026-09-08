@@ -52,7 +52,10 @@ from atelier2.adapters.dbos.uncontinuable_runs import (
     DbosUncontinuableRunStore,
     retag_stranded_continuations,
 )
-from atelier2.adapters.dbos.work_item_claims import WorkItemClaimLedger
+from atelier2.adapters.dbos.work_item_claims import (
+    WorkItemClaimLedger,
+    close_checkouts_of_terminal_runs,
+)
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
     register_durable_run_workflow,
@@ -368,6 +371,7 @@ class _BoundRuntime:
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
     tracker_item_source: TrackerItemSource | None
+    work_item_claims: WorkItemClaimLedger | None = None
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
@@ -889,6 +893,7 @@ def _open_binding(
             agent_workspace_owner.reconcile(attempt_store)
         register_durable_run_workflow(
             datasource,
+            engine,
             _agent_executor_map(agent_registry, tuple(agent_executors_v2)),
             attempt_store,
             agent_process_supervisor,
@@ -926,6 +931,7 @@ def _open_binding(
         agent_workspace_owner,
         project_binding.declared_project,
         tracker_item_source,
+        work_item_claims=project_binding.work_item_claims,
     )
 
 
@@ -1140,6 +1146,7 @@ class _DbosProcessOwner:
             self._converge_driverless_attempts(bound)
             self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
+            self._close_terminal_claim_checkouts(bound)
             self._advance_queue(bound)
             self._start_queue_sweep(bound)
 
@@ -1197,6 +1204,31 @@ class _DbosProcessOwner:
         converge_uncontinuable_runs(
             DbosUncontinuableRunStore(bound.engine, bound.settings.application_version)
         )
+
+    @staticmethod
+    def _close_terminal_claim_checkouts(bound: _BoundRuntime) -> None:
+        """Remove leftover claim checkouts of runs the store already ended.
+
+        Walks only the checkouts this adapter currently holds under its own
+        root, never the run history. A close that cannot finish leaves the
+        run as it stands; the next tick tries again.
+        """
+
+        ledger = bound.work_item_claims
+        if ledger is None:
+            return
+        checkouts = ledger.checkouts
+        if not isinstance(checkouts, LocalClaimCheckouts):
+            return
+        try:
+            close_checkouts_of_terminal_runs(
+                bound.engine, checkouts, checkouts.standing_run_ids()
+            )
+        except Exception:
+            _LOG.exception(
+                "Closing leftover claim checkouts failed; the next tick asks again.",
+                extra={"event": "claim_checkout_close_failed"},
+            )
 
     @staticmethod
     def _advance_queue(bound: _BoundRuntime) -> None:
@@ -1257,6 +1289,7 @@ class _DbosProcessOwner:
         cannot sweep at all should not come up quietly.
         """
 
+        _DbosProcessOwner._close_terminal_claim_checkouts(bound)
         try:
             _DbosProcessOwner._advance_queue(bound)
         except Exception:
