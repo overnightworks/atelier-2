@@ -458,14 +458,6 @@ qualified_name = "atelier2.application.resolve_references.resolve_declared_refer
 lines = 61
 
 [[function]]
-qualified_name = "atelier2.application.resolve_start_bindings._candidate_choices"
-lines = 82
-
-[[function]]
-qualified_name = "atelier2.application.resolve_start_bindings._select_component"
-lines = 180
-
-[[function]]
 qualified_name = "atelier2.application.resolve_start_bindings.cast_unbound_roles"
 lines = 71
 
@@ -480,10 +472,6 @@ lines = 101
 [[function]]
 qualified_name = "atelier2.contracts.adapter_operations_v3.read_adapter_operation_document"
 lines = 64
-
-[[function]]
-qualified_name = "atelier2.contracts.agent_attempts.AgentAttempt.__post_init__"
-lines = 183
 
 [[function]]
 qualified_name = "atelier2.contracts.agent_transcripts._event_document"
@@ -502,16 +490,8 @@ qualified_name = "atelier2.contracts.budgets_v3.read_budget_revision_document"
 lines = 60
 
 [[function]]
-qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
-lines = 176
-
-[[function]]
 qualified_name = "atelier2.contracts.provider_probe_receipts.read_provider_probe_receipt"
 lines = 89
-
-[[function]]
-qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
-lines = 72
 
 [[function]]
 qualified_name = "atelier2.host._argument_parser"
@@ -582,22 +562,6 @@ qualified_name = "atelier2.application.model_configuration.validate_model_regist
 complexity = 21
 
 [[complexity]]
-qualified_name = "atelier2.application.resolve_start_bindings._select_component"
-complexity = 27
-
-[[complexity]]
 qualified_name = "atelier2.application.start_published_run.start_published_run"
 complexity = 21
-
-[[complexity]]
-qualified_name = "atelier2.contracts.agent_attempts.AgentAttempt.__post_init__"
-complexity = 27
-
-[[complexity]]
-qualified_name = "atelier2.contracts.executions.RunEvent.__post_init__"
-complexity = 22
-
-[[complexity]]
-qualified_name = "atelier2.contracts.run_configuration_v3._walk_node"
-complexity = 18
 

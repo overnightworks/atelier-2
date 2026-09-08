@@ -55,11 +55,12 @@ from atelier2.ports.host_configuration import (
     ProjectModelDefaultsRevisionCreated,
     ProjectModelDefaultsRevisionExisting,
     ProjectModelDefaultsRevisionInvalid,
+    ProviderModelDiscoverer,
     ProviderModelDiscovery,
     ProviderModelDiscoveryResult,
     ProviderModelDiscoveryUnsupported,
     ProviderModelInspectionUnavailable,
-    ProviderModelInspector,
+    ProviderModelValidator,
 )
 from atelier2.ports.host_configuration import (
     ModelRegistryRevisionCollision as PortModelRegistryRevisionCollision,
@@ -255,7 +256,7 @@ def publish_model_registry(
     entries: tuple[tuple[str, str], ...],
     channel: HostConfigurationChannel,
     catalog: AgentConfigurationCatalog,
-    inspector: ProviderModelInspector | None,
+    discoverer: ProviderModelDiscoverer | None,
 ) -> PublishModelRegistryUseCaseResult:
     try:
         provider = ProviderId(provider_id)
@@ -304,8 +305,8 @@ def publish_model_registry(
         if discovery is None:
             discovery = (
                 ProviderModelDiscoveryUnsupported()
-                if inspector is None
-                else inspector.discover_models(configuration, auth_profile)
+                if discoverer is None
+                else discoverer.discover_models(configuration, auth_profile)
             )
             discovery_by_auth_profile[auth_profile.revision_hash] = discovery
         match discovery:
@@ -361,7 +362,7 @@ def validate_model_registry_entry(
     configuration_hash: str,
     channel: HostConfigurationChannel,
     catalog: AgentConfigurationCatalog,
-    inspector: ProviderModelInspector | None,
+    validator: ProviderModelValidator | None,
 ) -> PublishModelRegistryUseCaseResult:
     try:
         provider = ProviderId(provider_id)
@@ -392,12 +393,12 @@ def validate_model_registry_entry(
     if selected.provider_check is not ProviderModelCheck.NOT_CHECKED:
         return ModelRegistryUnchanged(latest)
     found = catalog.agent_configuration_revision(configuration_revision_hash)
-    if found is None or inspector is None:
+    if found is None or validator is None:
         return ModelRegistryInvalid()
     configuration, auth_profile = found
     if configuration.model != selected.model_id or auth_profile.provider_id != provider:
         return ModelRegistryInvalid()
-    match inspector.validate_model(configuration, auth_profile):
+    match validator.validate_model(configuration, auth_profile):
         case ProviderModelCheck.CHECKED as check:
             pass
         case ProviderModelCheck.UNKNOWN_AT_PROVIDER as check:

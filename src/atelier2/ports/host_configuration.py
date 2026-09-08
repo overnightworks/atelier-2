@@ -97,14 +97,26 @@ type ProviderModelValidationResult = (
 )
 
 
-class ProviderModelInspector(Protocol):
-    """Server-side discovery and dry-run authority for exact provider ids."""
+class ProviderModelDiscoverer(Protocol):
+    """Which models this provider names, as its own narrow protocol.
+
+    A caller composing only discovery depends on this answer alone,
+    so a fake or adapter serving the dry-run does not have to grow with it.
+    """
 
     def discover_models(
         self,
         configuration: AgentConfigurationRevision,
         auth_profile: AuthProfileRevision,
     ) -> ProviderModelDiscoveryResult: ...
+
+
+class ProviderModelValidator(Protocol):
+    """Whether this model runs on this executor path, as its own narrow protocol.
+
+    A caller composing only the dry-run depends on this answer alone,
+    so a fake or adapter serving discovery does not have to grow with it.
+    """
 
     def validate_model(
         self,

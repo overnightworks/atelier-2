@@ -532,6 +532,96 @@ class QueueItemReferenceMismatch(RuntimeError):
     """A command named a different item than the snapshot it was resolved against."""
 
 
+def _is_legacy_admission(snapshot: QueueItemSnapshot) -> bool:
+    return (
+        snapshot.state is QueueItemState.ADMITTED
+        and snapshot.admission is not None
+        and snapshot.proposal is None
+    )
+
+
+def _require_typed_snapshot_fields(snapshot: QueueItemSnapshot) -> None:
+    if snapshot.observation is not None and not isinstance(
+        snapshot.observation, QueueItemTrackerObservation
+    ):
+        raise TypeError(
+            "a queue item snapshot carries its observation through the contract"
+        )
+    if snapshot.retired_at is not None and not isinstance(
+        snapshot.retired_at, RecordedAt
+    ):
+        raise TypeError("a queue item snapshot carries retired_at as RecordedAt")
+
+
+def _require_canonical_revision_for_state(snapshot: QueueItemSnapshot) -> None:
+    if (
+        snapshot.state is QueueItemState.OBSERVED
+        and snapshot.revision != QUEUE_PROJECTION_REVISION_OBSERVED
+    ):
+        raise ValueError("an observed queue item must be at revision zero")
+    if snapshot.state is QueueItemState.PROPOSED and snapshot.revision.value < 1:
+        raise ValueError("a proposed queue item must have a positive revision")
+
+
+def _require_admission_presence_agrees_with_state(snapshot: QueueItemSnapshot) -> None:
+    if (snapshot.state is QueueItemState.ADMITTED) != (snapshot.admission is not None):
+        raise ValueError(
+            "a queue item snapshot carries an admission if and only if it is ADMITTED"
+        )
+
+
+def _require_proposal_presence_agrees_with_lifecycle(
+    snapshot: QueueItemSnapshot,
+) -> None:
+    proposed = snapshot.state in {QueueItemState.PROPOSED, QueueItemState.ADMITTED}
+    if proposed != (snapshot.proposal is not None) and not _is_legacy_admission(
+        snapshot
+    ):
+        raise ValueError(
+            "a proposed queue lifecycle carries the proposal it is based on"
+        )
+
+
+def _require_canonical_admission_shape(snapshot: QueueItemSnapshot) -> None:
+    admission = snapshot.admission
+    if _is_legacy_admission(snapshot):
+        if (
+            admission is None
+            or admission.authority is not None
+            or admission.proposal_revision is not None
+        ):
+            raise ValueError("only a proposal-less admission may be legacy-shaped")
+    elif snapshot.state is QueueItemState.ADMITTED:
+        proposal = snapshot.proposal
+        if (
+            admission is None
+            or proposal is None
+            or admission.authority is None
+            or admission.proposal_revision is None
+            or admission.workflow_lineage_id != proposal.workflow_lineage_id
+            or snapshot.revision.value != admission.proposal_revision.value + 1
+        ):
+            raise ValueError(
+                "an admitted proposal must name its exact authority and revision"
+            )
+
+
+def _require_canonical_launch_binding(snapshot: QueueItemSnapshot) -> None:
+    if snapshot.launch_binding is None:
+        return
+    admission = snapshot.admission
+    if (
+        snapshot.state is not QueueItemState.ADMITTED
+        or snapshot.proposal is None
+        or admission is None
+    ):
+        raise ValueError("only a proposed admission can carry a launch binding")
+    if snapshot.launch_binding.item_id != snapshot.item_reference.item_id:
+        raise ValueError("a launch binding must name its queue item")
+    if snapshot.launch_binding.proposal_revision != admission.proposal_revision:
+        raise ValueError("a launch binding must name the admitted proposal")
+
+
 @dataclass(frozen=True)
 class QueueItemSnapshot:
     """One durable point-in-time view of a queue item's admission lifecycle."""
@@ -547,62 +637,12 @@ class QueueItemSnapshot:
     retired_at: RecordedAt | None = None
 
     def __post_init__(self) -> None:
-        if self.observation is not None and not isinstance(
-            self.observation, QueueItemTrackerObservation
-        ):
-            raise TypeError(
-                "a queue item snapshot carries its observation through the contract"
-            )
-        if self.retired_at is not None and not isinstance(self.retired_at, RecordedAt):
-            raise TypeError("a queue item snapshot carries retired_at as RecordedAt")
-        if (
-            self.state is QueueItemState.OBSERVED
-            and self.revision != QUEUE_PROJECTION_REVISION_OBSERVED
-        ):
-            raise ValueError("an observed queue item must be at revision zero")
-        if self.state is QueueItemState.PROPOSED and self.revision.value < 1:
-            raise ValueError("a proposed queue item must have a positive revision")
-        admitted = self.state is QueueItemState.ADMITTED
-        if admitted != (self.admission is not None):
-            raise ValueError(
-                "a queue item snapshot carries an admission if and only if it is ADMITTED"
-            )
-        proposed = self.state in {QueueItemState.PROPOSED, QueueItemState.ADMITTED}
-        legacy_admission = (
-            admitted and self.admission is not None and self.proposal is None
-        )
-        if proposed != (self.proposal is not None) and not legacy_admission:
-            raise ValueError(
-                "a proposed queue lifecycle carries the proposal it is based on"
-            )
-        admission = self.admission
-        if legacy_admission:
-            if (
-                admission is None
-                or admission.authority is not None
-                or admission.proposal_revision is not None
-            ):
-                raise ValueError("only a proposal-less admission may be legacy-shaped")
-        elif admitted:
-            proposal = self.proposal
-            if (
-                admission is None
-                or proposal is None
-                or admission.authority is None
-                or admission.proposal_revision is None
-                or admission.workflow_lineage_id != proposal.workflow_lineage_id
-                or self.revision.value != admission.proposal_revision.value + 1
-            ):
-                raise ValueError(
-                    "an admitted proposal must name its exact authority and revision"
-                )
-        if self.launch_binding is not None:
-            if not admitted or self.proposal is None or admission is None:
-                raise ValueError("only a proposed admission can carry a launch binding")
-            if self.launch_binding.item_id != self.item_reference.item_id:
-                raise ValueError("a launch binding must name its queue item")
-            if self.launch_binding.proposal_revision != admission.proposal_revision:
-                raise ValueError("a launch binding must name the admitted proposal")
+        _require_typed_snapshot_fields(self)
+        _require_canonical_revision_for_state(self)
+        _require_admission_presence_agrees_with_state(self)
+        _require_proposal_presence_agrees_with_lifecycle(self)
+        _require_canonical_admission_shape(self)
+        _require_canonical_launch_binding(self)
 
     def revalidated(self) -> QueueItemSnapshot:
         """This snapshot built again through its own constructor, every field kept.

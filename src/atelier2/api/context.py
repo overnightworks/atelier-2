@@ -152,7 +152,8 @@ from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.host_configuration import (
     HostConfigurationChannel,
     ProjectSourceConnectionChannel,
-    ProviderModelInspector,
+    ProviderModelDiscoverer,
+    ProviderModelValidator,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.project_connections import (
@@ -223,7 +224,8 @@ class ApiPorts:
     # where no runtime clock stands behind this app -- a composition without
     # one says so rather than pretending an admission started anything.
     request_queue_sweep: Callable[[], None] | None = None
-    model_registry_inspector: ProviderModelInspector | None = None
+    model_registry_discoverer: ProviderModelDiscoverer | None = None
+    model_registry_validator: ProviderModelValidator | None = None
     # None is the honest default too: a deployment with no auto-redeploy
     # watcher in front of it (every test app, and any host serving without
     # one) has no status file for GET /health to read.
