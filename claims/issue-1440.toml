@@ -1,8 +1,0 @@
-claim_id = "2c84d59700164292b0860a1420a51859"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "3fdbe9605eeb232f5b7a3219b1585cead5264a10"
-branch = "claude/issue-1440-sonar-tests"
-scope = ["tests/integration/test_api.py", "tests/integration/test_api_queries.py", "tests/integration/test_scan_definition_source.py", "tests/integration/test_store_migration.py", "tests/integration/test_v3_open_pr_action.py", "tests/integration/test_definition_source_store.py", "tests/integration/test_attention_sse.py", "tests/domain/test_schemas_v3.py", "tests/host/test_run_command.py"]
-opened_commit = "3c918734ee376b387536cfc88b819d5066ab162a"
-whole_reason = "drei mechanische Regelfamilien in neun Testdateien, eine Aufraeumrunde"
