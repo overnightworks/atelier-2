@@ -8,6 +8,13 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from tests.tooling.checkout_test_support import (
+    MISSING_CHECKOUT_REASON,
+    directory_is_a_git_checkout,
+)
+
 PROJECT_ROOT = Path(__file__).parents[2]
 PLACEHOLDER_USER = "operator"
 _HOME_DIRECTORY_PREFIX = "/home/"
@@ -54,6 +61,10 @@ def _findings() -> list[str]:
     return findings
 
 
+@pytest.mark.skipif(
+    not directory_is_a_git_checkout(PROJECT_ROOT),
+    reason=MISSING_CHECKOUT_REASON,
+)
 def test_no_tracked_file_names_the_operators_real_home_path_or_hostname() -> None:
     assert _findings() == []
 

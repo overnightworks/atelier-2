@@ -8,6 +8,13 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
+from tests.tooling.checkout_test_support import (
+    MISSING_CHECKOUT_REASON,
+    directory_is_a_git_checkout,
+)
+
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_root_layout.py"
 
@@ -65,6 +72,22 @@ def test_a_stray_directory_is_refused() -> None:
     )
 
 
+def test_the_checkout_predicate_is_false_for_a_plain_directory_and_true_after_git_init(
+    tmp_path: Path,
+) -> None:
+    assert directory_is_a_git_checkout(tmp_path) is False
+
+    subprocess.run(
+        ["git", "init", "--quiet", str(tmp_path)], check=True, capture_output=True
+    )
+
+    assert directory_is_a_git_checkout(tmp_path) is True
+
+
+@pytest.mark.skipif(
+    not directory_is_a_git_checkout(PROJECT_ROOT),
+    reason=MISSING_CHECKOUT_REASON,
+)
 def test_the_repository_root_passes_the_gate() -> None:
     result = subprocess.run(
         [sys.executable, str(GATE)],
