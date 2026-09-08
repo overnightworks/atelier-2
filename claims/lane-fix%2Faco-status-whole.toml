@@ -1,7 +1,0 @@
-claim_id = "327eea37a0d24960b3e2e09437a39b21"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "c9100ce4b7b520f329744aac8d71bcfa1a2cf317"
-branch = "fix/aco-status-whole"
-scope = ["src/atelier2/adapters/agent_claim_cli.py,tests/adapters/test_agent_claim_cli.py"]
-opened_commit = "c31a5479f399f6fa14b363dd13d8007e8c54732d"
