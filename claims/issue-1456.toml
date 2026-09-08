@@ -1,0 +1,7 @@
+claim_id = "e5c5c85eb30243d8a5c929aaab412649"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "b5c8fd6ec2373272092b92e59c9cd17511d10ca0"
+branch = "claude/issue-1456-claim-release"
+scope = ["src/atelier2/adapters/dbos/work_item_claims.py", "tests/adapters/test_work_item_claim_precondition.py"]
+opened_commit = "0860d51818b166eea53d2c7794605fa8cf712f0f"
