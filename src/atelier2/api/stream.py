@@ -4,7 +4,7 @@ import asyncio
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, TypeVar, assert_never, get_args
+from typing import Final, Literal, assert_never, get_args
 from urllib.parse import quote
 
 from fastapi.sse import ServerSentEvent
@@ -56,8 +56,6 @@ from atelier2.contracts.run_projections import (
 )
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.when import RecordedAt
-
-Result = TypeVar("Result")
 
 StreamFailureCode = Literal[
     "durable-projection-unrepresentable",
@@ -153,7 +151,7 @@ class BoundedQueryRunner:
     def abandoned_queries(self) -> int:
         return len(self._abandoned_tasks)
 
-    async def run(self, query: Callable[[], Result]) -> Result:
+    async def run[Result](self, query: Callable[[], Result]) -> Result:
         try:
             await asyncio.wait_for(
                 self._semaphore.acquire(), self._admission_timeout_seconds
