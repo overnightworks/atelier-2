@@ -1,0 +1,8 @@
+claim_id = "0e12228b7c4e4f9ba618522a6d0d0479"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "66a284657cc26bb7de751054c32c99c84b62859e"
+branch = "claude/issue-1429-gitless-gates"
+scope = ["tests/tooling"]
+opened_commit = "45caaa15f1b4953c79266d21923e58c8e9fe8ce0"
+whole_reason = "die zwei Pruefungen und ihr gemeinsamer Owner liegen im selben Verzeichnis; kein anderer Bereich ist beteiligt"
