@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import cache
 
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
+    AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
     AgentRole,
     AuthProfileRevisionHash,
@@ -215,6 +215,90 @@ def configuration_registered(
     )
 
 
+def _override_choices(
+    requested: AgentBinding,
+    registered: tuple[_ModelCandidate, ...],
+    override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]],
+) -> _RoleChoices:
+    """Whether this start override names exactly one eligible registry tuple."""
+    matches = tuple(
+        candidate
+        for candidate in registered
+        if candidate.configuration_hash == requested.agent_configuration_revision_hash
+    )
+    metadata = override_models.get(requested.agent_configuration_revision_hash)
+    if len(matches) == 1 and (
+        metadata is None or (matches[0].provider_id, matches[0].model_id) == metadata
+    ):
+        return _RoleChoices(matches, None)
+    return _RoleChoices((), ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED)
+
+
+def _pinned_model_choices(
+    model_id: str, registered: tuple[_ModelCandidate, ...]
+) -> _RoleChoices:
+    """Whether this workflow pin names exactly one eligible registry tuple."""
+    pinned = tuple(
+        _ModelCandidate(
+            candidate.configuration_hash,
+            candidate.provider_id,
+            candidate.model_id,
+            ModelResolutionSource.PINNED_IN_WORKFLOW,
+            None,
+        )
+        for candidate in registered
+        if candidate.model_id == model_id
+    )
+    if len(pinned) == 1:
+        return _RoleChoices(pinned, None)
+    if not pinned:
+        return _RoleChoices(
+            (), ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
+        )
+    return _RoleChoices((), ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS)
+
+
+def _project_default_choices(
+    declared_difficulty: RoleDifficulty,
+    defaults: ProjectModelDefaultsRevision | None,
+    registered: tuple[_ModelCandidate, ...],
+) -> _RoleChoices:
+    """Project defaults from this difficulty upward that the registry still holds."""
+    if defaults is None:
+        return _RoleChoices((), ModelResolutionUncastReason.NO_PROJECT_DEFAULT)
+    by_difficulty: dict[RoleDifficulty, ProjectModelDefault] = {
+        default.difficulty: default for default in defaults.defaults
+    }
+    choices: list[_ModelCandidate] = []
+    for typed_difficulty in (1, 2, 3):
+        if typed_difficulty < declared_difficulty:
+            continue
+        default = by_difficulty.get(typed_difficulty)
+        if default is None:
+            continue
+        matching = tuple(
+            candidate
+            for candidate in registered
+            if candidate.provider_id == default.provider_id.value
+            and candidate.model_id == default.model_id
+            and candidate.configuration_hash
+            == default.agent_configuration_revision_hash
+        )
+        if len(matching) == 1:
+            choices.append(
+                _ModelCandidate(
+                    default.agent_configuration_revision_hash,
+                    default.provider_id.value,
+                    default.model_id,
+                    ModelResolutionSource.FROM_PROJECT,
+                    typed_difficulty,
+                )
+            )
+    if not choices:
+        return _RoleChoices((), ModelResolutionUncastReason.NO_PROJECT_DEFAULT)
+    return _RoleChoices(tuple(choices), None)
+
+
 def _candidate_choices(
     declaration: DeclaredRole,
     requested_by_role: dict[str, AgentBinding],
@@ -222,76 +306,14 @@ def _candidate_choices(
     defaults: ProjectModelDefaultsRevision | None,
     registries: tuple[ModelRegistryRevision, ...],
 ) -> _RoleChoices:
+    """Who may occupy this role: override, then pin, then project defaults."""
     registered = _eligible_registry_candidates(registries)
     requested = requested_by_role.get(declaration.role)
     if requested is not None:
-        matches = tuple(
-            candidate
-            for candidate in registered
-            if candidate.configuration_hash
-            == requested.agent_configuration_revision_hash
-        )
-        metadata = override_models.get(requested.agent_configuration_revision_hash)
-        if len(matches) == 1 and (
-            metadata is None
-            or (matches[0].provider_id, matches[0].model_id) == metadata
-        ):
-            return _RoleChoices(matches, None)
-        return _RoleChoices((), ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED)
+        return _override_choices(requested, registered, override_models)
     if declaration.model is not None:
-        pinned = tuple(
-            _ModelCandidate(
-                candidate.configuration_hash,
-                candidate.provider_id,
-                candidate.model_id,
-                ModelResolutionSource.PINNED_IN_WORKFLOW,
-                None,
-            )
-            for candidate in registered
-            if candidate.model_id == declaration.model
-        )
-        if len(pinned) == 1:
-            uncast_reason = None
-        elif not pinned:
-            uncast_reason = ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
-        else:
-            uncast_reason = ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS
-        return _RoleChoices(pinned if len(pinned) == 1 else (), uncast_reason)
-    choices: list[_ModelCandidate] = []
-    if defaults is not None:
-        by_difficulty: dict[RoleDifficulty, ProjectModelDefault] = {
-            default.difficulty: default for default in defaults.defaults
-        }
-        for typed_difficulty in (1, 2, 3):
-            if typed_difficulty < declaration.difficulty:
-                continue
-            default = by_difficulty.get(typed_difficulty)
-            if default is None:
-                continue
-            matching_registry_tuples = tuple(
-                candidate
-                for candidate in registered
-                if (
-                    candidate.provider_id == default.provider_id.value
-                    and candidate.model_id == default.model_id
-                    and candidate.configuration_hash
-                    == default.agent_configuration_revision_hash
-                )
-            )
-            if len(matching_registry_tuples) == 1:
-                choices.append(
-                    _ModelCandidate(
-                        default.agent_configuration_revision_hash,
-                        default.provider_id.value,
-                        default.model_id,
-                        ModelResolutionSource.FROM_PROJECT,
-                        typed_difficulty,
-                    )
-                )
-    return _RoleChoices(
-        tuple(choices),
-        None if choices else ModelResolutionUncastReason.NO_PROJECT_DEFAULT,
-    )
+        return _pinned_model_choices(declaration.model, registered)
+    return _project_default_choices(declaration.difficulty, defaults, registered)
 
 
 def _family_edges(
@@ -332,71 +354,84 @@ def _connected_roles(
     return tuple(components)
 
 
-def _select_component(
-    roles: tuple[str, ...],
-    choices: dict[str, _RoleChoices],
-    edges: tuple[tuple[str, str], ...],
-) -> dict[str, _ModelCandidate | None]:
-    """Keep the precedence-first maximum assignment of a tree or one cycle."""
-    relevant_edges = tuple(
-        (left, right) for left, right in edges if left in roles and right in roles
-    )
-    role_index = {role: index for index, role in enumerate(roles)}
-    options = {role: (*choices[role].candidates, None) for role in roles}
-    neighbours = {role: set[str]() for role in roles}
-    for left, right in relevant_edges:
-        neighbours[left].add(right)
-        neighbours[right].add(left)
+@dataclass(frozen=True)
+class _ComponentSelection:
+    states: tuple[int, ...]
+    assigned_count: int
 
-    @dataclass(frozen=True)
-    class Selection:
-        states: tuple[int, ...]
-        assigned_count: int
 
-    missing_state = max(len(value) for value in options.values()) + 1
+@dataclass
+class _ComponentSearch:
+    """Family-assignment search for one connected component: a tree or one cycle."""
 
-    def selection_key(selection: Selection) -> tuple[int, tuple[int, ...]]:
-        return (
-            -selection.assigned_count,
-            tuple(
-                missing_state if state_index < 0 else state_index
-                for state_index in selection.states
+    roles: tuple[str, ...]
+    role_index: dict[str, int]
+    options: dict[str, tuple[_ModelCandidate | None, ...]]
+    neighbours: dict[str, set[str]]
+    relevant_edges: tuple[tuple[str, str], ...]
+    missing_state: int
+    tree_memo: dict[
+        tuple[str, str | None, frozenset[str]], dict[int, _ComponentSelection]
+    ] = field(default_factory=dict)
+
+    @classmethod
+    def of(
+        cls,
+        roles: tuple[str, ...],
+        choices: dict[str, _RoleChoices],
+        edges: tuple[tuple[str, str], ...],
+    ) -> _ComponentSearch:
+        relevant_edges = tuple(
+            (left, right) for left, right in edges if left in roles and right in roles
+        )
+        options = {role: (*choices[role].candidates, None) for role in roles}
+        neighbours = {role: set[str]() for role in roles}
+        for left, right in relevant_edges:
+            neighbours[left].add(right)
+            neighbours[right].add(left)
+        index = {role: position for position, role in enumerate(roles)}
+        missing = max(len(value) for value in options.values()) + 1
+        return cls(roles, index, options, neighbours, relevant_edges, missing)
+
+    def best_of(self, selections: list[_ComponentSelection]) -> _ComponentSelection:
+        missing = self.missing_state
+        return min(
+            selections,
+            key=lambda item: (
+                -item.assigned_count,
+                tuple(missing if index < 0 else index for index in item.states),
             ),
         )
 
-    def best_of(selections: list[Selection]) -> Selection:
-        return min(selections, key=selection_key)
+    def one_state(self, role: str, state_index: int) -> _ComponentSelection:
+        states = [-1] * len(self.roles)
+        states[self.role_index[role]] = state_index
+        assigned = int(self.options[role][state_index] is not None)
+        return _ComponentSelection(tuple(states), assigned)
 
-    def one_state(role: str, state_index: int) -> Selection:
-        states = [-1] * len(roles)
-        states[role_index[role]] = state_index
-        return Selection(
-            tuple(states),
-            int(options[role][state_index] is not None),
+    @staticmethod
+    def merged(
+        left: _ComponentSelection, right: _ComponentSelection
+    ) -> _ComponentSelection:
+        states = tuple(
+            right_state if left_state < 0 else left_state
+            for left_state, right_state in zip(left.states, right.states, strict=True)
         )
+        return _ComponentSelection(states, left.assigned_count + right.assigned_count)
 
-    def merge(left: Selection, right: Selection) -> Selection:
-        return Selection(
-            tuple(
-                right_state if left_state < 0 else left_state
-                for left_state, right_state in zip(
-                    left.states, right.states, strict=True
-                )
-            ),
-            left.assigned_count + right.assigned_count,
-        )
-
-    def compatible(
+    def family_pair_may_stand(
+        self,
         left_role: str,
         left_state_index: int,
         right_role: str,
         right_state_index: int,
     ) -> bool:
+        """Whether these two role-states may stand together under the family edges that join them."""
         states = {
-            left_role: options[left_role][left_state_index],
-            right_role: options[right_role][right_state_index],
+            left_role: self.options[left_role][left_state_index],
+            right_role: self.options[right_role][right_state_index],
         }
-        for declarer, referenced in relevant_edges:
+        for declarer, referenced in self.relevant_edges:
             if {declarer, referenced} != {left_role, right_role}:
                 continue
             declarer_candidate = states[declarer]
@@ -408,110 +443,122 @@ def _select_component(
                 return False
         return True
 
-    @cache
-    def tree_options(
-        role: str,
-        parent: str | None,
-        blocked: frozenset[str],
-    ) -> dict[int, Selection]:
+    def subtree_assignment(
+        self, role: str, parent: str | None, blocked: frozenset[str]
+    ) -> dict[int, _ComponentSelection]:
+        """Precedence-first maximum of this role's subtree, keyed by this role's state."""
+        key = (role, parent, blocked)
+        cached = self.tree_memo.get(key)
+        if cached is not None:
+            return cached
         descendants = tuple(
             neighbour
-            for neighbour in neighbours[role]
+            for neighbour in self.neighbours[role]
             if neighbour != parent and neighbour not in blocked
         )
-        selections: dict[int, Selection] = {}
-        for state_index in range(len(options[role])):
-            selected = one_state(role, state_index)
+        selections: dict[int, _ComponentSelection] = {}
+        for state_index in range(len(self.options[role])):
+            selected = self.one_state(role, state_index)
             viable = True
             for descendant in descendants:
-                descendant_options = tree_options(descendant, role, blocked)
+                descendant_options = self.subtree_assignment(descendant, role, blocked)
                 compatible_descendants = [
                     descendant_selection
                     for descendant_state, descendant_selection in descendant_options.items()
-                    if compatible(
-                        role,
-                        state_index,
-                        descendant,
-                        descendant_state,
+                    if self.family_pair_may_stand(
+                        role, state_index, descendant, descendant_state
                     )
                 ]
                 if not compatible_descendants:
                     viable = False
                     break
-                selected = merge(selected, best_of(compatible_descendants))
+                selected = self.merged(selected, self.best_of(compatible_descendants))
             if viable:
                 selections[state_index] = selected
+        self.tree_memo[key] = selections
         return selections
 
-    remaining_degree = {role: len(neighbours[role]) for role in roles}
-    leaves = deque(role for role in roles if remaining_degree[role] <= 1)
-    peeled: set[str] = set()
-    while leaves:
-        role = leaves.popleft()
-        if role in peeled:
-            continue
-        peeled.add(role)
-        for neighbour in neighbours[role]:
-            if neighbour in peeled:
+    def roles_left_on_the_cycle(self) -> frozenset[str]:
+        """After peeling every degree-1 role, the roles that remain on the one cycle."""
+        remaining_degree = {role: len(self.neighbours[role]) for role in self.roles}
+        leaves = deque(role for role in self.roles if remaining_degree[role] <= 1)
+        peeled: set[str] = set()
+        while leaves:
+            role = leaves.popleft()
+            if role in peeled:
                 continue
-            remaining_degree[neighbour] -= 1
-            if remaining_degree[neighbour] == 1:
-                leaves.append(neighbour)
-    cycle = frozenset(role for role in roles if role not in peeled)
+            peeled.add(role)
+            for neighbour in self.neighbours[role]:
+                if neighbour in peeled:
+                    continue
+                remaining_degree[neighbour] -= 1
+                if remaining_degree[neighbour] == 1:
+                    leaves.append(neighbour)
+        return frozenset(role for role in self.roles if role not in peeled)
 
-    if not cycle:
-        selection = best_of(list(tree_options(roles[0], None, frozenset()).values()))
-    else:
-        start = next(role for role in roles if role in cycle)
+    def cycle_roles_from(self, start: str, cycle: frozenset[str]) -> list[str]:
+        """The remaining cycle in walk order, starting at `start`."""
         cycle_order = [start]
         previous: str | None = None
         current = start
         while True:
             following = next(
                 neighbour
-                for neighbour in neighbours[current]
+                for neighbour in self.neighbours[current]
                 if neighbour in cycle and neighbour != previous
             )
             if following == start:
                 break
             cycle_order.append(following)
             previous, current = current, following
+        return cycle_order
 
-        attached = {role: tree_options(role, None, cycle) for role in cycle_order}
-        completed: list[Selection] = []
+    def best_assignment_around(self, cycle: frozenset[str]) -> _ComponentSelection:
+        """Precedence-first maximum assignment around the remaining cycle."""
+        start = next(role for role in self.roles if role in cycle)
+        cycle_order = self.cycle_roles_from(start, cycle)
+        attached = {
+            role: self.subtree_assignment(role, None, cycle) for role in cycle_order
+        }
+        completed: list[_ComponentSelection] = []
         for start_state, start_selection in attached[start].items():
             paths = {start_state: start_selection}
             previous_role = start
             for role in cycle_order[1:]:
-                next_paths: dict[int, Selection] = {}
+                next_paths: dict[int, _ComponentSelection] = {}
                 for state_index, attachment in attached[role].items():
                     possible = [
-                        merge(path, attachment)
+                        self.merged(path, attachment)
                         for previous_state, path in paths.items()
-                        if compatible(
-                            previous_role,
-                            previous_state,
-                            role,
-                            state_index,
+                        if self.family_pair_may_stand(
+                            previous_role, previous_state, role, state_index
                         )
                     ]
                     if possible:
-                        next_paths[state_index] = best_of(possible)
+                        next_paths[state_index] = self.best_of(possible)
                 paths = next_paths
                 previous_role = role
             completed.extend(
                 path
                 for final_state, path in paths.items()
-                if compatible(
-                    cycle_order[-1],
-                    final_state,
-                    start,
-                    start_state,
+                if self.family_pair_may_stand(
+                    cycle_order[-1], final_state, start, start_state
                 )
             )
-        selection = best_of(completed)
+        return self.best_of(completed)
 
-    return {role: options[role][selection.states[role_index[role]]] for role in roles}
+    def select(self) -> dict[str, _ModelCandidate | None]:
+        cycle = self.roles_left_on_the_cycle()
+        if not cycle:
+            selection = self.best_of(
+                list(self.subtree_assignment(self.roles[0], None, frozenset()).values())
+            )
+        else:
+            selection = self.best_assignment_around(cycle)
+        return {
+            role: self.options[role][selection.states[self.role_index[role]]]
+            for role in self.roles
+        }
 
 
 def cast_unbound_roles(
@@ -551,7 +598,7 @@ def cast_unbound_roles(
     }
     edges = _family_edges(declarations)
     for component in _connected_roles(declarations, edges):
-        selected.update(_select_component(component, choices_by_role, edges))
+        selected.update(_ComponentSearch.of(component, choices_by_role, edges).select())
     for left, _right in edges:
         if selected[left] is None and choices_by_role[left].uncast_reason is None:
             uncast_reasons[left] = (
@@ -607,6 +654,60 @@ def _roles_working_on_the_project(graph: WorkflowGraphV3) -> frozenset[str]:
     )
 
 
+def _receipt_gate_refuses(
+    executor_key: AgentExecutorKey,
+    configuration: AgentConfigurationRevision,
+    registry: AgentExecutorRegistry,
+    workflow_hash: WorkflowRevisionHash,
+) -> bool:
+    """Whether a missing receipt refuses this start; the canary exemption waives only this gate."""
+    capability = configuration.requested_capability
+    if registry.is_startable(executor_key, capability, configuration.revision_hash):
+        return False
+    if not registry.is_structurally_startable(executor_key, capability):
+        return True
+    return not registry.reprobe_exempt(workflow_hash)
+
+
+def _resolved_or_refused_binding(
+    binding: AgentBinding,
+    reads: AgentConfigurationBindingReads,
+    registry: AgentExecutorRegistry,
+    workflow_hash: WorkflowRevisionHash,
+    working_on_the_project: frozenset[str],
+) -> (
+    ResolvedAgentBinding
+    | DurableAgentConfigurationRevisionMissing
+    | DurableAgentExecutorBindingUnavailable
+    | DurableAgentExecutorCapabilityUnavailable
+    | DurableAgentExecutorWithoutWorkspaceFileTools
+):
+    """This one requested binding, or the first refusal that stops it."""
+    found = reads.agent_configuration_revision(
+        binding.agent_configuration_revision_hash
+    )
+    if found is None:
+        return DurableAgentConfigurationRevisionMissing()
+    configuration, auth = found
+    executor_key = AgentExecutorKey(auth.provider_id, configuration.executor_revision)
+    if not registry.contains(executor_key):
+        return DurableAgentExecutorBindingUnavailable()
+    if configuration.requested_capability not in registry.declared_capabilities(
+        executor_key
+    ):
+        return DurableAgentExecutorCapabilityUnavailable()
+    if (
+        binding.role.value in working_on_the_project
+        and registry.workspace_file_tools(executor_key) is WorkspaceFileTools.WITHHELD
+    ):
+        return DurableAgentExecutorWithoutWorkspaceFileTools(
+            binding.role.value, configuration.executor_revision.value
+        )
+    if _receipt_gate_refuses(executor_key, configuration, registry, workflow_hash):
+        return DurableAgentExecutorBindingUnavailable()
+    return ResolvedAgentBinding(binding.role, configuration, auth)
+
+
 def resolve_start_bindings(
     graph: WorkflowGraphV3,
     workflow_hash: WorkflowRevisionHash,
@@ -658,46 +759,12 @@ def resolve_start_bindings(
     )
     resolved: list[ResolvedAgentBinding] = []
     for binding in agent_bindings.bindings:
-        found = reads.agent_configuration_revision(
-            binding.agent_configuration_revision_hash
+        outcome = _resolved_or_refused_binding(
+            binding, reads, registry, workflow_hash, working_on_the_project
         )
-        if found is None:
-            return DurableAgentConfigurationRevisionMissing()
-        configuration, auth = found
-        executor_key = AgentExecutorKey(
-            auth.provider_id, configuration.executor_revision
-        )
-        if not registry.contains(executor_key):
-            return DurableAgentExecutorBindingUnavailable()
-        if configuration.requested_capability not in registry.declared_capabilities(
-            executor_key
-        ):
-            return DurableAgentExecutorCapabilityUnavailable()
-        if (
-            binding.role.value in working_on_the_project
-            and registry.workspace_file_tools(executor_key)
-            is WorkspaceFileTools.WITHHELD
-        ):
-            return DurableAgentExecutorWithoutWorkspaceFileTools(
-                binding.role.value, configuration.executor_revision.value
-            )
-        # The one exemption bypasses the receipt gate alone: it may only
-        # rescue a start that `is_structurally_startable` already admits. An
-        # executor never registered or marked unavailable refuses here
-        # regardless of the exemption -- no run, canary included, could ever
-        # produce evidence for a factory that does not exist.
-        if not registry.is_startable(
-            executor_key,
-            configuration.requested_capability,
-            configuration.revision_hash,
-        ) and (
-            not registry.is_structurally_startable(
-                executor_key, configuration.requested_capability
-            )
-            or not registry.reprobe_exempt(workflow_hash)
-        ):
-            return DurableAgentExecutorBindingUnavailable()
-        resolved.append(ResolvedAgentBinding(binding.role, configuration, auth))
+        if not isinstance(outcome, ResolvedAgentBinding):
+            return outcome
+        resolved.append(outcome)
 
     resolved_bindings = tuple(resolved)
     if isinstance(graph, WorkflowGraphV3):
