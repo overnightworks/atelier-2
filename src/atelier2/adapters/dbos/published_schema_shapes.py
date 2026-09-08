@@ -31,6 +31,7 @@ reads them.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from atelier2.adapters.dbos.published_queue_shapes import (
     PUBLISHED_QUEUE_TABLE_SHAPES,
@@ -1424,8 +1425,9 @@ CREATE TABLE wait_answers (
 """,
 }
 
-_WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = {
-    "wait_answers_payload_no_update": """
+_WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = MappingProxyType(
+    {
+        "wait_answers_payload_no_update": """
         CREATE TRIGGER wait_answers_payload_no_update
         BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
                          round_ordinal, answer_bytes, answer_hash,
@@ -1434,7 +1436,7 @@ _WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = {
           SELECT RAISE(ABORT, 'wait answer bindings are immutable');
         END
     """,
-    "wait_answers_state_transition": """
+        "wait_answers_state_transition": """
         CREATE TRIGGER wait_answers_state_transition
         BEFORE UPDATE OF state, state_version ON wait_answers
         WHEN NOT (OLD.state = 'PENDING' AND OLD.state_version = 0
@@ -1443,17 +1445,18 @@ _WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = {
           SELECT RAISE(ABORT, 'invalid wait answer transition');
         END
     """,
-    "wait_answers_no_delete": """
+        "wait_answers_no_delete": """
         CREATE TRIGGER wait_answers_no_delete
         BEFORE DELETE ON wait_answers BEGIN
           SELECT RAISE(ABORT, 'wait answers are immutable');
         END
     """,
-}
+    }
+)
 
-PUBLISHED_WAIT_ANSWER_TRIGGERS: Mapping[int, Mapping[str, str]] = {
-    version: _WAIT_ANSWER_TRIGGERS_V34_TO_V45 for version in range(34, 46)
-}
+PUBLISHED_WAIT_ANSWER_TRIGGERS: Mapping[int, Mapping[str, str]] = dict.fromkeys(
+    range(34, 46), _WAIT_ANSWER_TRIGGERS_V34_TO_V45
+)
 
 _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (
     (

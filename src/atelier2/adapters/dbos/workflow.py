@@ -865,7 +865,6 @@ class _DurableRunWorkflows:
                     if terminal is None:
                         redrive_index = self.sleep_before_redrive(redrive_index)
                         continue
-                    continue
                 case AgentExecutorBindingRefusalFenced():
                     return RunState.STARTED.value
                 case _ as unreachable:
