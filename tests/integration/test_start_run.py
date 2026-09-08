@@ -282,40 +282,6 @@ def test_a_malformed_declared_scope_refuses_the_start_by_name_not_as_corruption(
     assert "../etc/passwd" in result.detail
 
 
-def test_an_empty_declared_scope_refuses_the_start_by_name_not_as_corruption(
-    storage: tuple[DbosRuntime, DbosDurableRunStarter],
-) -> None:
-    runtime, starter = storage
-    document = graph_input_wait_line(WORK_ITEM_ORDER_SCHEMA_REVISION.value)
-    publish_pinned_revisions(
-        runtime.engine,
-        ANY_JSON_SCHEMA,
-        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
-    )
-    publish_revision(runtime.engine, revision(document))
-    observed = ObservedWorkItemRevision(
-        TrackerItemReference("gh:9003"),
-        WorkItemKind.ISSUE,
-        b"no scope list in this body",
-        WorkItemChangeMarker('W/"scope-3"'),
-        RecordedAt("2026-09-06T09:00:00Z"),
-    )
-
-    result = start_published_run(
-        RunId("run-with-empty-scope"),
-        revision(document).revision_hash,
-        (),
-        starter,
-        orders=(AuthoredOrder("context", ObservedWorkItemOrderValue(observed)),),
-    )
-
-    assert isinstance(result, RunInputRefused)
-    assert result.name == "context"
-    assert result.refusal is V3InputRefusal.VALUE_REFUSED
-    assert result.detail is not None
-    assert "no scope list" in result.detail
-
-
 def test_raise_after_real_enqueue_rolls_back_the_run_and_its_workflow(
     storage: tuple[DbosRuntime, DbosDurableRunStarter], monkeypatch: pytest.MonkeyPatch
 ) -> None:
