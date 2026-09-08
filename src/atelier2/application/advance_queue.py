@@ -270,11 +270,9 @@ def admit_queue_items_by_label(
     and what it writes is still only a proposal (REQ-QUEUE-01); without them
     the item stays observed and the admission says so, exactly as before.
 
-    A labelled item whose body names no scope list is declined with
-    `QueueLabelAdmissionScopeMissing` and left as it was: an empty scope
-    must not cost a start.
+    A labelled item whose body names no scope list is declined and left as it
+    was, exactly as `_scoped_or_declined` decides.
     """
-
     policy = active_policy(queue, project)
     if policy is None or policy.automation_label is None:
         return QueueAutomationLabelUnset()
@@ -287,18 +285,15 @@ def admit_queue_items_by_label(
     declined: list[QueueLabelAdmissionDeclined] = []
     for item in projected_items(queue, page_limit):
         item_id = item.item_reference.item_id
-        # A retired item has left the pullable set (ADR 0016, 2026-09-01
-        # amendment); admitting one would write a decision the sweep then
-        # refuses to act on.
+        # A retired item left the pullable set (ADR 0016, 2026-09-01
+        # amendment); admitting one writes a decision the sweep won't act on.
         if item.retired_at is not None or item_id not in listing.labelled:
             continue
-        scope = _work_item_scope(tracker, item)
+        scope = _scoped_or_declined(tracker, item)
         if isinstance(scope, QueueAutomationSourceUnreadable):
             return scope
-        if scope is None or not scope.paths:
-            declined.append(
-                QueueLabelAdmissionDeclined(item_id, QueueLabelAdmissionScopeMissing())
-            )
+        if isinstance(scope, QueueLabelAdmissionDeclined):
+            declined.append(scope)
             continue
         expected_revision = _proposed_from_policy_defaults(queue, item, policy)
         outcome = _confirmed_by_rule(queue, item, expected_revision, rationale)
@@ -321,6 +316,25 @@ def _work_item_scope(
             return QueueAutomationSourceUnreadable(detail)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _scoped_or_declined(
+    tracker: TrackerItemSource, item: QueueItemSnapshot
+) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
+    """Answer whether the labelled item's body names a scope list to admit.
+
+    An empty scope must not cost a start, so a missing or pathless scope comes
+    back as the declined outcome the caller records as-is; an unreadable
+    tracker comes back as the outcome the caller returns outright.
+    """
+
+    scope = _work_item_scope(tracker, item)
+    if isinstance(scope, QueueAutomationSourceUnreadable):
+        return scope
+    if scope is None or not scope.paths:
+        item_id = item.item_reference.item_id
+        return QueueLabelAdmissionDeclined(item_id, QueueLabelAdmissionScopeMissing())
+    return scope
 
 
 def _proposed_from_policy_defaults(
