@@ -379,10 +379,7 @@ def _work_item_claim_ledger(
     scratch_root: Path | None,
     engine: Engine,
 ) -> WorkItemClaimLedger | None:
-    """The claim boundary this instance holds, where it was given every part.
-
-    Without an executable or a served project there is no claim boundary.
-    """
+    """Compose the claim boundary only for a configured, served project."""
 
     if executable is None or project_checkout is None:
         return None
@@ -427,13 +424,7 @@ def _project_checkout_for(engine: Engine, project_id: ProjectId | None) -> Path 
 def _declared_project_at(
     project_checkout: Path | None, database_path: Path
 ) -> DeclaredProject | None:
-    """The project this process serves, composed from the checkout it stands in.
-
-    The database path travels with it because the project's candidate store is
-    placed beside the store this process binds, the same derivation the
-    agent-control root uses -- so the project keeps its work inside the root it
-    is served from rather than inside the checkout it reads.
-    """
+    """Compose the served project and place its candidates beside the database."""
 
     if project_checkout is None:
         return None
@@ -469,27 +460,11 @@ which is why the node-workflow fallback is offered exactly here."""
 
 
 def _open_binding_owning_workflow_id(record: sa.Row[Any]) -> str | None:
-    """The DBOS workflow whose own terminal status frees this intent, by state.
+    """Return the workflow that can still move this intent, if one exists.
 
-    `PREPARED` and `CONFIRMED` name `durable_effect` (`effect_workflow_id_for`).
-    `adapter_for_key` resolves the *current* adapter registry fresh on every
-    replay, ahead of every memoized step (`workflow.py::durable_effect`), so a
-    `CONFIRMED` intent whose commit outran its own workflow's `SUCCESS` can
-    still crash a replay under a changed identity -- exempting it by its own
-    persisted state alone could strand a run already durably marked complete
-    (#1218). The id such an intent names is not always one DBOS ever minted:
-    an Agent node redeeming its own grant never starts a `durable_effect` at
-    all, and `_agent_redeemed_owning_workflow_ids` answers for those.
-    `RECONCILING` names `durable_reconciliation` (`reconcile_workflow_id_for`),
-    keyed by the intent's own reconciliation command; that workflow is the only
-    driver a reconciling intent can have, whichever authorization prepared it.
-
-    `WAITING_RECONCILIATION` answers `None`: no workflow drives it yet, and
-    the identity it recorded must still be honoured by whichever
-    reconciliation command is issued against it later, so it always counts
-    against a differing identity. `ABANDONED` is never passed here --
-    `EffectIntentState` itself defines it as the state "no workflow will move
-    ... again," so the caller exempts it before any workflow id is needed.
+    A waiting-reconciliation intent has no driver and must retain its binding.
+    Agent-redeemed intents whose effect workflow was never minted are resolved
+    separately through their node workflow.
     """
 
     state = EffectIntentState(str(record.state))
@@ -523,24 +498,9 @@ def _recorded_workflow_statuses(
 def _agent_redeemed_owning_workflow_ids(
     connection: Connection, records: list[sa.Row[Any]]
 ) -> dict[str, str]:
-    """The node workflow owning each intent whose `durable_effect` never existed.
+    """Map agent effect and claim keys to the node workflow that drove them.
 
-    An intent an Agent node earns through its own pinned tool grant is prepared
-    and redeemed as two steps of that node's workflow
-    (`workflow.py::redeem_agent_node_effect`), so no `atelier2-effect-*`
-    workflow is ever minted for it and reading that id back finds nothing --
-    which counted every such intent as forever open and made a moved identity
-    unstartable while five finished pushes sat in the store (#1218). Its owner
-    is the node workflow, and which node execution that is, is recomputed
-    rather than stored: every agent attempt of the intent's own run names its
-    node execution, and the logical key that execution mints
-    (`logical_effect_key_for`, the derivation `logical_effect_key_for_node`
-    composes for the preparer) either is this intent's key or is not. The lane
-    claim a builder node holds before it works is prepared by that same node
-    workflow under its own key (`work_item_claim_effect_key`), so both keys of
-    one execution name it. No match names no owner, so the caller keeps the
-    intent -- a store whose rows are gone fails closed rather than exempting
-    an intent nothing accounts for.
+    A missing execution remains unowned so binding validation fails closed.
     """
 
     run_ids = {str(record.run_id) for record in records}
@@ -564,12 +524,7 @@ def _agent_redeemed_owning_workflow_ids(
 def _node_executions_of(
     connection: Connection, run_ids: set[str]
 ) -> tuple[NodeExecutionId, ...]:
-    """Every node execution these runs are known to have reached.
-
-    An attempt names one, and so does every event a node wrote -- which is the
-    only trace left by a node that ended before an attempt of it existed, as a
-    refused lane claim does.
-    """
+    """Read reached node executions from attempts and their earlier events."""
 
     executions = {
         str(record.node_execution_id)
@@ -584,20 +539,11 @@ def _node_executions_of(
 
 
 def _still_open_effect_intents(connection: Connection) -> list[sa.Row[Any]]:
-    """Every durable effect intent a differing identity still has to answer for.
+    """Return nonterminal intents in stable refusal order.
 
-    Ordered by operation and logical key so a refusal names the same intents
-    in the same order every time. `ABANDONED` is domain-terminal by
-    definition and is dropped before any workflow lookup; every other state
-    is kept unless the DBOS workflow that owns it next has already ended for
-    good. Which workflow that is, is asked in one order: the intent's own
-    `durable_effect` or `durable_reconciliation`
-    (`_open_binding_owning_workflow_id`) first, and only for an intent whose
-    effect workflow DBOS never minted, the node workflow that redeemed it
-    itself (`_agent_redeemed_owning_workflow_ids`). A missing or non-terminal
-    status counts against the binding, so an already-corrupt database missing
-    an intent's run row (or its workflow row) fails closed rather than
-    silently exempting it.
+    Abandoned intents are terminal. Every other intent stays open unless its
+    effect, reconciliation, or fallback node workflow is terminal; a missing
+    status therefore fails closed.
     """
 
     candidates = [
@@ -690,17 +636,23 @@ def _open_binding_conflict_message(
     )
 
 
-def _open_binding(
-    settings: DbosRuntimeSettings,
-    agent_registry: AgentExecutorRegistry,
-    effect_registry: EffectAdapterRegistry,
-    effect_bindings: tuple[EffectAdapterBinding, ...],
-    *,
-    tracker_item_source: TrackerItemSource | None,
-) -> _BoundRuntime:
-    canonical_database = settings.database_path.resolve()
-    # H2's sole concrete adapter binds its resolved external SQLite path here.
-    # This closes file-alias corruption without widening the generic factory port.
+@dataclass(frozen=True)
+class _ProjectBinding:
+    declared_project: DeclaredProject | None
+    work_item_claims: WorkItemClaimLedger | None
+    effect_bindings: tuple[EffectAdapterBinding, ...]
+
+
+@dataclass(frozen=True)
+class _DurableBindingRequirements:
+    open_effect_intents: list[sa.Row[Any]]
+    effect_bindings: set[EffectAdapterBinding]
+    agent_capabilities: set[tuple[AgentExecutorKey, AgentExecutionCapability]]
+
+
+def _require_distinct_effect_stores(
+    canonical_database: Path, effect_bindings: tuple[EffectAdapterBinding, ...]
+) -> None:
     for effect_binding in effect_bindings:
         external_database = Path(effect_binding.operational_identity.value)
         same_existing_file = False
@@ -717,15 +669,186 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "canonical and external effect stores must be distinct"
             )
-    local_process_keys = any(
+
+
+def _local_process_binding(
+    settings: DbosRuntimeSettings, agent_registry: AgentExecutorRegistry
+) -> bool:
+    local_process = any(
         entry.manifest_entry.carrier is AgentExecutorCarrier.LOCAL_PROCESS
         for entry in agent_registry.entries
     )
-    if local_process_keys and settings.agent_scratch_root is None:
+    if local_process and settings.agent_scratch_root is None:
         raise DbosRuntimeBindingConflict(
             "serving a provider executor requires an agent scratch root, because "
             "every attempt is started in a workspace of its own"
         )
+    return local_process
+
+
+def _bind_project(
+    engine: Engine,
+    settings: DbosRuntimeSettings,
+    effect_bindings: tuple[EffectAdapterBinding, ...],
+) -> _ProjectBinding:
+    if settings.bootstrap_project_root is not None:
+        if settings.project_id is None:
+            raise ValueError(
+                "a bootstrap project root writes the host configuration "
+                "channel, so it needs a project id"
+            )
+        append_project_root(
+            engine, settings.project_id, settings.bootstrap_project_root
+        )
+    checkout = _project_checkout_for(engine, settings.project_id)
+    declared_project = _declared_project_at(checkout, settings.database_path)
+    work_item_claims = _work_item_claim_ledger(
+        settings.aco_executable,
+        checkout,
+        settings.agent_scratch_root,
+        engine,
+    )
+    if work_item_claims is not None:
+        effect_bindings = (*effect_bindings, work_item_claims.binding)
+    return _ProjectBinding(declared_project, work_item_claims, effect_bindings)
+
+
+def _durable_binding_requirements(engine: Engine) -> _DurableBindingRequirements:
+    with engine.connect() as connection:
+        open_effect_intents = _still_open_effect_intents(connection)
+        effect_bindings = {
+            EffectAdapterBinding(
+                AdapterRevision(str(record.adapter_revision)),
+                EffectDestination(str(record.destination_identity)),
+                AdapterOperationalIdentity(str(record.adapter_operational_identity)),
+                AdapterOperationName(str(record.operation_name)),
+            )
+            for record in open_effect_intents
+        }
+        agent_capabilities = {
+            (
+                AgentExecutorKey(
+                    ProviderId(str(record.provider_id)),
+                    AgentExecutorRevision(str(record.executor_revision)),
+                ),
+                AgentExecutionCapability(str(record.requested_capability)),
+            )
+            for record in connection.execute(
+                sa.select(
+                    auth_profile_revisions.c.provider_id,
+                    agent_configuration_revisions.c.executor_revision,
+                    agent_configuration_revisions.c.requested_capability,
+                )
+                .select_from(runs)
+                .join(
+                    run_agent_bindings,
+                    run_agent_bindings.c.run_id == runs.c.run_id,
+                )
+                .join(
+                    agent_configuration_revisions,
+                    agent_configuration_revisions.c.revision_hash
+                    == run_agent_bindings.c.agent_configuration_revision_hash,
+                )
+                .join(
+                    auth_profile_revisions,
+                    auth_profile_revisions.c.revision_hash
+                    == agent_configuration_revisions.c.auth_profile_revision_hash,
+                )
+                .where(
+                    runs.c.workflow_format_version.in_(
+                        (WorkflowFormatVersion.V2, WorkflowFormatVersion.V3)
+                    ),
+                    runs.c.state != "COMPLETED",
+                )
+                .distinct()
+            )
+        }
+    return _DurableBindingRequirements(
+        open_effect_intents, effect_bindings, agent_capabilities
+    )
+
+
+def _require_effect_bindings(
+    requirements: _DurableBindingRequirements,
+    effect_bindings: tuple[EffectAdapterBinding, ...],
+) -> None:
+    if not requirements.effect_bindings.issubset(set(effect_bindings)):
+        raise DbosRuntimeBindingConflict(
+            _open_binding_conflict_message(
+                requirements.open_effect_intents, set(effect_bindings)
+            )
+        )
+
+
+def _require_executor_bindings(
+    requirements: _DurableBindingRequirements,
+    agent_registry: AgentExecutorRegistry,
+) -> None:
+    required_keys = {key for key, _capability in requirements.agent_capabilities}
+    if not required_keys.issubset(agent_registry.keys):
+        raise DbosRuntimeBindingConflict(
+            "runtime registry is missing a nonterminal durable executor binding"
+        )
+
+
+def _require_executor_capabilities(
+    requirements: _DurableBindingRequirements,
+    agent_registry: AgentExecutorRegistry,
+) -> None:
+    if any(
+        capability not in agent_registry.declared_capabilities(key)
+        for key, capability in requirements.agent_capabilities
+    ):
+        raise DbosRuntimeBindingConflict(
+            "runtime registry lacks a nonterminal durable capability"
+        )
+
+
+def _open_agent_executors(
+    agent_registry: AgentExecutorRegistry,
+    opened: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]],
+) -> None:
+    for entry in agent_registry.entries:
+        if entry.factory is not None:
+            opened.append((entry.manifest_entry, entry.factory.open()))
+
+
+def _cleanup_binding_resources(
+    engine: Engine,
+    agent_executors: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]],
+    adapters: OpenEffectAdapterRegistry | None,
+    supervisor: AgentProcessSupervisor | None,
+    workspace_owner: LocalAgentAttemptWorkspaceOwner | None,
+) -> list[BaseException]:
+    cleanup_errors: list[BaseException] = []
+    cleanups = []
+    if supervisor is not None:
+        cleanups.append(supervisor.close)
+    if workspace_owner is not None:
+        cleanups.append(workspace_owner.close)
+    if adapters is not None:
+        cleanups.append(adapters.close)
+    cleanups.extend(executor.close for _entry, executor in reversed(agent_executors))
+    cleanups.append(engine.dispose)
+    for cleanup in cleanups:
+        try:
+            cleanup()
+        except BaseException as cleanup_error:
+            cleanup_errors.append(cleanup_error)
+    return cleanup_errors
+
+
+def _open_binding(
+    settings: DbosRuntimeSettings,
+    agent_registry: AgentExecutorRegistry,
+    effect_registry: EffectAdapterRegistry,
+    effect_bindings: tuple[EffectAdapterBinding, ...],
+    *,
+    tracker_item_source: TrackerItemSource | None,
+) -> _BoundRuntime:
+    canonical_database = settings.database_path.resolve()
+    _require_distinct_effect_stores(canonical_database, effect_bindings)
+    local_process_keys = _local_process_binding(settings, agent_registry)
     engine = create_canonical_engine(
         settings.database_path, settings.sqlite_lock_timeout_seconds
     )
@@ -735,101 +858,13 @@ def _open_binding(
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
     try:
         initialize_schema(engine)
-        if settings.bootstrap_project_root is not None:
-            if settings.project_id is None:
-                raise ValueError(
-                    "a bootstrap project root writes the host configuration "
-                    "channel, so it needs a project id"
-                )
-            append_project_root(
-                engine, settings.project_id, settings.bootstrap_project_root
-            )
-        project_checkout = _project_checkout_for(engine, settings.project_id)
-        declared_project_source = _declared_project_at(
-            project_checkout, settings.database_path
-        )
-        work_item_claims = _work_item_claim_ledger(
-            settings.aco_executable,
-            project_checkout,
-            settings.agent_scratch_root,
-            engine,
-        )
-        if work_item_claims is not None:
-            effect_bindings = (*effect_bindings, work_item_claims.binding)
-        with engine.connect() as connection:
-            open_effect_intents = _still_open_effect_intents(connection)
-            durable_bindings = {
-                EffectAdapterBinding(
-                    AdapterRevision(str(record.adapter_revision)),
-                    EffectDestination(str(record.destination_identity)),
-                    AdapterOperationalIdentity(
-                        str(record.adapter_operational_identity)
-                    ),
-                    AdapterOperationName(str(record.operation_name)),
-                )
-                for record in open_effect_intents
-            }
-            required_agent_capabilities = {
-                (
-                    AgentExecutorKey(
-                        ProviderId(str(record.provider_id)),
-                        AgentExecutorRevision(str(record.executor_revision)),
-                    ),
-                    AgentExecutionCapability(str(record.requested_capability)),
-                )
-                for record in connection.execute(
-                    sa.select(
-                        auth_profile_revisions.c.provider_id,
-                        agent_configuration_revisions.c.executor_revision,
-                        agent_configuration_revisions.c.requested_capability,
-                    )
-                    .select_from(runs)
-                    .join(
-                        run_agent_bindings,
-                        run_agent_bindings.c.run_id == runs.c.run_id,
-                    )
-                    .join(
-                        agent_configuration_revisions,
-                        agent_configuration_revisions.c.revision_hash
-                        == run_agent_bindings.c.agent_configuration_revision_hash,
-                    )
-                    .join(
-                        auth_profile_revisions,
-                        auth_profile_revisions.c.revision_hash
-                        == agent_configuration_revisions.c.auth_profile_revision_hash,
-                    )
-                    .where(
-                        runs.c.workflow_format_version.in_(
-                            (WorkflowFormatVersion.V2, WorkflowFormatVersion.V3)
-                        ),
-                        runs.c.state != "COMPLETED",
-                    )
-                    .distinct()
-                )
-            }
-        if not durable_bindings.issubset(set(effect_bindings)):
-            raise DbosRuntimeBindingConflict(
-                _open_binding_conflict_message(
-                    open_effect_intents, set(effect_bindings)
-                )
-            )
-        required_agent_keys = {key for key, _capability in required_agent_capabilities}
-        if not required_agent_keys.issubset(agent_registry.keys):
-            raise DbosRuntimeBindingConflict(
-                "runtime registry is missing a nonterminal durable executor binding"
-            )
-        if any(
-            capability not in agent_registry.declared_capabilities(key)
-            for key, capability in required_agent_capabilities
-        ):
-            raise DbosRuntimeBindingConflict(
-                "runtime registry lacks a nonterminal durable capability"
-            )
-        for registry_entry in agent_registry.entries:
-            if registry_entry.factory is not None:
-                agent_executors_v2.append(
-                    (registry_entry.manifest_entry, registry_entry.factory.open())
-                )
+        project_binding = _bind_project(engine, settings, effect_bindings)
+        effect_bindings = project_binding.effect_bindings
+        requirements = _durable_binding_requirements(engine)
+        _require_effect_bindings(requirements, effect_bindings)
+        _require_executor_bindings(requirements, agent_registry)
+        _require_executor_capabilities(requirements, agent_registry)
+        _open_agent_executors(agent_registry, agent_executors_v2)
         adapters = effect_registry.open()
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
@@ -858,40 +893,21 @@ def _open_binding(
             agent_process_supervisor,
             LOCAL_EXECUTION_PERMISSION_POLICY,
             agent_workspace_owner,
-            declared_project_source,
+            project_binding.declared_project,
             artifact_store,
             adapters,
             effect_bindings,
             settings.project_id,
-            work_item_claims,
+            project_binding.work_item_claims,
         )
     except BaseException as original:
-        cleanup_errors: list[BaseException] = []
-        if agent_process_supervisor is not None:
-            try:
-                agent_process_supervisor.close()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-        if agent_workspace_owner is not None:
-            try:
-                agent_workspace_owner.close()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-        resources: list[
-            OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2
-        ] = []
-        if adapters is not None:
-            resources.append(adapters)
-        resources.extend(executor for _entry, executor in reversed(agent_executors_v2))
-        for resource in resources:
-            try:
-                resource.close()
-            except BaseException as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-        try:
-            engine.dispose()
-        except BaseException as cleanup_error:
-            cleanup_errors.append(cleanup_error)
+        cleanup_errors = _cleanup_binding_resources(
+            engine,
+            agent_executors_v2,
+            adapters,
+            agent_process_supervisor,
+            agent_workspace_owner,
+        )
         if cleanup_errors:
             raise BaseExceptionGroup(
                 "runtime open and cleanup both failed", [original, *cleanup_errors]
@@ -907,7 +923,7 @@ def _open_binding(
         adapters,
         agent_process_supervisor,
         agent_workspace_owner,
-        declared_project_source,
+        project_binding.declared_project,
         tracker_item_source,
     )
 
@@ -1080,31 +1096,15 @@ class _DbosProcessOwner:
                     )
                 except BaseException as error:
                     errors.append(error)
-                resources: list[
-                    OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2
-                ] = [bound.effect_adapters]
-                if bound.agent_process_supervisor is not None:
-                    try:
-                        bound.agent_process_supervisor.close()
-                    except BaseException as error:
-                        errors.append(error)
-                if bound.agent_workspace_owner is not None:
-                    try:
-                        bound.agent_workspace_owner.close()
-                    except BaseException as error:
-                        errors.append(error)
-                resources.extend(
-                    executor for _entry, executor in reversed(bound.agent_executors_v2)
+                errors.extend(
+                    _cleanup_binding_resources(
+                        bound.engine,
+                        list(bound.agent_executors_v2),
+                        bound.effect_adapters,
+                        bound.agent_process_supervisor,
+                        bound.agent_workspace_owner,
+                    )
                 )
-                for resource in resources:
-                    try:
-                        resource.close()
-                    except BaseException as error:
-                        errors.append(error)
-                try:
-                    bound.engine.dispose()
-                except BaseException as error:
-                    errors.append(error)
             finally:
                 self._bound = None
             if len(errors) == 1:

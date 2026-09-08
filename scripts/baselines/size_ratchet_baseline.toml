@@ -330,10 +330,6 @@ qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
 lines = 228
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.runtime._still_open_effect_intents"
-lines = 66
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.schema._apply_v44_to_v45"
 lines = 158
 
@@ -368,18 +364,6 @@ lines = 70
 [[function]]
 qualified_name = "atelier2.adapters.dbos.workflow.reconstruct_agent_attempt"
 lines = 60
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
-lines = 730
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.durable_node"
-lines = 84
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow.redeem_agent_node_effect"
-lines = 84
 
 [[function]]
 qualified_name = "atelier2.adapters.github.effects.GitHubEffectAdapter.execute"
@@ -576,14 +560,6 @@ lines = 115
 [[function]]
 qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__"
 lines = 84
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.runtime._open_binding"
-complexity = 27
-
-[[complexity]]
-qualified_name = "atelier2.adapters.dbos.workflow.register_durable_run_workflow"
-complexity = 61
 
 [[complexity]]
 qualified_name = "atelier2.api.routes.runs.start_run_route"
