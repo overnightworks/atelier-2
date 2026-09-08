@@ -217,55 +217,6 @@ def _declared_reference(
     )
 
 
-def _cancellation_references(
-    node: WorkflowNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """The node's cancellation policy reference, if it declares one."""
-
-    if node.cancellation is not None:
-        yield _declared_reference(
-            node,
-            chain,
-            "cancellation",
-            RevisionKind.CANCELLATION_POLICY,
-            node.cancellation,
-        )
-
-
-def _output_references(
-    node: WorkflowNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """Every output's declared schema reference."""
-
-    for output in node.outputs:
-        yield _declared_reference(
-            node,
-            chain,
-            "outputs.schema",
-            RevisionKind.SCHEMA,
-            output.schema_reference,
-            output.name,
-        )
-
-
-def _required_context_references(
-    node: WorkflowNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """Every required-context source a non-subworkflow node declares."""
-
-    for required in node.required_context:
-        yield _declared_reference(
-            node,
-            chain,
-            "required_context.source",
-            RevisionKind.CONTEXT_SOURCE,
-            VersionedReference(
-                ref=required.source.ref, revision=required.source.revision
-            ),
-            required.name,
-        )
-
-
 def _agent_context_references(
     node: AgentNodeV3, chain: ReferenceChain
 ) -> Iterator[DeclaredReference]:
@@ -319,58 +270,48 @@ def _agent_grant_references(
             yield _declared_reference(node, chain, field_name, kind, reference)
 
 
-def _deterministic_references(
-    node: DeterministicNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """A deterministic node's operation and, where kept, its retry policy."""
-
-    yield _declared_reference(
-        node, chain, "operation", RevisionKind.DETERMINISTIC_OPERATION, node.operation
-    )
-    if node.retry is not None:
-        yield _declared_reference(
-            node, chain, "retry", RevisionKind.RETRY_POLICY, node.retry
-        )
-
-
-def _action_references(
-    node: ActionNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """An action node's adapter operation reference."""
-
-    yield _declared_reference(
-        node, chain, "operation", RevisionKind.ADAPTER_OPERATION, node.operation
-    )
-
-
-def _subworkflow_references(
-    node: SubworkflowNodeV3, chain: ReferenceChain
-) -> Iterator[DeclaredReference]:
-    """A subworkflow node's workflow reference and, where kept, its budget."""
-
-    yield _declared_reference(
-        node, chain, "workflow", RevisionKind.WORKFLOW, node.workflow
-    )
-    if node.budget is not None:
-        yield _declared_reference(
-            node, chain, "budget", RevisionKind.BUDGET_POLICY, node.budget
-        )
-
-
 def _walk_node(
     node: WorkflowNodeV3, chain: ReferenceChain
 ) -> Iterator[DeclaredReference]:
-    yield from _cancellation_references(node, chain)
-    yield from _output_references(node, chain)
+    def declared(
+        field_name: str,
+        kind: RevisionKind,
+        reference: VersionedReference,
+        entry: str | None = None,
+    ) -> DeclaredReference:
+        return _declared_reference(node, chain, field_name, kind, reference, entry)
+
+    if node.cancellation is not None:
+        yield declared(
+            "cancellation", RevisionKind.CANCELLATION_POLICY, node.cancellation
+        )
+    for output in node.outputs:
+        yield declared(
+            "outputs.schema", RevisionKind.SCHEMA, output.schema_reference, output.name
+        )
     if not isinstance(node, SubworkflowNodeV3):
-        yield from _required_context_references(node, chain)
+        for required in node.required_context:
+            yield declared(
+                "required_context.source",
+                RevisionKind.CONTEXT_SOURCE,
+                VersionedReference(
+                    ref=required.source.ref, revision=required.source.revision
+                ),
+                required.name,
+            )
     if isinstance(node, AgentNodeV3):
         yield from _agent_context_references(node, chain)
         yield from _agent_policy_references(node, chain)
         yield from _agent_grant_references(node, chain)
     if isinstance(node, DeterministicNodeV3):
-        yield from _deterministic_references(node, chain)
+        yield declared(
+            "operation", RevisionKind.DETERMINISTIC_OPERATION, node.operation
+        )
+        if node.retry is not None:
+            yield declared("retry", RevisionKind.RETRY_POLICY, node.retry)
     if isinstance(node, ActionNodeV3):
-        yield from _action_references(node, chain)
+        yield declared("operation", RevisionKind.ADAPTER_OPERATION, node.operation)
     if isinstance(node, SubworkflowNodeV3):
-        yield from _subworkflow_references(node, chain)
+        yield declared("workflow", RevisionKind.WORKFLOW, node.workflow)
+        if node.budget is not None:
+            yield declared("budget", RevisionKind.BUDGET_POLICY, node.budget)

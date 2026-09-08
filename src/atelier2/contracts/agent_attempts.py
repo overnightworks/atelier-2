@@ -340,21 +340,7 @@ class CancelAgentAttemptRequest:
         )
 
 
-def _owner_bound(attempt: AgentAttempt) -> bool:
-    return attempt.process_owner_id is not None
-
-
-def _runner_manifest_bound(attempt: AgentAttempt) -> bool:
-    return attempt.runner_manifest_id is not None
-
-
-def _evidence_kept(attempt: AgentAttempt) -> bool:
-    return attempt.runner_terminal_evidence_hash is not None
-
-
 def _require_canonical_attempt_identity(attempt: AgentAttempt) -> None:
-    """Whether this attempt's id, executor, and node name it exactly."""
-
     if not isinstance(attempt.attempt_id, AgentAttemptId):
         raise TypeError("agent attempt id must be typed")
     if not isinstance(
@@ -370,8 +356,6 @@ def _require_canonical_attempt_identity(attempt: AgentAttempt) -> None:
 
 
 def _require_canonical_attempt_state(attempt: AgentAttempt) -> None:
-    """Whether the raw state version and process phase are well-formed."""
-
     if (
         type(attempt.state_version) is not int
         or attempt.state_version < 0
@@ -381,9 +365,7 @@ def _require_canonical_attempt_state(attempt: AgentAttempt) -> None:
 
 
 def _require_paired_process_owner(attempt: AgentAttempt) -> None:
-    """Whether the legacy process owner and its watchdog generation travel together."""
-
-    owner_bound = _owner_bound(attempt)
+    owner_bound = attempt.process_owner_id is not None
     generation_bound = attempt.watchdog_generation_id is not None
     if owner_bound != generation_bound:
         raise ValueError("agent process owner and generation must be bound together")
@@ -395,9 +377,7 @@ def _require_paired_process_owner(attempt: AgentAttempt) -> None:
 
 
 def _require_paired_runner_generation(attempt: AgentAttempt) -> None:
-    """Whether the Runner manifest and its generation travel together."""
-
-    runner_manifest_bound = _runner_manifest_bound(attempt)
+    runner_manifest_bound = attempt.runner_manifest_id is not None
     runner_generation_bound = attempt.runner_generation_id is not None
     if runner_manifest_bound != runner_generation_bound:
         raise ValueError("runner manifest and generation must be bound together")
@@ -409,23 +389,19 @@ def _require_paired_runner_generation(attempt: AgentAttempt) -> None:
 
 
 def _require_bound_runner_invocation(attempt: AgentAttempt) -> None:
-    """Whether a kept invocation id names its exact generation binding."""
-
     if attempt.runner_invocation_id is not None and (
         not isinstance(attempt.runner_invocation_id, RunnerInvocationId)
-        or not _runner_manifest_bound(attempt)
+        or attempt.runner_manifest_id is None
     ):
         raise ValueError("runner invocation requires its exact generation binding")
 
 
 def _require_consistent_runner_evidence(attempt: AgentAttempt) -> None:
-    """Whether the evidence acceptance phase, and any hash it names, agree."""
-
     if not isinstance(
         attempt.runner_evidence_acceptance_phase, RunnerEvidenceAcceptancePhase
     ):
         raise TypeError("runner evidence acceptance phase must be typed")
-    evidence_kept = _evidence_kept(attempt)
+    evidence_kept = attempt.runner_terminal_evidence_hash is not None
     if evidence_kept != (
         attempt.runner_evidence_acceptance_phase
         is not RunnerEvidenceAcceptancePhase.NONE
@@ -438,8 +414,6 @@ def _require_consistent_runner_evidence(attempt: AgentAttempt) -> None:
 
 
 def _require_typed_transcript_pointer(attempt: AgentAttempt) -> None:
-    """Whether a kept transcript pointer carries its declared type."""
-
     if attempt.transcript_artifact_hash is not None and not isinstance(
         attempt.transcript_artifact_hash, ArtifactHash
     ):
@@ -447,30 +421,25 @@ def _require_typed_transcript_pointer(attempt: AgentAttempt) -> None:
 
 
 def _require_exclusive_process_binding(attempt: AgentAttempt) -> None:
-    """Whether legacy process ownership and Runner binding stay mutually exclusive."""
-
     if (
-        _owner_bound(attempt)
+        attempt.process_owner_id is not None
         or attempt.process_phase is not AgentAttemptProcessPhase.NONE
-    ) and _runner_manifest_bound(attempt):
+    ) and attempt.runner_manifest_id is not None:
         raise ValueError("legacy process ownership and runner binding are exclusive")
 
 
 def _require_runner_evidence_bound(attempt: AgentAttempt) -> None:
-    """Whether a kept invocation or evidence names its exact generation."""
-
     if (
-        attempt.runner_invocation_id is not None or _evidence_kept(attempt)
-    ) and not _runner_manifest_bound(attempt):
+        attempt.runner_invocation_id is not None
+        or attempt.runner_terminal_evidence_hash is not None
+    ) and attempt.runner_manifest_id is None:
         raise ValueError("runner invocation and evidence require a generation")
 
 
 def _require_canonical_prepared_evidence_phase(attempt: AgentAttempt) -> None:
-    """Whether a prepared attempt's kept evidence stands at a canonical phase."""
-
     if (
         attempt.state is AgentAttemptState.PREPARED
-        and _evidence_kept(attempt)
+        and attempt.runner_terminal_evidence_hash is not None
         and attempt.runner_evidence_acceptance_phase
         not in {
             RunnerEvidenceAcceptancePhase.CORE_COMMITTED,
@@ -481,9 +450,7 @@ def _require_canonical_prepared_evidence_phase(attempt: AgentAttempt) -> None:
 
 
 def _require_process_phase_agrees_with_owner(attempt: AgentAttempt) -> None:
-    """Whether the process phase and the live owner it implies agree."""
-
-    owner_bound = _owner_bound(attempt)
+    owner_bound = attempt.process_owner_id is not None
     if attempt.process_phase is AgentAttemptProcessPhase.NONE and owner_bound:
         raise ValueError("unprepared agent process may not have a live owner")
     ownerless_never_launched = (
@@ -501,8 +468,6 @@ def _require_process_phase_agrees_with_owner(attempt: AgentAttempt) -> None:
 
 
 def _require_terminal_version_floor(attempt: AgentAttempt) -> None:
-    """Whether a terminal attempt has settled past its opening state version."""
-
     if attempt.state in TERMINAL_AGENT_ATTEMPT_STATES and attempt.state_version < 2:
         raise ValueError("terminal agent attempt requires state version at least 2")
 
@@ -516,7 +481,7 @@ def _prepared_shape_is_valid(attempt: AgentAttempt) -> bool:
         or attempt.cancellation is not None
     ):
         return False
-    runner_manifest_bound = _runner_manifest_bound(attempt)
+    runner_manifest_bound = attempt.runner_manifest_id is not None
     return (
         (
             attempt.process_phase is AgentAttemptProcessPhase.NONE
@@ -556,7 +521,7 @@ def _launch_armed_shape_is_valid(attempt: AgentAttempt) -> bool:
     return (
         attempt.process_phase is not AgentAttemptProcessPhase.NONE
         or attempt.state_version == 1
-        or _runner_manifest_bound(attempt)
+        or attempt.runner_manifest_id is not None
     )
 
 
@@ -583,7 +548,7 @@ def _cancelled_or_interrupted_shape_is_valid(attempt: AgentAttempt) -> bool:
     ):
         return False
     return attempt.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED or (
-        _runner_manifest_bound(attempt)
+        attempt.runner_manifest_id is not None
         and attempt.process_phase is AgentAttemptProcessPhase.NONE
     )
 

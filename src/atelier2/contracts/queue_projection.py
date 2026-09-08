@@ -532,25 +532,15 @@ class QueueItemReferenceMismatch(RuntimeError):
     """A command named a different item than the snapshot it was resolved against."""
 
 
-def _is_admitted(snapshot: QueueItemSnapshot) -> bool:
-    return snapshot.state is QueueItemState.ADMITTED
-
-
-def _is_proposed_lifecycle(snapshot: QueueItemSnapshot) -> bool:
-    return snapshot.state in {QueueItemState.PROPOSED, QueueItemState.ADMITTED}
-
-
 def _is_legacy_admission(snapshot: QueueItemSnapshot) -> bool:
     return (
-        _is_admitted(snapshot)
+        snapshot.state is QueueItemState.ADMITTED
         and snapshot.admission is not None
         and snapshot.proposal is None
     )
 
 
 def _require_typed_snapshot_fields(snapshot: QueueItemSnapshot) -> None:
-    """Whether the snapshot's optional typed fields carry their declared types."""
-
     if snapshot.observation is not None and not isinstance(
         snapshot.observation, QueueItemTrackerObservation
     ):
@@ -564,8 +554,6 @@ def _require_typed_snapshot_fields(snapshot: QueueItemSnapshot) -> None:
 
 
 def _require_canonical_revision_for_state(snapshot: QueueItemSnapshot) -> None:
-    """Whether the revision counter matches what its lifecycle state requires."""
-
     if (
         snapshot.state is QueueItemState.OBSERVED
         and snapshot.revision != QUEUE_PROJECTION_REVISION_OBSERVED
@@ -576,9 +564,7 @@ def _require_canonical_revision_for_state(snapshot: QueueItemSnapshot) -> None:
 
 
 def _require_admission_presence_agrees_with_state(snapshot: QueueItemSnapshot) -> None:
-    """Whether an admission is present exactly when the state is ADMITTED."""
-
-    if _is_admitted(snapshot) != (snapshot.admission is not None):
+    if (snapshot.state is QueueItemState.ADMITTED) != (snapshot.admission is not None):
         raise ValueError(
             "a queue item snapshot carries an admission if and only if it is ADMITTED"
         )
@@ -587,9 +573,7 @@ def _require_admission_presence_agrees_with_state(snapshot: QueueItemSnapshot) -
 def _require_proposal_presence_agrees_with_lifecycle(
     snapshot: QueueItemSnapshot,
 ) -> None:
-    """Whether a proposal is present exactly when the lifecycle expects one."""
-
-    proposed = _is_proposed_lifecycle(snapshot)
+    proposed = snapshot.state in {QueueItemState.PROPOSED, QueueItemState.ADMITTED}
     if proposed != (snapshot.proposal is not None) and not _is_legacy_admission(
         snapshot
     ):
@@ -599,8 +583,6 @@ def _require_proposal_presence_agrees_with_lifecycle(
 
 
 def _require_canonical_admission_shape(snapshot: QueueItemSnapshot) -> None:
-    """Whether an admission -- legacy or proposal-backed -- names its exact source."""
-
     admission = snapshot.admission
     if _is_legacy_admission(snapshot):
         if (
@@ -609,7 +591,7 @@ def _require_canonical_admission_shape(snapshot: QueueItemSnapshot) -> None:
             or admission.proposal_revision is not None
         ):
             raise ValueError("only a proposal-less admission may be legacy-shaped")
-    elif _is_admitted(snapshot):
+    elif snapshot.state is QueueItemState.ADMITTED:
         proposal = snapshot.proposal
         if (
             admission is None
@@ -625,12 +607,14 @@ def _require_canonical_admission_shape(snapshot: QueueItemSnapshot) -> None:
 
 
 def _require_canonical_launch_binding(snapshot: QueueItemSnapshot) -> None:
-    """Whether a kept launch binding names the exact admitted proposal it spends."""
-
     if snapshot.launch_binding is None:
         return
     admission = snapshot.admission
-    if not _is_admitted(snapshot) or snapshot.proposal is None or admission is None:
+    if (
+        snapshot.state is not QueueItemState.ADMITTED
+        or snapshot.proposal is None
+        or admission is None
+    ):
         raise ValueError("only a proposed admission can carry a launch binding")
     if snapshot.launch_binding.item_id != snapshot.item_reference.item_id:
         raise ValueError("a launch binding must name its queue item")

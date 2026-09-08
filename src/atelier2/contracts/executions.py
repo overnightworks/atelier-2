@@ -332,8 +332,6 @@ def _attempt_hash_fields(
 
 
 def _require_canonical_event_identity(event: RunEvent) -> None:
-    """Whether this event's sequence, node, and round name one real execution."""
-
     if type(event.event_sequence) is not int or event.event_sequence <= 0:
         raise ValueError("event sequence must be an exact positive integer")
     if event.node_id == "":
@@ -351,8 +349,6 @@ def _require_canonical_event_identity(event: RunEvent) -> None:
 
 
 def _require_consistent_wait_actor(event: RunEvent) -> None:
-    """Whether a waiting event names exactly the answer actor it requires."""
-
     actor_required = event.event_kind is RunEventKind.WAITING_INPUT
     if actor_required != (event.wait_answer_actor is not None):
         raise ValueError("waiting event and expected answer actor disagree")
@@ -362,12 +358,9 @@ def _require_consistent_wait_actor(event: RunEvent) -> None:
         raise TypeError("waiting event answer actor must be typed")
 
 
-def _require_consistent_receipt_fields(event: RunEvent) -> None:
-    """Whether a receipt event carries its receipt fields, and only it does.
-
-    Reads `event.payload_hash`, which the caller sets before this runs.
-    """
-
+def _require_consistent_receipt_fields(
+    event: RunEvent, payload_hash: Sha256Hash
+) -> None:
     receipt_event = event.event_kind in {
         RunEventKind.ACTION_RECONCILIATION_RESOLVED,
         RunEventKind.ACTION_COMPLETED,
@@ -375,22 +368,18 @@ def _require_consistent_receipt_fields(event: RunEvent) -> None:
     if receipt_event:
         if event.receipt_logical_key is None or event.receipt_result_hash is None:
             raise ValueError("receipt event requires both exact receipt fields")
-        if event.receipt_result_hash != event.payload_hash:
+        if event.receipt_result_hash != payload_hash:
             raise ValueError("receipt event payload must match its receipt result hash")
     elif event.receipt_logical_key is not None or event.receipt_result_hash is not None:
         raise ValueError("nonreceipt event may not carry receipt fields")
 
 
 def _require_bounded_wait_cancellation_payload(event: RunEvent) -> None:
-    """Whether a wait-cancellation payload is a bounded command id.
-
-    A resting pause has no attempt to stamp, so this event *is* the
-    cancellation's whole attestation and its payload is the operator command
-    id that ordered it -- the only durable trace a retry of that same command
-    can be answered from. Bounded exactly like the `command_id` an attempt
-    cancellation carries in its own column.
-    """
-
+    # A resting pause has no attempt to stamp, so this event *is* the
+    # cancellation's whole attestation and its payload is the operator command
+    # id that ordered it -- the only durable trace a retry of that same command
+    # can be answered from. Bounded exactly like the `command_id` an attempt
+    # cancellation carries in its own column.
     if event.event_kind is not RunEventKind.WAIT_CANCELLED:
         return
     from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
@@ -403,8 +392,6 @@ def _require_bounded_wait_cancellation_payload(event: RunEvent) -> None:
 
 
 def _require_receipt_hash_scope(event: RunEvent) -> None:
-    """Whether a kept agent receipt hash belongs only to an agent completion."""
-
     if (
         event.agent_receipt_hash is not None
         and event.event_kind is not RunEventKind.AGENT_COMPLETED
@@ -413,8 +400,6 @@ def _require_receipt_hash_scope(event: RunEvent) -> None:
 
 
 def _require_typed_attempt_binding(event: RunEvent) -> None:
-    """Whether a kept attempt binding uses one of its two closed shapes."""
-
     attempt_binding = event.attempt_binding
     if attempt_binding is not None and not isinstance(
         attempt_binding, RunEventAgentAttemptBinding | RunEventCancellationBinding
@@ -422,19 +407,13 @@ def _require_typed_attempt_binding(event: RunEvent) -> None:
         raise TypeError("run event attempt binding must use its closed type")
 
 
-def _is_cancellation_kind(event: RunEvent) -> bool:
-    return event.event_kind in {
+def _require_canonical_attempt_binding_shape(event: RunEvent) -> None:
+    attempt_binding = event.attempt_binding
+    if event.event_kind in {
         RunEventKind.AGENT_CANCEL_REQUESTED,
         RunEventKind.AGENT_CANCELLED,
         RunEventKind.AGENT_INTERRUPTED,
-    }
-
-
-def _require_canonical_attempt_binding_shape(event: RunEvent) -> None:
-    """Whether the attempt or cancellation binding matches its event kind."""
-
-    attempt_binding = event.attempt_binding
-    if _is_cancellation_kind(event):
+    }:
         if not isinstance(attempt_binding, RunEventCancellationBinding):
             raise ValueError("cancellation event requires its exact command binding")
         terminal_cancellation = event.event_kind in {
@@ -469,9 +448,11 @@ def _event_hash(event: RunEvent, payload_hash: Sha256Hash) -> Sha256Hash:
 
     attempt_binding = event.attempt_binding
     agent_receipt_bound = event.agent_receipt_hash is not None
-    use_v2_hash = _is_cancellation_kind(event) or (
-        attempt_binding is not None and attempt_binding.attempt_ordinal == 2
-    )
+    use_v2_hash = event.event_kind in {
+        RunEventKind.AGENT_CANCEL_REQUESTED,
+        RunEventKind.AGENT_CANCELLED,
+        RunEventKind.AGENT_INTERRUPTED,
+    } or (attempt_binding is not None and attempt_binding.attempt_ordinal == 2)
     hash_domain = _event_hash_domain(
         agent_receipt_bound=agent_receipt_bound, use_v2_hash=use_v2_hash
     )
@@ -534,7 +515,7 @@ class RunEvent:
         _require_consistent_wait_actor(self)
         payload_hash = Sha256Hash.of(self.payload)
         object.__setattr__(self, "payload_hash", payload_hash)
-        _require_consistent_receipt_fields(self)
+        _require_consistent_receipt_fields(self, payload_hash)
         _require_bounded_wait_cancellation_payload(self)
         _require_receipt_hash_scope(self)
         _require_typed_attempt_binding(self)

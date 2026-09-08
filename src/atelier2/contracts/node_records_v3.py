@@ -389,8 +389,6 @@ class InputReceiptBinding:
 
 
 def _require_typed_envelope_header(envelope: InputEnvelope) -> None:
-    """Whether the envelope's status and input name are well-formed."""
-
     if not isinstance(envelope.status, ProjectedDeliveryStatus):
         raise TypeError("an input envelope names its status through the contract")
     if envelope.name == "":
@@ -398,8 +396,6 @@ def _require_typed_envelope_header(envelope: InputEnvelope) -> None:
 
 
 def _require_succeeded_envelope_shape(envelope: InputEnvelope) -> None:
-    """Whether a succeeded envelope carries its value and no stale receipt."""
-
     if envelope.schema_revision is None or envelope.value_hash is None:
         raise ValueError("a succeeded input envelope carries schema and value")
     if envelope.receipt is not None:
@@ -409,8 +405,6 @@ def _require_succeeded_envelope_shape(envelope: InputEnvelope) -> None:
 
 
 def _require_persisted_envelope_shape(envelope: InputEnvelope) -> None:
-    """Whether a non-succeeded envelope carries exactly its persisted receipt."""
-
     if envelope.receipt is None:
         raise ValueError("a non-succeeded input envelope names the upstream receipt")
     if envelope.schema_revision is not None or envelope.value_hash is not None:
