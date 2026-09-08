@@ -29,6 +29,7 @@ from atelier2.application.refusals import (
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     QueueItemTrackerObservation,
+    TrackerItemReference,
     WorkItemReference,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
@@ -43,11 +44,20 @@ from atelier2.ports.queue_projection import QueueItemsReconciled, QueueProjectio
 
 
 @dataclass(frozen=True)
+class SkippedProjectSourceItem:
+    """An open tracker item this import did not observe, named so the rest still can."""
+
+    reference: TrackerItemReference
+    reason: str
+
+
+@dataclass(frozen=True)
 class ProjectSourceIssuesImported:
-    """The observation landed: every open issue is a row, only the new ones write."""
+    """The observation landed: usable open issues are rows; unusable ones are named."""
 
     observed: int
     newly_observed: int
+    skipped: tuple[SkippedProjectSourceItem, ...] = ()
 
 
 type ImportProjectSourceIssuesOutcome = (
@@ -81,14 +91,15 @@ def import_project_source_issues(
         case OpenTrackerItemsObserved() as listing:
             observed_at = listing.observed_at
             items: list[tuple[WorkItemReference, QueueItemTrackerObservation]] = []
+            skipped: list[SkippedProjectSourceItem] = []
             for item in listing.items:
                 try:
                     observation = QueueItemTrackerObservation(item.title, observed_at)
                 except ValueError as refusal:
-                    return SourcePayloadMalformed(
-                        f"tracker item {item.reference.value} "
-                        f"carries an unusable title: {refusal}"
+                    skipped.append(
+                        SkippedProjectSourceItem(item.reference, str(refusal))
                     )
+                    continue
                 items.append((WorkItemReference(project, item.reference), observation))
         case TrackerSourceUnavailable(detail):
             return ReadUnavailable(detail)
@@ -98,7 +109,9 @@ def import_project_source_issues(
             assert_never(unreachable)
     match queue.reconcile_open_items(project, tuple(items), observed_at):
         case QueueItemsReconciled(observed, newly_observed, _):
-            return ProjectSourceIssuesImported(len(observed), len(newly_observed))
+            return ProjectSourceIssuesImported(
+                len(observed), len(newly_observed), tuple(skipped)
+            )
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():

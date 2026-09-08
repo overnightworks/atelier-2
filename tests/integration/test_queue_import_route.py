@@ -45,6 +45,7 @@ from atelier2.contracts.host_configuration import (
     SourceKind,
     SourceReference,
 )
+from atelier2.contracts.queue_projection import MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.when import recorded_instant
 from tests.scenarios.api import durable_api_client
@@ -178,7 +179,7 @@ def test_importing_turns_every_open_issue_into_exactly_one_listable_observed_row
     imported = api.post(PROJECT_SOURCE_IMPORT_PATH)
 
     assert imported.status_code == 200, imported.text
-    assert imported.json() == {"observed": 2, "newly_observed": 2}
+    assert imported.json() == {"observed": 2, "newly_observed": 2, "skipped": []}
     listed = api.get(QUEUE_ITEMS_PATH)
     assert listed.status_code == 200, listed.text
     page = listed.json()
@@ -212,7 +213,7 @@ def test_a_repeated_import_adds_nothing(runtime: DbosRuntime, tmp_path: Path) ->
     repeated = api.post(PROJECT_SOURCE_IMPORT_PATH)
 
     assert repeated.status_code == 200, repeated.text
-    assert repeated.json() == {"observed": 2, "newly_observed": 0}
+    assert repeated.json() == {"observed": 2, "newly_observed": 0, "skipped": []}
     assert api.get(QUEUE_ITEMS_PATH).json() == first_list
 
 
@@ -310,6 +311,38 @@ def test_a_malformed_platform_payload_is_a_named_refusal_writing_nothing(
     assert refused.status_code == 502, refused.text
     assert refused.json()["type"].endswith(":project-source-payload-malformed")
     assert api.get(QUEUE_ITEMS_PATH).json()["items"] == []
+
+
+def test_an_unusable_title_is_named_and_the_rest_is_imported(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    api = connected_api(
+        runtime,
+        tmp_path,
+        _FakeGitHubIssueListing(
+            [
+                {"number": 79, "title": "Fix the flaky importer test"},
+                {
+                    "number": 1446,
+                    "title": "x" * (MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS + 1),
+                },
+            ]
+        ),
+    )
+
+    imported = api.post(PROJECT_SOURCE_IMPORT_PATH)
+
+    assert imported.status_code == 200, imported.text
+    body = imported.json()
+    assert body["observed"] == 1
+    assert body["newly_observed"] == 1
+    (skipped,) = body["skipped"]
+    assert skipped["tracker_item_reference"] == "gh:1446"
+    assert str(MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS) in skipped["reason"]
+    listed = api.get(QUEUE_ITEMS_PATH)
+    assert listed.status_code == 200, listed.text
+    (item,) = listed.json()["items"]
+    assert item["tracker_item_reference"] == "gh:79"
 
 
 def test_listing_queue_items_on_an_empty_queue_is_an_empty_page(

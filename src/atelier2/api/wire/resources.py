@@ -851,11 +851,21 @@ class CatalogAdmissionResource(ApiModel):
     revision_number: int = Field(ge=1)
 
 
+class SkippedProjectSourceItemResource(ApiModel):
+    """An open tracker item this import did not observe, and why."""
+
+    tracker_item_reference: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    reason: str = Field(min_length=1)
+
+
 class ProjectSourceImportResource(ApiModel):
-    """What one import observed: the open items seen, and how many were new."""
+    """What one import observed: the usable open items, and which it named as unusable."""
 
     observed: int = Field(ge=0)
     newly_observed: int = Field(ge=0)
+    skipped: tuple[SkippedProjectSourceItemResource, ...]
 
 
 class WorkflowRevisionPageResource(ApiModel):

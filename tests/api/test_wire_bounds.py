@@ -211,6 +211,9 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "ProjectSourceResource.kind": MAXIMUM_SOURCE_KIND_CHARACTERS,
     "ProjectSourceResource.address": MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     "ProjectSourceListResource.items": MAXIMUM_ACTIVE_PROJECT_SOURCES,
+    "SkippedProjectSourceItemResource.tracker_item_reference": (
+        MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    ),
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     "UncastRoleResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
