@@ -1,0 +1,8 @@
+claim_id = "8a479d35f7d74fd0ab3eddffd948ff77"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "dfb35602bcf9835f9a6379ef9a046ec74acb4b85"
+branch = "claude/issue-1445-sonar-unused"
+scope = ["src/atelier2/adapters/agent_client_protocol.py", "src/atelier2/adapters/dbos/run_fork_store.py", "src/atelier2/application/resolve_references.py", "src/atelier2/adapters/dbos/workflow.py", "src/atelier2/adapters/github/effects.py", "src/atelier2/adapters/dbos/published_schema_shapes.py"]
+opened_commit = "384490e0f779f31cf3b4d310c9b9e47a8bee9b8d"
+whole_reason = "sechs Befunde derselben Art in sechs Dateien, eine Aufraeumrunde"
