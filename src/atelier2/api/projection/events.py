@@ -77,8 +77,11 @@ def bounded_event_summary(projection: PersistedRunEvent) -> PersistedRunEvent:
     reason = projection.node_receipt_reason
     if reason is None or len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
         return projection
-    return replace(
-        projection, node_receipt_reason=_omitted_receipt_reason_summary(projection)
+    return cast(
+        PersistedRunEvent,
+        replace(
+            projection, node_receipt_reason=_omitted_receipt_reason_summary(projection)
+        ),
     )
 
 

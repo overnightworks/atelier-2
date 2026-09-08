@@ -45,7 +45,6 @@ is one resident copy of that tail, carried from the adapter that ran the
 command to whichever ending publishes or discards it.
 """
 
-_BRACKETED_LINE = re.compile(r"=+\s*(?P<content>.*?)\s*=+")
 _VERDICT_COUNT = (
     r"\d+ (?:passed|failed|error(?:s)?|skipped|xfailed|xpassed|deselected|"
     r"warning(?:s)?)"
@@ -74,8 +73,13 @@ def pytest_summary_line(output_tail: bytes) -> str | None:
     text = output_tail.decode("utf-8", errors="replace")
     for line in reversed(text.splitlines()):
         stripped = line.strip()
-        bracketed = _BRACKETED_LINE.fullmatch(stripped)
-        content = bracketed.group("content") if bracketed is not None else stripped
+        # '=' padding around a pytest section title. A pattern of `=+`, `\s*`
+        # and `.*?` backtracks cubically on a long unmatched line; verification
+        # output is untrusted and unbounded.
+        if len(stripped) >= 2 and stripped[0] == "=" and stripped[-1] == "=":
+            content = stripped.strip("=").strip()
+        else:
+            content = stripped
         if _VERDICT_LINE.fullmatch(content) is not None:
             return content
     return None
