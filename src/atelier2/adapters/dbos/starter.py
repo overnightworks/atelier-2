@@ -95,6 +95,7 @@ from atelier2.contracts.schemas_v3 import (
 )
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_REVISION,
+    WorkItemScope,
     WorkItemScopeMalformed,
     read_work_item_order_document,
     work_item_order_document,
@@ -184,14 +185,7 @@ def _pin_authored_orders(
 def _order_value_bytes(
     connection: Connection, order: AuthoredOrder, pinned: PublishedRevisionHash
 ) -> bytes | DurableV3StartInputRefused:
-    """The exact bytes one authored order is, whichever way it was supplied.
-
-    The inline bound bites here rather than at the schema reading below, so
-    every route's refusal names the same door. A work item is the one value
-    whose *kind* must be declared: it is stored only under the house schema,
-    and a malformed `## Bereich` scope-list line in its body refuses the
-    order by name, never as corruption.
-    """
+    """The exact bytes one authored order is, whichever way it was supplied."""
     match order.value:
         case InlineOrderValue(content):
             if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
@@ -226,6 +220,12 @@ def _order_value_bytes(
             except WorkItemScopeMalformed as malformed:
                 return DurableV3StartInputRefused(
                     order.name, V3InputRefusal.VALUE_REFUSED, str(malformed)
+                )
+            if not WorkItemScope.from_body(revision.body).paths:
+                return DurableV3StartInputRefused(
+                    order.name,
+                    V3InputRefusal.VALUE_REFUSED,
+                    f"work item {revision.item.value} names no scope list",
                 )
             if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
                 return DurableV3StartInputRefused(

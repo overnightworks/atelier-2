@@ -24,6 +24,7 @@ inside an order value (ADR 0010 decision 1, 2026-08-26 amendment).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -120,7 +121,10 @@ class ObservedWorkItemRevision:
 
 
 _SCOPE_SECTION_HEADING = "## Bereich"
-_GLOB_CHARACTERS = frozenset("*?[]")
+# One path component of a naked repository-relative path: letters, digits, `.`,
+# `_`, `-`, so Markdown wrapping, list markers, commas, and prose punctuation
+# cannot pass as a path.
+_SCOPE_COMPONENT = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]*\Z")
 
 
 class WorkItemScopeMalformed(ValueError):
@@ -133,25 +137,35 @@ class WorkItemScopeMalformed(ValueError):
 
 def _canonical_scope_path(token: str) -> str:
     normalized = token.rstrip("/")
-    if (
-        not normalized
-        or normalized.startswith("/")
-        or any(character.isspace() for character in token)
-        or any(character in _GLOB_CHARACTERS for character in token)
-        or ".." in normalized.split("/")
-    ):
+    if not normalized or normalized.startswith("/"):
         raise WorkItemScopeMalformed(token)
+    for part in normalized.split("/"):
+        if (
+            part in {"", ".", ".."}
+            or part.endswith(".")
+            or _SCOPE_COMPONENT.fullmatch(part) is None
+        ):
+            raise WorkItemScopeMalformed(token)
     return normalized
+
+
+def _is_code_fence(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(("```", "~~~"))
 
 
 def _scope_section(body_text: str) -> str | None:
     lines = body_text.splitlines()
+    in_fence = False
     for index, line in enumerate(lines):
-        if line.strip() != _SCOPE_SECTION_HEADING:
+        if _is_code_fence(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or line.strip() != _SCOPE_SECTION_HEADING:
             continue
         section_lines: list[str] = []
         for later_line in lines[index + 1 :]:
-            if later_line.startswith("## "):
+            if _is_code_fence(later_line) or later_line.startswith("## "):
                 break
             section_lines.append(later_line)
         return "\n".join(section_lines)
@@ -182,10 +196,12 @@ class WorkItemScope:
     def from_body(cls, body: bytes) -> WorkItemScope:
         """The scope one work item body declares, read exactly once.
 
-        Each non-empty line under `## Bereich` is one repository-relative path;
-        a line that is not a relative path is a named error, not a silent
-        exclusion. No `## Bereich` section, or one without a path, is a valid
-        empty scope. Prose elsewhere, including under `## Dateien`, is not read.
+        Each non-empty line under `## Bereich` is one naked repository-relative
+        path; a line that is not such a path is a named error, not a silent
+        exclusion. The section ends at the next `## ` heading or a code fence.
+        No `## Bereich` section, or one without a path, is a valid empty scope.
+        A heading inside a fence is not a section. Prose elsewhere, including
+        under `## Dateien`, is not read.
         """
 
         section = _scope_section(body.decode("utf-8"))

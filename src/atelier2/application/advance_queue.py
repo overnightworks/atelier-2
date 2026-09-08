@@ -81,6 +81,7 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_REVISION,
     WorkItemScope,
+    WorkItemScopeMalformed,
 )
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
@@ -216,11 +217,28 @@ class QueueLabelAdmissionScopeMissing:
 
 
 @dataclass(frozen=True)
+class QueueLabelAdmissionScopeMalformed:
+    """A scope-list line is not a relative path, so the rule does not admit the item."""
+
+    token: str
+
+
+@dataclass(frozen=True)
+class QueueLabelAdmissionTrackerItemUnknown:
+    """The tracker does not know this labelled item, so the rule does not admit it."""
+
+
+@dataclass(frozen=True)
 class QueueLabelAdmissionDeclined:
     """One labelled item the projection did not newly admit, in its own words."""
 
     item_id: QueueItemId
-    outcome: QueueAdmissionOutcome | QueueLabelAdmissionScopeMissing
+    outcome: (
+        QueueAdmissionOutcome
+        | QueueLabelAdmissionScopeMissing
+        | QueueLabelAdmissionScopeMalformed
+        | QueueLabelAdmissionTrackerItemUnknown
+    )
 
 
 @dataclass(frozen=True)
@@ -252,26 +270,13 @@ def admit_queue_items_by_label(
 ) -> QueueLabelAdmissionOutcome:
     """Admit every item the project's automation label names, and no other.
 
-    The label is the operator's own signal in the tracker (REQ-QUEUE-08): a
-    human writes it there, the atelier never does, and this rule only decides
-    whether an admission has an authority. It is read at the instant the rule
-    decides, so an item whose label was removed before the sweep is not
-    admitted by it.
+    The label is the operator's own signal in the tracker (REQ-QUEUE-08). It is
+    read at the instant the rule decides, so an item whose label was removed
+    before the sweep is not admitted by it.
 
-    What the rule may admit is the projection's decision, not this function's:
-    every labelled item goes through the same `confirm` CAS the operator's
-    door uses, under `AUTOMATION_RULE`. An item reserved for a human and one
-    already admitted are therefore declined by the contract itself and left
-    exactly as they were. Admission is not a start: the cap and the priority
-    still govern what `advance_queue` starts afterwards.
-
-    A labelled item that carries no proposal is proposed first when the policy
-    states its defaults, so the label alone is the operator's whole handgrip
-    and what it writes is still only a proposal (REQ-QUEUE-01); without them
-    the item stays observed and the admission says so, exactly as before.
-
-    A labelled item whose body names no scope list is declined and left as it
-    was, exactly as `_scoped_or_declined` decides.
+    What the rule may admit is the projection's `confirm` CAS under
+    `AUTOMATION_RULE`. A missing, malformed, or unknown scope is declined
+    and left as it was. Snapshots are read before any mutation.
     """
     policy = active_policy(queue, project)
     if policy is None or policy.automation_label is None:
@@ -280,18 +285,33 @@ def admit_queue_items_by_label(
     listing = open_tracker_items(tracker, project, label)
     if isinstance(listing, TrackerSourceUnavailable | TrackerPayloadMalformed):
         return QueueAutomationSourceUnreadable(listing.detail)
+    return _admit_labelled(queue, tracker, policy, label, listing.labelled, page_limit)
+
+
+def _admit_labelled(
+    queue: QueueProjection,
+    tracker: TrackerItemSource,
+    policy: QueueProjectPolicyRevision,
+    label: str,
+    labelled: frozenset[QueueItemId],
+    page_limit: int,
+) -> QueueLabelAdmissionsDecided | QueueAutomationSourceUnreadable:
+    items = tuple(
+        item
+        for item in projected_items(queue, page_limit)
+        if item.retired_at is None and item.item_reference.item_id in labelled
+    )
+    scopes: list[WorkItemScope | QueueLabelAdmissionDeclined] = []
+    for item in items:
+        scope = _work_item_scope(tracker, item)
+        if isinstance(scope, QueueAutomationSourceUnreadable):
+            return scope
+        scopes.append(scope)
     rationale = QueueAdmissionRationale(_AUTOMATION_ADMISSION_REASON + label)
     admitted: list[QueueItemId] = []
     declined: list[QueueLabelAdmissionDeclined] = []
-    for item in projected_items(queue, page_limit):
+    for item, scope in zip(items, scopes, strict=True):
         item_id = item.item_reference.item_id
-        # A retired item left the pullable set (ADR 0016, 2026-09-01
-        # amendment); admitting one writes a decision the sweep won't act on.
-        if item.retired_at is not None or item_id not in listing.labelled:
-            continue
-        scope = _scoped_or_declined(tracker, item)
-        if isinstance(scope, QueueAutomationSourceUnreadable):
-            return scope
         if isinstance(scope, QueueLabelAdmissionDeclined):
             declined.append(scope)
             continue
@@ -306,35 +326,29 @@ def admit_queue_items_by_label(
 
 def _work_item_scope(
     tracker: TrackerItemSource, item: QueueItemSnapshot
-) -> WorkItemScope | QueueAutomationSourceUnreadable | None:
+) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
+    item_id = item.item_reference.item_id
     match tracker.snapshot(item.item_reference.tracker_item):
         case WorkItemRevisionObserved(revision):
-            return WorkItemScope.from_body(revision.body)
+            try:
+                scope = WorkItemScope.from_body(revision.body)
+            except WorkItemScopeMalformed as malformed:
+                return QueueLabelAdmissionDeclined(
+                    item_id, QueueLabelAdmissionScopeMalformed(malformed.token)
+                )
+            if not scope.paths:
+                return QueueLabelAdmissionDeclined(
+                    item_id, QueueLabelAdmissionScopeMissing()
+                )
+            return scope
         case TrackerItemUnknown():
-            return None
+            return QueueLabelAdmissionDeclined(
+                item_id, QueueLabelAdmissionTrackerItemUnknown()
+            )
         case TrackerSourceUnavailable(detail) | TrackerPayloadMalformed(detail):
             return QueueAutomationSourceUnreadable(detail)
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def _scoped_or_declined(
-    tracker: TrackerItemSource, item: QueueItemSnapshot
-) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
-    """Answer whether the labelled item's body names a scope list to admit.
-
-    An empty scope must not cost a start, so a missing or pathless scope comes
-    back as the declined outcome the caller records as-is; an unreadable
-    tracker comes back as the outcome the caller returns outright.
-    """
-
-    scope = _work_item_scope(tracker, item)
-    if isinstance(scope, QueueAutomationSourceUnreadable):
-        return scope
-    if scope is None or not scope.paths:
-        item_id = item.item_reference.item_id
-        return QueueLabelAdmissionDeclined(item_id, QueueLabelAdmissionScopeMissing())
-    return scope
 
 
 def _proposed_from_policy_defaults(

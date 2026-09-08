@@ -182,8 +182,7 @@ def test_a_scope_list_names_exactly_those_paths() -> None:
 
 def test_a_path_mentioned_in_prose_is_not_claimed() -> None:
     body = (
-        "## Dateien\n"
-        "Tests nur unter `tests/domain` — nicht `tests/adapters`.\n"
+        "## Dateien\nTests nur unter `tests/domain` — nicht `tests/adapters`.\n"
     ).encode()
     assert WorkItemScope.from_body(body).paths == ()
 
@@ -200,6 +199,19 @@ def test_a_path_mentioned_in_prose_is_not_claimed() -> None:
         (b"no scope section at all", ()),
         (b"## Bereich\na/one\n## Nachbarn\nb/two\n", ("a/one",)),
         (b"## Dateien\n`ignored/path.py`.\n## Bereich\na/one\n", ("a/one",)),
+        (b"## Bereich\n.github/workflows/ci.yml\n", (".github/workflows/ci.yml",)),
+        (
+            b"## Bereich\na/one\n```\nnot/a/path\n```\n",
+            ("a/one",),
+        ),
+        (
+            b"```\n## Bereich\nnot/a/path\n```\n",
+            (),
+        ),
+        (
+            b"## Bereich\na/one\n~~~\nnot/a/path\n~~~\n",
+            ("a/one",),
+        ),
     ],
     ids=[
         "one-file",
@@ -211,6 +223,10 @@ def test_a_path_mentioned_in_prose_is_not_claimed() -> None:
         "no-scope-section",
         "stops-at-the-next-heading",
         "dateien-prose-is-not-read",
+        "hidden-directory",
+        "stops-at-a-code-fence",
+        "heading-inside-a-fence-is-not-a-section",
+        "stops-at-a-tilde-fence",
     ],
 )
 def test_the_scope_section_grammar_reads_exactly_its_path_lines(
@@ -221,7 +237,19 @@ def test_the_scope_section_grammar_reads_exactly_its_path_lines(
 
 @pytest.mark.parametrize(
     "token",
-    ["../etc/passwd", "a/../b", "with space", "*.py", "/absolute", "//"],
+    [
+        "../etc/passwd",
+        "a/../b",
+        "with space",
+        "*.py",
+        "/absolute",
+        "//",
+        "`src/foo.py`",
+        "#todo",
+        "-src/foo.py",
+        "a.py,b.py",
+        "src/foo.py.",
+    ],
     ids=[
         "leading-traversal",
         "embedded-traversal",
@@ -229,6 +257,11 @@ def test_the_scope_section_grammar_reads_exactly_its_path_lines(
         "glob",
         "absolute",
         "only-separators",
+        "backticks",
+        "leading-hash",
+        "list-marker",
+        "comma-list",
+        "trailing-period",
     ],
 )
 def test_a_scope_list_line_that_is_not_a_relative_path_is_a_named_error(

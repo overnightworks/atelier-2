@@ -17,8 +17,10 @@ import pytest
 from atelier2.application.advance_queue import (
     QueueAutomationLabelUnset,
     QueueAutomationSourceUnreadable,
+    QueueLabelAdmissionScopeMalformed,
     QueueLabelAdmissionScopeMissing,
     QueueLabelAdmissionsDecided,
+    QueueLabelAdmissionTrackerItemUnknown,
     admit_queue_items_by_label,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
@@ -60,7 +62,9 @@ from atelier2.contracts.work_items import (
 )
 from atelier2.ports.issue_observation import (
     ObservedOpenTrackerItem,
+    ObserveWorkItemRevisionResult,
     OpenTrackerItemsObserved,
+    TrackerItemUnknown,
     TrackerSourceUnavailable,
     WorkItemRevisionObserved,
 )
@@ -288,6 +292,39 @@ def _tracker(
                 OBSERVED_AT,
             )
         ),
+    )
+
+
+def _snapshot(reference: str, body: bytes) -> WorkItemRevisionObserved:
+    return WorkItemRevisionObserved(
+        ObservedWorkItemRevision(
+            TrackerItemReference(reference),
+            WorkItemKind.ISSUE,
+            body,
+            WorkItemChangeMarker('W/"1"'),
+            OBSERVED_AT,
+        )
+    )
+
+
+def _tracker_answers(
+    *items: tuple[str, tuple[str, ...], ObserveWorkItemRevisionResult],
+) -> FakeTrackerItemSource:
+    first_ref = items[0][0]
+    answers = {ref: answer for ref, _labels, answer in items}
+    return FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            tuple(
+                ObservedOpenTrackerItem(
+                    TrackerItemReference(ref), f"item {ref}", labels
+                )
+                for ref, labels, _answer in items
+            ),
+            OBSERVED_AT,
+        ),
+        snapshot_answer=answers[first_ref],
+        expected_snapshot_reference=TrackerItemReference(first_ref),
+        unexpected_snapshot_answer=lambda ref: answers[ref.value],
     )
 
 
@@ -522,3 +559,68 @@ def test_a_labelled_item_without_a_scope_list_is_declined_instead_of_started() -
     (declined,) = outcome.declined
     assert declined.outcome == QueueLabelAdmissionScopeMissing()
     assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+
+
+def test_a_malformed_scope_line_declines_that_item_and_admits_the_rest() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1"), _proposed("gh:2")])
+
+    outcome = admit_queue_items_by_label(
+        queue,
+        project=PROJECT,
+        tracker=_tracker_answers(
+            (
+                "gh:1",
+                (LABEL,),
+                _snapshot("gh:1", b"## Bereich\n../etc/passwd\n"),
+            ),
+            ("gh:2", (LABEL,), _snapshot("gh:2", _SCOPED_BODY)),
+        ),
+    )
+
+    assert isinstance(outcome, QueueLabelAdmissionsDecided)
+    assert outcome.admitted == _item_ids("gh:2")
+    (declined,) = outcome.declined
+    assert declined.outcome == QueueLabelAdmissionScopeMalformed("../etc/passwd")
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+    assert queue.state_of("gh:2").state is QueueItemState.ADMITTED
+
+
+def test_an_unreadable_snapshot_admits_nothing_before_any_mutation() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1"), _proposed("gh:2")])
+
+    outcome = admit_queue_items_by_label(
+        queue,
+        project=PROJECT,
+        tracker=_tracker_answers(
+            ("gh:1", (LABEL,), _snapshot("gh:1", _SCOPED_BODY)),
+            (
+                "gh:2",
+                (LABEL,),
+                TrackerSourceUnavailable("GitHub could not be reached"),
+            ),
+        ),
+    )
+
+    assert outcome == QueueAutomationSourceUnreadable("GitHub could not be reached")
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+    assert queue.state_of("gh:2").state is QueueItemState.PROPOSED
+
+
+def test_an_unknown_tracker_item_is_declined_by_name_not_as_a_missing_scope() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1"), _proposed("gh:2")])
+
+    outcome = admit_queue_items_by_label(
+        queue,
+        project=PROJECT,
+        tracker=_tracker_answers(
+            ("gh:1", (LABEL,), TrackerItemUnknown(TrackerItemReference("gh:1"))),
+            ("gh:2", (LABEL,), _snapshot("gh:2", _SCOPED_BODY)),
+        ),
+    )
+
+    assert isinstance(outcome, QueueLabelAdmissionsDecided)
+    assert outcome.admitted == _item_ids("gh:2")
+    (declined,) = outcome.declined
+    assert declined.outcome == QueueLabelAdmissionTrackerItemUnknown()
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+    assert queue.state_of("gh:2").state is QueueItemState.ADMITTED
