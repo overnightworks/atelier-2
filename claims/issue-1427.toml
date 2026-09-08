@@ -1,0 +1,8 @@
+claim_id = "263fac628ae0486fb3160aebbc206042"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "0fc9173e1b9932671ed1872eac4af55b2ba3765a"
+branch = "claude/issue-1427-scope-list"
+scope = ["src/atelier2/contracts/work_items.py", "src/atelier2/application/advance_queue.py", "tests/domain/test_work_items.py", "tests/application/test_admit_queue_items_by_label.py"]
+opened_commit = "81e7c3f739ca0929a987254a9559579a62767817"
+whole_reason = "ein Leser, eine Zulassung und die zwei Tests daneben sind eine Entscheidung"
