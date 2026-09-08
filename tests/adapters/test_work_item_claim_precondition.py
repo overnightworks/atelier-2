@@ -952,3 +952,33 @@ def test_a_granted_claim_with_no_touches_still_holds(
     assert started_node.hold(ledger) is None
 
     assert started_node.standing() == (RunState.STARTED.value, 1, 0, 0)
+
+
+def test_a_run_refused_for_a_foreign_lane_holds_no_claim(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """The node still ends on the grant, and the ended run holds nothing.
+
+    The ledger posted the claim; the door receipts it and refuses because a
+    foreign lane already stands on those paths. The refuse path gives that
+    unused grant back, so the next run is not blocked by a dead one.
+    """
+
+    executable = fake_agent_claim_executable(tmp_path, "touches")
+
+    assert started_node.hold(
+        started_node.ledger(AgentClaimCli(executable, tmp_path))
+    ) == (RunState.FAILED.value)
+    assert claimed_ledger(executable) == ()
+
+
+def test_a_run_that_was_granted_its_claim_keeps_it(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    executable = fake_agent_claim_executable(tmp_path)
+
+    assert (
+        started_node.hold(started_node.ledger(AgentClaimCli(executable, tmp_path)))
+        is None
+    )
+    assert len(claimed_ledger(executable)) == 1

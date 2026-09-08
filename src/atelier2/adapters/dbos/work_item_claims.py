@@ -87,6 +87,7 @@ from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.queue_projection import QueuePolicyReader
 from atelier2.ports.work_item_claims import (
+    Abandoned,
     ClaimAbsent,
     ClaimReceipt,
     ClaimRefusal,
@@ -105,6 +106,8 @@ WHOLE_SCOPE_REASON = (
     "regelt; der Schnitt ist der des Items"
 )
 """Why the ledger's width check is waived: the scope is the item's own cut."""
+UNWORKED_CLAIM_RELEASE_REASON = "der Lauf endete, ohne unter diesem Claim zu arbeiten"
+"""Why a grant this door receipted and then refused is given back."""
 
 
 def out_of_order_reason(label: str) -> str:
@@ -170,8 +173,8 @@ class WorkItemClaimRefused:
     runtime's sentence from the granted claim's touches, and empty where
     neither said more. A claim the ledger granted over paths another lane
     already holds is a fact that happened: it is recorded as this effect's
-    receipt, and the node ends afterwards. Releasing it belongs to the run's
-    own completion.
+    receipt, and the refuse path gives it back because the run never worked
+    under it.
     """
 
     reason: AgentExecutionRefusal
@@ -559,8 +562,10 @@ def _drive_prepared_claim(
     Opening is no durable step. A typed checkout failure is recorded as this
     hold's own refusal so a replay that cannot open still consumes the hold
     step, then takes the refuse step, instead of raising out of the node.
-    Closing the checkout on that path is best-effort: a close that cannot
-    finish must not replace the refusal, so the refuse step still runs.
+    Giving back an unused grant and closing the checkout on that path are
+    both best-effort: a release or close that cannot finish must not replace
+    the refusal, so the refuse step still runs. Both run before that step,
+    so a recovery that replays this drive attempts them again.
     """
 
     logical_key = prepared[LOGICAL_KEY_FIELD]
@@ -579,12 +584,35 @@ def _drive_prepared_claim(
     _confirm_claim(datasource, logical_key, revision_hash, outcome)
     if isinstance(outcome, WorkItemClaimHeld):
         return None
+    _release_unworked_claim(ledger, run_id, outcome)
     try:
         ledger.checkouts.close(run_id)
     except ClaimCheckoutUnavailable:
         pass
     return _refuse_claim(
         datasource, run_id, revision_hash, node_id, round_ordinal, outcome.record()
+    )
+
+
+def _release_unworked_claim(
+    ledger: WorkItemClaimLedger, run_id: RunId, outcome: WorkItemClaimRefused
+) -> None:
+    """Give back a grant this run receipted and then ended on, unused.
+
+    The receipt already accounts for the grant; the ledger still holds it
+    until this call. A release the ledger refuses is the same class as a
+    checkout close that cannot finish: the node still ends on the refusal
+    that decided it.
+    """
+
+    confirmed = outcome.confirmed
+    if confirmed is None:
+        return
+    ledger.claims.release(
+        confirmed.receipt.item,
+        run_id,
+        confirmed.receipt.claim_id,
+        Abandoned(UNWORKED_CLAIM_RELEASE_REASON),
     )
 
 
