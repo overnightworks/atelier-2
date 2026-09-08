@@ -70,6 +70,7 @@ _STATUS_CLAIM_FIELDS = frozenset(
         "state",
         "age",
         "old",
+        "whole",
     }
 )
 _TOUCH_FIELDS = frozenset({"issue", "lane", "claim_id", "agent", "scope"})
@@ -439,9 +440,9 @@ def _claim_refusal(value: dict[str, object]) -> ClaimRefusal:
 def _status_claim(value: object) -> _StandingClaim:
     """One live store claim as `aco status --json` states it."""
     claim = _object(value)
-    fields = frozenset(claim)
-    if fields not in (_STATUS_CLAIM_FIELDS, _STATUS_CLAIM_FIELDS | {"whole"}):
-        raise ValueError("aco returned fields outside its pinned contract")
+    if "whole" not in claim:
+        claim = {**claim, "whole": None}
+    _require_fields(claim, _STATUS_CLAIM_FIELDS)
     item = _identity(claim["issue"], claim["lane"])
     branch = HeadBranch(_text(claim["branch"]))
     agent = _text(claim["agent"])
@@ -450,8 +451,7 @@ def _status_claim(value: object) -> _StandingClaim:
     claim_id = _text(claim["claim_id"])
     scope = _scope(claim["scope"])
     _resource(claim["resource"], claim["resource_value"])
-    if "whole" in claim:
-        _text(claim["whole"])
+    _optional_text(claim["whole"])
     overlaps: list[_ClaimPeer] = []
     for overlap in _list(claim["overlaps"]):
         overlap_fields = _object(overlap)

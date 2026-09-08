@@ -99,7 +99,7 @@ def _standing_claim(
     resource: str | None = None,
     resource_value: int | None = None,
 ) -> dict[str, object]:
-    claim: dict[str, object] = {
+    return {
         "issue": item,
         "lane": None,
         "agent": agent,
@@ -110,14 +110,12 @@ def _standing_claim(
         "scope": [path.as_posix() for path in scope],
         "resource": resource,
         "resource_value": resource_value,
+        "whole": whole,
         "overlaps": [] if overlaps is None else overlaps,
         "state": "CLAIMED",
         "age": "0m",
         "old": False,
     }
-    if whole is not None:
-        claim["whole"] = whole
-    return claim
 
 
 def _status_payload(
@@ -471,12 +469,19 @@ def test_a_refusal_detail_carries_no_credential_and_stays_bounded(
     assert cut.detail == "x" * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
 
 
-def test_adapter_accepts_the_optional_wide_claim_reason_in_a_read_back(
+def test_adapter_reads_back_a_claim_that_carries_a_whole_reason(
     recorded_process: RecordedProcess,
 ) -> None:
     recorded_process.outputs.append(_status_payload(whole="the run owns all source"))
 
-    assert isinstance(_adapter().read_back(ITEM, CLAIM_ID, CHECKOUT), ClaimReceipt)
+    assert _adapter().read_back(ITEM, CLAIM_ID, CHECKOUT) == ClaimReceipt(
+        ITEM,
+        CLAIM_ID,
+        AGENT,
+        BRANCH,
+        SCOPE,
+        (),
+    )
 
 
 def test_adapter_accepts_an_allocated_resource_value(
