@@ -224,7 +224,10 @@ def _cancellation_references(
 
     if node.cancellation is not None:
         yield _declared_reference(
-            node, chain, "cancellation", RevisionKind.CANCELLATION_POLICY,
+            node,
+            chain,
+            "cancellation",
+            RevisionKind.CANCELLATION_POLICY,
             node.cancellation,
         )
 

@@ -405,9 +405,7 @@ def _require_succeeded_envelope_shape(envelope: InputEnvelope) -> None:
     if envelope.receipt is not None:
         raise ValueError("a succeeded input envelope carries no receipt")
     if (envelope.source_event_hash is None) != (envelope.source_receipt_hash is None):
-        raise ValueError(
-            "a reused succeeded input names both source hashes or neither"
-        )
+        raise ValueError("a reused succeeded input names both source hashes or neither")
 
 
 def _require_persisted_envelope_shape(envelope: InputEnvelope) -> None:

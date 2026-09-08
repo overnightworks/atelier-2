@@ -376,9 +376,7 @@ def _require_consistent_receipt_fields(event: RunEvent) -> None:
         if event.receipt_logical_key is None or event.receipt_result_hash is None:
             raise ValueError("receipt event requires both exact receipt fields")
         if event.receipt_result_hash != event.payload_hash:
-            raise ValueError(
-                "receipt event payload must match its receipt result hash"
-            )
+            raise ValueError("receipt event payload must match its receipt result hash")
     elif event.receipt_logical_key is not None or event.receipt_result_hash is not None:
         raise ValueError("nonreceipt event may not carry receipt fields")
 
@@ -446,9 +444,7 @@ def _require_canonical_attempt_binding_shape(event: RunEvent) -> None:
         if terminal_cancellation != (attempt_binding.disposition is not None):
             raise ValueError("cancellation event disposition shape disagrees")
         if not terminal_cancellation and attempt_binding.replacement_attempt_id:
-            raise ValueError(
-                "cancellation request may not name a replacement attempt"
-            )
+            raise ValueError("cancellation request may not name a replacement attempt")
     elif isinstance(attempt_binding, RunEventCancellationBinding):
         raise ValueError("noncancellation event may not carry a cancellation binding")
     elif attempt_binding is not None and event.event_kind not in {
