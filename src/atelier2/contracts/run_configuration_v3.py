@@ -204,6 +204,72 @@ def _walk(graph: WorkflowGraphV3, chain: ReferenceChain) -> Iterator[DeclaredRef
         yield from _walk_node(node, chain)
 
 
+def _declared_reference(
+    node: WorkflowNodeV3,
+    chain: ReferenceChain,
+    field_name: str,
+    kind: RevisionKind,
+    reference: VersionedReference,
+    entry: str | None = None,
+) -> DeclaredReference:
+    return DeclaredReference(
+        ReferenceSite(field_name, node.id, entry, chain), kind, reference
+    )
+
+
+def _agent_context_references(
+    node: AgentNodeV3, chain: ReferenceChain
+) -> Iterator[DeclaredReference]:
+    """An agent node's available-context sources and their read operations."""
+
+    for available in node.available_context:
+        yield _declared_reference(
+            node,
+            chain,
+            "available_context.source",
+            RevisionKind.CONTEXT_SOURCE,
+            available.source,
+            available.name,
+        )
+        for read_operation in available.read_operations:
+            yield _declared_reference(
+                node,
+                chain,
+                "available_context.read_operations",
+                RevisionKind.READ_OPERATION,
+                read_operation,
+                available.name,
+            )
+
+
+def _agent_policy_references(
+    node: AgentNodeV3, chain: ReferenceChain
+) -> Iterator[DeclaredReference]:
+    """An agent node's kept profile, policy, budget, and retry references."""
+
+    for reference, field_name, kind in (
+        (node.profile, "profile", RevisionKind.PROFILE),
+        (node.policy, "policy", RevisionKind.POLICY),
+        (node.budget, "budget", RevisionKind.BUDGET_POLICY),
+        (node.retry, "retry", RevisionKind.RETRY_POLICY),
+    ):
+        if reference is not None:
+            yield _declared_reference(node, chain, field_name, kind, reference)
+
+
+def _agent_grant_references(
+    node: AgentNodeV3, chain: ReferenceChain
+) -> Iterator[DeclaredReference]:
+    """An agent node's granted skill and tool references."""
+
+    for references, field_name, kind in (
+        (node.skills, "skills", RevisionKind.SKILL),
+        (node.tools, "tools", RevisionKind.TOOL),
+    ):
+        for reference in references:
+            yield _declared_reference(node, chain, field_name, kind, reference)
+
+
 def _walk_node(
     node: WorkflowNodeV3, chain: ReferenceChain
 ) -> Iterator[DeclaredReference]:
@@ -213,9 +279,7 @@ def _walk_node(
         reference: VersionedReference,
         entry: str | None = None,
     ) -> DeclaredReference:
-        return DeclaredReference(
-            ReferenceSite(field_name, node.id, entry, chain), kind, reference
-        )
+        return _declared_reference(node, chain, field_name, kind, reference, entry)
 
     if node.cancellation is not None:
         yield declared(
@@ -236,34 +300,9 @@ def _walk_node(
                 required.name,
             )
     if isinstance(node, AgentNodeV3):
-        for available in node.available_context:
-            yield declared(
-                "available_context.source",
-                RevisionKind.CONTEXT_SOURCE,
-                available.source,
-                available.name,
-            )
-            for read_operation in available.read_operations:
-                yield declared(
-                    "available_context.read_operations",
-                    RevisionKind.READ_OPERATION,
-                    read_operation,
-                    available.name,
-                )
-        for reference, field_name, kind in (
-            (node.profile, "profile", RevisionKind.PROFILE),
-            (node.policy, "policy", RevisionKind.POLICY),
-            (node.budget, "budget", RevisionKind.BUDGET_POLICY),
-            (node.retry, "retry", RevisionKind.RETRY_POLICY),
-        ):
-            if reference is not None:
-                yield declared(field_name, kind, reference)
-        for references, field_name, kind in (
-            (node.skills, "skills", RevisionKind.SKILL),
-            (node.tools, "tools", RevisionKind.TOOL),
-        ):
-            for reference in references:
-                yield declared(field_name, kind, reference)
+        yield from _agent_context_references(node, chain)
+        yield from _agent_policy_references(node, chain)
+        yield from _agent_grant_references(node, chain)
     if isinstance(node, DeterministicNodeV3):
         yield declared(
             "operation", RevisionKind.DETERMINISTIC_OPERATION, node.operation
