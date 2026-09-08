@@ -3,5 +3,5 @@ agent = "Claude Fable 5.1 (head)"
 role = "builder"
 base = "0fc9173e1b9932671ed1872eac4af55b2ba3765a"
 branch = "claude/issue-1422-claim-intent"
-scope = ["src/atelier2/adapters/dbos/effect_store.py", "tests/integration/test_driverless_effect_intents.py"]
+scope = ["src/atelier2/adapters/dbos/effect_store.py", "tests/integration/test_driverless_effect_intents.py", "src/atelier2/adapters/dbos/driverless_intents.py"]
 opened_commit = "a0eaffac41d0c383ab23bf46161c45a831b0e6a4"
