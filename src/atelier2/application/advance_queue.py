@@ -1,10 +1,6 @@
 """The queue sweep: admit what the project's automation label names, then start.
 
-Both halves run on the same trigger and read the same projection, so they live
-together: `admit_queue_items_by_label` turns the operator's label in the
-tracker into the proposal the project's policy defaults name and the one
-durable admission decision an automation rule may make, and `advance_queue`
-starts each exact launch of an admitted item once. The cap and the priority
+Both halves share one trigger and one projection. The cap and the priority
 govern the start, never the admission.
 """
 
@@ -43,6 +39,7 @@ from atelier2.application.start_published_run import (
     start_published_run,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.definition_sources import MAXIMUM_REPOSITORY_PATH_CHARACTERS
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
@@ -123,9 +120,7 @@ from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 _LOG = logging.getLogger("atelier2")
 
 _QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
-# The durable reason an automatic admission records, followed by the label that
-# authorized it: the record says which rule admitted the item, not merely that
-# some rule did.
+# Durable reason, then the label that authorized it.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
 
@@ -221,6 +216,13 @@ class QueueLabelAdmissionScopeMalformed:
     """A scope-list line is not a relative path, so the rule does not admit the item."""
 
     token: str
+
+
+def _queue_label_admission_declined_reason(outcome: object) -> str:
+    name = type(outcome).__name__
+    if not isinstance(outcome, QueueLabelAdmissionScopeMalformed):
+        return name
+    return f"{name}: {' '.join(outcome.token.split())[:MAXIMUM_REPOSITORY_PATH_CHARACTERS]}"
 
 
 @dataclass(frozen=True)

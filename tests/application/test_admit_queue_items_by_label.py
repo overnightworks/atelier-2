@@ -21,9 +21,11 @@ from atelier2.application.advance_queue import (
     QueueLabelAdmissionScopeMissing,
     QueueLabelAdmissionsDecided,
     QueueLabelAdmissionTrackerItemUnknown,
+    _queue_label_admission_declined_reason,
     admit_queue_items_by_label,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.definition_sources import MAXIMUM_REPOSITORY_PATH_CHARACTERS
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     QUEUE_PROJECTION_REVISION_OBSERVED,
@@ -581,8 +583,29 @@ def test_a_malformed_scope_line_declines_that_item_and_admits_the_rest() -> None
     assert outcome.admitted == _item_ids("gh:2")
     (declined,) = outcome.declined
     assert declined.outcome == QueueLabelAdmissionScopeMalformed("../etc/passwd")
+    assert (
+        _queue_label_admission_declined_reason(declined.outcome)
+        == "QueueLabelAdmissionScopeMalformed: ../etc/passwd"
+    )
     assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
     assert queue.state_of("gh:2").state is QueueItemState.ADMITTED
+
+
+def test_a_malformed_scope_token_stays_one_bounded_line_in_the_decline_reason() -> None:
+    token = "not a path\nand a second line " + ("x" * 2_000)
+    reason = _queue_label_admission_declined_reason(
+        QueueLabelAdmissionScopeMalformed(token)
+    )
+
+    assert reason.startswith(
+        "QueueLabelAdmissionScopeMalformed: not a path and a second line"
+    )
+    assert "\n" not in reason
+    assert (
+        len(reason)
+        <= len("QueueLabelAdmissionScopeMalformed: ")
+        + MAXIMUM_REPOSITORY_PATH_CHARACTERS
+    )
 
 
 def test_an_unreadable_snapshot_admits_nothing_before_any_mutation() -> None:
