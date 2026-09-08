@@ -41,6 +41,7 @@ PROJECT_CHECKOUT = Path("/workspace")
 class RecordedProcess:
     outputs: list[bytes]
     errors: list[bytes] = field(default_factory=list)
+    return_codes: list[int] = field(default_factory=list)
     commands: list[tuple[str, ...]] = field(default_factory=list)
     working_directories: list[object] = field(default_factory=list)
 
@@ -53,7 +54,8 @@ class RecordedProcess:
         self, _process: object, _timeout: float, _maximum: int
     ) -> tuple[int, bytes, bytes]:
         error = self.errors.pop(0) if self.errors else b""
-        return 0, self.outputs.pop(0), error
+        return_code = self.return_codes.pop(0) if self.return_codes else 0
+        return return_code, self.outputs.pop(0), error
 
 
 def _claim_payload(
@@ -165,6 +167,16 @@ def _release_payload(
             "reason": reason,
         }
     ).encode()
+
+
+JSON_ERROR_SENTENCE = (
+    "the claim state ref does not exist yet; run bootstrap before claim, "
+    "rescope, or release"
+)
+
+
+def _ok_false_payload(sentence: str = JSON_ERROR_SENTENCE) -> bytes:
+    return json.dumps({"ok": False, "error": sentence}).encode()
 
 
 @pytest.fixture
@@ -416,6 +428,72 @@ def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> N
         ClaimRefusalReason.PRIORITY,
         "higher-priority actionable item #42 (score 7) is free: fix the flake; "
         "use --out-of-order REASON to proceed",
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda adapter: adapter.claim(
+            ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+        ),
+        lambda adapter: adapter.read_back(ITEM, CLAIM_ID, CHECKOUT),
+        lambda adapter: adapter.release(ITEM, RUN_ID, CLAIM_ID, Merged(44)),
+    ),
+    ids=("claim", "status", "release"),
+)
+def test_a_nonzero_json_refusal_carries_the_error_sentence(
+    recorded_process: RecordedProcess,
+    call: Callable[[AgentClaimCli], object],
+) -> None:
+    """A `--json` command that exits non-zero with ok-false is that sentence,
+    not a contract violation of a success payload."""
+
+    recorded_process.outputs.append(_ok_false_payload())
+    recorded_process.return_codes.append(2)
+
+    assert call(_adapter()) == ClaimRefusal(
+        ClaimRefusalReason.UNKNOWN, JSON_ERROR_SENTENCE
+    )
+
+
+def test_a_json_refusal_detail_is_scrubbed_and_bounded(
+    recorded_process: RecordedProcess,
+) -> None:
+    token = "ghp_" + "a" * 36
+    recorded_process.outputs.extend(
+        (
+            _ok_false_payload(f"origin refused the token {token}"),
+            _ok_false_payload("x" * (2 * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES)),
+        )
+    )
+    recorded_process.return_codes.extend((2, 2))
+
+    scrubbed = _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+    )
+    cut = _adapter().claim(ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT)
+
+    assert isinstance(scrubbed, ClaimRefusal)
+    assert scrubbed.detail == f"origin refused the token {REDACTION_MARKER}"
+    assert isinstance(cut, ClaimRefusal)
+    assert cut.detail == "x" * MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
+
+
+def test_a_nonzero_exit_without_json_keeps_the_stderr_sentence(
+    recorded_process: RecordedProcess,
+) -> None:
+    recorded_process.outputs.append(b"")
+    recorded_process.return_codes.append(2)
+    recorded_process.errors.append(
+        b"ERROR: claim branch 'x' does not match checkout branch 'main'\n"
+    )
+
+    assert _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+    ) == ClaimRefusal(
+        ClaimRefusalReason.UNKNOWN,
+        "claim branch 'x' does not match checkout branch 'main'",
     )
 
 
