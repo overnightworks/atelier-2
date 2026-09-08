@@ -180,7 +180,8 @@ class _RecordedDocumentationPublisher:
             )
 
     def close(self) -> None:
-        pass
+        # Connections open per publish; this publisher holds nothing to release.
+        return
 
 
 @dataclass(frozen=True)

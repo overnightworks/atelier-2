@@ -1451,9 +1451,9 @@ _WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = {
     """,
 }
 
-PUBLISHED_WAIT_ANSWER_TRIGGERS: Mapping[int, Mapping[str, str]] = {
-    version: _WAIT_ANSWER_TRIGGERS_V34_TO_V45 for version in range(34, 46)
-}
+PUBLISHED_WAIT_ANSWER_TRIGGERS: Mapping[int, Mapping[str, str]] = dict.fromkeys(
+    range(34, 46), _WAIT_ANSWER_TRIGGERS_V34_TO_V45
+)
 
 _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (
     (

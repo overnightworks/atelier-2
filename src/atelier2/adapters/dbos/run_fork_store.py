@@ -165,8 +165,8 @@ class DbosRunForkStore:
                 line = _linear_node_ids(graph)
                 target_index = line.index(request.restart_from_node_id)
                 reused = tuple(
-                    _resolve_reused_node(connection, origin, graph, node_id, position)
-                    for position, node_id in enumerate(line[:target_index])
+                    _resolve_reused_node(connection, origin, graph, node_id)
+                    for node_id in line[:target_index]
                 )
                 reuse_by_node = {entry.node_id: entry for entry in reused}
                 fences = _effect_fences(connection, origin, graph, line[target_index:])
@@ -417,7 +417,6 @@ def _resolve_reused_node(
     origin: RunV3,
     graph: WorkflowGraphV3,
     node_id: str,
-    position: int,
 ) -> RunForkReusedNode:
     inherited = one_record(
         connection,
@@ -945,8 +944,8 @@ def validate_stored_fork(connection: Connection, fork: RunFork) -> RunV3:
         raise RuntimeError("stored fork prefix disagrees with its graph")
     try:
         expected_reused_nodes = tuple(
-            _resolve_reused_node(connection, origin, graph, node_id, position)
-            for position, node_id in enumerate(line[:target_index])
+            _resolve_reused_node(connection, origin, graph, node_id)
+            for node_id in line[:target_index]
         )
     except _PrefixNotReusable as error:
         raise RuntimeError(
