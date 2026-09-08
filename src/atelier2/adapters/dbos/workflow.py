@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import wraps
 from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
@@ -120,7 +121,6 @@ from atelier2.contracts.budgets_v3 import (
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
-    EffectIntent,
     LogicalEffectKey,
     ReconcileCommandId,
 )
@@ -180,6 +180,14 @@ from atelier2.ports.project_verification import (
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
 _LOG = logging.getLogger("atelier2")
+
+
+def _registered_workflow[**P, T](name: str, function: Callable[P, T]) -> Callable[P, T]:
+    @wraps(function)
+    def registered(*args: P.args, **kwargs: P.kwargs) -> T:
+        return function(*args, **kwargs)
+
+    return DBOS.workflow(name=name, max_recovery_attempts=None)(registered)
 
 
 def _declared_workspace_owner(
@@ -559,43 +567,46 @@ def _declared_output_schema_document(
         ) from error
 
 
-def register_durable_run_workflow(
-    datasource: SQLAlchemyDatasource,
-    agent_executors_v2: Mapping[
-        AgentExecutorKey,
-        tuple[
-            AgentExecutorV2 | None,
-            AgentExecutorOperationalIdentity,
-            frozenset[AgentExecutionCapability],
-            AgentExecutorCarrier,
-        ],
-    ],
-    agent_attempt_store: AgentAttemptStore,
-    agent_session: AgentSession | None,
-    agent_permission_policy: PermissionPolicyRevision,
-    agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
-    project: DeclaredProject | None,
-    artifact_publisher: ArtifactPublisher,
-    adapter: OpenEffectAdapterRegistry,
-    effect_binding: tuple[EffectAdapterBinding, ...],
-    project_id: ProjectId | None = None,
-    work_item_claims: WorkItemClaimLedger | None = None,
-) -> None:
-    effect_bindings = effect_binding
+@dataclass
+class _DurableRunWorkflows:
+    db: SQLAlchemyDatasource
+    executors: AgentExecutorMap
+    attempts: AgentAttemptStore
+    session: AgentSession | None
+    permissions: PermissionPolicyRevision
+    workspaces: AgentAttemptWorkspaceOwner | None
+    project: DeclaredProject | None
+    artifacts: ArtifactPublisher
+    adapters: OpenEffectAdapterRegistry
+    effect_bindings: tuple[EffectAdapterBinding, ...]
+    project_id: ProjectId | None = None
+    work_item_claims: WorkItemClaimLedger | None = None
 
-    def adapter_for_intent(intent: EffectIntent) -> EffectAdapter:
-        return adapter.adapter_for(
+    def register(self) -> None:
+        register = _registered_workflow
+        register(WORKFLOW_NAME, self.durable_run)
+        self.add_workflow = register(SUBWORKFLOW_WORKFLOW_NAME, self.durable_add)
+        register(CANCELLATION_WORKFLOW_NAME, self.durable_agent_attempt_cancellation)
+        register(REPLACEMENT_WORKFLOW_NAME, self.durable_agent_attempt_replacement)
+        self.node_workflow = register(NODE_WORKFLOW_NAME, self.durable_node)
+        self.effect_workflow = register(EFFECT_WORKFLOW_NAME, self.durable_effect)
+        register(RECONCILE_WORKFLOW_NAME, self.durable_reconciliation)
+        self.continuation_workflow = register(
+            ACTION_CONTINUATION_WORKFLOW_NAME, self.durable_action_continuation
+        )
+        register(ANSWER_WORKFLOW_NAME, self.durable_answer)
+
+    def adapter_for_key(self, logical_key: str, revision_hash: str) -> EffectAdapter:
+        intent = self.db.run_tx_step(
+            {"name": "effect-adapter-binding"},
+            lambda: load_intent(self.db.sql_session(), logical_key, revision_hash),
+        )
+        return self.adapters.adapter_for(
             intent.binding.operation_name, intent.binding.adapter_binding
         )
 
-    def adapter_for_key(logical_key: str, revision_hash: str) -> EffectAdapter:
-        intent = datasource.run_tx_step(
-            {"name": "effect-adapter-binding"},
-            lambda: load_intent(datasource.sql_session(), logical_key, revision_hash),
-        )
-        return adapter_for_intent(intent)
-
     def execute_v2_attempt(
+        self,
         attempt_execution: AgentAttemptExecution,
         executor: AgentExecutorV2,
         binding: AgentNodeBindingV2,
@@ -603,32 +614,26 @@ def register_durable_run_workflow(
         return execute_agent_attempt(
             attempt_execution,
             executor,
-            agent_attempt_store,
-            _declared_agent_session(agent_session),
-            _declared_workspace_owner(agent_workspace_owner),
-            pinned_project(binding, project),
-            artifact_publisher,
-            permissions=agent_permission_policy,
+            self.attempts,
+            _declared_agent_session(self.session),
+            _declared_workspace_owner(self.workspaces),
+            pinned_project(binding, self.project),
+            self.artifacts,
+            permissions=self.permissions,
             workspace_files=AttemptWorkspaceFileAccess,
         )
 
     def agent_node_attempt(
+        self,
         binding: AgentNodeBindingV2,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
         node_id: str,
         attempt_ordinal: int,
     ) -> ReconstructedAgentAttempt:
-        """One turn at an Agent node: what it executes, and who executes it.
-
-        Derived from the binding the caller already decoded rather than from a
-        durable attempt, because the first turn mints the attempt this names --
-        it does not read one back.
-        """
-
-        executor, operational_identity, declared_capabilities, carrier = (
-            agent_executors_v2[_executor_key(binding)]
-        )
+        executor, operational_identity, declared_capabilities, carrier = self.executors[
+            _executor_key(binding)
+        ]
         request = agent_execution_request_v2(
             binding,
             run_id,
@@ -651,30 +656,31 @@ def register_durable_run_workflow(
         )
 
     def drive_agent_node(
+        self,
         binding: AgentNodeBindingV2,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
         node_id: str,
     ) -> str:
-        """One Agent node from its preconditions to wherever the run stands next.
-
-        A pin the source no longer answers for refuses here, so no lane is held.
-        """
-
-        attempt = agent_node_attempt(
+        attempt = self.agent_node_attempt(
             binding, run_id, revision_hash, node_id, AGENT_ATTEMPT_ORDINAL
         )
         if attempt.executor is None:
-            return refuse_unavailable_executor(attempt.execution.request)
+            return self.refuse_unavailable_executor(attempt.execution.request)
         unattested = refuse_unattested_pin(
-            datasource, binding, project, run_id, revision_hash, node_id
+            self.db,
+            binding,
+            self.project,
+            run_id,
+            revision_hash,
+            node_id,
         )
         if unattested is not None:
             return unattested
         unclaimed = hold_work_item_claim(
-            datasource,
-            work_item_claims,
-            project_id,
+            self.db,
+            self.work_item_claims,
+            self.project_id,
             binding,
             run_id,
             revision_hash,
@@ -682,12 +688,13 @@ def register_durable_run_workflow(
         )
         if unclaimed is not None:
             return unclaimed
-        outcome = execute_v2_attempt(attempt.execution, attempt.executor, binding)
-        return continue_run_after(
+        outcome = self.execute_v2_attempt(attempt.execution, attempt.executor, binding)
+        return self.continue_run_after(
             outcome, binding, run_id, revision_hash, node_id, binding.round_ordinal
         )
 
     def continue_run_after(
+        self,
         outcome: AgentAttemptExecutionOutcome,
         node_binding: AgentNodeBindingV2,
         run_id: RunId,
@@ -695,26 +702,19 @@ def register_durable_run_workflow(
         node_id: str,
         round_ordinal: int,
     ) -> str:
-        """Redeem what this Attempt earned and start whatever the run does next.
-
-        Where the run stands afterwards is the answer, so the one caller that
-        owes a different word -- the replacement workflow, which answers with its
-        Attempt's own state -- takes the side effects and ignores the word.
-        """
-
         if not isinstance(outcome, AgentAttemptSucceeded):
             return RunState.STARTED.value
-        redeemed_effect = redeem_agent_node_effect(
+        redeemed_effect = self.redeem_agent_node_effect(
             outcome, node_binding, run_id, revision_hash, node_id, round_ordinal
         )
         if redeemed_effect is not None:
             logical_key, state = redeemed_effect
             if state is RunState.WAITING_RECONCILIATION:
                 return state.value
-            return continue_confirmed_effect(logical_key, revision_hash)
+            return self.continue_confirmed_effect(logical_key, revision_hash)
         match outcome.completion:
             case RunContinues(successor_id, successor_round):
-                start_node(run_id, revision_hash, successor_id, successor_round)
+                self.start_node(run_id, revision_hash, successor_id, successor_round)
                 return RunState.STARTED.value
             case RunCompletes():
                 return RunState.COMPLETED.value
@@ -722,6 +722,7 @@ def register_durable_run_workflow(
                 assert_never(unreachable)
 
     def redeem_agent_node_effect(
+        self,
         outcome: AgentAttemptSucceeded,
         node_binding: AgentNodeBindingV2,
         run_id: RunId,
@@ -729,71 +730,37 @@ def register_durable_run_workflow(
         node_id: str,
         round_ordinal: int,
     ) -> tuple[LogicalEffectKey, RunState] | None:
-        """Redeem the external effect this agent node's own grant earned, if any.
-
-        Runs after the attempt has durably succeeded and candidate capture has
-        kept its tree. Only an effect-shaped grant prepares an intent. Preparing
-        and redeeming are separate durable steps, so replay reads the standing
-        remote effect back instead of creating a twin.
-        """
-        grant = datasource.run_tx_step(
+        grant = self.db.run_tx_step(
             {"name": "agent-effect-kind"},
             lambda: read_pinned_effect_tool_grant(
-                datasource.sql_session(),
-                load_graph(datasource.sql_session(), revision_hash).node(node_id),
+                self.db.sql_session(),
+                load_graph(self.db.sql_session(), revision_hash).node(node_id),
             ),
         )
         push = (
             grant is not None
             and grant.capability is ToolGrantCapability.PUSH_ATELIER_COMMIT
         )
-        if push:
-            if (
-                project is None
-                or project_id is None
-                or node_binding.project_source is None
-            ):
-                raise RunBindingConflict("push grant requires its declared project")
-            push_project = project
-            push_project_id = project_id
-            push_source = node_binding.project_source
-            candidate = push_project.candidates.read(outcome.attempt.attempt_id)
-            if candidate is None:
-                raise RunBindingConflict("successful push attempt has no candidate")
-            prepare = lambda: prepare_graph_agent_push(
-                datasource.sql_session(),
-                run_id,
-                revision_hash,
-                node_id,
-                round_ordinal,
-                outcome.attempt.attempt_id.value,
-                candidate.tree,
-                push_source.commit,
-                effect_bindings,
-                push_project_id,
-            )
-        else:
-            prepare = lambda: prepare_graph_agent_open_pr(
-                datasource.sql_session(),
-                run_id,
-                revision_hash,
-                node_id,
-                round_ordinal,
-                effect_bindings,
-                project_id,
-            )
-        logical_key = datasource.run_tx_step(
+        logical_key = self.db.run_tx_step(
             {"name": AGENT_EFFECT_PREPARE_STEP_NAME},
-            prepare,
+            self.prepare_agent_node_effect(
+                push,
+                outcome,
+                node_binding,
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+            ),
         )
         if logical_key is None:
             return None
-        selected_adapter = adapter_for_key(str(logical_key), revision_hash.value)
+        selected_adapter = self.adapter_for_key(str(logical_key), revision_hash.value)
         state = RunState(
-            datasource.run_tx_step(
+            self.db.run_tx_step(
                 {"name": AGENT_EFFECT_REDEEM_STEP_NAME},
                 lambda: redeem_agent_effect(
-                    datasource.sql_session(),
+                    self.db.sql_session(),
                     selected_adapter,
                     str(logical_key),
                     revision_hash.value,
@@ -806,74 +773,97 @@ def register_durable_run_workflow(
             )
         return LogicalEffectKey(str(logical_key)), state
 
+    def prepare_agent_node_effect(
+        self,
+        push: bool,
+        outcome: AgentAttemptSucceeded,
+        node_binding: AgentNodeBindingV2,
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+        round_ordinal: int,
+    ) -> Callable[[], str | None]:
+        if push:
+            project = self.project
+            project_id = self.project_id
+            source = node_binding.project_source
+            if project is None or project_id is None or source is None:
+                raise RunBindingConflict("push grant requires its declared project")
+            candidate = project.candidates.read(outcome.attempt.attempt_id)
+            if candidate is None:
+                raise RunBindingConflict("successful push attempt has no candidate")
+            return lambda: prepare_graph_agent_push(
+                self.db.sql_session(),
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+                outcome.attempt.attempt_id.value,
+                candidate.tree,
+                source.commit,
+                self.effect_bindings,
+                project_id,
+            )
+        return lambda: prepare_graph_agent_open_pr(
+            self.db.sql_session(),
+            run_id,
+            revision_hash,
+            node_id,
+            round_ordinal,
+            self.effect_bindings,
+            self.project_id,
+        )
+
     def continue_confirmed_effect(
-        logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
+        self, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
     ) -> str:
         run_id, head, round_ordinal, state = checkpoint_confirmed_effect(
-            datasource, logical_key, revision_hash
+            self.db, logical_key, revision_hash
         )
         if RunState(state) is RunState.STARTED:
-            start_node(RunId(run_id), revision_hash, head, round_ordinal)
+            self.start_node(RunId(run_id), revision_hash, head, round_ordinal)
         return state
 
     def start_node(
+        self,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
         node_id: str,
         round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> None:
-        """Start one round of one node under the identity that round has.
-
-        The durable workflow id is derived from the execution, so a second round
-        of the same node is a second durable workflow rather than a repeat of
-        the first that the idempotency key would swallow.
-        """
         execution_id = NodeExecutionId.for_node(
             run_id, revision_hash, node_id, round_ordinal
         )
         with SetWorkflowID(node_workflow_id_for(execution_id)):
             DBOS.start_workflow(
-                durable_node, run_id.value, revision_hash.value, node_id
+                self.node_workflow,
+                run_id.value,
+                revision_hash.value,
+                node_id,
             )
 
-    def refuse_unavailable_executor(request: AgentExecutionRequestV2) -> str:
+    def refuse_unavailable_executor(self, request: AgentExecutionRequestV2) -> str:
         redrive_index = 0
         while True:
-            refusal = agent_attempt_store.refuse_unavailable_executor(request)
+            refusal = self.attempts.refuse_unavailable_executor(request)
             match refusal:
                 case AgentExecutorBindingRefusalWritten():
                     return RunState.FAILED.value
                 case AgentExecutorBindingRefusalNeedsPreparedCleanup(
                     _attempt, cleanup_request
                 ):
-                    accepted = agent_attempt_store.request_cancellation(cleanup_request)
+                    accepted = self.attempts.request_cancellation(cleanup_request)
                     if not isinstance(accepted, AgentAttemptCancellationAccepted):
-                        DBOS.sleep(
-                            CANCELLATION_REDRIVE_SECONDS[
-                                min(
-                                    redrive_index,
-                                    len(CANCELLATION_REDRIVE_SECONDS) - 1,
-                                )
-                            ]
-                        )
-                        redrive_index += 1
+                        redrive_index = self.sleep_before_redrive(redrive_index)
                         continue
                     terminal = continue_agent_attempt_cancellation(
                         cleanup_request,
-                        agent_attempt_store,
-                        _declared_agent_session(agent_session),
-                        _declared_workspace_owner(agent_workspace_owner),
+                        self.attempts,
+                        _declared_agent_session(self.session),
+                        _declared_workspace_owner(self.workspaces),
                     )
                     if terminal is None:
-                        DBOS.sleep(
-                            CANCELLATION_REDRIVE_SECONDS[
-                                min(
-                                    redrive_index,
-                                    len(CANCELLATION_REDRIVE_SECONDS) - 1,
-                                )
-                            ]
-                        )
-                        redrive_index += 1
+                        redrive_index = self.sleep_before_redrive(redrive_index)
                         continue
                     continue
                 case AgentExecutorBindingRefusalFenced():
@@ -881,23 +871,26 @@ def register_durable_run_workflow(
                 case _ as unreachable:
                     assert_never(unreachable)
 
-    @DBOS.workflow(name=WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_run(run_id: str, revision_hash: str) -> str:
+    @staticmethod
+    def sleep_before_redrive(redrive_index: int) -> int:
+        delay_index = min(redrive_index, len(CANCELLATION_REDRIVE_SECONDS) - 1)
+        DBOS.sleep(CANCELLATION_REDRIVE_SECONDS[delay_index])
+        return redrive_index + 1
+
+    def durable_run(self, run_id: str, revision_hash: str) -> str:
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
-        start = bootstrap_run_binding(datasource, typed_run_id, typed_revision)
-        start_node(typed_run_id, typed_revision, start)
+        start = bootstrap_run_binding(self.db, typed_run_id, typed_revision)
+        self.start_node(typed_run_id, typed_revision, start)
         return RunState.STARTED.value
 
-    @DBOS.workflow(name=SUBWORKFLOW_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_add(left: int, right: int) -> int:
+    def durable_add(self, left: int, right: int) -> int:
         return left + right
 
-    @DBOS.workflow(name=CANCELLATION_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_agent_attempt_cancellation(
-        run_id: str, attempt_id: str, command_id: str
+        self, run_id: str, attempt_id: str, command_id: str
     ) -> str:
-        attempt = agent_attempt_store.load(AgentAttemptId(attempt_id))
+        attempt = self.attempts.load(AgentAttemptId(attempt_id))
         cancellation = attempt.cancellation
         if cancellation is None or attempt.run_id != RunId(run_id):
             raise RunTransitionConflict(
@@ -919,34 +912,28 @@ def register_durable_run_workflow(
         while (
             continue_agent_attempt_cancellation(
                 request,
-                agent_attempt_store,
-                _declared_agent_session(agent_session),
-                _declared_workspace_owner(agent_workspace_owner),
+                self.attempts,
+                _declared_agent_session(self.session),
+                _declared_workspace_owner(self.workspaces),
             )
             is None
         ):
-            DBOS.sleep(
-                CANCELLATION_REDRIVE_SECONDS[
-                    min(redrive_index, len(CANCELLATION_REDRIVE_SECONDS) - 1)
-                ]
-            )
-            redrive_index += 1
-        return agent_attempt_store.load(attempt.attempt_id).state.value
+            redrive_index = self.sleep_before_redrive(redrive_index)
+        return self.attempts.load(attempt.attempt_id).state.value
 
-    @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_agent_attempt_replacement(attempt_id: str) -> str:
-        replacement = agent_attempt_store.load(AgentAttemptId(attempt_id))
+    def durable_agent_attempt_replacement(self, attempt_id: str) -> str:
+        replacement = self.attempts.load(AgentAttemptId(attempt_id))
         reconstructed = reconstruct_agent_attempt(
-            datasource, agent_executors_v2, project, replacement
+            self.db, self.executors, self.project, replacement
         )
         if reconstructed.executor is None:
             return RunState.STARTED.value
-        outcome = execute_v2_attempt(
+        outcome = self.execute_v2_attempt(
             reconstructed.execution,
             reconstructed.executor,
             reconstructed.binding,
         )
-        continue_run_after(
+        self.continue_run_after(
             outcome,
             reconstructed.binding,
             replacement.run_id,
@@ -954,45 +941,47 @@ def register_durable_run_workflow(
             replacement.node_id,
             reconstructed.binding.round_ordinal,
         )
-        # This workflow answers with its Attempt's own word rather than the run's,
-        # read back from the store so the answer is the durable one whatever the
-        # drive reported.
-        return agent_attempt_store.load(replacement.attempt_id).state.value
+        return self.attempts.load(replacement.attempt_id).state.value
 
-    @DBOS.workflow(name=NODE_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_node(run_id: str, revision_hash: str, node_id: str) -> str:
+    def durable_node(self, run_id: str, revision_hash: str, node_id: str) -> str:
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
         binding = decode_node_binding(
-            _node_binding(datasource, typed_run_id, typed_revision, node_id, project)
+            _node_binding(
+                self.db,
+                typed_run_id,
+                typed_revision,
+                node_id,
+                self.project,
+            )
         )
         if isinstance(binding, AgentNodeBindingV2):
-            return drive_agent_node(binding, typed_run_id, typed_revision, node_id)
+            return self.drive_agent_node(binding, typed_run_id, typed_revision, node_id)
         if isinstance(binding, ActionNodeBinding):
             logical_key = str(
-                datasource.run_tx_step(
+                self.db.run_tx_step(
                     {"name": ACTION_PREPARE_STEP_NAME},
                     lambda: (
                         prepare_graph_action(
-                            datasource.sql_session(),
+                            self.db.sql_session(),
                             typed_run_id,
                             typed_revision,
-                            effect_bindings,
-                            project_id,
+                            self.effect_bindings,
+                            self.project_id,
                         ).intent.binding.logical_key.value
                     ),
                 )
             )
             with SetWorkflowID(effect_workflow_id_for(LogicalEffectKey(logical_key))):
-                DBOS.start_workflow(durable_effect, logical_key, revision_hash)
+                DBOS.start_workflow(self.effect_workflow, logical_key, revision_hash)
             return RunState.STARTED.value
         if isinstance(binding, WaitNodeBinding):
             wait_round_ordinal = binding.round_ordinal
-            datasource.run_tx_step(
+            self.db.run_tx_step(
                 {"name": WAIT_COMMIT_STEP_NAME},
                 lambda: (
                     commit_waiting_input(
-                        datasource.sql_session(),
+                        self.db.sql_session(),
                         typed_run_id,
                         typed_revision,
                         node_id,
@@ -1003,32 +992,40 @@ def register_durable_run_workflow(
             )
             return RunState.WAITING_INPUT.value
         if isinstance(binding, SubworkflowNodeBinding):
-            execution_id = NodeExecutionId.for_node(
-                typed_run_id, typed_revision, node_id
+            return self.drive_subworkflow_node(
+                binding, typed_run_id, typed_revision, node_id
             )
-            with SetWorkflowID(subworkflow_workflow_id_for(execution_id)):
-                handle = DBOS.start_workflow(durable_add, *binding.operands)
-            result = handle.get_result()
-            datasource.run_tx_step(
-                {"name": SUBWORKFLOW_COMMIT_STEP_NAME},
-                lambda: (
-                    commit_subworkflow_completed(
-                        datasource.sql_session(),
-                        typed_run_id,
-                        typed_revision,
-                        node_id,
-                        result,
-                    ).state.value
-                ),
-            )
-            return RunState.COMPLETED.value
         assert_never(binding)
 
-    @DBOS.workflow(name=EFFECT_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_effect(logical_key: str, revision_hash: str) -> str:
-        selected_adapter = adapter_for_key(logical_key, revision_hash)
+    def drive_subworkflow_node(
+        self,
+        binding: SubworkflowNodeBinding,
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+    ) -> str:
+        execution_id = NodeExecutionId.for_node(run_id, revision_hash, node_id)
+        with SetWorkflowID(subworkflow_workflow_id_for(execution_id)):
+            handle = DBOS.start_workflow(self.add_workflow, *binding.operands)
+        result = handle.get_result()
+        self.db.run_tx_step(
+            {"name": SUBWORKFLOW_COMMIT_STEP_NAME},
+            lambda: (
+                commit_subworkflow_completed(
+                    self.db.sql_session(),
+                    run_id,
+                    revision_hash,
+                    node_id,
+                    result,
+                ).state.value
+            ),
+        )
+        return RunState.COMPLETED.value
+
+    def durable_effect(self, logical_key: str, revision_hash: str) -> str:
+        selected_adapter = self.adapter_for_key(logical_key, revision_hash)
         observed = _run_effect_step(
-            datasource,
+            self.db,
             OBSERVE_STEP_NAME,
             observe_adapter_with_fork_fence,
             selected_adapter,
@@ -1036,7 +1033,7 @@ def register_durable_run_workflow(
             revision_hash,
         )
         resolved = _run_effect_step(
-            datasource,
+            self.db,
             RESOLVE_STEP_NAME,
             resolve_observation,
             selected_adapter,
@@ -1044,39 +1041,30 @@ def register_durable_run_workflow(
             revision_hash,
             observed,
         )
-        state = RunState(
-            datasource.run_tx_step(
-                {"name": COMMIT_STEP_NAME},
-                lambda: (
-                    commit_resolution(
-                        datasource.sql_session(), logical_key, revision_hash, resolved
-                    ).value
-                ),
-            )
+        return self.commit_effect_resolution(
+            logical_key,
+            revision_hash,
+            lambda: (
+                commit_resolution(
+                    self.db.sql_session(), logical_key, revision_hash, resolved
+                ).value
+            ),
         )
-        if state is RunState.STARTED:
-            schedule_confirmed_effect_continuation(
-                durable_action_continuation,
-                LogicalEffectKey(logical_key),
-                WorkflowRevisionHash(revision_hash),
-            )
-        return state.value
 
-    @DBOS.workflow(name=RECONCILE_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_reconciliation(command_id: str, revision_hash: str) -> str:
+    def durable_reconciliation(self, command_id: str, revision_hash: str) -> str:
         command_logical_key = str(
-            datasource.run_tx_step(
+            self.db.run_tx_step(
                 {"name": "reconcile-adapter-binding"},
-                lambda: datasource.sql_session().scalar(
+                lambda: self.db.sql_session().scalar(
                     sa.select(reconcile_commands.c.logical_key).where(
                         reconcile_commands.c.command_id == command_id
                     )
                 ),
             )
         )
-        selected_adapter = adapter_for_key(command_logical_key, revision_hash)
+        selected_adapter = self.adapter_for_key(command_logical_key, revision_hash)
         observed = _run_effect_step(
-            datasource,
+            self.db,
             OBSERVE_STEP_NAME,
             observe_reconcile_command,
             selected_adapter,
@@ -1086,7 +1074,7 @@ def register_durable_run_workflow(
         command = ReconcileCommandId(command_id)
         logical_key = str(observed["logical_key"])
         resolved = _run_effect_step(
-            datasource,
+            self.db,
             RESOLVE_STEP_NAME,
             resolve_observation,
             selected_adapter,
@@ -1095,84 +1083,95 @@ def register_durable_run_workflow(
             observed,
             command if observed.get("operator_authorized") == command_id else None,
         )
-        state = RunState(
-            datasource.run_tx_step(
-                {"name": COMMIT_STEP_NAME},
-                lambda: (
-                    commit_resolution(
-                        datasource.sql_session(),
-                        logical_key,
-                        revision_hash,
-                        resolved,
-                        command,
-                    ).value
-                ),
-            )
+        return self.commit_effect_resolution(
+            logical_key,
+            revision_hash,
+            lambda: (
+                commit_resolution(
+                    self.db.sql_session(),
+                    logical_key,
+                    revision_hash,
+                    resolved,
+                    command,
+                ).value
+            ),
         )
+
+    def commit_effect_resolution(
+        self,
+        logical_key: str,
+        revision_hash: str,
+        commit: Callable[[], str],
+    ) -> str:
+        state = RunState(self.db.run_tx_step({"name": COMMIT_STEP_NAME}, commit))
         if state is RunState.STARTED:
             schedule_confirmed_effect_continuation(
-                durable_action_continuation,
+                self.continuation_workflow,
                 LogicalEffectKey(logical_key),
                 WorkflowRevisionHash(revision_hash),
             )
         return state.value
 
-    @DBOS.workflow(name=ACTION_CONTINUATION_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_action_continuation(logical_key: str, revision_hash: str) -> str:
-        typed_key = LogicalEffectKey(logical_key)
-        typed_revision = WorkflowRevisionHash(revision_hash)
-        run_id, head, round_ordinal, state = checkpoint_confirmed_effect(
-            datasource, typed_key, typed_revision
+    def durable_action_continuation(self, logical_key: str, revision_hash: str) -> str:
+        return self.continue_confirmed_effect(
+            LogicalEffectKey(logical_key), WorkflowRevisionHash(revision_hash)
         )
-        if RunState(state) is RunState.STARTED:
-            start_node(RunId(run_id), typed_revision, head, round_ordinal)
-        return state
 
-    @DBOS.workflow(name=ANSWER_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_answer(
+        self,
         run_id: str,
         revision_hash: str,
         node_id: str,
         round_ordinal: int = FIRST_ROUND_ORDINAL,
     ) -> str:
-        """Apply the answer one execution of one waiting node was given.
-
-        The round has a default because an answer enqueued before a pause could
-        stand in a round named only the node, and the one round such a run could
-        have paused in is the first.
-        """
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
 
         def apply() -> list[str]:
             answer = load_wait_answer(
-                datasource.sql_session(),
+                self.db.sql_session(),
                 typed_run_id,
                 typed_revision,
                 node_id,
                 round_ordinal,
             ).answer
-            transition = commit_wait_answered(datasource.sql_session(), answer)
+            transition = commit_wait_answered(self.db.sql_session(), answer)
             return [transition.current_node_id, transition.state.value]
 
-        # The step reports the state as well as the head, because an answered Wait
-        # node that is its run's sink ends the run, and after a terminal transition
-        # correctness must not rest on DBOS deduplicating a workflow id: starting
-        # the sink's own node again is harmless only for as long as that id happens
-        # to collide. The state is what says "there is nothing left to start", so
-        # the decision is read from the run rather than borrowed from the runtime.
-        # Recording two values is why the step name carries a version -- a
-        # recovered step of the earlier shape would be read as a head alone.
         head, state = cast(
             tuple[str, str],
-            tuple(datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)),
+            tuple(self.db.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)),
         )
-        # The heir starts in the round the answered pause stood in. That is the
-        # exact round while a Wait may not stand inside a loop body, because
-        # every node outside a loop stands in the first round. #658 P3 legalises
-        # one there and owes this step a target round of its own: that is a
-        # change to a recorded step's return shape, not to an argument, so it
-        # cannot be carried by a default the way this workflow's round is.
         if RunState(state) is RunState.STARTED:
-            start_node(typed_run_id, typed_revision, head, round_ordinal)
+            self.start_node(typed_run_id, typed_revision, head, round_ordinal)
         return state
+
+
+def register_durable_run_workflow(
+    datasource: SQLAlchemyDatasource,
+    agent_executors_v2: AgentExecutorMap,
+    agent_attempt_store: AgentAttemptStore,
+    agent_session: AgentSession | None,
+    agent_permission_policy: PermissionPolicyRevision,
+    agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
+    project: DeclaredProject | None,
+    artifact_publisher: ArtifactPublisher,
+    adapter: OpenEffectAdapterRegistry,
+    effect_binding: tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None = None,
+    work_item_claims: WorkItemClaimLedger | None = None,
+) -> None:
+    _DurableRunWorkflows(
+        datasource,
+        agent_executors_v2,
+        agent_attempt_store,
+        agent_session,
+        agent_permission_policy,
+        agent_workspace_owner,
+        project,
+        artifact_publisher,
+        adapter,
+        effect_binding,
+        project_id,
+        work_item_claims,
+    ).register()
