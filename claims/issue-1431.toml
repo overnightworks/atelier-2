@@ -1,7 +1,0 @@
-claim_id = "fe8777c941d944bc9e8e686b9b14fba4"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "66a284657cc26bb7de751054c32c99c84b62859e"
-branch = "claude/issue-1431-s3776-bindings"
-scope = ["src/atelier2/application/resolve_start_bindings.py", "tests/domain/test_resolve_start_bindings.py", "scripts/baselines/size_ratchet_baseline.toml"]
-opened_commit = "d594c46ef848d32861a468c0d809704cc256e38f"
