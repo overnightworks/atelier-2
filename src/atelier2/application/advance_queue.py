@@ -78,7 +78,10 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_REVISION
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    WorkItemScope,
+)
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 from atelier2.ports.durable_runs import (
@@ -88,8 +91,10 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.issue_observation import (
     TrackerItemSource,
+    TrackerItemUnknown,
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
@@ -206,11 +211,16 @@ class QueueAutomationSourceUnreadable:
 
 
 @dataclass(frozen=True)
+class QueueLabelAdmissionScopeMissing:
+    """The labelled item's body names no scope list, so the rule does not admit it."""
+
+
+@dataclass(frozen=True)
 class QueueLabelAdmissionDeclined:
     """One labelled item the projection did not newly admit, in its own words."""
 
     item_id: QueueItemId
-    outcome: QueueAdmissionOutcome
+    outcome: QueueAdmissionOutcome | QueueLabelAdmissionScopeMissing
 
 
 @dataclass(frozen=True)
@@ -259,6 +269,10 @@ def admit_queue_items_by_label(
     states its defaults, so the label alone is the operator's whole handgrip
     and what it writes is still only a proposal (REQ-QUEUE-01); without them
     the item stays observed and the admission says so, exactly as before.
+
+    A labelled item whose body names no scope list is declined with
+    `QueueLabelAdmissionScopeMissing` and left as it was: an empty scope
+    must not cost a start.
     """
 
     policy = active_policy(queue, project)
@@ -278,6 +292,14 @@ def admit_queue_items_by_label(
         # refuses to act on.
         if item.retired_at is not None or item_id not in listing.labelled:
             continue
+        scope = _work_item_scope(tracker, item)
+        if isinstance(scope, QueueAutomationSourceUnreadable):
+            return scope
+        if scope is None or not scope.paths:
+            declined.append(
+                QueueLabelAdmissionDeclined(item_id, QueueLabelAdmissionScopeMissing())
+            )
+            continue
         expected_revision = _proposed_from_policy_defaults(queue, item, policy)
         outcome = _confirmed_by_rule(queue, item, expected_revision, rationale)
         if isinstance(outcome, QueueItemAdmitted):
@@ -285,6 +307,20 @@ def admit_queue_items_by_label(
         else:
             declined.append(QueueLabelAdmissionDeclined(item_id, outcome))
     return QueueLabelAdmissionsDecided(tuple(admitted), tuple(declined))
+
+
+def _work_item_scope(
+    tracker: TrackerItemSource, item: QueueItemSnapshot
+) -> WorkItemScope | QueueAutomationSourceUnreadable | None:
+    match tracker.snapshot(item.item_reference.tracker_item):
+        case WorkItemRevisionObserved(revision):
+            return WorkItemScope.from_body(revision.body)
+        case TrackerItemUnknown():
+            return None
+        case TrackerSourceUnavailable(detail) | TrackerPayloadMalformed(detail):
+            return QueueAutomationSourceUnreadable(detail)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _proposed_from_policy_defaults(

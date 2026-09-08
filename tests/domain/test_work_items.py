@@ -158,7 +158,7 @@ def test_a_written_order_reads_back_as_the_document_it_was_written_from() -> Non
 
 
 def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
-    body = b"## Dateien\n`src/atelier2/contracts/work_items.py`, `workflows/`."
+    body = b"## Bereich\nsrc/atelier2/contracts/work_items.py\nworkflows/\n"
 
     document = read_work_item_order_document(work_item_order_document(revision(body)))
 
@@ -168,18 +168,38 @@ def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
     )
 
 
+def test_a_scope_list_names_exactly_those_paths() -> None:
+    body = (
+        b"## Bereich\n"
+        b"src/atelier2/contracts/work_items.py\n"
+        b"src/atelier2/application/advance_queue.py\n"
+    )
+    assert WorkItemScope.from_body(body).paths == (
+        "src/atelier2/application/advance_queue.py",
+        "src/atelier2/contracts/work_items.py",
+    )
+
+
+def test_a_path_mentioned_in_prose_is_not_claimed() -> None:
+    body = (
+        "## Dateien\n"
+        "Tests nur unter `tests/domain` — nicht `tests/adapters`.\n"
+    ).encode()
+    assert WorkItemScope.from_body(body).paths == ()
+
+
 @pytest.mark.parametrize(
     ("body", "paths"),
     [
-        (b"## Dateien\n`a/file.py`.", ("a/file.py",)),
-        (b"## Dateien\n`a/dir`, `a/dir/`.", ("a/dir",)),
-        (b"## Dateien\n`a/dir//`.", ("a/dir",)),
-        (b"## Dateien\n`b/one`, `a/two`.", ("a/two", "b/one")),
-        (b"## Dateien\n`a/one`, `a/one`.", ("a/one",)),
-        (b"## Dateien\nprose names `a/one` here.", ("a/one",)),
-        (b"## Dateien\n", ()),
-        (b"no files section at all", ()),
-        (b"## Dateien\n`a/one`.\n## Nachbarn\n`b/two`.", ("a/one",)),
+        (b"## Bereich\na/file.py\n", ("a/file.py",)),
+        (b"## Bereich\na/dir\na/dir/\n", ("a/dir",)),
+        (b"## Bereich\na/dir//\n", ("a/dir",)),
+        (b"## Bereich\nb/one\na/two\n", ("a/two", "b/one")),
+        (b"## Bereich\na/one\na/one\n", ("a/one",)),
+        (b"## Bereich\n", ()),
+        (b"no scope section at all", ()),
+        (b"## Bereich\na/one\n## Nachbarn\nb/two\n", ("a/one",)),
+        (b"## Dateien\n`ignored/path.py`.\n## Bereich\na/one\n", ("a/one",)),
     ],
     ids=[
         "one-file",
@@ -187,13 +207,13 @@ def test_the_body_s_scope_round_trips_through_the_order_document() -> None:
         "directory-with-multiple-trailing-slashes",
         "unsorted-becomes-sorted",
         "duplicate-collapses",
-        "prose-outside-backticks-ignored",
-        "section-without-a-token",
-        "no-files-section",
+        "section-without-a-path",
+        "no-scope-section",
         "stops-at-the-next-heading",
+        "dateien-prose-is-not-read",
     ],
 )
-def test_the_files_section_grammar_reads_exactly_its_backtick_tokens(
+def test_the_scope_section_grammar_reads_exactly_its_path_lines(
     body: bytes, paths: tuple[str, ...]
 ) -> None:
     assert WorkItemScope.from_body(body).paths == paths
@@ -211,11 +231,11 @@ def test_the_files_section_grammar_reads_exactly_its_backtick_tokens(
         "only-separators",
     ],
 )
-def test_a_files_section_token_that_is_not_a_relative_path_is_a_named_error(
+def test_a_scope_list_line_that_is_not_a_relative_path_is_a_named_error(
     token: str,
 ) -> None:
     with pytest.raises(WorkItemScopeMalformed) as error:
-        WorkItemScope.from_body(f"## Dateien\n`{token}`.".encode())
+        WorkItemScope.from_body(f"## Bereich\n{token}\n".encode())
 
     assert error.value.token == token
 

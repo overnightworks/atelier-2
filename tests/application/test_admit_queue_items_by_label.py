@@ -17,6 +17,7 @@ import pytest
 from atelier2.application.advance_queue import (
     QueueAutomationLabelUnset,
     QueueAutomationSourceUnreadable,
+    QueueLabelAdmissionScopeMissing,
     QueueLabelAdmissionsDecided,
     admit_queue_items_by_label,
 )
@@ -52,10 +53,16 @@ from atelier2.contracts.queue_projection import (
     WorkItemReference,
 )
 from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+)
 from atelier2.ports.issue_observation import (
     ObservedOpenTrackerItem,
     OpenTrackerItemsObserved,
     TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
@@ -71,6 +78,7 @@ PROJECT = ProjectId("studio")
 LINEAGE = CatalogLineageId("b" * 64)
 LABEL = "bereit"
 OBSERVED_AT = RecordedAt("2026-09-04T09:00:00Z")
+_SCOPED_BODY = b"## Bereich\nsrc/atelier2/contracts/work_items.py\n"
 OPERATOR_RATIONALE = QueueAdmissionRationale("operator approved the proposal")
 DEFAULT_PRIORITY = QueuePriorityRank(3)
 
@@ -257,7 +265,10 @@ def _proposed_from_the_defaults(tracker: str) -> QueueItemSnapshot:
     )
 
 
-def _tracker(*items: tuple[str, tuple[str, ...]]) -> FakeTrackerItemSource:
+def _tracker(
+    *items: tuple[str, tuple[str, ...]], body: bytes = _SCOPED_BODY
+) -> FakeTrackerItemSource:
+    reference = items[0][0] if items else "gh:1"
     return FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
             tuple(
@@ -267,7 +278,16 @@ def _tracker(*items: tuple[str, tuple[str, ...]]) -> FakeTrackerItemSource:
                 for reference, labels in items
             ),
             OBSERVED_AT,
-        )
+        ),
+        snapshot_answer=WorkItemRevisionObserved(
+            ObservedWorkItemRevision(
+                TrackerItemReference(reference),
+                WorkItemKind.ISSUE,
+                body,
+                WorkItemChangeMarker('W/"1"'),
+                OBSERVED_AT,
+            )
+        ),
     )
 
 
@@ -485,4 +505,20 @@ def test_an_unreadable_tracker_admits_nothing_and_says_so() -> None:
     outcome = admit_queue_items_by_label(queue, project=PROJECT, tracker=tracker)
 
     assert outcome == QueueAutomationSourceUnreadable("GitHub could not be reached")
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+
+
+def test_a_labelled_item_without_a_scope_list_is_declined_instead_of_started() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1")])
+
+    outcome = admit_queue_items_by_label(
+        queue,
+        project=PROJECT,
+        tracker=_tracker(("gh:1", (LABEL,)), body=b"no scope list in this body"),
+    )
+
+    assert isinstance(outcome, QueueLabelAdmissionsDecided)
+    assert outcome.admitted == ()
+    (declined,) = outcome.declined
+    assert declined.outcome == QueueLabelAdmissionScopeMissing()
     assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
