@@ -594,7 +594,8 @@ _LANE_BRANCH = head_branch_for_queue_item(WorkItemReference(PROJECT, ITEM).item_
             _SCOPED_ITEM,
             "touches",
             AgentNodeRefusalRecord(
-                AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+                AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+                "item 77 on one.txt",
             ),
             1,
             id="the-claim-touches-another-lane",

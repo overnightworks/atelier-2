@@ -355,10 +355,17 @@ def test_a_claim_the_ledger_recorded_differently_refuses(answer: ClaimReceipt) -
 
 
 def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:
-    """The claim happened, so it is recorded -- and the node still ends there."""
+    """The claim happened, so it is recorded -- and the node still ends there.
+
+    The refusal names the other lane and the path that actually collides,
+    not the rest of that lane's inventory.
+    """
 
     touch = ClaimTouch(
-        77, "other-claim", "atelier2 run other", (PurePosixPath("tests"),)
+        77,
+        "other-claim",
+        "atelier2 run other",
+        (PurePosixPath("docs"), PurePosixPath("tests")),
     )
     claims = FakeWorkItemClaims(claim_answer=_receipt(touches=(touch,)))
 
@@ -366,9 +373,51 @@ def test_a_claim_touching_another_lane_refuses_and_keeps_its_receipt() -> None:
 
     assert isinstance(outcome, WorkItemClaimRefused)
     assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+    assert outcome.detail == "item 77 on tests"
     assert outcome.confirmed is not None
     assert outcome.confirmed.receipt.touches[0].claim_id == "other-claim"
-    assert outcome.confirmed.receipt.touches[0].scope == ("tests",)
+    assert outcome.confirmed.receipt.touches[0].scope == ("docs", "tests")
+
+
+def test_a_claim_touching_several_lanes_names_each_collision_in_stable_order() -> None:
+    later = ClaimTouch(90, "z-claim", "atelier2 run z", (PurePosixPath("tests"),))
+    earlier = ClaimTouch(
+        12,
+        "a-claim",
+        "atelier2 run a",
+        (PurePosixPath("src/atelier2/adapters/dbos/work_item_claims.py"),),
+    )
+    unnamed = ClaimTouch(
+        None, "lane-claim", "atelier2 run wide", (PurePosixPath("tests"),)
+    )
+    claims = FakeWorkItemClaims(
+        claim_answer=_receipt(touches=(later, unnamed, earlier))
+    )
+
+    outcome = _held(claims)
+
+    assert isinstance(outcome, WorkItemClaimRefused)
+    assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+    assert outcome.detail == (
+        "item 12 on src/atelier2/adapters/dbos/work_item_claims.py; "
+        "item 90 on tests; atelier2 run wide on tests"
+    )
+
+
+def test_a_touching_lane_refusal_keeps_its_detail_inside_the_existing_bound() -> None:
+    touch = ClaimTouch(
+        77,
+        "other-claim",
+        "atelier2 run other",
+        tuple(PurePosixPath(f"tests/p{index:03d}.py") for index in range(80)),
+    )
+
+    outcome = _held(FakeWorkItemClaims(claim_answer=_receipt(touches=(touch,))))
+
+    assert isinstance(outcome, WorkItemClaimRefused)
+    assert outcome.reason is AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+    assert "item 77" in outcome.detail
+    assert len(outcome.detail.encode("utf-8")) <= MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
 
 
 def test_a_drive_that_died_before_its_receipt_takes_no_second_claim(
@@ -868,3 +917,38 @@ def test_a_close_that_fails_during_refuse_keeps_the_git_error_sentence(
     assert close_sentence not in record.detail
     assert len(git_sentence.encode()) > MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
     assert len(record.detail.encode("utf-8")) <= MAXIMUM_CLAIM_REFUSAL_DETAIL_BYTES
+
+
+def test_a_granted_claim_that_touches_another_lane_ends_the_node_naming_the_collision(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    """The node ends AGENT_FAILED, and the recorded refusal names lane and path."""
+
+    executable = fake_agent_claim_executable(tmp_path, "touches")
+    ledger = started_node.ledger(AgentClaimCli(executable, tmp_path))
+
+    assert started_node.hold(ledger) == RunState.FAILED.value
+
+    assert started_node.standing() == (RunState.FAILED.value, 1, 1, 0)
+    with started_node.runtime.engine.connect() as connection:
+        payload = connection.execute(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == started_node.run_id.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        ).scalar_one()
+    record = AgentNodeRefusalRecord.decode(bytes(payload))
+    assert record is not None
+    assert record.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE
+    assert record.detail == "item 77 on one.txt"
+
+
+def test_a_granted_claim_with_no_touches_still_holds(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    executable = fake_agent_claim_executable(tmp_path)
+    ledger = started_node.ledger(AgentClaimCli(executable, tmp_path))
+
+    assert started_node.hold(ledger) is None
+
+    assert started_node.standing() == (RunState.STARTED.value, 1, 0, 0)
