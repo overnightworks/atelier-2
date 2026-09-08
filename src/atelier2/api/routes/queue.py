@@ -47,6 +47,7 @@ from atelier2.api.wire.requests import (
 from atelier2.api.wire.resources import (
     InvalidFieldResource,
     ProjectSourceImportResource,
+    SkippedProjectSourceItemResource,
 )
 from atelier2.application.admit_queue_item import QueueItemsListed
 from atelier2.application.import_project_source_issues import (
@@ -293,9 +294,17 @@ async def import_project_source_issues_route(
         context.control_runner, context.use_cases.import_project_source_issues
     )
     match result:
-        case ProjectSourceIssuesImported(observed, newly_observed):
+        case ProjectSourceIssuesImported(observed, newly_observed, skipped):
             return ProjectSourceImportResource(
-                observed=observed, newly_observed=newly_observed
+                observed=observed,
+                newly_observed=newly_observed,
+                skipped=tuple(
+                    SkippedProjectSourceItemResource(
+                        tracker_item_reference=item.reference.value,
+                        reason=item.reason,
+                    )
+                    for item in skipped
+                ),
             )
         case ProjectSourceNotConnected():
             raise ApiProblem("project-source-not-connected")

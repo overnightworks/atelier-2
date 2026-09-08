@@ -7790,7 +7790,7 @@
       },
       "ProjectSourceImportResource": {
         "additionalProperties": false,
-        "description": "What one import observed: the open items seen, and how many were new.",
+        "description": "What one import observed: the usable open items, and which it named as unusable.",
         "properties": {
           "newly_observed": {
             "minimum": 0.0,
@@ -7801,11 +7801,19 @@
             "minimum": 0.0,
             "title": "Observed",
             "type": "integer"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedProjectSourceItemResource"
+            },
+            "title": "Skipped",
+            "type": "array"
           }
         },
         "required": [
           "observed",
-          "newly_observed"
+          "newly_observed",
+          "skipped"
         ],
         "title": "ProjectSourceImportResource",
         "type": "object"
@@ -9731,6 +9739,29 @@
         ],
         "title": "SeatState",
         "type": "string"
+      },
+      "SkippedProjectSourceItemResource": {
+        "additionalProperties": false,
+        "description": "An open tracker item this import did not observe, and why.",
+        "properties": {
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "tracker_item_reference": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Tracker Item Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tracker_item_reference",
+          "reason"
+        ],
+        "title": "SkippedProjectSourceItemResource",
+        "type": "object"
       },
       "SourceConnectionAuthMethod": {
         "description": "The credential method the operator chose at connect time.\n\nADR 0010 decision 2 specifies two methods; the App method joins here when\nits composition is built — deferred by naming, not by a placeholder field.",

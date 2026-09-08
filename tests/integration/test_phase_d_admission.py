@@ -68,7 +68,7 @@ from atelier2.application.queue_sweep_reads import validated_snapshot
 from atelier2.application.refusals import (
     DurableStateCorrupt as ApplicationDurableStateCorrupt,
 )
-from atelier2.application.refusals import SourcePayloadMalformed, WriteUnavailable
+from atelier2.application.refusals import WriteUnavailable
 from atelier2.application.start_published_run import RunCreated
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
@@ -473,7 +473,7 @@ def test_a_re_observed_item_loses_its_retirement(
     ["", "x" * (MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS + 1)],
     ids=["empty", "overlong"],
 )
-def test_a_title_the_projection_cannot_hold_leaves_the_projection_untouched(
+def test_a_title_the_projection_cannot_hold_is_skipped_and_the_rest_is_observed(
     store: tuple[DbosQueueProjectionStore, Engine], title: str
 ) -> None:
     queue, _engine = store
@@ -481,10 +481,16 @@ def test_a_title_the_projection_cannot_hold_leaves_the_projection_untouched(
 
     outcome = _import(queue, SECOND_READ, ("gh:79", "Renamed"), ("gh:962", title))
 
-    assert isinstance(outcome, SourcePayloadMalformed)
-    assert "gh:962" in outcome.detail
-    (snapshot,) = _snapshots_by_reference(queue).values()
-    assert snapshot.observation == QueueItemTrackerObservation("Open", FIRST_READ)
+    assert isinstance(outcome, ProjectSourceIssuesImported)
+    assert outcome.observed == 1
+    assert outcome.newly_observed == 0
+    (skipped,) = outcome.skipped
+    assert skipped.reference == TrackerItemReference("gh:962")
+    snapshots = _snapshots_by_reference(queue)
+    assert snapshots[TrackerItemReference("gh:79")].observation == (
+        QueueItemTrackerObservation("Renamed", SECOND_READ)
+    )
+    assert TrackerItemReference("gh:962") not in snapshots
 
 
 def test_a_run_for_one_project_leaves_another_projects_items_open(

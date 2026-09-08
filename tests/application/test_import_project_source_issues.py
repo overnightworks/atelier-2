@@ -10,6 +10,7 @@ import pytest
 from atelier2.application.import_project_source_issues import (
     ProjectSourceIssuesImported,
     ProjectSourceNotConnected,
+    SkippedProjectSourceItem,
     SourcePayloadMalformed,
     import_project_source_issues,
 )
@@ -130,7 +131,9 @@ def test_the_open_items_reach_the_queue_with_their_titles_and_the_runs_read_time
         queue,
     )
 
-    assert outcome == ProjectSourceIssuesImported(observed=2, newly_observed=1)
+    assert outcome == ProjectSourceIssuesImported(
+        observed=2, newly_observed=1, skipped=()
+    )
     assert queue.reconciliations == [
         (
             PROJECT,
@@ -154,18 +157,49 @@ def test_the_open_items_reach_the_queue_with_their_titles_and_the_runs_read_time
     ["", "x" * (MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS + 1)],
     ids=["empty", "overlong"],
 )
-def test_a_title_the_projection_cannot_hold_is_refused_before_anything_is_written(
+def test_an_unusable_title_is_named_and_skipped_and_the_rest_is_observed(
     title: str,
 ) -> None:
-    queue = _QueueRecording(QueueItemsReconciled((), (), ()))
+    observed = _item_ids("gh:79", "gh:652")
+    queue = _QueueRecording(QueueItemsReconciled(observed, observed, ()))
+    with pytest.raises(ValueError) as refusal:
+        QueueItemTrackerObservation(title, OBSERVED_AT)
 
     outcome = import_project_source_issues(
-        PROJECT, _listing(("gh:79", "First listed item"), ("gh:652", title)), queue
+        PROJECT,
+        _listing(
+            ("gh:79", "First listed item"),
+            ("gh:1446", title),
+            ("gh:652", "Second listed item"),
+        ),
+        queue,
     )
 
-    assert isinstance(outcome, SourcePayloadMalformed)
-    assert "gh:652" in outcome.detail
-    assert queue.reconciliations == []
+    assert outcome == ProjectSourceIssuesImported(
+        observed=2,
+        newly_observed=2,
+        skipped=(
+            SkippedProjectSourceItem(
+                TrackerItemReference("gh:1446"), str(refusal.value)
+            ),
+        ),
+    )
+    assert queue.reconciliations == [
+        (
+            PROJECT,
+            (
+                (
+                    WorkItemReference(PROJECT, TrackerItemReference("gh:79")),
+                    QueueItemTrackerObservation("First listed item", OBSERVED_AT),
+                ),
+                (
+                    WorkItemReference(PROJECT, TrackerItemReference("gh:652")),
+                    QueueItemTrackerObservation("Second listed item", OBSERVED_AT),
+                ),
+            ),
+            OBSERVED_AT,
+        )
+    ]
 
 
 @pytest.mark.parametrize(

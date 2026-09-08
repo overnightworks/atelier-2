@@ -230,10 +230,11 @@ confirmation records typed `OPERATOR` authority; it does not choose or replace
 the proposal's workflow. OBSERVED rows enter through the
 operator's issue import: `POST /atelier/api/v1/project-sources/import` on a
 served instance whose project-source connection record names a GitHub
-repository observes every open issue as one OBSERVED row (reference grammar
-`gh:<n>`, owned by the GitHub adapter), idempotent through the derived
-identity and insert-or-ignore -- a repeated import adds nothing and never
-rewinds a proposal or admission.
+repository observes every usable open issue as one OBSERVED row (reference
+grammar `gh:<n>`, owned by the GitHub adapter); an item whose title the
+projection cannot hold is named and skipped rather than refusing the rest.
+Idempotent through the derived identity and insert-or-ignore -- a repeated
+import adds nothing and never rewinds a proposal or admission.
 
 A project policy may state the workflow lineage, priority rank, and automation
 disposition a labelled item with no proposal is proposed under (V52). The
