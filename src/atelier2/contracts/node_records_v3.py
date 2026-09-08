@@ -388,6 +388,49 @@ class InputReceiptBinding:
         )
 
 
+def _require_typed_envelope_header(envelope: InputEnvelope) -> None:
+    """Whether the envelope's status and input name are well-formed."""
+
+    if not isinstance(envelope.status, ProjectedDeliveryStatus):
+        raise TypeError("an input envelope names its status through the contract")
+    if envelope.name == "":
+        raise ValueError("an input envelope names a nonempty input")
+
+
+def _require_succeeded_envelope_shape(envelope: InputEnvelope) -> None:
+    """Whether a succeeded envelope carries its value and no stale receipt."""
+
+    if envelope.schema_revision is None or envelope.value_hash is None:
+        raise ValueError("a succeeded input envelope carries schema and value")
+    if envelope.receipt is not None:
+        raise ValueError("a succeeded input envelope carries no receipt")
+    if (envelope.source_event_hash is None) != (envelope.source_receipt_hash is None):
+        raise ValueError(
+            "a reused succeeded input names both source hashes or neither"
+        )
+
+
+def _require_persisted_envelope_shape(envelope: InputEnvelope) -> None:
+    """Whether a non-succeeded envelope carries exactly its persisted receipt."""
+
+    if envelope.receipt is None:
+        raise ValueError("a non-succeeded input envelope names the upstream receipt")
+    if envelope.schema_revision is not None or envelope.value_hash is not None:
+        raise ValueError("a non-succeeded input envelope carries no schema or value")
+    if (
+        envelope.source_event_hash is not None
+        or envelope.source_receipt_hash is not None
+    ):
+        raise ValueError("a non-succeeded input carries no reused success source")
+    if (
+        envelope.status is not ProjectedDeliveryStatus.STALE
+        and envelope.status.value != envelope.receipt.disposition.value
+    ):
+        raise ValueError(
+            "a non-stale input envelope status matches the persisted disposition"
+        )
+
+
 @dataclass(frozen=True)
 class InputEnvelope:
     """One bound input: succeeded value, or the named non-success receipt."""
@@ -401,37 +444,11 @@ class InputEnvelope:
     source_receipt_hash: NodeReceiptHash | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.status, ProjectedDeliveryStatus):
-            raise TypeError("an input envelope names its status through the contract")
-        if self.name == "":
-            raise ValueError("an input envelope names a nonempty input")
+        _require_typed_envelope_header(self)
         if self.status is ProjectedDeliveryStatus.SUCCEEDED:
-            if self.schema_revision is None or self.value_hash is None:
-                raise ValueError("a succeeded input envelope carries schema and value")
-            if self.receipt is not None:
-                raise ValueError("a succeeded input envelope carries no receipt")
-            if (self.source_event_hash is None) != (self.source_receipt_hash is None):
-                raise ValueError(
-                    "a reused succeeded input names both source hashes or neither"
-                )
-            return
-        if self.receipt is None:
-            raise ValueError(
-                "a non-succeeded input envelope names the upstream receipt"
-            )
-        if self.schema_revision is not None or self.value_hash is not None:
-            raise ValueError(
-                "a non-succeeded input envelope carries no schema or value"
-            )
-        if self.source_event_hash is not None or self.source_receipt_hash is not None:
-            raise ValueError("a non-succeeded input carries no reused success source")
-        if (
-            self.status is not ProjectedDeliveryStatus.STALE
-            and self.status.value != self.receipt.disposition.value
-        ):
-            raise ValueError(
-                "a non-stale input envelope status matches the persisted disposition"
-            )
+            _require_succeeded_envelope_shape(self)
+        else:
+            _require_persisted_envelope_shape(self)
 
     def framed(self) -> bytes:
         inherited_source = (
