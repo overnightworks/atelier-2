@@ -72,7 +72,11 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
     UnknownOutcomeReason,
 )
-from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for_node
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    logical_effect_key_for_node,
+    logical_effect_key_for_work_item_claim,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
     TERMINAL_RUN_STATES,
@@ -747,6 +751,12 @@ resolution and will never run again: recovery replays only pending work, never
 a raised ending. An absent row is not one of them -- absence says the workflow
 was never written, and who owes it decides what that means."""
 
+_TERMINAL_NODE_WORKFLOW_STATUSES = (*_TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES, "SUCCESS")
+"""The wider terminal set a node workflow answers to: unlike the effect or
+reconcile workflow `_workflow_is_dead` otherwise checks, a node workflow's own
+resolution is what commits its intents and enqueues its effect in the same
+step, so SUCCESS discharges that duty just as finally as an error does."""
+
 _DRIVEN_INTENT_STATES = (
     EffectIntentState.PREPARED.value,
     EffectIntentState.RECONCILING.value,
@@ -992,10 +1002,14 @@ def _enqueueing_node_workflow_is_dead(
     prepared on the node its run is standing on, and the run stands there until
     the effect confirms -- an ending lifts the run where it stands and moves it
     no further, so a run that ended still names the node this intent belongs
-    to. Deriving that node execution's own logical key and requiring it to be
-    exactly this intent's key is what makes the derived workflow id this
-    intent's driver rather than a neighbour's; when it is not, nothing here can
-    honestly name a driver, so the intent is left alone.
+    to. That node owes two possible intents in the same step -- its own effect,
+    keyed by `logical_effect_key_for_node`, and the work-item claim it takes
+    before it runs, keyed by `logical_effect_key_for_work_item_claim` (the same
+    split `_agent_redeemed_owning_workflow_ids` reads for the restart sweep).
+    Requiring this intent's key to be exactly one of the two is what makes the
+    derived workflow id this intent's driver rather than a neighbour's; when it
+    is neither, nothing here can honestly name a driver, so the intent is left
+    alone.
     """
 
     run = (
@@ -1011,25 +1025,36 @@ def _enqueueing_node_workflow_is_dead(
     revision_hash = WorkflowRevisionHash(str(record["workflow_revision_hash"]))
     node_id = str(run["current_node_id"])
     round_ordinal = int(run["current_round_ordinal"])
-    if (
-        logical_effect_key_for_node(run_id, revision_hash, node_id, round_ordinal)
-        != logical_key
+    if logical_key not in (
+        logical_effect_key_for_node(run_id, revision_hash, node_id, round_ordinal),
+        logical_effect_key_for_work_item_claim(
+            run_id, revision_hash, node_id, round_ordinal
+        ),
     ):
         return False
     execution_id = NodeExecutionId.for_node(
         run_id, revision_hash, node_id, round_ordinal
     )
     return _workflow_is_dead(
-        connection, node_workflow_id_for(execution_id), application_version
+        connection,
+        node_workflow_id_for(execution_id),
+        application_version,
+        terminal_statuses=_TERMINAL_NODE_WORKFLOW_STATUSES,
     )
 
 
 def _workflow_is_dead(
-    connection: Connection, workflow_id: str, application_version: str
+    connection: Connection,
+    workflow_id: str,
+    application_version: str,
+    *,
+    terminal_statuses: tuple[str, ...] = _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES,
 ) -> bool:
     """Whether DBOS itself will never take this workflow another step.
 
-    A terminal error status is the ordinary answer (#628). A workflow still
+    A terminal error status is the ordinary answer (#628); `terminal_statuses`
+    lets a node-workflow caller widen that set to SUCCESS, since a node's own
+    successful resolution discharges it just as finally. A workflow still
     PENDING, ENQUEUED, or DELAYED under a retired `application_version` is
     just as dead: DBOS scopes recovery to the version that enqueued it, so a
     deploy that retires that version strands the workflow exactly as if it
@@ -1038,7 +1063,7 @@ def _workflow_is_dead(
     """
 
     status = _workflow_status(connection, workflow_id)
-    if status in _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES:
+    if status in terminal_statuses:
         return True
     if status not in LIVE_DRIVER_WORKFLOW_STATUSES:
         return False

@@ -49,6 +49,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.advancer import prepared_effect_intent
 from atelier2.adapters.dbos.effect_store import (
     DurableEffectConflict,
     commit_resolution,
@@ -77,9 +78,11 @@ from atelier2.application.reconcile_effect import (
     ReconciliationStale,
     reconcile_effect_result,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effects import (
     EFFECT_INTENT_VERSION_ABANDONED,
     ConfirmationSource,
+    EffectBinding,
     EffectId,
     EffectIntent,
     EffectIntentState,
@@ -99,6 +102,7 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
     logical_effect_key_for_node,
+    logical_effect_key_for_work_item_claim,
 )
 from atelier2.contracts.run_projections import NodeState, RunPage
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -262,21 +266,54 @@ def action_node_workflow_id(intent: EffectIntent) -> str:
     )
 
 
+def prepare_claim_intent(runtime: DbosRuntime, intent: EffectIntent) -> EffectIntent:
+    """Prepare ACTION_NODE_ID's own work-item claim beside its effect intent.
+
+    Recorded through `prepared_effect_intent`, the same production entry point
+    `prepare_work_item_claim` calls, from the exact binding fields `prepared`
+    already recorded for the node's own effect intent -- only the logical key
+    (`logical_effect_key_for_work_item_claim` rather than `logical_effect_key_
+    for_node`) and the operation name differ. That is exactly the one
+    difference `_enqueueing_node_workflow_is_dead` must tell apart.
+    """
+
+    claim_binding = EffectBinding(
+        logical_effect_key_for_work_item_claim(
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            ACTION_NODE_ID,
+        ),
+        intent.binding.run_id,
+        intent.binding.workflow_revision_hash,
+        intent.binding.adapter_revision,
+        intent.binding.destination,
+        intent.binding.adapter_operational_identity,
+        AdapterOperationName.CLAIM_WORK_ITEM,
+    )
+    claim_intent = EffectIntent(claim_binding, intent.request)
+    with canonical_write_transaction(runtime.engine) as connection:
+        prepared_effect_intent(connection, claim_intent)
+    return claim_intent
+
+
 def converge(engine: Engine, application_version: str) -> tuple[LogicalEffectKey, ...]:
     return converge_driverless_effect_intents(engine, application_version)
 
 
-def intent_row(engine: Engine) -> tuple[object, ...]:
+def intent_row(
+    engine: Engine, logical_key: LogicalEffectKey | None = None
+) -> tuple[object, ...]:
+    """The fixture's one intent row, or a named one once more than one exists."""
+
+    query = sa.select(
+        effect_intents.c.state,
+        effect_intents.c.state_version,
+        effect_intents.c.reconciliation_owner_command_id,
+    )
+    if logical_key is not None:
+        query = query.where(effect_intents.c.logical_key == logical_key.value)
     with engine.connect() as connection:
-        return tuple(
-            connection.execute(
-                sa.select(
-                    effect_intents.c.state,
-                    effect_intents.c.state_version,
-                    effect_intents.c.reconciliation_owner_command_id,
-                )
-            ).one()
-        )
+        return tuple(connection.execute(query).one())
 
 
 def run_event_kinds(engine: Engine) -> tuple[str, ...]:
@@ -485,6 +522,30 @@ def test_prepared_intent_still_owed_a_driver_is_left_alone(
         assert connection.scalar(sa.select(runs.c.state)) == RunState.STARTED.value
 
 
+def test_a_still_running_nodes_claim_intent_is_left_alone(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """A claim key must match its own live node, not just a dead one.
+
+    `node_workflow_still_owes_the_enqueue` is the exact live-node shape
+    `test_prepared_intent_still_owed_a_driver_is_left_alone` already proves
+    for the node's own effect key; this asks the same question of the claim
+    key sharing that node.
+    """
+
+    runtime, intent = prepared
+    claim = prepare_claim_intent(runtime, intent)
+    node_workflow_still_owes_the_enqueue(runtime, intent)
+
+    assert converge(runtime.engine, runtime.settings.application_version) == ()
+
+    assert intent_row(runtime.engine, claim.binding.logical_key) == (
+        EffectIntentState.PREPARED.value,
+        0,
+        None,
+    )
+
+
 def end_the_run(runtime: DbosRuntime, intent: EffectIntent, ending: RunState) -> None:
     """Close the run where it stands, the way serve-start's inventory does.
 
@@ -567,6 +628,38 @@ def test_prepared_intent_on_a_run_that_already_ended_is_abandoned(
             == intent.request.payload
         )
     assert run_event_kinds(runtime.engine) == events_before
+
+
+def test_a_dead_nodes_claim_intent_on_an_ended_run_is_abandoned(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """The live store's own shape: a claim key on a node that ended SUCCESS,
+    on a run that has already ended.
+
+    `_enqueueing_node_workflow_is_dead` used to compare only against
+    `logical_effect_key_for_node`, so a work-item claim intent never matched
+    its own node and stood PREPARED forever -- even once the node ended
+    SUCCESS and the run itself ended too. This proves both halves of the fix
+    together: the claim key is recognised as the node's own, and a SUCCESS
+    ending is read as dead exactly like a raised one.
+    """
+
+    runtime, intent = prepared
+    claim = prepare_claim_intent(runtime, intent)
+    _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
+    leave_workflow(
+        runtime.engine,
+        action_node_workflow_id(intent),
+        "SUCCESS",
+        runtime.settings.application_version,
+    )
+    end_the_run(runtime, intent, RunState.FAILED)
+
+    converged = converge(runtime.engine, runtime.settings.application_version)
+
+    assert set(converged) == {intent.binding.logical_key, claim.binding.logical_key}
+    assert intent_row(runtime.engine, intent.binding.logical_key) == ABANDONED_ROW
+    assert intent_row(runtime.engine, claim.binding.logical_key) == ABANDONED_ROW
 
 
 def test_an_abandoned_intent_is_not_swept_a_second_time(
