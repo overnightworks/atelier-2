@@ -1,8 +1,0 @@
-claim_id = "2e806facfefe41d9970a4bc3926cf056"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "66a284657cc26bb7de751054c32c99c84b62859e"
-branch = "claude/issue-1426-s6353"
-scope = ["src/atelier2/api/_support.py", "src/atelier2/api/limits.py", "src/atelier2/api/references.py", "src/atelier2/contracts/catalog_v3.py", "src/atelier2/contracts/when.py", "tests/domain/test_catalog_v3.py", "tests/domain/test_when.py", "tests/api/test_limits.py", "tests/api/test_references.py"]
-opened_commit = "af0da8fae319890d6d7786534ec5dab0be91750f"
-whole_reason = "genau die neun Dateien des Kandidaten-Diffs, keine Verzeichnisse"
