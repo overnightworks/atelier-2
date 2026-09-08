@@ -36,7 +36,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, cast
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -411,7 +411,7 @@ def execute_named_run(order: NamedRunOrder) -> RunReport:
         report = _run_published_revision(
             api, resolution.revision_hash, bindings, order.run_id, order.orders
         )
-        return replace(report, resolved_name=resolution)
+        return cast(RunReport, replace(report, resolved_name=resolution))
 
 
 def _run_published_revision(

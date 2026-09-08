@@ -9,7 +9,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import assert_never
+from typing import assert_never, cast
 
 from atelier2.adapters.agent_workspaces import (
     AgentScratchRootRefused,
@@ -807,7 +807,10 @@ def _atelier_doors_attested(settings: HostSettings) -> HostSettings:
     try:
         attest_atelier_doors_invocation(_atelier_doors_settings(deployment, settings))
     except ClaudeExecutableUnsupported as error:
-        return replace(settings, claude_atelier_doors_start_refusal=str(error))
+        return cast(
+            HostSettings,
+            replace(settings, claude_atelier_doors_start_refusal=str(error)),
+        )
     return settings
 
 

@@ -13,6 +13,7 @@ pin that no longer resolves each cost no run.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -172,6 +173,27 @@ def test_pytest_summary_line_reads_the_runs_own_last_verdict(
 ) -> None:
     del label
     assert pytest_summary_line(tail) == expected
+
+
+def test_bracketed_pytest_headers_still_yield_the_same_verdict() -> None:
+    """Real pytest tails from this module's cases still yield the same verdict."""
+
+    for label, tail, expected in PYTEST_SUMMARY_LINE_CASES:
+        assert pytest_summary_line(tail) == expected, label
+
+
+def test_a_long_unmatched_line_does_not_cost_superlinear_time() -> None:
+    """A long line that starts with '=' and never closes must stay cheap.
+
+    Verification output is untrusted and can run to thousands of characters; a
+    cubic scan of twenty thousand spaces would miss this bound by minutes.
+    """
+
+    line = ("=" + " " * 20_000).encode()
+    started = time.perf_counter()
+    assert pytest_summary_line(line) is None
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.1
 
 
 def runner_for(root: Path) -> LocalProjectVerificationRunner:
