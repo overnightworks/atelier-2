@@ -1,0 +1,8 @@
+claim_id = "eadaeb2c29a14ce88a50e49ec6d99357"
+agent = "Claude Fable 5.1 (head)"
+role = "builder"
+base = "ab2593cd8ebae9615974ff5ec7822205aebc4273"
+branch = "claude/issue-1458-checkout-close"
+scope = ["src/atelier2/adapters/claim_checkouts.py", "src/atelier2/adapters/dbos/work_item_claims.py", "tests/adapters"]
+opened_commit = "f10bcf2d262aed4f45acf759d29349a99d6d1d41"
+whole_reason = "der Checkout-Adapter, die eine Stelle die ihn schliesst, und die Tests daneben"
