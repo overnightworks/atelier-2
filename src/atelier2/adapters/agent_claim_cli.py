@@ -70,6 +70,7 @@ _STATUS_CLAIM_FIELDS = frozenset(
         "state",
         "age",
         "old",
+        "whole",
     }
 )
 _TOUCH_FIELDS = frozenset({"issue", "lane", "claim_id", "agent", "scope"})
@@ -156,9 +157,9 @@ class AgentClaimCli:
         arguments.extend(("--whole", reasons.whole))
         if reasons.out_of_order is not None:
             arguments.extend(("--out-of-order", reasons.out_of_order))
-        payload, diagnostics = self._command(*arguments, _JSON_FLAG, cwd=checkout)
-        if payload is None:
-            return _diagnostic_refusal(diagnostics)
+        payload = self._json_payload(*arguments, _JSON_FLAG, cwd=checkout)
+        if isinstance(payload, ClaimRefusal):
+            return payload
         if _is_claim_refusal(payload):
             return _claim_refusal(payload)
         try:
@@ -178,9 +179,9 @@ class AgentClaimCli:
         return acquired
 
     def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
-        payload, diagnostics = self._command("status", _JSON_FLAG, cwd=checkout)
-        if payload is None:
-            return _diagnostic_refusal(diagnostics)
+        payload = self._json_payload("status", _JSON_FLAG, cwd=checkout)
+        if isinstance(payload, ClaimRefusal):
+            return payload
         try:
             _require_fields(payload, _STATUS_FIELDS)
             if payload["issue"] is not None:
@@ -229,11 +230,11 @@ class AgentClaimCli:
             arguments.extend(("--merged", str(outcome.pull_request)))
         elif isinstance(outcome, Abandoned):
             arguments.extend(("--abandoned", outcome.reason))
-        payload, diagnostics = self._command(
+        payload = self._json_payload(
             *arguments, _JSON_FLAG, cwd=self._working_directory
         )
-        if payload is None:
-            return _diagnostic_refusal(diagnostics)
+        if isinstance(payload, ClaimRefusal):
+            return payload
         other_release = ClaimRefusal(
             ClaimRefusalReason.UNKNOWN,
             "aco released a claim other than the one requested",
@@ -260,9 +261,29 @@ class AgentClaimCli:
             return other_release
         return None
 
+    def _json_payload(
+        self, *arguments: str, cwd: Path
+    ) -> dict[str, object] | ClaimRefusal:
+        """Stdout of a `--json` command, or the refusal that command stated.
+
+        `_command` carries the child's exit status here. A non-zero exit that
+        printed `{"ok": false, "error": "<sentence>"}` is that sentence, never
+        a success payload; a non-zero exit with nothing parseable falls back
+        to the last `ERROR:` line on stderr. A zero exit is unchanged.
+        """
+
+        return_code, payload, diagnostics = self._command(*arguments, cwd=cwd)
+        if return_code != 0:
+            json_refusal = _json_error_refusal(payload)
+            if json_refusal is not None:
+                return json_refusal
+        if payload is None:
+            return _diagnostic_refusal(diagnostics)
+        return payload
+
     def _command(
         self, *arguments: str, cwd: Path
-    ) -> tuple[dict[str, object] | None, str]:
+    ) -> tuple[int | None, dict[str, object] | None, str]:
         try:
             process = subprocess.Popen(
                 (str(self._executable), *arguments),
@@ -272,16 +293,17 @@ class AgentClaimCli:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
-            _return_code, standard_output, standard_error = bounded_process_streams(
+            return_code, standard_output, standard_error = bounded_process_streams(
                 process, self._timeout_seconds, MAXIMUM_AGENT_CLAIM_OUTPUT_BYTES
             )
         except (OSError, ValueError):
-            return None, ""
+            return None, None, ""
         diagnostics = standard_error.decode("utf-8", errors="replace")
         try:
-            return _object(json.loads(standard_output.decode("utf-8"))), diagnostics
+            payload = _object(json.loads(standard_output.decode("utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-            return None, diagnostics
+            payload = None
+        return return_code, payload, diagnostics
 
 
 def _acquired_claim(payload: dict[str, object]) -> ClaimReceipt:
@@ -396,6 +418,22 @@ def _is_claim_refusal(value: dict[str, object]) -> bool:
     return value.get("refused") is True
 
 
+def _json_error_refusal(payload: dict[str, object] | None) -> ClaimRefusal | None:
+    """The sentence a refusing `--json` command printed on stdout, if it did.
+
+    The tool writes `{"ok": false, "error": "<sentence>"}` and the same
+    sentence under `ERROR:` on stderr. The stdout object is the refusal,
+    not a success payload.
+    """
+
+    if payload is None:
+        return None
+    error = payload.get("error")
+    if payload.get("ok") is not False or not isinstance(error, str) or not error:
+        return None
+    return ClaimRefusal(ClaimRefusalReason.UNKNOWN, error)
+
+
 def _diagnostic_refusal(diagnostics: str) -> ClaimRefusal:
     """The refusal a command that printed no JSON left on its standard error.
 
@@ -439,9 +477,9 @@ def _claim_refusal(value: dict[str, object]) -> ClaimRefusal:
 def _status_claim(value: object) -> _StandingClaim:
     """One live store claim as `aco status --json` states it."""
     claim = _object(value)
-    fields = frozenset(claim)
-    if fields not in (_STATUS_CLAIM_FIELDS, _STATUS_CLAIM_FIELDS | {"whole"}):
-        raise ValueError("aco returned fields outside its pinned contract")
+    if "whole" not in claim:
+        claim = {**claim, "whole": None}
+    _require_fields(claim, _STATUS_CLAIM_FIELDS)
     item = _identity(claim["issue"], claim["lane"])
     branch = HeadBranch(_text(claim["branch"]))
     agent = _text(claim["agent"])
@@ -450,8 +488,7 @@ def _status_claim(value: object) -> _StandingClaim:
     claim_id = _text(claim["claim_id"])
     scope = _scope(claim["scope"])
     _resource(claim["resource"], claim["resource_value"])
-    if "whole" in claim:
-        _text(claim["whole"])
+    _optional_text(claim["whole"])
     overlaps: list[_ClaimPeer] = []
     for overlap in _list(claim["overlaps"]):
         overlap_fields = _object(overlap)
