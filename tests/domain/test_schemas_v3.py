@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -420,7 +420,7 @@ def test_the_dialect_is_pinned_rather_than_reinterpreted(
 
 
 @pytest.fixture
-def counted_retrievals(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+def counted_retrievals(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every retrieval the production path attempts, in order."""
     attempted: list[str] = []
     original: Callable[[str], NoReturn] = schemas_v3.refuse_retrieval
@@ -430,7 +430,7 @@ def counted_retrievals(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
         original(uri)
 
     monkeypatch.setattr(schemas_v3, "refuse_retrieval", counting)
-    yield attempted
+    return attempted
 
 
 @pytest.mark.proves("no-schema-reference-ever-leaves-the-document")

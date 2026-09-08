@@ -6290,10 +6290,10 @@ def test_v40_collision_keeps_occupancy_and_version_until_a_clean_retry(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (V39_SCHEMA_HANDOFF.version,)
-        assert (
+        assert occupancy_before == (
             connection.execute("SELECT * FROM host_occupancy_revisions").fetchall(),
             connection.execute("SELECT * FROM host_occupancy_bindings").fetchall(),
-        ) == occupancy_before
+        )
         for statement in drop_sql:
             connection.execute(statement)
         connection.commit()

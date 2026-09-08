@@ -8,7 +8,6 @@ the shape of an internal call.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -540,19 +539,19 @@ def unbound_serving_answers() -> dict[tuple[str, str], list[Answer]]:
 
 
 @pytest.fixture
-def order(tmp_path: Path) -> Iterator[list[str]]:
+def order(tmp_path: Path) -> list[str]:
     workflow = tmp_path / "workflow.yaml"
     workflow.write_bytes(WORKFLOW_DOCUMENT)
     binding = tmp_path / "writer.json"
     binding.write_bytes(BINDING_DOCUMENT)
-    yield ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
+    return ["run", "--workflow", str(workflow), "--binding", f"{AGENT_ROLE}={binding}"]
 
 
 @pytest.fixture
-def unbound_order(tmp_path: Path) -> Iterator[list[str]]:
+def unbound_order(tmp_path: Path) -> list[str]:
     workflow = tmp_path / "workflow.yaml"
     workflow.write_bytes(WORKFLOW_DOCUMENT)
-    yield ["run", "--workflow", str(workflow)]
+    return ["run", "--workflow", str(workflow)]
 
 
 def run_command(order: list[str], service: ScriptedService, *extra: str) -> int:
@@ -1113,10 +1112,10 @@ def named_serving_answers() -> dict[tuple[str, str], list[Answer]]:
 
 
 @pytest.fixture
-def named_order(tmp_path: Path) -> Iterator[list[str]]:
+def named_order(tmp_path: Path) -> list[str]:
     binding = tmp_path / "writer.json"
     binding.write_bytes(BINDING_DOCUMENT)
-    yield ["run", "--name", NAME, "--binding", f"{AGENT_ROLE}={binding}"]
+    return ["run", "--name", NAME, "--binding", f"{AGENT_ROLE}={binding}"]
 
 
 @pytest.mark.proves("one-command-runs-the-workflow-a-name-holds")

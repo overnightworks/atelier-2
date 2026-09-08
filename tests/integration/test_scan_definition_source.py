@@ -304,7 +304,7 @@ def test_a_scan_leaves_the_store_exactly_as_it_found_it(
 
     scanning(sources, reader)
 
-    assert (sources.registered, sources.intaken) == before
+    assert before == (sources.registered, sources.intaken)
 
 
 def test_a_successful_scan_leaves_the_store_exactly_as_it_found_it() -> None:
@@ -317,4 +317,4 @@ def test_a_successful_scan_leaves_the_store_exactly_as_it_found_it() -> None:
     )
 
     assert isinstance(result, DefinitionSourceScanned)
-    assert (sources.registered, sources.intaken) == before
+    assert before == (sources.registered, sources.intaken)

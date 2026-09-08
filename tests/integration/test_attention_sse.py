@@ -232,7 +232,7 @@ def _hold_until_event(
             assert response.status_code == 200, response.read()
             connected.set()
             received.append(_read_one_sse_event(response, time.monotonic() + 12))
-    except (AssertionError, httpx.HTTPError, json.JSONDecodeError, ValueError) as error:
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError) as error:
         errors.append(error)
         connected.set()
 

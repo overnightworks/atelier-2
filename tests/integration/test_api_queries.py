@@ -2413,14 +2413,14 @@ def test_dbos_flattens_and_reconstructs_the_closed_attempt_binding(
         _insert_event(connection, event)
         record = connection.execute(sa.select(run_events)).mappings().one()
 
-    assert (
+    assert expected_columns == (
         record["agent_attempt_id"],
         record["attempt_ordinal"],
         record["cancellation_command_id"],
         record["replacement"],
         record["cancellation_disposition"],
         record["replacement_attempt_id"],
-    ) == expected_columns
+    )
     assert record["event_hash"] == event.event_hash.value
     assert event_from_record(record) == event
 
