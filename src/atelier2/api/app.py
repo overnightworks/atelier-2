@@ -393,7 +393,7 @@ def bound_use_cases(
                 entries,
                 ports.host_configuration_channel,
                 ports.agent_configuration_catalog,
-                ports.model_registry_inspector,
+                ports.model_registry_discoverer,
             )
         ),
         validate_model_registry_entry=(
@@ -402,7 +402,7 @@ def bound_use_cases(
                 configuration_hash,
                 ports.host_configuration_channel,
                 ports.agent_configuration_catalog,
-                ports.model_registry_inspector,
+                ports.model_registry_validator,
             )
         ),
         get_project_model_defaults=lambda project_id: get_project_model_defaults(
