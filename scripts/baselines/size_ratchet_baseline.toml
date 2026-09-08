@@ -458,14 +458,6 @@ qualified_name = "atelier2.application.resolve_references.resolve_declared_refer
 lines = 61
 
 [[function]]
-qualified_name = "atelier2.application.resolve_start_bindings._candidate_choices"
-lines = 82
-
-[[function]]
-qualified_name = "atelier2.application.resolve_start_bindings._select_component"
-lines = 180
-
-[[function]]
 qualified_name = "atelier2.application.resolve_start_bindings.cast_unbound_roles"
 lines = 71
 
@@ -580,10 +572,6 @@ complexity = 22
 [[complexity]]
 qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
 complexity = 21
-
-[[complexity]]
-qualified_name = "atelier2.application.resolve_start_bindings._select_component"
-complexity = 27
 
 [[complexity]]
 qualified_name = "atelier2.application.start_published_run.start_published_run"
