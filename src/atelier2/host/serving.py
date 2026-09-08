@@ -1311,6 +1311,13 @@ def compose_application(
         seat = _seat_of(settings)
         lifespan = _serve_lifespan(runtime, seat, close_runtime_at_shutdown)
         artifact_store = DbosArtifactStore(runtime.engine)
+        provider_models = HostProviderModelInspector(
+            runtime.agent_executor_registry,
+            settings.codex_subscription,
+            settings.grok_subscription,
+            settings.model_inspection_timeout_seconds,
+            settings.agent_termination_grace_seconds,
+        )
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
@@ -1320,9 +1327,7 @@ def compose_application(
                     runtime.engine
                 ),
                 published_run_starter=DbosDurableRunStarter(
-                    runtime.engine,
-                    runtime.settings,
-                    runtime.agent_executor_registry,
+                    runtime.engine, runtime.settings, runtime.agent_executor_registry
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version
@@ -1363,13 +1368,8 @@ def compose_application(
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
                 request_queue_sweep=runtime.request_queue_sweep,
                 tracker_item_source=tracker_item_source,
-                model_registry_inspector=HostProviderModelInspector(
-                    runtime.agent_executor_registry,
-                    settings.codex_subscription,
-                    settings.grok_subscription,
-                    settings.model_inspection_timeout_seconds,
-                    settings.agent_termination_grace_seconds,
-                ),
+                model_registry_discoverer=provider_models,
+                model_registry_validator=provider_models,
                 redeploy_status_reader=filesystem_redeploy_status_reader(
                     redeploy_status_path(settings.database_path)
                 ),

@@ -59,16 +59,17 @@ from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunState
 from atelier2.ports.host_configuration import (
+    ProviderModelDiscoverer,
     ProviderModelDiscoveryResult,
     ProviderModelDiscoveryUnsupported,
-    ProviderModelInspector,
     ProviderModelValidationResult,
+    ProviderModelValidator,
 )
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
-from tests.scenarios.api import ExactConfiguredModelInspector, durable_api_client
+from tests.scenarios.api import durable_api_client
 from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
@@ -266,7 +267,8 @@ def model_configuration_revision_counts(runtime: DbosRuntime) -> tuple[int, int]
 def configured_model_api(
     runtime: DbosRuntime,
     project_root: Path,
-    inspector: ProviderModelInspector | None = None,
+    model_registry_discoverer: ProviderModelDiscoverer | None = None,
+    model_registry_validator: ProviderModelValidator | None = None,
 ) -> tuple[TestClient, str, dict[str, Any]]:
     project = ProjectId("model-configuration-contract")
     publish_project_root_revision(
@@ -275,7 +277,8 @@ def configured_model_api(
     client = durable_api_client(
         runtime,
         served_project_id=project,
-        model_registry_inspector=inspector,
+        model_registry_discoverer=model_registry_discoverer,
+        model_registry_validator=model_registry_validator,
     )
     auth_profile = answered(
         client.post(
@@ -303,7 +306,7 @@ def configured_model_api(
     return client, encode_public_project_reference(project), configuration
 
 
-class FirstUseModelInspector:
+class FirstUseProviderModels:
     def __init__(self, validation: ProviderModelCheck) -> None:
         self.validation = validation
         self.validation_calls = 0
@@ -567,9 +570,12 @@ def test_operator_model_requires_a_server_validation_revision_before_use(
     expected_check: str,
     defaults_status: int,
 ) -> None:
-    inspector = FirstUseModelInspector(validation)
+    provider_models = FirstUseProviderModels(validation)
     client, project_reference, configuration = configured_model_api(
-        runtime, tmp_path, inspector
+        runtime,
+        tmp_path,
+        model_registry_discoverer=provider_models,
+        model_registry_validator=provider_models,
     )
     configuration_hash = configuration["agent_configuration_revision_hash"]
     registry_path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
@@ -640,7 +646,7 @@ def test_operator_model_requires_a_server_validation_revision_before_use(
     )
     assert validated["revision_number"] == 2
     assert validated["entries"][0]["provider_check"] == expected_check
-    assert inspector.validation_calls == 1
+    assert provider_models.validation_calls == 1
     retry = answered(
         client.post(
             registry_path + "/validations",
@@ -649,7 +655,7 @@ def test_operator_model_requires_a_server_validation_revision_before_use(
         200,
     )
     assert retry == validated
-    assert inspector.validation_calls == 1
+    assert provider_models.validation_calls == 1
 
     checked_default = {
         **unchecked_default,
@@ -666,9 +672,7 @@ def test_operator_model_requires_a_server_validation_revision_before_use(
 def test_project_defaults_refuse_invalid_registry_tuples_without_a_write(
     runtime: DbosRuntime, tmp_path: Path, tuple_kind: str
 ) -> None:
-    client, project_reference, configuration = configured_model_api(
-        runtime, tmp_path, ExactConfiguredModelInspector()
-    )
+    client, project_reference, configuration = configured_model_api(runtime, tmp_path)
     entry = {
         "model_id": "opus",
         "agent_configuration_revision_hash": configuration[
@@ -723,9 +727,7 @@ def test_project_defaults_refuse_invalid_registry_tuples_without_a_write(
 def test_a_saved_default_survives_a_registry_append_when_setting_its_sibling(
     runtime: DbosRuntime, tmp_path: Path
 ) -> None:
-    client, project_reference, configuration = configured_model_api(
-        runtime, tmp_path, ExactConfiguredModelInspector()
-    )
+    client, project_reference, configuration = configured_model_api(runtime, tmp_path)
     registry_path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
     first_registry = answered(
         client.put(

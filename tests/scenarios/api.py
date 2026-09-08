@@ -54,10 +54,11 @@ from atelier2.contracts.run_projections import (
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.host_configuration import (
+    ProviderModelDiscoverer,
     ProviderModelDiscovery,
     ProviderModelDiscoveryResult,
-    ProviderModelInspector,
     ProviderModelValidationResult,
+    ProviderModelValidator,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.run_events import (
@@ -139,7 +140,7 @@ class OneRunQueries:
         return RunFound(self._projection)
 
 
-class ExactConfiguredModelInspector:
+class ExactConfiguredProviderModels:
     """The deterministic provider boundary used by API integration scenarios."""
 
     def discover_models(
@@ -189,7 +190,8 @@ def api_ports(**overrides: object) -> ApiPorts:
         "project_source_connector": unused,
         "project_source_credential_store": unused,
         "queue_projection": unused,
-        "model_registry_inspector": ExactConfiguredModelInspector(),
+        "model_registry_discoverer": ExactConfiguredProviderModels(),
+        "model_registry_validator": ExactConfiguredProviderModels(),
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -248,7 +250,8 @@ def durable_ports(
         "project_source_connector": unused,
         "project_source_credential_store": unused,
         "queue_projection": DbosQueueProjectionStore(engine),
-        "model_registry_inspector": ExactConfiguredModelInspector(),
+        "model_registry_discoverer": ExactConfiguredProviderModels(),
+        "model_registry_validator": ExactConfiguredProviderModels(),
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -374,7 +377,8 @@ def durable_asgi_app(
     poll_backoff: EventPollBackoff | None = None,
     served_project_id: ProjectId | None = None,
     tracker_item_source: TrackerItemSource | None = None,
-    model_registry_inspector: ProviderModelInspector | None = None,
+    model_registry_discoverer: ProviderModelDiscoverer | None = None,
+    model_registry_validator: ProviderModelValidator | None = None,
 ) -> FastAPI:
     """The ASGI app in front of one real durable runtime.
 
@@ -382,6 +386,7 @@ def durable_asgi_app(
     needs the app itself so one event loop can drive many requests.
     """
 
+    provider_models = ExactConfiguredProviderModels()
     return create_app(
         source_commit="commit",
         source_tree="tree",
@@ -390,10 +395,15 @@ def durable_asgi_app(
             runtime.settings,
             runtime.agent_executor_registry,
             tracker_item_source=tracker_item_source,
-            model_registry_inspector=(
-                ExactConfiguredModelInspector()
-                if model_registry_inspector is None
-                else model_registry_inspector
+            model_registry_discoverer=(
+                provider_models
+                if model_registry_discoverer is None
+                else model_registry_discoverer
+            ),
+            model_registry_validator=(
+                provider_models
+                if model_registry_validator is None
+                else model_registry_validator
             ),
         ),
         limits=api_limits() if limits is None else limits,
@@ -409,7 +419,8 @@ def durable_api_client(
     limits: ApiLimits | None = None,
     served_project_id: ProjectId | None = None,
     tracker_item_source: TrackerItemSource | None = None,
-    model_registry_inspector: ProviderModelInspector | None = None,
+    model_registry_discoverer: ProviderModelDiscoverer | None = None,
+    model_registry_validator: ProviderModelValidator | None = None,
 ) -> TestClient:
     """The real HTTP boundary in front of one real durable runtime.
 
@@ -424,7 +435,8 @@ def durable_api_client(
             limits,
             served_project_id=served_project_id,
             tracker_item_source=tracker_item_source,
-            model_registry_inspector=model_registry_inspector,
+            model_registry_discoverer=model_registry_discoverer,
+            model_registry_validator=model_registry_validator,
         )
     )
 
