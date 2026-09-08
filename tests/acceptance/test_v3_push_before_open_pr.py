@@ -541,7 +541,7 @@ def _start_public_run(
     )
 
 
-_SCOPED_ITEM = b"Implement P3.\n\n## Dateien\n`one.txt`\n"
+_SCOPED_ITEM = b"Implement P3.\n\n## Bereich\none.txt\n"
 _LANE_BRANCH = head_branch_for_queue_item(WorkItemReference(PROJECT, ITEM).item_id)
 
 
@@ -611,7 +611,7 @@ def test_a_claim_this_run_cannot_hold_ends_the_node_before_any_work(
 ) -> None:
     """A claim this run cannot hold ends it where it stands, and nothing ran.
 
-    The scope is the item's own `## Dateien` and a wide claim is not this
+    The scope is the item's own `## Bereich` and a wide claim is not this
     runtime's to invent; an instance serving without a claim command holds no
     lane at all; and the ledger itself may refuse, or grant a claim over paths
     another lane already holds. Every one of them ends the node under its own

@@ -69,6 +69,7 @@ from atelier2.application.advance_queue import (
     QueueAutomationSourceUnreadable,
     QueueLabelAdmissionOutcome,
     QueueLabelAdmissionsDecided,
+    _queue_label_admission_declined_reason,
     admit_queue_items_by_label,
     advance_queue,
 )
@@ -977,7 +978,7 @@ def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
                 _LOG.info(
                     "The automation label did not admit queue item %s (%s).",
                     decision.item_id.value,
-                    type(decision.outcome).__name__,
+                    _queue_label_admission_declined_reason(decision.outcome),
                     extra={
                         "event": "queue_label_admission_declined",
                         "item_id": decision.item_id.value,

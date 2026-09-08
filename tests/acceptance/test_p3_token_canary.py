@@ -461,7 +461,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                         ObservedWorkItemRevision(
                             ITEM,
                             WorkItemKind.ISSUE,
-                            b"Implement P3.\n\n## Dateien\n`one.txt`\n",
+                            b"Implement P3.\n\n## Bereich\none.txt\n",
                             WorkItemChangeMarker("issue-642-canary"),
                             RecordedAt("2026-08-27T12:00:00Z"),
                         )

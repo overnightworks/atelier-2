@@ -224,7 +224,7 @@ def test_a_started_run_s_work_item_order_reads_back_its_declared_scope(
     observed = ObservedWorkItemRevision(
         TrackerItemReference("gh:9001"),
         WorkItemKind.ISSUE,
-        b"## Dateien\n`src/atelier2/contracts/work_items.py`.",
+        b"## Bereich\nsrc/atelier2/contracts/work_items.py\n",
         WorkItemChangeMarker('W/"scope-1"'),
         RecordedAt("2026-09-06T09:00:00Z"),
     )
@@ -246,9 +246,9 @@ def test_a_started_run_s_work_item_order_reads_back_its_declared_scope(
 def test_a_malformed_declared_scope_refuses_the_start_by_name_not_as_corruption(
     storage: tuple[DbosRuntime, DbosDurableRunStarter],
 ) -> None:
-    """A tracker item's own bad `## Dateien` token is the author's mistake, not a
-    lie the store told: it must refuse the order by name, never surface as the
-    generic `DurableStateCorrupt` a real storage defect would.
+    """A tracker item's own bad `## Bereich` scope-list line is the author's
+    mistake, not a lie the store told: it must refuse the order by name, never
+    surface as the generic `DurableStateCorrupt` a real storage defect would.
     """
 
     runtime, starter = storage
@@ -262,7 +262,7 @@ def test_a_malformed_declared_scope_refuses_the_start_by_name_not_as_corruption(
     observed = ObservedWorkItemRevision(
         TrackerItemReference("gh:9002"),
         WorkItemKind.ISSUE,
-        b"## Dateien\n`../etc/passwd`.",
+        b"## Bereich\n../etc/passwd\n",
         WorkItemChangeMarker('W/"scope-2"'),
         RecordedAt("2026-09-06T09:00:00Z"),
     )

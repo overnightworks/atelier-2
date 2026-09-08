@@ -278,7 +278,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
         item = ObservedWorkItemRevision(
             ITEM,
             WorkItemKind.ISSUE,
-            b"Implement the repository workflow proof.\n\n## Dateien\n`one.txt`\n",
+            b"Implement the repository workflow proof.\n\n## Bereich\none.txt\n",
             WorkItemChangeMarker("issue-883-v1"),
             RecordedAt("2026-08-29T12:00:00Z"),
         )

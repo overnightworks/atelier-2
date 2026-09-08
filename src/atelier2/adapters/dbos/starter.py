@@ -189,7 +189,7 @@ def _order_value_bytes(
     The inline bound bites here rather than at the schema reading below, so
     every route's refusal names the same door. A work item is the one value
     whose *kind* must be declared: it is stored only under the house schema,
-    and a malformed `## Dateien` token in its body refuses the order by name,
+    and a malformed scope-list token in its body refuses the order by name,
     never as corruption.
     """
     match order.value:

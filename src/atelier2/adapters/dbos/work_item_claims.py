@@ -101,7 +101,7 @@ BRANCH_FIELD = "branch"
 REFUSAL_FIELD = "refusal"
 HELD_FIELD = "held"
 WHOLE_SCOPE_REASON = (
-    "der Lauf claimt genau den Scope, den der Item-Body unter `## Dateien` "
+    "der Lauf claimt genau den Scope, den der Item-Body unter `## Bereich` "
     "regelt; der Schnitt ist der des Items"
 )
 """Why the ledger's width check is waived: the scope is the item's own cut."""

@@ -1,10 +1,6 @@
 """The queue sweep: admit what the project's automation label names, then start.
 
-Both halves run on the same trigger and read the same projection, so they live
-together: `admit_queue_items_by_label` turns the operator's label in the
-tracker into the proposal the project's policy defaults name and the one
-durable admission decision an automation rule may make, and `advance_queue`
-starts each exact launch of an admitted item once. The cap and the priority
+Both halves share one trigger and one projection. The cap and the priority
 govern the start, never the admission.
 """
 
@@ -43,6 +39,7 @@ from atelier2.application.start_published_run import (
     start_published_run,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.definition_sources import MAXIMUM_REPOSITORY_PATH_CHARACTERS
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
@@ -78,7 +75,11 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_REVISION
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    WorkItemScope,
+    WorkItemScopeMalformed,
+)
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import AnyWorkflowDocument
 from atelier2.ports.durable_runs import (
@@ -88,8 +89,10 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.issue_observation import (
     TrackerItemSource,
+    TrackerItemUnknown,
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
@@ -117,9 +120,7 @@ from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 _LOG = logging.getLogger("atelier2")
 
 _QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
-# The durable reason an automatic admission records, followed by the label that
-# authorized it: the record says which rule admitted the item, not merely that
-# some rule did.
+# Durable reason, then the label that authorized it.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
 
@@ -206,11 +207,40 @@ class QueueAutomationSourceUnreadable:
 
 
 @dataclass(frozen=True)
+class QueueLabelAdmissionScopeMissing:
+    """The labelled item's body names no scope list, so the rule does not admit it."""
+
+
+@dataclass(frozen=True)
+class QueueLabelAdmissionScopeMalformed:
+    """A scope-list line is not a relative path, so the rule does not admit the item."""
+
+    token: str
+
+
+def _queue_label_admission_declined_reason(outcome: object) -> str:
+    name = type(outcome).__name__
+    if not isinstance(outcome, QueueLabelAdmissionScopeMalformed):
+        return name
+    return f"{name}: {' '.join(outcome.token.split())[:MAXIMUM_REPOSITORY_PATH_CHARACTERS]}"
+
+
+@dataclass(frozen=True)
+class QueueLabelAdmissionTrackerItemUnknown:
+    """The tracker does not know this labelled item, so the rule does not admit it."""
+
+
+@dataclass(frozen=True)
 class QueueLabelAdmissionDeclined:
     """One labelled item the projection did not newly admit, in its own words."""
 
     item_id: QueueItemId
-    outcome: QueueAdmissionOutcome
+    outcome: (
+        QueueAdmissionOutcome
+        | QueueLabelAdmissionScopeMissing
+        | QueueLabelAdmissionScopeMalformed
+        | QueueLabelAdmissionTrackerItemUnknown
+    )
 
 
 @dataclass(frozen=True)
@@ -242,25 +272,14 @@ def admit_queue_items_by_label(
 ) -> QueueLabelAdmissionOutcome:
     """Admit every item the project's automation label names, and no other.
 
-    The label is the operator's own signal in the tracker (REQ-QUEUE-08): a
-    human writes it there, the atelier never does, and this rule only decides
-    whether an admission has an authority. It is read at the instant the rule
-    decides, so an item whose label was removed before the sweep is not
-    admitted by it.
+    The label is the operator's own signal in the tracker (REQ-QUEUE-08). It is
+    read at the instant the rule decides, so an item whose label was removed
+    before the sweep is not admitted by it.
 
-    What the rule may admit is the projection's decision, not this function's:
-    every labelled item goes through the same `confirm` CAS the operator's
-    door uses, under `AUTOMATION_RULE`. An item reserved for a human and one
-    already admitted are therefore declined by the contract itself and left
-    exactly as they were. Admission is not a start: the cap and the priority
-    still govern what `advance_queue` starts afterwards.
-
-    A labelled item that carries no proposal is proposed first when the policy
-    states its defaults, so the label alone is the operator's whole handgrip
-    and what it writes is still only a proposal (REQ-QUEUE-01); without them
-    the item stays observed and the admission says so, exactly as before.
+    What the rule may admit is the projection's `confirm` CAS under
+    `AUTOMATION_RULE`. A missing, malformed, or unknown scope is declined
+    and left as it was. Snapshots are read before any mutation.
     """
-
     policy = active_policy(queue, project)
     if policy is None or policy.automation_label is None:
         return QueueAutomationLabelUnset()
@@ -268,15 +287,35 @@ def admit_queue_items_by_label(
     listing = open_tracker_items(tracker, project, label)
     if isinstance(listing, TrackerSourceUnavailable | TrackerPayloadMalformed):
         return QueueAutomationSourceUnreadable(listing.detail)
+    return _admit_labelled(queue, tracker, policy, label, listing.labelled, page_limit)
+
+
+def _admit_labelled(
+    queue: QueueProjection,
+    tracker: TrackerItemSource,
+    policy: QueueProjectPolicyRevision,
+    label: str,
+    labelled: frozenset[QueueItemId],
+    page_limit: int,
+) -> QueueLabelAdmissionsDecided | QueueAutomationSourceUnreadable:
+    items = tuple(
+        item
+        for item in projected_items(queue, page_limit)
+        if item.retired_at is None and item.item_reference.item_id in labelled
+    )
+    scopes: list[WorkItemScope | QueueLabelAdmissionDeclined] = []
+    for item in items:
+        scope = _work_item_scope(tracker, item)
+        if isinstance(scope, QueueAutomationSourceUnreadable):
+            return scope
+        scopes.append(scope)
     rationale = QueueAdmissionRationale(_AUTOMATION_ADMISSION_REASON + label)
     admitted: list[QueueItemId] = []
     declined: list[QueueLabelAdmissionDeclined] = []
-    for item in projected_items(queue, page_limit):
+    for item, scope in zip(items, scopes, strict=True):
         item_id = item.item_reference.item_id
-        # A retired item has left the pullable set (ADR 0016, 2026-09-01
-        # amendment); admitting one would write a decision the sweep then
-        # refuses to act on.
-        if item.retired_at is not None or item_id not in listing.labelled:
+        if isinstance(scope, QueueLabelAdmissionDeclined):
+            declined.append(scope)
             continue
         expected_revision = _proposed_from_policy_defaults(queue, item, policy)
         outcome = _confirmed_by_rule(queue, item, expected_revision, rationale)
@@ -285,6 +324,33 @@ def admit_queue_items_by_label(
         else:
             declined.append(QueueLabelAdmissionDeclined(item_id, outcome))
     return QueueLabelAdmissionsDecided(tuple(admitted), tuple(declined))
+
+
+def _work_item_scope(
+    tracker: TrackerItemSource, item: QueueItemSnapshot
+) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
+    item_id = item.item_reference.item_id
+    match tracker.snapshot(item.item_reference.tracker_item):
+        case WorkItemRevisionObserved(revision):
+            try:
+                scope = WorkItemScope.from_body(revision.body)
+            except WorkItemScopeMalformed as malformed:
+                return QueueLabelAdmissionDeclined(
+                    item_id, QueueLabelAdmissionScopeMalformed(malformed.token)
+                )
+            if not scope.paths:
+                return QueueLabelAdmissionDeclined(
+                    item_id, QueueLabelAdmissionScopeMissing()
+                )
+            return scope
+        case TrackerItemUnknown():
+            return QueueLabelAdmissionDeclined(
+                item_id, QueueLabelAdmissionTrackerItemUnknown()
+            )
+        case TrackerSourceUnavailable(detail) | TrackerPayloadMalformed(detail):
+            return QueueAutomationSourceUnreadable(detail)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _proposed_from_policy_defaults(

@@ -120,13 +120,15 @@ class ObservedWorkItemRevision:
         object.__setattr__(self, "digest", Sha256Hash.of(self.body))
 
 
-_FILES_SECTION_HEADING = "## Dateien"
-_BACKTICK_TOKEN = re.compile(r"`([^`]+)`")
-_GLOB_CHARACTERS = frozenset("*?[]")
+_SCOPE_SECTION_HEADING = "## Bereich"
+# One path component of a naked repository-relative path: letters, digits, `.`,
+# `_`, `-`, so Markdown wrapping, list markers, commas, and prose punctuation
+# cannot pass as a path.
+_SCOPE_COMPONENT = re.compile(r"\A[A-Za-z0-9._][A-Za-z0-9._-]*\Z")
 
 
 class WorkItemScopeMalformed(ValueError):
-    """A `## Dateien` token that is not a repository-relative path."""
+    """A scope-list line that is not a repository-relative path."""
 
     def __init__(self, token: str) -> None:
         super().__init__(f"work item scope token {token!r} is not a relative path")
@@ -135,25 +137,35 @@ class WorkItemScopeMalformed(ValueError):
 
 def _canonical_scope_path(token: str) -> str:
     normalized = token.rstrip("/")
-    if (
-        not normalized
-        or normalized.startswith("/")
-        or any(character.isspace() for character in token)
-        or any(character in _GLOB_CHARACTERS for character in token)
-        or ".." in normalized.split("/")
-    ):
+    if not normalized or normalized.startswith("/"):
         raise WorkItemScopeMalformed(token)
+    for part in normalized.split("/"):
+        if (
+            part in {"", ".", ".."}
+            or part.endswith(".")
+            or _SCOPE_COMPONENT.fullmatch(part) is None
+        ):
+            raise WorkItemScopeMalformed(token)
     return normalized
 
 
-def _files_section(body_text: str) -> str | None:
+def _is_code_fence(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(("```", "~~~"))
+
+
+def _scope_section(body_text: str) -> str | None:
     lines = body_text.splitlines()
+    in_fence = False
     for index, line in enumerate(lines):
-        if line.strip() != _FILES_SECTION_HEADING:
+        if _is_code_fence(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or line.strip() != _SCOPE_SECTION_HEADING:
             continue
         section_lines: list[str] = []
         for later_line in lines[index + 1 :]:
-            if later_line.startswith("## "):
+            if _is_code_fence(later_line) or later_line.startswith("## "):
                 break
             section_lines.append(later_line)
         return "\n".join(section_lines)
@@ -162,7 +174,7 @@ def _files_section(body_text: str) -> str | None:
 
 @dataclass(frozen=True)
 class WorkItemScope:
-    """The repository-relative paths one work item body names under `## Dateien`.
+    """The repository-relative paths one work item body names under `## Bereich`.
 
     Canonically sorted and duplicate-free, so two reads of the same section
     always compare equal and a later owner (a claim, a push fence) can trust
@@ -184,15 +196,18 @@ class WorkItemScope:
     def from_body(cls, body: bytes) -> WorkItemScope:
         """The scope one work item body declares, read exactly once.
 
-        Prose outside the backtick tokens of `## Dateien` is ignored; a token
-        that is not a relative path is a named error, not a silent exclusion.
-        No `## Dateien` section, or one without a token, is a valid empty scope.
+        Each non-empty line under `## Bereich` is one naked repository-relative
+        path; a line that is not such a path is a named error, not a silent
+        exclusion. The section ends at the next `## ` heading or a code fence.
+        No `## Bereich` section, or one without a path, is a valid empty scope.
+        A heading inside a fence is not a section. Prose elsewhere, including
+        under `## Dateien`, is not read.
         """
 
-        section = _files_section(body.decode("utf-8"))
+        section = _scope_section(body.decode("utf-8"))
         if section is None:
             return cls(())
-        tokens = _BACKTICK_TOKEN.findall(section)
+        tokens = [line.strip() for line in section.splitlines() if line.strip()]
         return cls(tuple(sorted({_canonical_scope_path(token) for token in tokens})))
 
 
