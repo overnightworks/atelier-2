@@ -99,12 +99,12 @@ _AUTHORED_BY_THE_SCENARIO = {
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Iterator[Path]:
+def database(tmp_path: Path) -> Path:
     path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(path)
     initialize_schema(engine)
     engine.dispose()
-    yield path
+    return path
 
 
 @pytest.fixture

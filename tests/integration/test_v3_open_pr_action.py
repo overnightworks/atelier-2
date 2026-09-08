@@ -481,7 +481,7 @@ def test_forked_action_references_the_confirmed_pull_request_without_replaying_i
     wait_for_state(started_runtime, RunState.COMPLETED, successor)
 
     assert len(github.recorded_pull_requests()) == 1
-    assert (github.readback_calls, github.execute_calls) == calls_before_fork
+    assert calls_before_fork == (github.readback_calls, github.execute_calls)
     with started_runtime.engine.connect() as connection:
         successor_receipt = (
             connection.execute(
@@ -534,7 +534,7 @@ def test_fork_reuses_a_successfully_confirmed_action_before_the_target(
         "publish",
     )
     wait_for_state(started_runtime, RunState.COMPLETED, forked.run.run_id)
-    assert (github.readback_calls, github.execute_calls) == calls_before_fork
+    assert calls_before_fork == (github.readback_calls, github.execute_calls)
     assert len(github.recorded_pull_requests()) == 1
 
 
@@ -577,7 +577,7 @@ def test_action_fork_with_changed_request_waits_without_invoking_the_adapter(
     assert isinstance(forked, DurableRunForkCreated)
     wait_for_state(started_runtime, RunState.WAITING_RECONCILIATION, forked.run.run_id)
 
-    assert (github.readback_calls, github.execute_calls) == calls_before_fork
+    assert calls_before_fork == (github.readback_calls, github.execute_calls)
     assert len(github.recorded_pull_requests()) == 1
 
 
@@ -719,7 +719,7 @@ def test_missing_confirmed_action_receipt_refuses_the_fork_before_any_side_effec
     refused = starter.fork_run(ForkRunRequest(RUN, "missing-action-receipt", "publish"))
 
     assert isinstance(refused, DurableRunForkStateCorrupt)
-    assert (github.readback_calls, github.execute_calls) == calls_before_fork
+    assert calls_before_fork == (github.readback_calls, github.execute_calls)
     with started_runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(run_forks)) == 0
 
@@ -904,7 +904,7 @@ def test_a_project_open_pr_action_refuses_without_a_confirmed_push_receipt(
                 ProjectId("project-without-a-push"),
             )
 
-    assert (github.readback_calls, github.execute_calls) == calls_before_retry
+    assert calls_before_retry == (github.readback_calls, github.execute_calls)
 
 
 @pytest.mark.parametrize(
@@ -980,7 +980,7 @@ def test_a_project_open_pr_action_refuses_a_corrupt_confirmed_push_receipt(
                 ProjectId("project-with-a-corrupt-push"),
             )
 
-    assert (github.readback_calls, github.execute_calls) == calls_before_retry
+    assert calls_before_retry == (github.readback_calls, github.execute_calls)
 
 
 def durable_bytes_contain(database: Path, token: str) -> bool:

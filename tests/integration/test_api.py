@@ -1813,8 +1813,9 @@ def test_http_reconciliation_preserves_accountable_binding_without_adapter_ident
         body["evidence"],
         "PENDING",
     )
-    assert (command["found_effect_id"], command["found_result"]) == (
-        ("effect-http", b"result-http") if found else (None, None)
+    assert (("effect-http", b"result-http") if found else (None, None)) == (
+        command["found_effect_id"],
+        command["found_result"],
     )
     encoded = str(accepted.json())
     assert "adapter" not in encoded
