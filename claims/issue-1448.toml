@@ -1,8 +1,0 @@
-claim_id = "04606834c9da4249908ddc8f4a9b3573"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "66c10dedd719a6f240b4c46d10f6be9ca69405c2"
-branch = "claude/issue-1448-api-async"
-scope = ["src/atelier2/api/_support.py", "src/atelier2/api/app.py", "src/atelier2/api/context.py", "src/atelier2/api/stream.py", "sonar-project.properties"]
-opened_commit = "50798a02fb0f250a9989ce6ff1edd69c03816fae"
-whole_reason = "vier API-Dateien und die Datei, die eine gemessene Ausnahme versioniert"
