@@ -100,6 +100,7 @@ def _standing_claim(
     whole: str | None = None,
     resource: str | None = None,
     resource_value: int | None = None,
+    state: str = "CLAIMED",
 ) -> dict[str, object]:
     return {
         "issue": item,
@@ -114,7 +115,7 @@ def _standing_claim(
         "resource_value": resource_value,
         "whole": whole,
         "overlaps": [] if overlaps is None else overlaps,
-        "state": "CLAIMED",
+        "state": state,
         "age": "0m",
         "old": False,
     }
@@ -127,6 +128,7 @@ def _status_payload(
     whole: str | None = None,
     resource: str | None = None,
     resource_value: int | None = None,
+    state: str = "CLAIMED",
 ) -> bytes:
     standing = (
         [
@@ -135,6 +137,7 @@ def _status_payload(
                 whole=whole,
                 resource=resource,
                 resource_value=resource_value,
+                state=state,
             )
         ]
         if claims is None
@@ -143,7 +146,7 @@ def _status_payload(
     return json.dumps(
         {
             "issue": None,
-            "state": "CLAIMED",
+            "state": state,
             "claims": standing,
         }
     ).encode()
@@ -177,6 +180,28 @@ JSON_ERROR_SENTENCE = (
 
 def _ok_false_payload(sentence: str = JSON_ERROR_SENTENCE) -> bytes:
     return json.dumps({"ok": False, "error": sentence}).encode()
+
+
+PRIORITY_CHECK_TEXT = (
+    "higher-priority actionable item #42 (score 7) is "
+    "free: fix the flake; use --out-of-order REASON to proceed"
+)
+CONTAINER_CHECK_TEXT = f"#{ITEM} is a container; claim a child"
+STDERR_ERROR_SENTENCE = "claim branch 'x' does not match checkout branch 'main'"
+
+
+def _error_check(name: str, text: str, *, issue: int | None = 42) -> dict[str, object]:
+    return {
+        "level": "error",
+        "check": name,
+        "text": text,
+        "slice": None,
+        "issue": issue,
+    }
+
+
+def _refused_claim_payload(*checks: object) -> bytes:
+    return json.dumps({"refused": True, "issue": ITEM, "checks": list(checks)}).encode()
 
 
 @pytest.fixture
@@ -402,33 +427,12 @@ def test_adapter_refuses_release_output_outside_the_pinned_json_contract(
 
 def test_adapter_maps_a_priority_refusal(recorded_process: RecordedProcess) -> None:
     recorded_process.outputs.append(
-        json.dumps(
-            {
-                "refused": True,
-                "issue": ITEM,
-                "checks": [
-                    {
-                        "level": "error",
-                        "check": "out-of-order",
-                        "text": (
-                            "higher-priority actionable item #42 (score 7) is "
-                            "free: fix the flake; use --out-of-order REASON to proceed"
-                        ),
-                        "slice": None,
-                        "issue": 42,
-                    }
-                ],
-            }
-        ).encode()
+        _refused_claim_payload(_error_check("out-of-order", PRIORITY_CHECK_TEXT))
     )
 
     assert _adapter().claim(
         ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
-    ) == ClaimRefusal(
-        ClaimRefusalReason.PRIORITY,
-        "higher-priority actionable item #42 (score 7) is free: fix the flake; "
-        "use --out-of-order REASON to proceed",
-    )
+    ) == ClaimRefusal(ClaimRefusalReason.PRIORITY, PRIORITY_CHECK_TEXT)
 
 
 @pytest.mark.parametrize(
@@ -495,6 +499,84 @@ def test_a_nonzero_exit_without_json_keeps_the_stderr_sentence(
         ClaimRefusalReason.UNKNOWN,
         "claim branch 'x' does not match checkout branch 'main'",
     )
+
+
+def test_a_nonzero_collection_refusal_carries_the_error_sentence(
+    recorded_process: RecordedProcess,
+) -> None:
+    """Exit 2 with `{"ok": false, "error": "<sentence>"}` is that sentence.
+
+    The collection point prints this object and the same sentence under
+    `ERROR:` on stderr. The stdout object is the refusal; a success-payload
+    field check must not run first.
+    """
+
+    recorded_process.outputs.append(_ok_false_payload())
+    recorded_process.return_codes.append(2)
+
+    assert _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, JSON_ERROR_SENTENCE)
+
+
+def test_a_nonzero_claim_refusal_uses_the_first_error_check(
+    recorded_process: RecordedProcess,
+) -> None:
+    """Exit 2 with `{refused: true, issue, checks}` is the claim-refusal path.
+
+    That object has no `ok` and no `error`. The detail is the first
+    error-level check's text; an out-of-order check anywhere in the array
+    is the priority reason. Treating the object as a collection-point
+    refusal or as unparseable would drop both.
+    """
+
+    recorded_process.outputs.append(
+        _refused_claim_payload(
+            _error_check("container", CONTAINER_CHECK_TEXT, issue=ITEM),
+            _error_check("out-of-order", PRIORITY_CHECK_TEXT),
+        )
+    )
+    recorded_process.return_codes.append(2)
+
+    assert _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+    ) == ClaimRefusal(ClaimRefusalReason.PRIORITY, CONTAINER_CHECK_TEXT)
+
+
+def test_a_nonzero_status_conflict_is_still_read_back(
+    recorded_process: RecordedProcess,
+) -> None:
+    """Exit 2 with the ordinary status object is still status, never a refusal.
+
+    `status --json` prints the same claim list on conflict and exits 2.
+    A claim in that payload must still be read back.
+    """
+
+    recorded_process.outputs.append(_status_payload(state="CONFLICT"))
+    recorded_process.return_codes.append(2)
+
+    assert _adapter().read_back(ITEM, CLAIM_ID, CHECKOUT) == ClaimReceipt(
+        ITEM,
+        CLAIM_ID,
+        AGENT,
+        BRANCH,
+        SCOPE,
+        (),
+    )
+
+
+def test_a_nonzero_unparseable_exit_keeps_the_stderr_error_line(
+    recorded_process: RecordedProcess,
+) -> None:
+    """Exit 2 whose stdout is not a JSON object is the last `ERROR:` line."""
+
+    recorded_process.outputs.append(b"not json")
+    recorded_process.return_codes.append(2)
+    recorded_process.errors.append(f"ERROR: {STDERR_ERROR_SENTENCE}\n".encode())
+
+    assert _adapter().claim(
+        ITEM, RUN_ID, BRANCH, SCOPE, CLAIM_ID, REASONS, CHECKOUT
+    ) == ClaimRefusal(ClaimRefusalReason.UNKNOWN, STDERR_ERROR_SENTENCE)
 
 
 def test_a_checkout_precondition_the_tool_refuses_names_its_sentence(
