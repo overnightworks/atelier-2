@@ -91,6 +91,7 @@ from atelier2.ports.work_item_claims import (
     ClaimReceipt,
     ClaimRefusal,
     ClaimRefusalReason,
+    ClaimTouch,
     WorkItemClaims,
     _bounded_detail,
 )
@@ -165,11 +166,12 @@ class WorkItemClaimHeld:
 class WorkItemClaimRefused:
     """This node ends here, and `confirmed` is the claim that was still taken.
 
-    `detail` is the ledger's own sentence for the refusal, empty where the
-    refusal is this runtime's judgement rather than the ledger's word. A claim
-    the ledger granted over paths another lane already holds is a fact that
-    happened: it is recorded as this effect's receipt, and the node ends
-    afterwards. Releasing it belongs to the run's own completion.
+    `detail` is the sentence that names why: the ledger's own word, or this
+    runtime's sentence from the granted claim's touches, and empty where
+    neither said more. A claim the ledger granted over paths another lane
+    already holds is a fact that happened: it is recorded as this effect's
+    receipt, and the node ends afterwards. Releasing it belongs to the run's
+    own completion.
     """
 
     reason: AgentExecutionRefusal
@@ -325,9 +327,59 @@ def hold_prepared_claim(
     if held.touches:
         return WorkItemClaimRefused(
             AgentExecutionRefusal.WORK_ITEM_CLAIM_TOUCHES_ANOTHER_LANE,
+            _bounded_detail(_touching_lane_detail(held)),
             confirmed=confirmed,
         )
     return WorkItemClaimHeld(confirmed)
+
+
+def _touching_lane_detail(held: ClaimReceipt) -> str:
+    """Name each touching lane by the paths that actually collide with this claim.
+
+    The foreign scope is an inventory; the operator needs the intersection.
+    """
+
+    return "; ".join(
+        _touch_clause(held.claimed_scope, touch)
+        for touch in _ordered_touches(held.touches)
+    )
+
+
+def _ordered_touches(touches: tuple[ClaimTouch, ...]) -> tuple[ClaimTouch, ...]:
+    return tuple(
+        sorted(
+            touches,
+            key=lambda touch: (
+                touch.item is None,
+                touch.item if touch.item is not None else 0,
+                touch.claim_id,
+            ),
+        )
+    )
+
+
+def _touch_clause(claimed_scope: tuple[PurePosixPath, ...], touch: ClaimTouch) -> str:
+    lane = f"item {touch.item}" if touch.item is not None else touch.agent
+    paths = _colliding_paths(claimed_scope, touch.scope)
+    if not paths:
+        return lane
+    return f"{lane} on {paths}"
+
+
+def _colliding_paths(
+    claimed_scope: tuple[PurePosixPath, ...],
+    foreign_scope: tuple[PurePosixPath, ...],
+) -> str:
+    colliding: list[str] = []
+    for ours in claimed_scope:
+        for theirs in foreign_scope:
+            if ours == theirs or ours.is_relative_to(theirs):
+                colliding.append(ours.as_posix())
+            elif theirs.is_relative_to(ours):
+                colliding.append(theirs.as_posix())
+    if not colliding:
+        colliding = [path.as_posix() for path in foreign_scope]
+    return ", ".join(sorted(dict.fromkeys(colliding)))
 
 
 def confirm_work_item_claim(
