@@ -216,6 +216,9 @@ class _CheckoutsWhoseCloseFails:
     def __init__(self) -> None:
         self.attempts = 0
 
+    def open(self, run_id: RunId, branch: HeadBranch, pin: object) -> Path:
+        raise AssertionError("a failing close is proven without opening a checkout")
+
     def close(self, run_id: RunId) -> None:
         self.attempts += 1
         raise ClaimCheckoutUnavailable("the claim checkout could not be removed")
