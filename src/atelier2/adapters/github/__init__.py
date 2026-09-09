@@ -16,6 +16,7 @@ from atelier2.adapters.github.composition import (
     GitHubConnectionUncomposable,
     live_github_effect_adapter_factory,
     live_github_effect_registry,
+    live_github_head_branch_pull_requests,
     live_github_issue_source,
 )
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
@@ -25,6 +26,7 @@ from atelier2.adapters.github.live_effects import (
     GitHubTokenCredential,
     GitHubUnexpectedResponse,
     LiveGitHubEffectAdapterFactory,
+    LiveGitHubHeadBranchPullRequests,
 )
 from atelier2.adapters.github.observation import LiveGitHubIssueSource
 
@@ -37,8 +39,10 @@ __all__ = (
     "GitHubTokenCredential",
     "GitHubUnexpectedResponse",
     "LiveGitHubEffectAdapterFactory",
+    "LiveGitHubHeadBranchPullRequests",
     "LiveGitHubIssueSource",
     "live_github_effect_adapter_factory",
     "live_github_effect_registry",
+    "live_github_head_branch_pull_requests",
     "live_github_issue_source",
 )

@@ -63,6 +63,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.github import (
     live_github_effect_registry,
+    live_github_head_branch_pull_requests,
     live_github_issue_source,
 )
 from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
@@ -148,11 +149,16 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     WorkspaceFileTools,
 )
-from atelier2.ports.effects import EffectAdapterFactory, EffectAdapterRegistry
+from atelier2.ports.effects import (
+    EffectAdapterFactory,
+    EffectAdapterRegistry,
+    HeadBranchPullRequests,
+)
 from atelier2.ports.host_configuration import (
     ProviderModelInspectionUnavailable,
     ProviderModelValidationResult,
 )
+from atelier2.ports.issue_observation import TrackerItemSource
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -879,6 +885,30 @@ def _project_source_connection(
         engine.dispose()
 
 
+def _tracker_item_source(
+    connection: ProjectSourceConnectionRevision | None,
+) -> TrackerItemSource | None:
+    """The tracker this instance observes its work items in, where one is connected."""
+
+    return None if connection is None else live_github_issue_source(connection)
+
+
+def _head_branch_pull_requests(
+    connection: ProjectSourceConnectionRevision | None,
+) -> HeadBranchPullRequests | None:
+    """Who answers which branch still carries an open review, where one is connected.
+
+    The sweep resolves an ended run's claim against this: a branch still under
+    review keeps its lane's paths held.
+    """
+
+    return (
+        None
+        if connection is None
+        else live_github_head_branch_pull_requests(connection)
+    )
+
+
 def _effect_adapters(
     settings: HostSettings, connection: ProjectSourceConnectionRevision | None
 ) -> EffectAdapterFactory | EffectAdapterRegistry:
@@ -996,18 +1026,16 @@ def compose_application(
     """
     subscription_executors = _subscription_executor_registrations(settings)
     # Read once: the same connection record composes the effect adapter, the
-    # queue sweep's own work-item reads, and the import door's tracker source.
+    # queue sweep's own work-item reads, the import door's tracker source, and
+    # the review state an ended run's claim is resolved against.
     source_connection = _project_source_connection(settings)
-    tracker_item_source = (
-        None
-        if source_connection is None
-        else live_github_issue_source(source_connection)
-    )
+    tracker_item_source = _tracker_item_source(source_connection)
     runtime = DbosRuntime(
         settings.runtime_settings(),
         _effect_adapters(settings, source_connection),
         subscription_executors,
         tracker_item_source=tracker_item_source,
+        head_branch_pull_requests=_head_branch_pull_requests(source_connection),
     )
     try:
         if source_connection is not None:
