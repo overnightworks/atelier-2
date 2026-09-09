@@ -522,12 +522,8 @@ qualified_name = "atelier2.host.provider_canary._run_provider_canaries"
 lines = 74
 
 [[function]]
-qualified_name = "atelier2.host.serving.HostProviderModelInspector.validate_model"
+qualified_name = "atelier2.host.serving.HostProviderModelValidator.validate_model"
 lines = 93
-
-[[function]]
-qualified_name = "atelier2.host.serving._discover_codex_models"
-lines = 64
 
 [[function]]
 qualified_name = "atelier2.host.serving._subscription_executor_registrations"
