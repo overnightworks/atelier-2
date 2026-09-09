@@ -42,6 +42,7 @@ class FakeWorkItemClaims:
     release_answer: ClaimRefusal | None = None
     claim_requests: list[ClaimRequest] = field(default_factory=list)
     read_back_requests: list[tuple[int, str, Path]] = field(default_factory=list)
+    standing_claims_reads: int = 0
     release_requests: list[tuple[int, RunId, str, ClaimReleaseOutcome]] = field(
         default_factory=list
     )
@@ -68,6 +69,7 @@ class FakeWorkItemClaims:
         return self.read_back_answer
 
     def standing_claims(self) -> tuple[ClaimTouch, ...] | ClaimRefusal:
+        self.standing_claims_reads += 1
         return self.standing_claims_answer
 
     def release(
