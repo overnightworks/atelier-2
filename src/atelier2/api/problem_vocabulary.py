@@ -624,6 +624,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Queue admission requires a proposal",
         "Propose the queue item before confirming its admission.",
     ),
+    "queue-policy-not-set": ProblemDefinition(
+        404,
+        "Queue project policy not found",
+        "Publish the project's queue policy with expected_revision 0.",
+    ),
     "queue-policy-revision-conflict": ProblemDefinition(
         409,
         "Queue policy revision conflict",

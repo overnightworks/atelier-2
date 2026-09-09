@@ -2,9 +2,11 @@
 
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
 read the queue through one typed `GET /queue-items` projection across observed,
-proposed, and admitted rows; revise a project's queue capacity policy with a
-CAS-guarded `PUT /projects/{public_project_reference}/queue-policy`; write the
-priority, workflow lineage, and prerequisites the operator will inspect through
+proposed, and admitted rows; read a project's queue capacity policy, every
+field and its current revision, through
+`GET /projects/{public_project_reference}/queue-policy`, and revise it with a
+CAS-guarded `PUT` on that same path; write the priority, workflow lineage, and
+prerequisites the operator will inspect through
 `PUT /queue-proposals`; and confirm exactly that proposal through
 `POST /queue-admissions`. The policy revision also carries the project's
 `automation_label`: with one named, the sweep confirms every inspected

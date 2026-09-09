@@ -297,6 +297,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         PROJECT_QUEUE_POLICY_PATH,
         "put_queue_project_policy_route",
     ),
+    (
+        "GET",
+        PROJECT_QUEUE_POLICY_PATH,
+        "get_queue_project_policy_route",
+    ),
     ("PUT", QUEUE_PROPOSALS_PATH, "put_queue_proposal_route"),
     ("POST", QUEUE_ADMISSIONS_PATH, "confirm_queue_proposal_route"),
     ("GET", QUEUE_ITEMS_PATH, "list_queue_items_route"),

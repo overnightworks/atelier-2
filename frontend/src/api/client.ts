@@ -1338,6 +1338,10 @@ export const problemDefinitions = {
     status: 409,
     title: "Queue admission requires a proposal",
   },
+  "queue-policy-not-set": {
+    status: 404,
+    title: "Queue project policy not found",
+  },
   "queue-policy-revision-conflict": {
     status: 409,
     title: "Queue policy revision conflict",
@@ -1872,6 +1876,10 @@ const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "queue-admission-proposal-required",
     problemDefinitions["queue-admission-proposal-required"],
+  ),
+  problemVariant(
+    "queue-policy-not-set",
+    problemDefinitions["queue-policy-not-set"],
   ),
   problemVariant(
     "queue-policy-revision-conflict",
