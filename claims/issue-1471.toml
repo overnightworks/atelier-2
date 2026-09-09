@@ -1,8 +1,0 @@
-claim_id = "e0cd95d41ddc43a09601432fc4cbd682"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
-branch = "claude/issue-1471-derived-coverage"
-scope = ["scripts/check_architecture.py", "tests/scripts"]
-opened_commit = "69c2a84e7a09338c2c9970f423e8ee59d735a150"
-whole_reason = "Der Check und der Test, der ihn haelt, sind eine Bewegung."
