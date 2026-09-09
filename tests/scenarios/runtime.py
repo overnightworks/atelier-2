@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
+from typing import Final
 
 import pytest
 
@@ -16,6 +18,14 @@ from tests.scenarios.runs import (
     V3_OPERATIONAL_IDENTITY,
     V3_PROVIDER,
 )
+
+SWEEP_PATIENCE_SECONDS: Final = 5.0
+"""How long a test waits for an asked-for queue sweep tick to run.
+
+Generous rather than tuned: a caller here already replaced or wrapped the
+sweep's own work to signal on its own completion, so what this bounds is a
+thread hand-off, not the tick's real work.
+"""
 
 
 def recording_exact_runtime(
@@ -61,3 +71,18 @@ def binding_refusal_of(
         return refusal
     runtime.close()
     pytest.fail("opening this runtime was expected to be refused")
+
+
+def wait_for_sweep(runtime: DbosRuntime, swept: threading.Event) -> None:
+    """Ask the runtime for a sweep now, and block until that tick has run.
+
+    The caller owns what `swept` means: a lifecycle probe replaces the sweep
+    entirely and signals on the replacement alone, while a behavioural proof
+    wraps the real sweep and signals only once it returns. Either way this is
+    the shared half -- asking, then waiting the same bounded patience for the
+    same thread hand-off, loud when it never arrives.
+    """
+
+    swept.clear()
+    runtime.request_queue_sweep()
+    assert swept.wait(SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"

@@ -1036,19 +1036,19 @@ def _log_project_source_import(outcome: ImportProjectSourceIssuesOutcome) -> Non
         case SourcePayloadMalformed(detail):
             _log_project_source_import_refused(
                 "project_source_import_payload_malformed",
-                "The tracker import could not read the tracker's payload (%s).",
+                "The tracker import could not read the tracker's payload%s.",
                 detail,
             )
         case ReadUnavailable(detail):
             _log_project_source_import_refused(
                 "project_source_import_read_unavailable",
-                "The tracker import could not read the tracker (%s).",
+                "The tracker import could not read the tracker%s.",
                 detail,
             )
         case WriteUnavailable(detail):
             _log_project_source_import_refused(
                 "project_source_import_write_unavailable",
-                "The tracker import could not write the observed items (%s); "
+                "The tracker import could not write the observed items%s; "
                 "the next tick asks again.",
                 detail,
             )
@@ -1096,9 +1096,15 @@ def _log_project_source_import_swept(imported: ProjectSourceIssuesImported) -> N
 def _log_project_source_import_refused(
     event: str, message: str, detail: str | None
 ) -> None:
-    """One warning line for an import refusal that leaves the queue as it was."""
+    """One warning line for an import refusal that leaves the queue as it was.
 
-    _LOG.warning(message, detail, extra={"event": event, "detail": detail})
+    `detail` is optional at its source -- a store's own refusal names none --
+    so `message` carries exactly one `%s` for the reason clause, filled with
+    an empty string rather than the literal word "None" when there is none.
+    """
+
+    reason = "" if detail is None else f" ({detail})"
+    _LOG.warning(message, reason, extra={"event": event, "detail": detail})
 
 
 def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:

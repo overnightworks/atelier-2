@@ -173,9 +173,9 @@ from tests.scenarios.catalog_lineages import (
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
+from tests.scenarios.runtime import wait_for_sweep
 
 PROJECT = ProjectId("project1")
-_QUEUE_SWEEP_PATIENCE_SECONDS = 5.0
 FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
 SECOND_READ = RecordedAt("2026-09-02T09:00:00Z")
 THIRD_READ = RecordedAt("2026-09-03T09:00:00Z")
@@ -1880,6 +1880,7 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
 
         snapshots = _snapshots_by_reference(queue)
         assert snapshots[proposed.tracker_item].state is QueueItemState.PROPOSED
+        assert snapshots[proposed.tracker_item].retired_at is None
         assert _launch_bindings(runtime.engine, proposed.item_id) == ()
         assert [
             (record.levelno, getattr(record, "detail", None))
@@ -1982,11 +1983,7 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
             (first_item, second_item), RecordedAt("2026-09-09T09:05:00Z")
         )
         tracker.open_items_answer = second_listing
-        swept.clear()
-        runtime.request_queue_sweep()
-        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), (
-            "the asked-for sweep never ran"
-        )
+        wait_for_sweep(runtime, swept)
 
         second_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:5555"))
         second_snapshot = _snapshots_by_reference(queue)[second_reference.tracker_item]
@@ -1994,13 +1991,12 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
         assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
 
         before = _snapshots_by_reference(queue)
-        swept.clear()
-        runtime.request_queue_sweep()
-        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), (
-            "the asked-for sweep never ran"
-        )
+        wait_for_sweep(runtime, swept)
 
-        assert _snapshots_by_reference(queue) == before
+        after = _snapshots_by_reference(queue)
+        assert after == before
+        assert after[first_reference.tracker_item].retired_at is None
+        assert after[second_reference.tracker_item].retired_at is None
         assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
         assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
     finally:

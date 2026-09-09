@@ -674,10 +674,10 @@ def test_a_queue_started_run_carries_the_admitted_items_tracker_reference(
         WorkItemChangeMarker('W/"9001"'),
         observed_at,
     )
-    # A served project bound to a tracker is exactly the composition the queue
-    # sweep now imports through on every tick (#1451), so the fake must answer
-    # the same open-items read the real one would -- the run's own item, or
-    # the sweep's import would retire the row this test seeds by hand below.
+    # A served project bound to a tracker is a composition the queue sweep's
+    # own tick imports through, so the fake must answer the same open-items
+    # read the real one would -- the run's own item, or ADR 0016's set
+    # difference would retire the row this test seeds by hand below.
     tracker = FakeTrackerItemSource(
         open_items_answer=OpenTrackerItemsObserved(
             (ObservedOpenTrackerItem(tracker_reference, "push before the pr", ()),),

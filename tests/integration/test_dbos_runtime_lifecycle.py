@@ -93,7 +93,11 @@ from tests.scenarios.runs import (
     publish_pinned_revisions,
     start_published_v3_run,
 )
-from tests.scenarios.runtime import binding_refusal_of, recording_exact_runtime
+from tests.scenarios.runtime import (
+    binding_refusal_of,
+    recording_exact_runtime,
+    wait_for_sweep,
+)
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     OPEN_PR_OPERATION,
@@ -105,7 +109,6 @@ from tests.scenarios.workflows import (
 
 WORKFLOW_TIMEOUT_SECONDS = 5.0
 WORKFLOW_POLL_SECONDS = 0.025
-SWEEP_PATIENCE_SECONDS = 5.0
 BARRIER_TIMEOUT_SECONDS = 5.0
 WORKFLOW_DOCUMENT = V3_WAIT_LINE_DOCUMENT
 
@@ -334,11 +337,9 @@ def test_a_launched_runtime_sweeps_the_queue_when_asked_and_stops_at_its_close(
     runtime = acquire(runtime_settings(canonical_database(tmp_path)))
     runtime.initialize_storage()
     runtime.launch()
-    swept.clear()
 
-    runtime.request_queue_sweep()
+    wait_for_sweep(runtime, swept)
 
-    assert swept.wait(SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
     runtime.close()
     assert not any(
         thread.name == QUEUE_SWEEP_THREAD_NAME and thread.is_alive()
