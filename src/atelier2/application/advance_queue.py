@@ -1,14 +1,13 @@
 """The queue sweep: admit what the project's automation label names, then start.
 
-Both halves share one trigger and one projection. The cap and the priority
-govern the start, never the admission.
+The cap and the priority govern the start, never the admission.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Final, assert_never
+from typing import Final, Protocol, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
 from atelier2.application.plan_queue_item import plan_queue_item
@@ -120,7 +119,6 @@ from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 _LOG = logging.getLogger("atelier2")
 
 _QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
-# Durable reason, then the label that authorized it.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
 
@@ -166,12 +164,7 @@ class QueueItemRestartsExhausted:
 
 @dataclass(frozen=True)
 class QueueItemRestartWithheld:
-    """The item keeps its ended run: the tracker no longer authorizes a restart.
-
-    Nothing durable changes -- the binding stays exactly as it ended -- so the
-    item stays admitted and bound, as one past the cap does, and the next sweep
-    asks the tracker again. Re-labelling an open item is what lets it restart.
-    """
+    """The item keeps its ended run: the tracker no longer authorizes a restart."""
 
     item_id: QueueItemId
     binding: QueueLaunchBinding
@@ -196,12 +189,7 @@ class QueueAutomationLabelUnset:
 
 @dataclass(frozen=True)
 class QueueAutomationSourceUnreadable:
-    """The tracker did not say which items carry the label, so none was admitted.
-
-    Soft on purpose: the labels live outside this instance, and an unreachable
-    tracker leaves every durable queue row exactly as it was. The next sweep
-    asks again.
-    """
+    """The tracker did not say which items carry the label, so none was admitted."""
 
     detail: str
 
@@ -218,11 +206,23 @@ class QueueLabelAdmissionScopeMalformed:
     token: str
 
 
+@dataclass(frozen=True)
+class QueueLabelAdmissionTouchesAnotherLane:
+    """The labelled item's scope touches a path another lane holds."""
+
+    other_lane: str
+    path: str
+
+
 def _queue_label_admission_declined_reason(outcome: object) -> str:
     name = type(outcome).__name__
-    if not isinstance(outcome, QueueLabelAdmissionScopeMalformed):
+    if isinstance(outcome, QueueLabelAdmissionTouchesAnotherLane):
+        token = f"{outcome.other_lane} on {outcome.path}"
+    elif isinstance(outcome, QueueLabelAdmissionScopeMalformed):
+        token = outcome.token
+    else:
         return name
-    return f"{name}: {' '.join(outcome.token.split())[:MAXIMUM_REPOSITORY_PATH_CHARACTERS]}"
+    return f"{name}: {' '.join(token.split())[:MAXIMUM_REPOSITORY_PATH_CHARACTERS]}"
 
 
 @dataclass(frozen=True)
@@ -240,6 +240,7 @@ class QueueLabelAdmissionDeclined:
         | QueueLabelAdmissionScopeMissing
         | QueueLabelAdmissionScopeMalformed
         | QueueLabelAdmissionTrackerItemUnknown
+        | QueueLabelAdmissionTouchesAnotherLane
     )
 
 
@@ -258,6 +259,12 @@ type QueueLabelAdmissionOutcome = (
 )
 
 
+class ExclusiveLaneOccupancy(Protocol):
+    """Who holds exclusive paths on the claim ledger the door also reads."""
+
+    def colliding_hold(self, paths: tuple[str, ...]) -> tuple[str, str] | None: ...
+
+
 @dataclass(frozen=True)
 class _RequiredOrderUnavailable:
     """The document declares graph inputs this sweep has no material for."""
@@ -268,17 +275,13 @@ def admit_queue_items_by_label(
     *,
     project: ProjectId,
     tracker: TrackerItemSource,
+    occupancy: ExclusiveLaneOccupancy | None = None,
     page_limit: int = MAXIMUM_PAGE_ITEMS,
 ) -> QueueLabelAdmissionOutcome:
     """Admit every item the project's automation label names, and no other.
 
-    The label is the operator's own signal in the tracker (REQ-QUEUE-08). It is
-    read at the instant the rule decides, so an item whose label was removed
-    before the sweep is not admitted by it.
-
-    What the rule may admit is the projection's `confirm` CAS under
-    `AUTOMATION_RULE`. A missing, malformed, or unknown scope is declined
-    and left as it was. Snapshots are read before any mutation.
+    A missing, malformed, unknown, or exclusively-held scope is declined and
+    left as it was. Snapshots are read before any mutation.
     """
     policy = active_policy(queue, project)
     if policy is None or policy.automation_label is None:
@@ -287,7 +290,9 @@ def admit_queue_items_by_label(
     listing = open_tracker_items(tracker, project, label)
     if isinstance(listing, TrackerSourceUnavailable | TrackerPayloadMalformed):
         return QueueAutomationSourceUnreadable(listing.detail)
-    return _admit_labelled(queue, tracker, policy, label, listing.labelled, page_limit)
+    return _admit_labelled(
+        queue, tracker, policy, label, listing.labelled, page_limit, occupancy
+    )
 
 
 def _admit_labelled(
@@ -297,6 +302,7 @@ def _admit_labelled(
     label: str,
     labelled: frozenset[QueueItemId],
     page_limit: int,
+    occupancy: ExclusiveLaneOccupancy | None,
 ) -> QueueLabelAdmissionsDecided | QueueAutomationSourceUnreadable:
     items = tuple(
         item
@@ -305,7 +311,7 @@ def _admit_labelled(
     )
     scopes: list[WorkItemScope | QueueLabelAdmissionDeclined] = []
     for item in items:
-        scope = _work_item_scope(tracker, item)
+        scope = _work_item_scope(tracker, item, occupancy)
         if isinstance(scope, QueueAutomationSourceUnreadable):
             return scope
         scopes.append(scope)
@@ -327,7 +333,9 @@ def _admit_labelled(
 
 
 def _work_item_scope(
-    tracker: TrackerItemSource, item: QueueItemSnapshot
+    tracker: TrackerItemSource,
+    item: QueueItemSnapshot,
+    occupancy: ExclusiveLaneOccupancy | None,
 ) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
     item_id = item.item_reference.item_id
     match tracker.snapshot(item.item_reference.tracker_item):
@@ -341,6 +349,11 @@ def _work_item_scope(
             if not scope.paths:
                 return QueueLabelAdmissionDeclined(
                     item_id, QueueLabelAdmissionScopeMissing()
+                )
+            hold = None if occupancy is None else occupancy.colliding_hold(scope.paths)
+            if hold is not None:
+                return QueueLabelAdmissionDeclined(
+                    item_id, QueueLabelAdmissionTouchesAnotherLane(*hold)
                 )
             return scope
         case TrackerItemUnknown():
@@ -360,12 +373,8 @@ def _proposed_from_policy_defaults(
 ) -> QueueProjectionRevision:
     """Fill a labelled item's missing proposal from the policy's own defaults.
 
-    Answers the revision the admission must now confirm: the proposal's own,
-    whether this call wrote it or a concurrent sweep already wrote exactly it,
-    and the item's own revision otherwise. A policy without defaults, an item
-    that already carries a decision, and a proposal the projection refuses all
-    leave the item exactly as it was, and the admission that follows reports in
-    its own words why it was not admitted.
+    Answers the revision the admission must now confirm, or leaves the item as
+    it was so the admission that follows can report why it was not admitted.
     """
 
     defaults = policy.defaults
@@ -480,9 +489,7 @@ def _released_or_advanced(
 ) -> QueueAdvanceOutcome | None:
     """Give back an ended launch before deciding anything else about the item.
 
-    A sweep that releases an item does not also start it: the item rejoins the
-    start order at the revision the release wrote, where the cap and the
-    priority decide about it again like any other admitted item.
+    A sweep that releases an item does not also start it.
     """
 
     if served_project is not None and item.item_reference.project != served_project:
@@ -500,13 +507,9 @@ def _release_ended_launch(
 ) -> QueueItemRestarting | QueueItemRestartsExhausted | QueueItemRestartWithheld | None:
     """Give back the binding of a run that ended without an answer.
 
-    `None` for every launch this sweep treats exactly as it always did: an item
-    with no binding, a run still going, a reservation whose start never landed,
-    and a COMPLETED run -- that run is the item's answer, and a second one
-    would spend money on a question already answered.
-
-    The tracker is asked before the cap and before the release, so a launch
-    the tracker no longer authorizes never reaches a write.
+    `None` for a launch this sweep leaves as it stands. The tracker is asked
+    before the cap and before the release, so an unauthorized launch never
+    reaches a write.
     """
 
     binding = item.launch_binding
@@ -730,11 +733,8 @@ def _bound_work_item_order(
 ) -> AuthoredOrder | _RequiredOrderUnavailable | None:
     """The one order the bound document's `graph_inputs` asks this sweep to fill.
 
-    `None` for a document with no `graph_inputs` (starts as today) or when no
-    parser was handed in. A document that declares anything else -- more than
-    one input, or one pinned to a schema other than the work-item order's --
-    names material this sweep has no way to supply, so it is unfillable rather
-    than guessed at.
+    `None` when there are none to fill. Anything else this sweep cannot supply
+    is unfillable rather than guessed at.
     """
 
     if workflow_document_parser is None:

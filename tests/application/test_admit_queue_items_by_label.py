@@ -20,6 +20,7 @@ from atelier2.application.advance_queue import (
     QueueLabelAdmissionScopeMalformed,
     QueueLabelAdmissionScopeMissing,
     QueueLabelAdmissionsDecided,
+    QueueLabelAdmissionTouchesAnotherLane,
     QueueLabelAdmissionTrackerItemUnknown,
     _queue_label_admission_declined_reason,
     admit_queue_items_by_label,
@@ -84,7 +85,9 @@ PROJECT = ProjectId("studio")
 LINEAGE = CatalogLineageId("b" * 64)
 LABEL = "bereit"
 OBSERVED_AT = RecordedAt("2026-09-04T09:00:00Z")
-_SCOPED_BODY = b"## Bereich\nsrc/atelier2/contracts/work_items.py\n"
+HELD_PATH = "src/atelier2/contracts/work_items.py"
+FOREIGN_LANE = "item 1446"
+_SCOPED_BODY = b"## Bereich\n" + HELD_PATH.encode() + b"\n"
 OPERATOR_RATIONALE = QueueAdmissionRationale("operator approved the proposal")
 DEFAULT_PRIORITY = QueuePriorityRank(3)
 
@@ -332,6 +335,20 @@ def _tracker_answers(
 
 def _item_ids(*trackers: str) -> tuple[QueueItemId, ...]:
     return tuple(_reference(tracker).item_id for tracker in trackers)
+
+
+@dataclass
+class _ExclusiveHolds:
+    """Paths another lane holds, answered the way the claim ledger would."""
+
+    holds: dict[str, str] = field(default_factory=dict)
+
+    def colliding_hold(self, paths: tuple[str, ...]) -> tuple[str, str] | None:
+        for path in paths:
+            lane = self.holds.get(path)
+            if lane is not None:
+                return lane, path
+        return None
 
 
 @pytest.mark.proves("the-automation-label-admits-the-items-that-carry-it")
@@ -647,3 +664,48 @@ def test_an_unknown_tracker_item_is_declined_by_name_not_as_a_missing_scope() ->
     assert declined.outcome == QueueLabelAdmissionTrackerItemUnknown()
     assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
     assert queue.state_of("gh:2").state is QueueItemState.ADMITTED
+
+
+def test_a_labelled_item_whose_scope_touches_another_lane_is_declined() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1")])
+
+    outcome = admit_queue_items_by_label(
+        queue,
+        project=PROJECT,
+        tracker=_tracker(("gh:1", (LABEL,))),
+        occupancy=_ExclusiveHolds({HELD_PATH: FOREIGN_LANE}),
+    )
+
+    assert isinstance(outcome, QueueLabelAdmissionsDecided)
+    assert outcome.admitted == ()
+    (declined,) = outcome.declined
+    assert declined.outcome == QueueLabelAdmissionTouchesAnotherLane(
+        FOREIGN_LANE, HELD_PATH
+    )
+    assert (
+        _queue_label_admission_declined_reason(declined.outcome)
+        == f"QueueLabelAdmissionTouchesAnotherLane: {FOREIGN_LANE} on {HELD_PATH}"
+    )
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+
+
+def test_the_same_sweep_admits_the_item_after_the_foreign_claim_is_released() -> None:
+    queue = _QueueProjectionFake([_proposed("gh:1")])
+    occupancy = _ExclusiveHolds({HELD_PATH: FOREIGN_LANE})
+    tracker = _tracker(("gh:1", (LABEL,)))
+
+    declined = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=tracker, occupancy=occupancy
+    )
+
+    assert isinstance(declined, QueueLabelAdmissionsDecided)
+    assert declined.admitted == ()
+    assert queue.state_of("gh:1").state is QueueItemState.PROPOSED
+
+    occupancy.holds.clear()
+    admitted = admit_queue_items_by_label(
+        queue, project=PROJECT, tracker=tracker, occupancy=occupancy
+    )
+
+    assert admitted == QueueLabelAdmissionsDecided(_item_ids("gh:1"), ())
+    assert queue.state_of("gh:1").state is QueueItemState.ADMITTED
