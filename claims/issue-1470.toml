@@ -1,0 +1,7 @@
+claim_id = "2125ef2a64474d6c84d7c719fbd77b84"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
+branch = "claude/issue-1470-use-case-binders"
+scope = ["src/atelier2/api/app.py", "scripts/baselines/size_ratchet_baseline.toml"]
+opened_commit = "e1bfd35faa8ba0bdb854ba07be0a6bef2efa2d8a"
