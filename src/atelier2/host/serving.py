@@ -18,6 +18,8 @@ from atelier2.adapters.agent_provider_catalog import (
     AgentProviderCatalog,
     ProviderCatalogDeployment,
     configure_provider_catalog,
+    open_provider_catalog_root,
+    provider_catalog_root,
 )
 from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
@@ -654,7 +656,7 @@ def _provider_catalog_deployment(
         settings.claude_subscription,
         settings.grok_subscription,
         settings.codex_subscription,
-        settings.agent_scratch_root,
+        provider_catalog_root(settings.database_path),
     )
 
 
@@ -1117,6 +1119,7 @@ def serve(settings: HostSettings) -> None:
     # second, differing deployment over the first.
     deployment = _provider_catalog_deployment(settings)
     if deployment is not None:
+        open_provider_catalog_root(deployment.working_directory_root)
         configure_provider_catalog(deployment)
     app, runtime = compose_application(settings, close_runtime_at_shutdown=True)
     try:

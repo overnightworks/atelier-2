@@ -75,6 +75,36 @@ _CATALOG_ROUTES: Final[dict[AuthMode, ProviderRoute]] = {
 _UNDEPLOYED_PROVIDER_BINARY: Final = ""
 _UNDEPLOYED_PROVIDER_DIRECTORY: Final = "provider-not-deployed"
 
+PROVIDER_CATALOG_DIRECTORY_NAME: Final = "provider-catalog"
+CATALOG_ROOT_MODE: Final = 0o700
+
+
+def provider_catalog_root(database_path: Path) -> Path:
+    """Where the library builds its private catalog homes, beside the store.
+
+    Deliberately not the attempt scratch root. That root is owned entirely by
+    attempt workspaces -- `LocalAgentAttemptWorkspaceOwner` refuses it the
+    moment it holds one entry that is not an attempt id -- so a catalog home
+    living there would fail every attempt started beside it, and one left
+    behind by a kill would stop `serve()` itself. Derived from the store this
+    deployment already names, like the redeploy status file beside it, because
+    it is this deployment's own state rather than an operator choice.
+    """
+
+    return database_path.parent / PROVIDER_CATALOG_DIRECTORY_NAME
+
+
+def open_provider_catalog_root(root: Path) -> None:
+    """Make the catalog root exist and be private, before anything writes in it.
+
+    A credential copy lands here, so the mode is set on every start rather than
+    only at creation: a directory that already exists must be private now, not
+    have been private when something else made it.
+    """
+
+    root.mkdir(mode=CATALOG_ROOT_MODE, parents=True, exist_ok=True)
+    root.chmod(CATALOG_ROOT_MODE)
+
 
 @dataclass(frozen=True)
 class ProviderCatalogDeployment:
@@ -82,10 +112,9 @@ class ProviderCatalogDeployment:
 
     Every value is a fact this host already owns: the executables and
     credential directories an operator named on the serve command line, and
-    the scratch root every provider child of this deployment works below. The
-    three API keys stay unset because atelier-2 runs subscription CLIs, and
-    no turn facts are configured because this host asks the library for
-    catalogs alone.
+    the catalog root beside this deployment's own store. The three API keys
+    stay unset because atelier-2 runs subscription CLIs, and no turn facts are
+    configured because this host asks the library for catalogs alone.
 
     Both binary-search answers are empty on purpose rather than by default:
     every executable an operator names here is validated as an absolute file,
@@ -182,6 +211,11 @@ class AgentProviderCatalog:
                 provider, _CATALOG_ROUTES[auth_profile.auth_mode]
             )
         except ProviderError as refusal:
+            return ProviderModelInspectionUnavailable(str(refusal))
+        except OSError as refusal:
+            # The library's own probe failures arrive as `ProviderError`; a
+            # catalog root that is missing, unwritable or full fails beneath
+            # them, and a registry write may not answer that with a traceback.
             return ProviderModelInspectionUnavailable(str(refusal))
         return ProviderModelDiscovery(frozenset(models))
 

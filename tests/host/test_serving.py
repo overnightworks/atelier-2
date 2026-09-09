@@ -5,16 +5,26 @@
 arming (`#7`): the serve flag that arms and always attests the doors
 executor, its refusal without the Claude deployment, its absence
 leaving the doors unserved, and the doors executor's own registry entry
-(capability, carrier, startability) once armed."""
+(capability, carrier, startability) once armed. It also owns the boundary
+between the two roots a serving deployment hands out: the provider library's
+catalog homes and the attempt scratch root, which no probe may enter."""
 
 from __future__ import annotations
 
+import os
+import stat
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.agent_provider_catalog import (
+    configure_provider_catalog,
+    open_provider_catalog_root,
+)
+from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.claude_subscription import (
     CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
@@ -26,11 +36,16 @@ from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionSto
 from atelier2.adapters.dbos.run_store import load_run_orders
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.grok_subscription import (
+    AUTHENTICATION_FILE_NAME,
+    GrokSubscriptionSettings,
+)
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutorRevision,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
@@ -83,10 +98,13 @@ from atelier2.contracts.work_items import (
 from atelier2.host import main
 from atelier2.host.serving import (
     HostSettings,
+    _provider_catalog,
+    _provider_catalog_deployment,
     compose_application,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationRevisionPage
 from atelier2.ports.agent_executions import AgentExecutorCarrier
+from atelier2.ports.host_configuration import ProviderModelDiscovery
 from atelier2.ports.issue_observation import WorkItemRevisionObserved
 from atelier2.ports.published_revisions import CatalogLineageFounded
 from atelier2.ports.queue_projection import QueueItemsPage, QueueItemsReconciled
@@ -426,6 +444,97 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
         assert listed[configuration.revision_hash] is True
     finally:
         runtime.close()
+
+
+# Stands in for `grok models`: it names a login and one chat model, which is
+# all the library's catalog path reads, without a billed CLI. It also records
+# the private home it was launched in, beside itself -- the one channel that
+# sees that directory at all, because the library removes it before the probe
+# returns and the damage it can do is done while it exists.
+LISTING_GROK = """
+import os, sys
+from pathlib import Path
+
+(Path(sys.argv[0]).resolve().parent / "observed-home.txt").write_text(os.environ["HOME"])
+print("You are logged in with someone.")
+print("Available models:")
+print("* grok-4.6 (default)")
+"""
+
+
+def _grok_serving_settings(tmp_path: Path) -> HostSettings:
+    executable = tmp_path / "grok"
+    executable.write_text(f"#!{sys.executable}\n{LISTING_GROK}", encoding="utf-8")
+    executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
+    workspace = tmp_path / "grok-workspace"
+    workspace.mkdir()
+    credentials = tmp_path / "grok-credentials"
+    credentials.mkdir()
+    authentication = credentials / AUTHENTICATION_FILE_NAME
+    authentication.write_text("{}", encoding="utf-8")
+    authentication.chmod(0o600)
+    return HostSettings(
+        database_path=tmp_path / "durable.sqlite",
+        effect_store_path=tmp_path / "effects.sqlite",
+        effect_adapter_revision="loopback-v1",
+        effect_destination="local",
+        application_version="composition-test",
+        source_commit="c" * 40,
+        source_tree="tree",
+        frontend_dist=_frontend(tmp_path),
+        provider_probe_receipt_directory=tmp_path / "provider-probes",
+        agent_scratch_root=agent_scratch_root(tmp_path),
+        grok_subscription=GrokSubscriptionSettings(
+            executable, workspace, credentials, os.environ["PATH"]
+        ),
+    )
+
+
+def test_a_catalog_probe_leaves_the_attempt_scratch_root_owned_by_attempts(
+    tmp_path: Path, provider_runtime_per_test: None
+) -> None:
+    """The library builds one private home per probe; this root allows none.
+
+    `LocalAgentAttemptWorkspaceOwner` refuses its root the moment it holds an
+    entry that is not an attempt id, and it re-checks that on every acquire.
+    A catalog home living there would fail whichever attempt started beside
+    it, and one left behind by a kill would stop `serve()` from starting at
+    all -- so the two roots this deployment hands out are two directories.
+
+    Where that home sat is asked of the probe itself rather than of the root
+    afterwards: the library removes the home before returning, so a root read
+    after the fact is clean either way and would prove nothing.
+    """
+
+    del provider_runtime_per_test
+    settings = _grok_serving_settings(tmp_path)
+    deployment = _provider_catalog_deployment(settings)
+    assert deployment is not None
+    open_provider_catalog_root(deployment.working_directory_root)
+    configure_provider_catalog(deployment)
+    profile = AuthProfileRevision("live", 1, ProviderId("xai"), AuthMode.SUBSCRIPTION)
+    scratch_root = settings.agent_scratch_root
+    assert scratch_root is not None
+    workspaces = LocalAgentAttemptWorkspaceOwner(scratch_root)
+
+    try:
+        discovered = _provider_catalog(settings).discover_models(
+            AgentConfigurationRevision(
+                "grok-4.6",
+                profile.revision_hash,
+                AgentExecutorRevision("grok-subscription/v1"),
+                AgentExecutionCapability.HEADLESS,
+                AgentConfigurationRevisionFormatVersion.V2,
+            ),
+            profile,
+        )
+        assert discovered == ProviderModelDiscovery(frozenset({"grok-4.6"}))
+        home = Path((tmp_path / "observed-home.txt").read_text())
+        assert scratch_root not in home.parents
+        assert deployment.working_directory_root in home.parents
+        workspaces.preflight()
+    finally:
+        workspaces.close()
 
 
 _QUEUE_STARTED_PROJECT = ProjectId("studio")

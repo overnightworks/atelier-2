@@ -16,11 +16,9 @@ import json
 import os
 import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from agent_providers.config import reset_config
 
 from atelier2.adapters.agent_provider_catalog import (
     CLAUDE_PROVIDER_ID,
@@ -53,6 +51,8 @@ from atelier2.ports.host_configuration import (
 )
 from tests.scenarios.agents import claude_subscription_deployment
 
+pytestmark = pytest.mark.usefixtures("provider_runtime_per_test")
+
 # A `grok models` that answers from a file beside itself, so one deployment can
 # report a changed catalog without being rewritten.
 GROK_MODELS_ANSWERING_FROM_A_FILE = """
@@ -70,15 +70,6 @@ import sys
 sys.stderr.write("synthetic Grok refusal\\n")
 raise SystemExit(1)
 """
-
-
-@pytest.fixture(autouse=True)
-def provider_runtime_is_configured_per_test() -> Iterator[None]:
-    """No test inherits, or leaves behind, another test's provider deployment."""
-
-    reset_config()
-    yield
-    reset_config()
 
 
 def _grok_deployment(directory: Path, program: str) -> GrokSubscriptionSettings:

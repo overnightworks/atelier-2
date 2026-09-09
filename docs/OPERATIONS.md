@@ -388,9 +388,14 @@ provider the library does not know, leave a registry publication unwritten
 rather than publishing an empty list -- an empty catalog would read as "unknown
 at this provider" and stop every model of it from starting.
 
-A configured credential file that is missing is logged by path, never by
-content, and its provider is reported logged out. On a host serving two of the
-three providers that line is expected for the third at every publication.
+A served provider whose configured credential file is missing is logged by
+path, never by content, and reported logged out. A provider this deployment
+does not serve never reaches that check at all.
+
+The library builds one private, disposable home per probe under
+`provider-catalog/` beside the durable store -- never under the agent scratch
+root, which is owned entirely by attempt workspaces and refuses anything else
+it holds.
 
 The library is pinned in `pyproject.toml` by commit, not by version: it is on a
 candidate branch that both its hosts are proving before it is released, and a
