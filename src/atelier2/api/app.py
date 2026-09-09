@@ -558,35 +558,32 @@ def bound_use_cases(
 ) -> ApiUseCases:
     """Spend the ports here, so that nothing below this line can reach one.
 
-    Each `_bind_*_use_cases` helper above builds one domain's nested contract,
-    declared in `context.py` next to the flat fields it mirrors, with its own
-    calls bound by keyword and checked against that contract's real field
-    types -- exactly as this function's own literal used to be checked before
-    it grew past the function ceiling. `ApiUseCases` itself stays the flat
-    record `scripts/check_architecture.py` requires: each nested contract is
-    merged back into it here by field name, and read back out through the
-    matching read-only property routes now call.
+    Each `_bind_*_use_cases` helper above builds one domain's own nested
+    contract, declared in `context.py`, with its calls bound by keyword and
+    checked against that contract's real field types -- exactly as this
+    function's own literal used to be checked before it grew past the
+    function ceiling. `ApiUseCases` holds the eleven contracts directly, so
+    each keyword below is itself checked against `ApiUseCases`'s own field
+    type, the same way every keyword here always was.
     """
     return ApiUseCases(
-        **vars(
-            _bind_workflow_revisions_use_cases(
-                ports, projection_limit, enriched_page_budget
-            )
+        workflow_revisions=_bind_workflow_revisions_use_cases(
+            ports, projection_limit, enriched_page_budget
         ),
-        **vars(_bind_runs_use_cases(ports)),
-        **vars(_bind_run_control_use_cases(served_project_id, ports)),
-        **vars(_bind_artifacts_use_cases(ports)),
-        **vars(_bind_definitions_use_cases(ports)),
-        **vars(_bind_agent_catalog_use_cases(ports)),
-        **vars(_bind_projects_use_cases(served_project_id, ports)),
-        **vars(_bind_model_configuration_use_cases(served_project_id, ports)),
-        **vars(_bind_catalog_lineage_use_cases(ports)),
-        **vars(
-            _bind_project_sources_use_cases(
-                served_project_id, ports, source_id_generator, connection_clock
-            )
+        runs=_bind_runs_use_cases(ports),
+        run_control=_bind_run_control_use_cases(served_project_id, ports),
+        artifacts=_bind_artifacts_use_cases(ports),
+        definitions=_bind_definitions_use_cases(ports),
+        agent_catalog=_bind_agent_catalog_use_cases(ports),
+        projects=_bind_projects_use_cases(served_project_id, ports),
+        model_configuration=_bind_model_configuration_use_cases(
+            served_project_id, ports
         ),
-        **vars(_bind_queue_use_cases(served_project_id, ports)),
+        catalog_lineage=_bind_catalog_lineage_use_cases(ports),
+        project_sources=_bind_project_sources_use_cases(
+            served_project_id, ports, source_id_generator, connection_clock
+        ),
+        queue=_bind_queue_use_cases(served_project_id, ports),
     )
 
 

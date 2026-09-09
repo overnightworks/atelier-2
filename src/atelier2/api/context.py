@@ -444,290 +444,31 @@ class QueueUseCases:
 class ApiUseCases:
     """The application calls, already bound to their ports by the composition.
 
-    Every field is a call, not a protocol: the port is spent at composition time,
-    and what a route holds is the decision, whose result type belongs to
-    `atelier2.application`. A field annotated with anything that resolves to
-    `atelier2.ports` would hand the port straight back through this record — which
-    is the evasion `scripts/check_architecture.py` reads these annotations for.
+    Every field is one further record of just such calls, each a use case the
+    composition already bound rather than a protocol: the port is spent at
+    composition time, and what a route holds is the decision, whose result
+    type belongs to `atelier2.application`. A field -- at any depth -- that
+    resolves to `atelier2.ports` would hand the port straight back through
+    this record, which is the evasion `scripts/check_architecture.py` reads
+    these annotations for, recursing through exactly the frozen records this
+    module declares.
 
     The calls stay synchronous because admitting one to the process-wide query
     budget is the API's decision, not the application's: the route runs them
     through its own bounded runner and owns the refusal a full budget produces.
-
-    The fields stay this flat record for the same reason `scripts/check_architecture.py`
-    reads them at all: the check judges `ApiUseCases` by walking its own directly
-    annotated fields, so a field of any other shape -- including one holding
-    another of these calls, grouped -- would leave that walk with nothing to
-    check. A route never reads a field directly, though: it reads one of the
-    read-only properties below, each handing back one domain's own contract,
-    declared just above this class. Each such field is typed twice, once here
-    and once on the contract its property builds -- the price of a check that
-    only reads a flat record, paid once per field rather than left unpaid as a
-    hole in what the check can see.
     """
 
-    get_workflow_revision: Callable[[WorkflowRevisionHash], GetWorkflowRevisionResult]
-    list_workflow_revisions: Callable[
-        [WorkflowRevisionHash | None, int], ListWorkflowRevisionsResult
-    ]
-    list_described_workflow_revisions: Callable[
-        [WorkflowRevisionHash | None, int], ListDescribedWorkflowRevisionsResult
-    ]
-    get_run: Callable[[RunId], GetRunResult]
-    get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
-    list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
-    prepare_run_events: Callable[[RunId, int], PrepareRunEventsResult]
-    read_run_events: Callable[[RunId, int, int], ReadRunEventsResult]
-    read_attention_events: Callable[
-        [RunId | None, int | None, int, tuple[tuple[RunId, int], ...]],
-        ReadAttentionEventsResult,
-    ]
-    publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
-    publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
-    read_artifact: Callable[[ArtifactHash], ReadArtifactResult]
-    publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
-    get_schema_revision: Callable[[PublishedRevisionHash], GetSchemaRevisionResult]
-    publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
-    publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
-    publish_adapter_operation_revision: Callable[
-        [bytes], PublishAdapterOperationRevisionResult
-    ]
-    publish_agent_definition_revision: Callable[
-        [bytes], PublishAgentDefinitionRevisionResult
-    ]
-    classify_definition_document: Callable[
-        [bytes, str | None], ClassifyDefinitionDocumentResult
-    ]
-    admit_library_addition: Callable[
-        [bytes, CatalogIntakeKind, CatalogActor, CatalogActivatedAt],
-        AdmitLibraryAdditionResult,
-    ]
-    read_library_addition: Callable[[CatalogIntakeId], ReadLibraryAdditionResult]
-    list_agent_definition_revisions: Callable[
-        [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
-    ]
-    get_agent_definition_revision: Callable[
-        [PublishedRevisionHash], GetAgentDefinitionRevisionResult
-    ]
-    publish_auth_profile_revision: Callable[
-        [str, int, str, str], PublishAuthProfileRevisionResult
-    ]
-    publish_agent_configuration_revision: Callable[
-        [str, str, str, str], PublishAgentConfigurationRevisionResult
-    ]
-    list_agent_configuration_revisions: Callable[
-        [AgentConfigurationRevisionHash | None, int],
-        ListAgentConfigurationRevisionsResult,
-    ]
-    list_auth_profile_revisions: Callable[
-        [AuthProfileRevisionHash | None, int],
-        ListAuthProfileRevisionsResult,
-    ]
-    list_projects: Callable[[], ListProjectsResult]
-    get_project: Callable[[ProjectId], GetProjectResult]
-    get_model_registry: Callable[[str], GetModelRegistryResult]
-    publish_model_registry: Callable[
-        [str, int, tuple[tuple[str, str], ...]],
-        PublishModelRegistryUseCaseResult,
-    ]
-    validate_model_registry_entry: Callable[
-        [str, str], PublishModelRegistryUseCaseResult
-    ]
-    get_project_model_defaults: Callable[[str], GetProjectModelDefaultsResult]
-    publish_project_model_defaults: Callable[
-        [str, int, tuple[tuple[int, str, str, str, str], ...]],
-        PublishProjectModelDefaultsUseCaseResult,
-    ]
-    get_project_model_resolution: Callable[
-        [str, str, tuple[tuple[str, str], ...]], GetProjectModelResolutionResult
-    ]
-    start_published_run: Callable[
-        [
-            RunId,
-            WorkflowRevisionHash,
-            tuple[AuthoredAgentBinding, ...] | None,
-            tuple[AuthoredOrder, ...],
-        ],
-        StartPublishedRunResult,
-    ]
-    fork_run: Callable[[RunId, str, str], ForkRunResult]
-    answer_wait: Callable[
-        [
-            RunId,
-            WorkflowRevisionHash,
-            str,
-            NodeExecutionId,
-            WaitAnswerActor,
-            bytes,
-        ],
-        AnswerWaitResult,
-    ]
-    reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
-    cancel_agent_attempt: Callable[
-        [CancelAgentAttemptRequest], CancelAgentAttemptResult
-    ]
-    cancel_run: Callable[[RunId, str, NodeExecutionId], CancelRunResult]
-    resolve_catalog_name: Callable[
-        [RevisionKind, CatalogLineageQuery, object], CatalogNameResult
-    ]
-    found_catalog_lineage: Callable[
-        [
-            RevisionKind,
-            PublishedRevisionHash,
-            CatalogLineageDisplayName | None,
-            CatalogActor,
-            CatalogActivatedAt,
-        ],
-        FoundLineageResult,
-    ]
-    admit_catalog_member: Callable[
-        [
-            RevisionKind,
-            CatalogLineageId,
-            PublishedRevisionHash,
-            CatalogActor,
-            CatalogActivatedAt,
-        ],
-        AdmitMemberResult,
-    ]
-    retire_catalog_lineage: Callable[
-        [CatalogLineageId, CatalogActor, CatalogActivatedAt],
-        RetireCatalogLineageUseCaseResult,
-    ]
-    get_project_source_connection: Callable[
-        [ProjectId], GetServedProjectSourceConnectionResult
-    ]
-    list_project_sources: Callable[[ProjectId], ListProjectSourcesResult]
-    connect_project_source: Callable[
-        [ProjectId, str, str], ConnectManagedProjectSourceResult
-    ]
-    disconnect_project_source: Callable[
-        [ProjectId, ProjectSourceId], DisconnectProjectSourceResult
-    ]
-    rotate_project_source_token: Callable[
-        [ProjectId, ProjectSourceId, str], RotateProjectSourceTokenResult
-    ]
-    confirm_queue_proposal: Callable[
-        [ConfirmQueueProposal], ConfirmQueueProposalOutcome
-    ]
-    plan_queue_item: Callable[[PlanQueueItem], PlanQueueItemOutcome]
-    put_queue_project_policy: Callable[
-        [QueueProjectPolicyRevision, int], PutQueueProjectPolicyOutcome
-    ]
-    list_queue_items: Callable[[QueueItemId | None, int], ListQueueItemsOutcome]
-    import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
-    read_redeploy_status: Callable[[], ReadRedeployStatusResult]
-
-    @property
-    def workflow_revisions(self) -> WorkflowRevisionUseCases:
-        return WorkflowRevisionUseCases(
-            get_workflow_revision=self.get_workflow_revision,
-            list_workflow_revisions=self.list_workflow_revisions,
-            list_described_workflow_revisions=self.list_described_workflow_revisions,
-            publish_workflow_revision=self.publish_workflow_revision,
-        )
-
-    @property
-    def runs(self) -> RunUseCases:
-        return RunUseCases(
-            get_run=self.get_run,
-            get_node_detail=self.get_node_detail,
-            list_runs=self.list_runs,
-            prepare_run_events=self.prepare_run_events,
-            read_run_events=self.read_run_events,
-            read_attention_events=self.read_attention_events,
-        )
-
-    @property
-    def run_control(self) -> RunControlUseCases:
-        return RunControlUseCases(
-            start_published_run=self.start_published_run,
-            fork_run=self.fork_run,
-            answer_wait=self.answer_wait,
-            reconcile_run=self.reconcile_run,
-            cancel_agent_attempt=self.cancel_agent_attempt,
-            cancel_run=self.cancel_run,
-        )
-
-    @property
-    def artifacts(self) -> ArtifactUseCases:
-        return ArtifactUseCases(
-            publish_artifact=self.publish_artifact,
-            read_artifact=self.read_artifact,
-        )
-
-    @property
-    def definitions(self) -> DefinitionDocumentUseCases:
-        return DefinitionDocumentUseCases(
-            publish_schema_revision=self.publish_schema_revision,
-            get_schema_revision=self.get_schema_revision,
-            publish_budget_revision=self.publish_budget_revision,
-            publish_tool_grant_revision=self.publish_tool_grant_revision,
-            publish_adapter_operation_revision=self.publish_adapter_operation_revision,
-            publish_agent_definition_revision=self.publish_agent_definition_revision,
-            classify_definition_document=self.classify_definition_document,
-            admit_library_addition=self.admit_library_addition,
-            read_library_addition=self.read_library_addition,
-        )
-
-    @property
-    def agent_catalog(self) -> AgentCatalogUseCases:
-        return AgentCatalogUseCases(
-            list_agent_definition_revisions=self.list_agent_definition_revisions,
-            get_agent_definition_revision=self.get_agent_definition_revision,
-            publish_auth_profile_revision=self.publish_auth_profile_revision,
-            publish_agent_configuration_revision=self.publish_agent_configuration_revision,
-            list_agent_configuration_revisions=self.list_agent_configuration_revisions,
-            list_auth_profile_revisions=self.list_auth_profile_revisions,
-        )
-
-    @property
-    def projects(self) -> ProjectUseCases:
-        return ProjectUseCases(
-            list_projects=self.list_projects,
-            get_project=self.get_project,
-        )
-
-    @property
-    def model_configuration(self) -> ModelConfigurationUseCases:
-        return ModelConfigurationUseCases(
-            get_model_registry=self.get_model_registry,
-            publish_model_registry=self.publish_model_registry,
-            validate_model_registry_entry=self.validate_model_registry_entry,
-            get_project_model_defaults=self.get_project_model_defaults,
-            publish_project_model_defaults=self.publish_project_model_defaults,
-            get_project_model_resolution=self.get_project_model_resolution,
-        )
-
-    @property
-    def catalog_lineage(self) -> CatalogLineageUseCases:
-        return CatalogLineageUseCases(
-            resolve_catalog_name=self.resolve_catalog_name,
-            found_catalog_lineage=self.found_catalog_lineage,
-            admit_catalog_member=self.admit_catalog_member,
-            retire_catalog_lineage=self.retire_catalog_lineage,
-        )
-
-    @property
-    def project_sources(self) -> ProjectSourceUseCases:
-        return ProjectSourceUseCases(
-            get_project_source_connection=self.get_project_source_connection,
-            list_project_sources=self.list_project_sources,
-            connect_project_source=self.connect_project_source,
-            disconnect_project_source=self.disconnect_project_source,
-            rotate_project_source_token=self.rotate_project_source_token,
-        )
-
-    @property
-    def queue(self) -> QueueUseCases:
-        return QueueUseCases(
-            confirm_queue_proposal=self.confirm_queue_proposal,
-            plan_queue_item=self.plan_queue_item,
-            put_queue_project_policy=self.put_queue_project_policy,
-            list_queue_items=self.list_queue_items,
-            import_project_source_issues=self.import_project_source_issues,
-            read_redeploy_status=self.read_redeploy_status,
-        )
+    workflow_revisions: WorkflowRevisionUseCases
+    runs: RunUseCases
+    run_control: RunControlUseCases
+    artifacts: ArtifactUseCases
+    definitions: DefinitionDocumentUseCases
+    agent_catalog: AgentCatalogUseCases
+    projects: ProjectUseCases
+    model_configuration: ModelConfigurationUseCases
+    catalog_lineage: CatalogLineageUseCases
+    project_sources: ProjectSourceUseCases
+    queue: QueueUseCases
 
 
 @dataclass(frozen=True)
