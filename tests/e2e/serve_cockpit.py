@@ -1119,13 +1119,13 @@ class BrowserProofHarness:
             run_id = decode_public_run_reference(public_run_reference)
         except ValueError:
             return None
-        result = context.use_cases.get_run(run_id)
+        result = context.use_cases.runs.get_run(run_id)
         if not isinstance(result, RunRead):
             return None
         run = result.projection.run
         if run.state is not RunState.WAITING_INPUT or run.last_event_sequence < 1:
             return None
-        head = context.use_cases.read_run_events(
+        head = context.use_cases.runs.read_run_events(
             run.run_id, run.last_event_sequence - 1, 1
         )
         if not isinstance(head, RunEventsRead) or len(head.events) != 1:
@@ -1186,20 +1186,20 @@ class BrowserProofHarness:
         context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
         use_cases = context.use_cases
         message_hash = _published_schema_hash(
-            use_cases.publish_schema_revision(CONDUCTOR_MESSAGE_SCHEMA)
+            use_cases.definitions.publish_schema_revision(CONDUCTOR_MESSAGE_SCHEMA)
         )
         report_hash = _published_schema_hash(
-            use_cases.publish_schema_revision(CONDUCTOR_REPORT_SCHEMA)
+            use_cases.definitions.publish_schema_revision(CONDUCTOR_REPORT_SCHEMA)
         )
         document = conductor_workflow_document(message_hash, report_hash)
-        match use_cases.publish_workflow_revision(document):
+        match use_cases.workflow_revisions.publish_workflow_revision(document):
             case PublicationCreated(read) | PublicationExisting(read):
                 revision = read.projection.revision
             case refused_publication:
                 raise RuntimeError(
                     f"conductor publication failed: {refused_publication!r}"
                 )
-        match use_cases.found_catalog_lineage(
+        match use_cases.catalog_lineage.found_catalog_lineage(
             RevisionKind.WORKFLOW,
             PublishedRevisionHash(revision.revision_hash.value),
             None,
@@ -1211,7 +1211,7 @@ class BrowserProofHarness:
             case refused_admission:
                 raise RuntimeError(f"conductor admission failed: {refused_admission!r}")
 
-        match use_cases.publish_auth_profile_revision(
+        match use_cases.agent_catalog.publish_auth_profile_revision(
             "e2e-conductor-profile", 1, CONDUCTOR_FAKE_PROVIDER, "subscription"
         ):
             case AuthProfileRevisionPublished(profile) | AuthProfileRevisionUnchanged(
@@ -1222,7 +1222,7 @@ class BrowserProofHarness:
                 raise RuntimeError(
                     f"conductor auth profile failed: {refused_profile!r}"
                 )
-        match use_cases.publish_agent_configuration_revision(
+        match use_cases.agent_catalog.publish_agent_configuration_revision(
             "conductor-fake-model",
             auth_profile_hash,
             CONDUCTOR_FAKE_REVISION,
@@ -1237,7 +1237,7 @@ class BrowserProofHarness:
                     f"conductor configuration failed: {refused_configuration!r}"
                 )
 
-        match use_cases.publish_model_registry(
+        match use_cases.model_configuration.publish_model_registry(
             CONDUCTOR_FAKE_PROVIDER,
             1,
             (("conductor-fake-model", configuration_hash),),
@@ -1248,7 +1248,7 @@ class BrowserProofHarness:
                 raise RuntimeError(
                     f"conductor model registry failed: {refused_registry!r}"
                 )
-        match use_cases.validate_model_registry_entry(
+        match use_cases.model_configuration.validate_model_registry_entry(
             CONDUCTOR_FAKE_PROVIDER, configuration_hash
         ):
             case ModelRegistryPublished(registry) | ModelRegistryUnchanged(registry):
@@ -1257,7 +1257,7 @@ class BrowserProofHarness:
                 raise RuntimeError(
                     f"conductor model validation failed: {refused_validation!r}"
                 )
-        match use_cases.get_project_model_defaults("e2e-workshop"):
+        match use_cases.model_configuration.get_project_model_defaults("e2e-workshop"):
             case ProjectModelDefaultsRead(current_defaults):
                 defaults_revision_number = current_defaults.revision_number + 1
                 retained_defaults = tuple(
@@ -1278,7 +1278,7 @@ class BrowserProofHarness:
                 raise RuntimeError(
                     f"conductor model defaults read failed: {refused_defaults_read!r}"
                 )
-        match use_cases.publish_project_model_defaults(
+        match use_cases.model_configuration.publish_project_model_defaults(
             "e2e-workshop",
             defaults_revision_number,
             retained_defaults

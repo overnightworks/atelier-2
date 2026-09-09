@@ -127,7 +127,7 @@ async def put_queue_project_policy_route(
         raise ApiProblem("invalid-request") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.put_queue_project_policy(
+        lambda: context.use_cases.queue.put_queue_project_policy(
             policy, body.expected_revision
         ),
     )
@@ -173,7 +173,7 @@ async def put_queue_proposal_route(
     except (TypeError, ValueError) as error:
         raise ApiProblem("invalid-request") from error
     result = await run_control_query(
-        context.control_runner, lambda: context.use_cases.plan_queue_item(command)
+        context.control_runner, lambda: context.use_cases.queue.plan_queue_item(command)
     )
     match result:
         case QueueItemProposed(item_reference, proposal, revision):
@@ -224,7 +224,7 @@ async def confirm_queue_proposal_route(
         raise ApiProblem("invalid-request") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.confirm_queue_proposal(command),
+        lambda: context.use_cases.queue.confirm_queue_proposal(command),
     )
     match result:
         case QueueItemAdmitted(item_reference, admission, revision):
@@ -268,7 +268,7 @@ async def list_queue_items_route(
 ) -> QueueItemPageResource:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_queue_items(
+        lambda: context.use_cases.queue.list_queue_items(
             None if after is None else _parse_after(after), limit
         ),
     )
@@ -291,7 +291,7 @@ async def import_project_source_issues_route(
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceImportResource:
     result = await run_control_query(
-        context.control_runner, context.use_cases.import_project_source_issues
+        context.control_runner, context.use_cases.queue.import_project_source_issues
     )
     match result:
         case ProjectSourceIssuesImported(observed, newly_observed, skipped):

@@ -378,10 +378,6 @@ qualified_name = "atelier2.adapters.grok_subscription.attest_grok_workspace_tool
 lines = 62
 
 [[function]]
-qualified_name = "atelier2.api.app.bound_use_cases"
-lines = 354
-
-[[function]]
 qualified_name = "atelier2.api.app.create_app"
 lines = 100
 

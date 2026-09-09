@@ -69,7 +69,7 @@ async def prepare_events(
         after_sequence = cursor.sequence
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.prepare_run_events(run_id, after_sequence),
+        lambda: context.use_cases.runs.prepare_run_events(run_id, after_sequence),
     )
     match result:
         case RunEventStreamPrepared(prepared_run_id, first_after, head, terminal):
@@ -80,7 +80,7 @@ async def prepare_events(
                 terminal,
                 await load_run_projection(
                     prepared_run_id,
-                    context.use_cases.get_run,
+                    context.use_cases.runs.get_run,
                     context.control_runner,
                     context.limits,
                 ),
@@ -110,7 +110,7 @@ async def event_stream_route(
 ) -> AsyncIterator[ServerSentEvent]:
     async for event in stream_server_events(
         prepared,
-        context.use_cases.read_run_events,
+        context.use_cases.runs.read_run_events,
         context.event_runner,
         page_size=context.limits.event_page_size,
         limits=context.limits,
@@ -139,7 +139,7 @@ async def prepare_attention_events(
         after_sequence = cursor.sequence
         result = await run_control_query(
             context.control_runner,
-            lambda: context.use_cases.read_attention_events(
+            lambda: context.use_cases.runs.read_attention_events(
                 after_run_id, after_sequence, 1, ()
             ),
         )
@@ -174,8 +174,8 @@ async def attention_event_stream_route(
 ) -> AsyncIterator[ServerSentEvent]:
     async for event in stream_attention_events(
         prepared,
-        context.use_cases.read_attention_events,
-        context.use_cases.get_run,
+        context.use_cases.runs.read_attention_events,
+        context.use_cases.runs.get_run,
         context.event_runner,
         page_size=context.limits.event_page_size,
         limits=context.limits,

@@ -10,7 +10,7 @@ import tomllib
 import typing
 from collections import abc
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +309,23 @@ def _is_a_port_capability(candidate: Any) -> bool:
     )
 
 
+def _is_a_nested_use_case_record(candidate: Any) -> bool:
+    """Whether a field's own type is one further record of just such calls.
+
+    `ApiUseCases` decomposes into per-domain records declared next to it in
+    `USE_CASE_RECORD_MODULE`, each holding nothing but more of the calls this
+    rule already knows how to judge. Recursing into exactly that shape lets the
+    walk see every call a route can reach without learning a new escape:
+    nothing outside this one module recurses, and nothing inside it is
+    exempted from eventually being a `Callable`.
+    """
+    return (
+        isinstance(candidate, type)
+        and is_dataclass(candidate)
+        and _owned_by(getattr(candidate, "__module__", ""), USE_CASE_RECORD_IMPORT)
+    )
+
+
 def _readable_fields(outcome: type) -> dict[str, Any] | None:
     """This type's annotated fields, or `None` when nothing can resolve them.
 
@@ -367,20 +384,38 @@ def _carried_by(outcome: Any, seen: set[int]) -> Iterator[Any]:
 
 
 def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
-    """Every way the use-case record could hand a port back to a route.
+    """Every way the use-case record, or one nested inside it, could hand back a port.
 
-    The record is what the routes hold, so a field of it that resolves to a port
-    reopens exactly the call the other locks close. The rule is positive and
-    therefore fail-closed: a field is a call into this application, or it is
-    refused. A field that is not a callable at all, or whose outcome was declared
-    anywhere but `atelier2.application`, fails without anyone having to predict the
-    spelling it would have used.
+    The record is what the routes hold -- directly or through a nested record
+    of its own -- so a field at any depth that resolves to a port reopens
+    exactly the call the other locks close. The rule is positive and therefore
+    fail-closed: a field is a call into this application, one further record
+    of just such calls, or it is refused. A field that is none of those, or
+    whose outcome was declared anywhere but `atelier2.application`, fails
+    without anyone having to predict the spelling it would have used.
 
-    There is no exception list: the record does not predate this rule, so it never
-    legitimately holds a port.
+    There is no exception list: the record does not predate this rule, so it
+    never legitimately holds a port.
     """
     record = _record_under_test(project_root)
-    problems = list(_unannotated_fields(project_root))
+    return _use_case_record_field_problems(
+        project_root, record, USE_CASE_RECORD_NAME, frozenset()
+    )
+
+
+def _use_case_record_field_problems(
+    project_root: Path, record: type, path: str, seen: frozenset[int]
+) -> tuple[str, ...]:
+    """One record's own fields, judged and recursed into by the same rule.
+
+    Cuts a cycle rather than looping forever: two records that named each
+    other would otherwise never resolve, and the safe answer to a record this
+    walk cannot finish is the same refusal an unresolved outcome gets.
+    """
+    if id(record) in seen:
+        return (f"{path} is {record}, which this walk already opened: a cycle",)
+    seen = seen | {id(record)}
+    problems = list(_unannotated_fields(project_root, record.__name__))
     try:
         resolved = typing.get_type_hints(record)
     except (NameError, TypeError, AttributeError) as error:
@@ -391,16 +426,25 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
         return (
             *problems,
             (
-                f"{USE_CASE_RECORD_NAME} carries an annotation that resolves to "
-                f"nothing, so what a route would hold cannot be judged: {error}"
+                f"{path} carries an annotation that resolves to nothing, so "
+                f"what a route would hold cannot be judged: {error}"
             ),
         )
     for field, annotation in resolved.items():
-        stated = f"{USE_CASE_RECORD_NAME}.{field} is {annotation}"
+        stated = f"{path}.{field} is {annotation}"
+        if _is_a_nested_use_case_record(annotation):
+            problems.extend(
+                _use_case_record_field_problems(
+                    project_root, annotation, f"{path}.{field}", seen
+                )
+            )
+            continue
         if typing.get_origin(annotation) is not abc.Callable:
             problems.append(
-                f"{stated}, which is not a call into {APPLICATION_PACKAGE}; every "
-                "field of this record is a use-case the composition already bound"
+                f"{stated}, which is not a call into {APPLICATION_PACKAGE} nor a "
+                f"further record of them declared in {USE_CASE_RECORD_IMPORT}; "
+                "every field of this record is a use-case the composition "
+                "already bound, or one record of just those"
             )
             continue
         declared = tuple(_declared_in(annotation))
@@ -433,23 +477,24 @@ def use_case_record_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
-def _unannotated_fields(project_root: Path) -> Iterator[str]:
+def _unannotated_fields(project_root: Path, record_name: str) -> Iterator[str]:
     """A class-body assignment carrying no annotation is invisible to the resolver.
 
     `typing.get_type_hints` reports annotated fields only, so an unannotated
     assignment would never reach the rule above. It is refused here rather than
     tolerated, because a field without an annotation is a hole in exactly this
-    check.
+    check -- for `record_name` and for every nested record this walk reaches,
+    since every one of them is declared in the same module.
     """
     module = _parsed(project_root / USE_CASE_RECORD_MODULE)
     for node in ast.walk(module):
-        if not isinstance(node, ast.ClassDef) or node.name != USE_CASE_RECORD_NAME:
+        if not isinstance(node, ast.ClassDef) or node.name != record_name:
             continue
         for statement in node.body:
             if isinstance(statement, (ast.Assign, ast.AugAssign)):
                 yield (
-                    f"{USE_CASE_RECORD_NAME} carries an unannotated assignment; "
-                    "a field without an annotation is a hole in this check"
+                    f"{record_name} carries an unannotated assignment; a field "
+                    "without an annotation is a hole in this check"
                 )
 
 

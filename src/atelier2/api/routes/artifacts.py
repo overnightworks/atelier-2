@@ -62,7 +62,7 @@ async def publish_artifact_route(
     content = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_artifact(content),
+        lambda: context.use_cases.artifacts.publish_artifact(content),
     )
     match result:
         case ArtifactPublicationCreated(artifact):
@@ -108,7 +108,7 @@ async def read_artifact_route(
         raise ApiProblem("invalid-artifact-hash") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.read_artifact(parsed),
+        lambda: context.use_cases.artifacts.read_artifact(parsed),
     )
     match result:
         case ArtifactRead(artifact):
