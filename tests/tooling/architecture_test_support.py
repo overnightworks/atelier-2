@@ -61,20 +61,3 @@ def append_to(project: Path, relative: str, text: str) -> None:
     path = project / relative
     with path.open("a", encoding="utf-8") as handle:
         handle.write(text)
-
-
-def recalibrate_copied_source_module_count(project: Path) -> None:
-    """Point the copied wrapper at this scratch tree's counted inventory.
-
-    A mutation that must add or delete a module would otherwise fail the exact
-    count before the invariant under test is reached.
-    """
-
-    script = load_architecture_script()
-    counted = script.source_module_count(project / script.SOURCE_PACKAGE_DIRECTORY)
-    copied = project / ARCHITECTURE_SCRIPT
-    source = copied.read_text(encoding="utf-8")
-    current = f"EXPECTED_SOURCE_MODULE_COUNT = {script.EXPECTED_SOURCE_MODULE_COUNT}"
-    updated = f"EXPECTED_SOURCE_MODULE_COUNT = {counted}"
-    assert source.count(current) == 1
-    copied.write_text(source.replace(current, updated, 1), encoding="utf-8")

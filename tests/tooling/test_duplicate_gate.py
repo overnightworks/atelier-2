@@ -19,7 +19,6 @@ from tests.tooling.architecture_test_support import (
     append_to,
     copied_project,
     load_architecture_script,
-    recalibrate_copied_source_module_count,
     run_gate,
 )
 
@@ -155,7 +154,6 @@ def project_carrying_a_copy(tmp_path: Path) -> Path:
         (project / COPY_CANVAS_PACKAGE / f"{module}.py").write_text(
             a_summing_function(), encoding="utf-8"
         )
-    recalibrate_copied_source_module_count(project)
     return project
 
 

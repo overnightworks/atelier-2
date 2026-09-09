@@ -13,7 +13,6 @@ from tests.tooling.architecture_test_support import (
     append_to,
     copied_project,
     load_architecture_script,
-    recalibrate_copied_source_module_count,
     run_gate,
 )
 
@@ -43,14 +42,12 @@ def assert_named_preflight_failed(
     assert fragment in result.stderr, result.stderr
 
 
-def assert_source_module_count_mismatch(
-    result: subprocess.CompletedProcess[str], found: int
+def assert_unnameable_source_refused(
+    result: subprocess.CompletedProcess[str], path: str
 ) -> None:
-    script = load_architecture_script()
     assert result.returncode != 0, result.stdout + result.stderr
-    assert script.source_module_count_mismatch(found) in result.stderr
-    assert "ImportError" not in result.stderr
-    assert "could not be imported" not in result.stderr
+    assert "source files the import analysis cannot see:" in result.stderr
+    assert path in result.stderr, result.stderr
 
 
 def add_contract_to_host_import(project: Path) -> None:
@@ -81,7 +78,6 @@ def add_empty_rogue_package(project: Path) -> None:
     rogue = project / "src/atelier2/rogue"
     rogue.mkdir()
     (rogue / "__init__.py").touch()
-    recalibrate_copied_source_module_count(project)
 
 
 def add_wire_to_port_import(project: Path) -> None:
@@ -202,7 +198,7 @@ def test_green_gate_reports_positive_source_contract_layer_and_native_graph_coun
     )
     script = load_architecture_script()
     landed = script.source_module_count(PROJECT_ROOT / "src/atelier2")
-    assert source_count == landed == script.EXPECTED_SOURCE_MODULE_COUNT
+    assert source_count == landed
     assert (contract_count, layer_count, preflight_count) == (
         len(script.EXPECTED_CONTRACT_NAMES),
         len(script.EXPECTED_LAYER_MEMBERS),
@@ -223,18 +219,35 @@ def empty_source_scan(project: Path) -> None:
         source.unlink()
 
 
-def shrink_source_scan_by_deleting_a_dispensable_leaf(project: Path) -> None:
-    """Delete a production leaf the use-case-record import does not need.
-
-    hashing.py is not that leaf: context's import graph loads it, so a stale
-    count would fail the copied tree at ImportError instead of the count.
-    """
-
+def delete_a_declared_layer(project: Path) -> None:
     (project / "src/atelier2/__main__.py").unlink()
 
 
 def add_a_source_module(project: Path) -> None:
     (project / "src/atelier2/contracts/extra.py").write_text("", encoding="utf-8")
+
+
+def add_a_module_beside_the_package(project: Path) -> str:
+    beside = project / "src/tooling"
+    beside.mkdir()
+    (beside / "__init__.py").touch()
+    (beside / "helper.py").touch()
+    return "src/tooling/helper.py"
+
+
+def add_a_module_under_a_directory_python_cannot_name(project: Path) -> str:
+    unnameable = project / "src/atelier2/api/route-group"
+    unnameable.mkdir()
+    (unnameable / "__init__.py").touch()
+    (unnameable / "health.py").touch()
+    return "src/atelier2/api/route-group/health.py"
+
+
+def add_a_module_under_a_directory_that_is_no_package(project: Path) -> str:
+    loose = project / "src/atelier2/api/group"
+    loose.mkdir()
+    (loose / "health.py").touch()
+    return "src/atelier2/api/group/health.py"
 
 
 def remove_contract(project: Path) -> None:
@@ -254,13 +267,53 @@ def change_layer(project: Path) -> None:
     )
 
 
-def test_an_empty_source_scan_fails_at_the_source_module_count(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "unnameable",
+    [
+        add_a_module_beside_the_package,
+        add_a_module_under_a_directory_python_cannot_name,
+        add_a_module_under_a_directory_that_is_no_package,
+    ],
+    ids=["beside-the-package", "unnameable-directory", "no-package"],
+)
+def test_a_source_file_the_analysis_cannot_see_is_refused_by_its_path(
+    tmp_path: Path, unnameable: Callable[[Path], str]
+) -> None:
     project = copied_project(tmp_path)
-    empty_source_scan(project)
+    invisible = unnameable(project)
 
     result = run_gate(project)
 
-    assert_source_module_count_mismatch(result, found=0)
+    assert_unnameable_source_refused(result, invisible)
+
+
+def test_a_new_module_inside_a_declared_layer_keeps_the_gate_green(
+    tmp_path: Path,
+) -> None:
+    project = copied_project(tmp_path)
+    add_a_source_module(project)
+
+    result = run_gate(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_an_emptied_source_tree_is_refused_instead_of_judged_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """An empty `src` leaves the package resolvable from wherever it is installed.
+
+    The gate then reports on a tree it never read, so what it must say is that the
+    module it resolved is not this tree's module.
+    """
+    project = copied_project(tmp_path)
+    empty_source_scan(project)
+    script = load_architecture_script()
+
+    result = run_gate(project)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{script.USE_CASE_RECORD_MODULE} of the tree under test" in result.stderr
 
 
 def test_a_missing_contract_fails_as_a_reviewed_set_change(tmp_path: Path) -> None:
@@ -283,32 +336,15 @@ def test_a_changed_layer_order_fails_as_a_reviewed_set_change(tmp_path: Path) ->
     assert "the reviewed layer order or member set changed" in result.stderr
 
 
-def test_deleting_a_dispensable_source_leaf_fails_at_the_source_module_count(
-    tmp_path: Path,
-) -> None:
+def test_deleting_a_declared_layer_fails_as_a_missing_layer(tmp_path: Path) -> None:
     project = copied_project(tmp_path)
-    shrink_source_scan_by_deleting_a_dispensable_leaf(project)
+    delete_a_declared_layer(project)
     script = load_architecture_script()
 
     result = run_gate(project)
 
-    remaining = script.source_module_count(project / "src/atelier2")
-    assert remaining == script.EXPECTED_SOURCE_MODULE_COUNT - 1
-    assert_source_module_count_mismatch(result, found=remaining)
-
-
-def test_adding_a_source_module_fails_at_the_source_module_count(
-    tmp_path: Path,
-) -> None:
-    project = copied_project(tmp_path)
-    add_a_source_module(project)
-    script = load_architecture_script()
-
-    result = run_gate(project)
-
-    counted = script.source_module_count(project / "src/atelier2")
-    assert counted == script.EXPECTED_SOURCE_MODULE_COUNT + 1
-    assert_source_module_count_mismatch(result, found=counted)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert f"{script.ROOT_PACKAGE}.__main__" in result.stdout + result.stderr
 
 
 def test_architecture_decision_and_executable_contract_share_the_exact_layers_and_owners(
@@ -391,12 +427,12 @@ def add_route_reaching_a_port(project: Path) -> None:
 def add_nested_route_reaching_a_port(project: Path) -> None:
     nested = project / "src/atelier2/api/routes/group"
     nested.mkdir()
+    (nested / "__init__.py").touch()
     (nested / "health.py").write_text(
         "from atelier2.api.context import ApiPorts\n\n\n"
         "def leak(ports: ApiPorts) -> object:\n    return ports\n",
         encoding="utf-8",
     )
-    recalibrate_copied_source_module_count(project)
 
 
 RUN_QUERIES_IMPORT = "from atelier2.ports.run_queries import RunQueries"

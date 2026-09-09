@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib
 import io
+import keyword
 import sys
 import tokenize
 import tomllib
@@ -16,7 +17,6 @@ from typing import Any
 from importlinter.api import read_configuration
 from importlinter.cli import lint_imports
 
-EXPECTED_SOURCE_MODULE_COUNT = 269
 EXPECTED_CONTRACT_NAMES = {
     "layers": "Atelier package layers",
     "root-facade": "Root facade cannot bypass ports",
@@ -44,7 +44,9 @@ class _UnresolvedOutcome:
 _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
 
 
+SOURCE_DIRECTORY = "src"
 SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
+PACKAGE_MARKER = "__init__.py"
 PORT_PACKAGE_DIRECTORY = "src/atelier2/ports"
 HTTP_SENTENCE_MARKERS = ("API limits", "HTTP", "status code")
 API_PACKAGE_DIRECTORY = "src/atelier2/api"
@@ -183,10 +185,51 @@ def source_module_count(source_root: Path) -> int:
     return sum(1 for _ in source_root.rglob("*.py"))
 
 
-def source_module_count_mismatch(found: int) -> str:
+def _is_a_python_name(name: str) -> bool:
+    return name.isidentifier() and not keyword.iskeyword(name)
+
+
+def _naming_problem(relative: Path, source_root: Path) -> str | None:
+    """Why Python cannot name this file, given relative to `src`, as a module."""
+    directories = relative.parts[:-1]
+    if not directories or directories[0] != ROOT_PACKAGE:
+        return f"it lies outside the {ROOT_PACKAGE} package"
+    for depth, directory in enumerate(directories, start=1):
+        if not _is_a_python_name(directory):
+            return f"the directory {directory!r} is not a Python name"
+        package = Path(*directories[:depth])
+        if not (source_root / package / PACKAGE_MARKER).exists():
+            return f"{package.as_posix()} carries no {PACKAGE_MARKER}"
+    if not _is_a_python_name(relative.stem):
+        return f"the name {relative.stem!r} is not a Python name"
+    return None
+
+
+def unnameable_source_problems(project_root: Path) -> tuple[str, ...]:
+    """Source files no import contract can judge, each with its path and reason.
+
+    A contract speaks about modules, and the analysis only ever builds modules of
+    the declared root package. A file beside that package, under a directory that
+    is no package, or under a name Python cannot spell is absent from every
+    contract it appears to satisfy -- it is kept because nothing ever read it.
+    Only the tree on disk can answer this, so it is read here rather than asked of
+    the graph, which is missing exactly the files in question.
+    """
+    source_root = project_root / SOURCE_DIRECTORY
+    problems: list[str] = []
+    for source in sorted(source_root.rglob("*.py")):
+        problem = _naming_problem(source.relative_to(source_root), source_root)
+        if problem is not None:
+            problems.append(f"{source.relative_to(project_root).as_posix()}: {problem}")
+    return tuple(problems)
+
+
+def unnameable_source_refusal(problems: tuple[str, ...]) -> str:
     return (
-        "source module count mismatch: "
-        f"found {found} source modules; expected {EXPECTED_SOURCE_MODULE_COUNT}"
+        "source files the import analysis cannot see:\n  "
+        + "\n  ".join(problems)
+        + f"\nevery file under {SOURCE_DIRECTORY} must be a module of the "
+        f"{ROOT_PACKAGE} package, or no contract judges it"
     )
 
 
@@ -931,9 +974,9 @@ ARCHITECTURE_PREFLIGHTS = (
 
 
 def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
-    source_count = source_module_count(project_root / SOURCE_PACKAGE_DIRECTORY)
-    if source_count != EXPECTED_SOURCE_MODULE_COUNT:
-        raise ArchitecturePreflightError(source_module_count_mismatch(source_count))
+    unnameable = unnameable_source_problems(project_root)
+    if unnameable:
+        raise ArchitecturePreflightError(unnameable_source_refusal(unnameable))
     problems: list[str] = []
     for preflight_id, check in ARCHITECTURE_PREFLIGHTS:
         try:
@@ -947,6 +990,7 @@ def architecture_preflight(project_root: Path) -> ArchitectureConfiguration:
             "architecture preflights failed:\n  " + "\n  ".join(problems)
         )
     configuration = read_architecture_configuration(project_root / "pyproject.toml")
+    source_count = source_module_count(project_root / SOURCE_PACKAGE_DIRECTORY)
     print(
         "Architecture preflight: "
         f"{source_count} source modules, {len(configuration.contracts)} contracts, "
