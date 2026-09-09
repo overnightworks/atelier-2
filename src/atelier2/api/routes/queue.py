@@ -54,7 +54,9 @@ from atelier2.application.import_project_source_issues import (
     ProjectSourceIssuesImported,
 )
 from atelier2.application.plan_queue_item import (
+    QueueProjectPolicyNotSet,
     QueueProjectPolicyPublished,
+    QueueProjectPolicyRead,
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
 )
@@ -145,6 +147,31 @@ async def put_queue_project_policy_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(_policy_resource(stored), status)
+
+
+@router.get(PROJECT_QUEUE_POLICY_PATH)
+async def get_queue_project_policy_route(
+    public_project_reference: PublicProjectReferencePath,
+    context: ApiContext = api_context_dependency,
+) -> QueueProjectPolicyResource:
+    project = decode_public_project_reference_value(
+        public_project_reference, context.limits
+    )
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.queue.get_queue_project_policy(project),
+    )
+    match result:
+        case QueueProjectPolicyRead(policy):
+            return _policy_resource(policy)
+        case QueueProjectPolicyNotSet():
+            raise ApiProblem("queue-policy-not-set")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.put(

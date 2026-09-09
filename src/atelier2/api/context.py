@@ -38,6 +38,7 @@ from atelier2.application.model_configuration import (
     PublishProjectModelDefaultsUseCaseResult,
 )
 from atelier2.application.plan_queue_item import (
+    GetQueueProjectPolicyOutcome,
     PlanQueueItemOutcome,
     PutQueueProjectPolicyOutcome,
 )
@@ -435,6 +436,7 @@ class QueueUseCases:
     put_queue_project_policy: Callable[
         [QueueProjectPolicyRevision, int], PutQueueProjectPolicyOutcome
     ]
+    get_queue_project_policy: Callable[[ProjectId], GetQueueProjectPolicyOutcome]
     list_queue_items: Callable[[QueueItemId | None, int], ListQueueItemsOutcome]
     import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
     read_redeploy_status: Callable[[], ReadRedeployStatusResult]

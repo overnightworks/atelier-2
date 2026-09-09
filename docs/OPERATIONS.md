@@ -592,6 +592,19 @@ reason the canary's four hashes above are not copied either.
 
 ### Publish a queue policy with its cap and its automation label
 
+Read the current policy first, so publishing one field never means guessing
+the rest:
+
+```bash
+curl -fsS \
+  http://127.0.0.1:8422/atelier/api/v1/projects/<public-project-reference>/queue-policy
+```
+
+A `404 queue-policy-not-set` means the project has never published one:
+`expected_revision` is `0`. Otherwise the answer carries every field and the
+`revision_number` currently in force -- change the one field this publish is
+about and send the rest back exactly as read.
+
 One CAS-guarded call names both of a project's queue rules at once:
 
 ```bash
@@ -602,9 +615,9 @@ curl -fsS -X PUT \
        "maximum_active_runs": 2, "automation_label": "bereit"}'
 ```
 
-`expected_revision` is the revision number currently in force (`0` for a
-project that has never published one) and `revision_number` is that plus one;
-a mismatch is refused as `queue-policy-revision-conflict` rather than
+`expected_revision` is the `revision_number` the read above answered (`0` if
+it answered `queue-policy-not-set`) and `revision_number` is that plus one; a
+mismatch is refused as `queue-policy-revision-conflict` rather than
 overwriting a revision someone else published. Revisions are append-only, so
 changing either rule means publishing the next revision, never editing this
 one.

@@ -608,6 +608,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (PROJECT_QUEUE_POLICY_PATH, "get"): (
+        "invalid-public-project-reference",
+        "queue-policy-not-set",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (QUEUE_ITEMS_PATH, "get"): (
         "invalid-request",
         "temporarily-unavailable",

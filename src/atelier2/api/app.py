@@ -80,6 +80,7 @@ from atelier2.application.model_configuration import (
     validate_model_registry_entry,
 )
 from atelier2.application.plan_queue_item import (
+    get_queue_project_policy,
     plan_queue_item,
     put_queue_project_policy,
 )
@@ -537,6 +538,9 @@ def _bind_queue_use_cases(
         ),
         put_queue_project_policy=lambda policy, expected_revision: (
             put_queue_project_policy(policy, expected_revision, ports.queue_projection)
+        ),
+        get_queue_project_policy=lambda project: get_queue_project_policy(
+            project, ports.queue_projection
         ),
         list_queue_items=lambda after, limit: list_queue_items(
             after, limit, ports.queue_projection

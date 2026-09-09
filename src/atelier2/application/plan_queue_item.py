@@ -1,10 +1,16 @@
-"""Write the exact queue proposal and project policy an operator inspects."""
+"""Plan a queue proposal, and read and write the project policy it is planned under."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ReadUnavailable,
+    WriteUnavailable,
+)
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     PlanQueueItem,
     QueueProjectPolicyRevision,
@@ -14,7 +20,15 @@ from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateC
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.queue_projection import (
     QueuePlanner,
+    QueuePolicyReader,
     QueuePolicyWriter,
+    QueueReadUnavailable,
+)
+from atelier2.ports.queue_projection import (
+    QueueProjectPolicyAbsent as PortQueueProjectPolicyAbsent,
+)
+from atelier2.ports.queue_projection import (
+    QueueProjectPolicyFound as PortQueueProjectPolicyFound,
 )
 from atelier2.ports.queue_projection import (
     QueueProjectPolicyPublished as PortQueueProjectPolicyPublished,
@@ -43,6 +57,16 @@ class QueueProjectPolicyRevisionConflict:
     actual_revision: int
 
 
+@dataclass(frozen=True)
+class QueueProjectPolicyRead:
+    policy: QueueProjectPolicyRevision
+
+
+@dataclass(frozen=True)
+class QueueProjectPolicyNotSet:
+    """The project has published no policy revision yet (ADR 0016)."""
+
+
 type PlanQueueItemOutcome = (
     QueueProposalOutcome | WriteUnavailable | DurableStateCorrupt
 )
@@ -51,6 +75,12 @@ type PutQueueProjectPolicyOutcome = (
     | QueueProjectPolicyUnchanged
     | QueueProjectPolicyRevisionConflict
     | WriteUnavailable
+    | DurableStateCorrupt
+)
+type GetQueueProjectPolicyOutcome = (
+    QueueProjectPolicyRead
+    | QueueProjectPolicyNotSet
+    | ReadUnavailable
     | DurableStateCorrupt
 )
 
@@ -85,3 +115,19 @@ def put_queue_project_policy(
             result.expected_revision, result.actual_revision
         )
     raise AssertionError("queue policy writer returned an unknown outcome")
+
+
+def get_queue_project_policy(
+    project: ProjectId, queue: QueuePolicyReader
+) -> GetQueueProjectPolicyOutcome:
+    match queue.current_policy(project):
+        case PortQueueProjectPolicyFound(policy):
+            return QueueProjectPolicyRead(policy)
+        case PortQueueProjectPolicyAbsent():
+            return QueueProjectPolicyNotSet()
+        case QueueReadUnavailable():
+            return ReadUnavailable()
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)

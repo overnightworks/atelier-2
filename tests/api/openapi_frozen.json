@@ -6142,6 +6142,33 @@
         ],
         "type": "object"
       },
+      "ProblemQueuePolicyNotSet": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "const": 404,
+            "type": "integer"
+          },
+          "title": {
+            "const": "Queue project policy not found",
+            "type": "string"
+          },
+          "type": {
+            "const": "urn:atelier2:problem:v1:queue-policy-not-set",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
       "ProblemQueuePolicyRevisionConflict": {
         "additionalProperties": false,
         "properties": {
@@ -14681,6 +14708,94 @@
       }
     },
     "/atelier/api/v1/projects/{public_project_reference}/queue-policy": {
+      "get": {
+        "operationId": "get_queue_project_policy_route_atelier_api_v1_projects__public_project_reference__queue_policy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "public_project_reference",
+            "required": true,
+            "schema": {
+              "maxLength": 5471,
+              "pattern": "^project1\\.[A-Za-z0-9_-]+$",
+              "title": "Public Project Reference",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueProjectPolicyResource"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidPublicProjectReference"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemQueuePolicyNotSet"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemDurableStateCorrupt"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInternalError"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemTemporarilyUnavailable"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          }
+        },
+        "summary": "Get Queue Project Policy Route"
+      },
       "put": {
         "operationId": "put_queue_project_policy_route_atelier_api_v1_projects__public_project_reference__queue_policy_put",
         "parameters": [
