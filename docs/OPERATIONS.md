@@ -377,8 +377,8 @@ The model lists a registry publication reads come from the shared provider
 library `overnightworks-agent-providers`, which owns every agent CLI's own
 vocabulary. This deployment states its provider facts once at Serve start --
 the executables and credential directories `serve-live.sh` names, and the
-scratch root beneath which every provider child works -- and asks. It states no
-API key: this host runs subscription CLIs.
+catalog root `provider-catalog/` beside the durable store -- and asks. It
+states no API key: this host runs subscription CLIs.
 
 Grok and Codex answer with their CLI's own model list. Claude answers nothing:
 its CLI prints aliases (`opus`, `sonnet`), while a registry here holds full
@@ -392,10 +392,9 @@ A served provider whose configured credential file is missing is logged by
 path, never by content, and reported logged out. A provider this deployment
 does not serve never reaches that check at all.
 
-The library builds one private, disposable home per probe under
-`provider-catalog/` beside the durable store -- never under the agent scratch
-root, which is owned entirely by attempt workspaces and refuses anything else
-it holds.
+The library builds one private, disposable home per probe under that root --
+never under the agent scratch root, which is owned entirely by attempt
+workspaces and refuses anything else it holds.
 
 The library is pinned in `pyproject.toml` by commit, not by version: it is on a
 candidate branch that both its hosts are proving before it is released, and a
