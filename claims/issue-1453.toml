@@ -1,8 +1,0 @@
-claim_id = "376d1f41528c4d9682de89be5e0da180"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
-branch = "claude/issue-1453-attempt-split"
-scope = ["src/atelier2/application/execute_agent_attempt.py", "tests/application", "scripts/check_architecture.py"]
-opened_commit = "eac1cca03e18f261a6652afb828e72458c4e0300"
-whole_reason = "Ein neues Quellmodul und die deklarierte Modul-Zahl gehoeren in denselben Commit."
