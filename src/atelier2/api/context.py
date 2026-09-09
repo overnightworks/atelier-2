@@ -450,8 +450,8 @@ class ApiUseCases:
     type belongs to `atelier2.application`. A field -- at any depth -- that
     resolves to `atelier2.ports` would hand the port straight back through
     this record, which is the evasion `scripts/check_architecture.py` reads
-    these annotations for, recursing through exactly the frozen records this
-    module declares.
+    these annotations for, recursing through exactly the records this module
+    declares.
 
     The calls stay synchronous because admitting one to the process-wide query
     budget is the API's decision, not the application's: the route runs them

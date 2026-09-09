@@ -310,7 +310,7 @@ def _is_a_port_capability(candidate: Any) -> bool:
 
 
 def _is_a_nested_use_case_record(candidate: Any) -> bool:
-    """Whether a field's own type is one further frozen record of just such calls.
+    """Whether a field's own type is one further record of just such calls.
 
     `ApiUseCases` decomposes into per-domain records declared next to it in
     `USE_CASE_RECORD_MODULE`, each holding nothing but more of the calls this
@@ -408,9 +408,9 @@ def _use_case_record_field_problems(
 ) -> tuple[str, ...]:
     """One record's own fields, judged and recursed into by the same rule.
 
-    Cuts a cycle rather than looping forever: two frozen records that named
-    each other would otherwise never resolve, and the safe answer to a record
-    this walk cannot finish is the same refusal an unresolved outcome gets.
+    Cuts a cycle rather than looping forever: two records that named each
+    other would otherwise never resolve, and the safe answer to a record this
+    walk cannot finish is the same refusal an unresolved outcome gets.
     """
     if id(record) in seen:
         return (f"{path} is {record}, which this walk already opened: a cycle",)
