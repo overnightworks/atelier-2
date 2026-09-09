@@ -19,7 +19,6 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_size_ratchet.py"
-REPORT_CORRIDOR = Path("scripts") / "report_corridor.py"
 DOCUMENTATION_LINES = Path("scripts") / "python_documentation_lines.py"
 BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
@@ -123,7 +122,6 @@ def scratch_project(
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
-    shutil.copy2(PROJECT_ROOT / REPORT_CORRIDOR, project / REPORT_CORRIDOR)
     shutil.copy2(PROJECT_ROOT / DOCUMENTATION_LINES, project / DOCUMENTATION_LINES)
     package = project / SOURCE_PACKAGE
     package.mkdir(parents=True)
@@ -438,7 +436,33 @@ def test_a_trailing_comment_counts_as_code_and_documentation_together(
     result = run_gate_with_base(project, base)
 
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "documentation share fell from 0.1429 to 0.0000" in result.stderr
+    assert DENSIFYING_MODULE_PATH in result.stderr
+    assert "documentation share fell from" in result.stderr
+    assert "1 of its own comment or docstring lines disappeared" in result.stderr
+
+
+def test_a_non_ascii_filename_is_not_silently_dropped(tmp_path: Path) -> None:
+    """Regression: git quotes a `--name-status` path that carries a
+    non-ASCII byte unless the diff is read with `-z`; a quoted path fails
+    the source-package prefix check and would be silently skipped, hiding
+    a real densification instead of reporting it."""
+    module_name = "straße.py"
+    project = scratch_git_project(tmp_path)
+    write_module(
+        project, module_name, a_documented_function("guarded", extra_code_lines=8)
+    )
+    base = commit(project, "base")
+    write_module(
+        project,
+        module_name,
+        a_function_without_documentation("guarded", extra_code_lines=8),
+    )
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(SOURCE_PACKAGE / module_name) in result.stderr
 
 
 def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
@@ -485,6 +509,55 @@ def test_a_split_that_moves_documentation_to_a_sibling_file_is_quiet(
     result = run_gate_with_base(project, base)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_foreign_densification_landed_after_the_pr_opened_is_not_charged_to_it(
+    tmp_path: Path,
+) -> None:
+    """Regression for the CI base-selection bug: a `pull_request` event's
+    checked-out commit is GitHub's merge of the PR branch onto the target
+    branch's *current* tip, not the PR's opening-time fork point. Diffing
+    against the stale fork point blames this PR for a completely unrelated
+    file another landing densified after the PR opened; diffing against the
+    target branch's current tip -- the merge commit's own first parent --
+    correctly sees this PR touched nothing there."""
+    project = scratch_git_project(tmp_path)
+    write_module(
+        project, "unrelated.py", a_documented_function("guarded", extra_code_lines=8)
+    )
+    fork_point = commit(project, "shared history before the pull request opened")
+    main_branch = _git(project, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+    _git(project, "checkout", "-q", "-b", "pr-branch")
+    write_module(project, "pr_owned.py", a_file_of(3))
+    commit(project, "the pull request's own, unrelated change")
+
+    _git(project, "checkout", "-q", main_branch)
+    write_module(
+        project,
+        "unrelated.py",
+        a_function_without_documentation("guarded", extra_code_lines=8),
+    )
+    commit(project, "a foreign landing strips a docstring while its code stays put")
+
+    # GitHub's own pull_request merge ref parents the base branch first and
+    # the PR branch second -- checkout the target branch and merge the PR
+    # branch into it, not the other way around, so HEAD^1 lands on the
+    # target branch's own tip the way it does for that real ref.
+    current_target_tip = _git(project, "rev-parse", main_branch).stdout.strip()
+    _git(project, "checkout", "-q", main_branch)
+    _git(project, *GIT_IDENTITY, "merge", "-q", "--no-edit", "pr-branch")
+
+    result_at_current_tip = run_gate_with_base(project, current_target_tip)
+    result_at_stale_fork_point = run_gate_with_base(project, fork_point)
+
+    assert result_at_current_tip.returncode == 0, (
+        result_at_current_tip.stdout + result_at_current_tip.stderr
+    )
+    assert result_at_stale_fork_point.returncode == 1, (
+        "the stale fork point must still see the foreign densification, or "
+        "this scenario proves nothing about the fix"
+    )
 
 
 def test_a_pure_rename_without_edits_is_quiet(tmp_path: Path) -> None:

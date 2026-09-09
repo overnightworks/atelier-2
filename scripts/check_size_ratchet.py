@@ -32,7 +32,6 @@ from python_documentation_lines import (
     comment_line_slices,
     docstring_line_slices,
 )
-from report_corridor import CorridorError, git_diff_lines
 
 ROOT_PACKAGE = "atelier2"
 SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
@@ -240,19 +239,36 @@ def _changed_source_paths(
     """Every touched path under the source package, base path included, so a
     rename's base-side census reads the file it was renamed from rather than
     (0, 0) -- otherwise a `git mv` plus any rewrite would read as a brand-new
-    file no matter what the rewrite did."""
+    file no matter what the rewrite did.
+
+    Read with `-z`: git quotes a path in its usual, newline-terminated
+    `--name-status` output whenever it carries a non-ASCII or otherwise
+    unsafe byte, and a quoted path would fail the prefix check below and be
+    silently dropped. A NUL-terminated record has nothing to quote, so
+    there is no escaping to decode and no second decoder to keep in step
+    with check_changed_narrative.py's own.
+    """
+    result = subprocess.run(
+        ["git", "diff", "-M", "-z", "--name-status", f"{base}...{head}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise SizeRatchetError(f"git diff failed: {result.stderr.strip()}")
     prefix = f"{SOURCE_PACKAGE_DIRECTORY}/"
+    fields = [field for field in result.stdout.split("\0") if field]
     changed: list[ChangedPath] = []
-    for line in git_diff_lines(
-        project_root, base, head, "--name-status", rename_detection="-M"
-    ):
-        if not line.strip():
-            continue
-        fields = line.split("\t")
-        if fields[0].startswith("R"):
-            base_path, head_path = fields[1], fields[2]
+    index = 0
+    while index < len(fields):
+        status = fields[index]
+        if status.startswith("R"):
+            base_path, head_path = fields[index + 1], fields[index + 2]
+            index += 3
         else:
-            base_path = head_path = fields[1]
+            base_path = head_path = fields[index + 1]
+            index += 2
         if head_path.startswith(prefix) and head_path.endswith(".py"):
             changed.append(ChangedPath(head_path, base_path))
     return tuple(sorted(changed, key=lambda changed_path: changed_path.head_path))
@@ -613,7 +629,6 @@ def main() -> int:
             )
     except (
         SizeRatchetError,
-        CorridorError,
         FileNotFoundError,
         KeyError,
         TypeError,
