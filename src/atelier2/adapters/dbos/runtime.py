@@ -30,6 +30,7 @@ from atelier2.adapters.claim_checkouts import LocalClaimCheckouts
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.claim_release import release_claims_of_ended_runs
 from atelier2.adapters.dbos.effect_store import converge_driverless_effect_intents
 from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
@@ -153,6 +154,7 @@ from atelier2.ports.effects import (
     EffectAdapterFactory,
     EffectAdapterRegistration,
     EffectAdapterRegistry,
+    HeadBranchPullRequests,
     OpenEffectAdapterRegistry,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
@@ -389,6 +391,7 @@ class _BoundRuntime:
     declared_project: DeclaredProject | None
     tracker_item_source: TrackerItemSource | None
     work_item_claims: WorkItemClaimLedger | None = None
+    head_branch_pull_requests: HeadBranchPullRequests | None = None
     leases: int = 0
     launched: bool = False
     storage_ready: bool = False
@@ -867,6 +870,7 @@ def _open_binding(
     effect_bindings: tuple[EffectAdapterBinding, ...],
     *,
     tracker_item_source: TrackerItemSource | None,
+    head_branch_pull_requests: HeadBranchPullRequests | None,
 ) -> _BoundRuntime:
     canonical_database = settings.database_path.resolve()
     _require_distinct_effect_stores(canonical_database, effect_bindings)
@@ -949,6 +953,7 @@ def _open_binding(
         project_binding.declared_project,
         tracker_item_source,
         work_item_claims=project_binding.work_item_claims,
+        head_branch_pull_requests=head_branch_pull_requests,
     )
 
 
@@ -1211,6 +1216,7 @@ class _DbosProcessOwner:
         effect_registry: EffectAdapterRegistry,
         *,
         tracker_item_source: TrackerItemSource | None = None,
+        head_branch_pull_requests: HeadBranchPullRequests | None = None,
     ) -> _BoundRuntime:
         with self._lock:
             agent_manifest = agent_registry.manifest
@@ -1223,6 +1229,7 @@ class _DbosProcessOwner:
                     effect_registry,
                     effect_bindings,
                     tracker_item_source=tracker_item_source,
+                    head_branch_pull_requests=head_branch_pull_requests,
                 )
             elif (
                 self._bound.settings.binding(
@@ -1301,6 +1308,7 @@ class _DbosProcessOwner:
             self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
             self._close_terminal_claim_checkouts(bound)
+            self._release_claims_of_ended_runs(bound)
             self._advance_queue(bound)
             self._start_queue_sweep(bound)
 
@@ -1385,6 +1393,31 @@ class _DbosProcessOwner:
             )
 
     @staticmethod
+    def _release_claims_of_ended_runs(bound: _BoundRuntime) -> None:
+        """Give back the work-item claim of every run the store already ended.
+
+        Before the queue advances: paths this sweep frees are paths the same
+        sweep may start the next lane on. A release that cannot finish leaves
+        the claim standing, and the next tick asks again -- a claim held one
+        tick too long costs a wait, while one given back too early costs the
+        lane that was still building under it.
+        """
+
+        ledger = bound.work_item_claims
+        head_branch_pull_requests = bound.head_branch_pull_requests
+        if ledger is None or head_branch_pull_requests is None:
+            return
+        try:
+            release_claims_of_ended_runs(
+                bound.engine, ledger.claims, head_branch_pull_requests
+            )
+        except Exception:
+            _LOG.exception(
+                "Releasing the claims of ended runs failed; the next tick asks again.",
+                extra={"event": "claim_release_failed"},
+            )
+
+    @staticmethod
     def _advance_queue(bound: _BoundRuntime) -> None:
         """Import the tracker's open items, admit what the label names, then start each launch once.
 
@@ -1456,6 +1489,7 @@ class _DbosProcessOwner:
         """
 
         _DbosProcessOwner._close_terminal_claim_checkouts(bound)
+        _DbosProcessOwner._release_claims_of_ended_runs(bound)
         try:
             _DbosProcessOwner._advance_queue(bound)
         except Exception:
@@ -1595,6 +1629,7 @@ class DbosRuntime:
         ] = (),
         *,
         tracker_item_source: TrackerItemSource | None = None,
+        head_branch_pull_requests: HeadBranchPullRequests | None = None,
     ) -> None:
         self._close_lock = threading.Lock()
         registry = AgentExecutorRegistry(
@@ -1615,7 +1650,11 @@ class DbosRuntime:
             )
         )
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, registry, effect_registry, tracker_item_source=tracker_item_source
+            settings,
+            registry,
+            effect_registry,
+            tracker_item_source=tracker_item_source,
+            head_branch_pull_requests=head_branch_pull_requests,
         )
 
     @property
