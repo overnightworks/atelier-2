@@ -14,16 +14,21 @@ Follows the pattern of the duplicate ratchet in `scripts/check_architecture.py`.
 
 from __future__ import annotations
 
+import argparse
 import ast
+import io
 import json
 import re
 import subprocess
 import sys
+import tokenize
 import tomllib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from report_corridor import CorridorError, git_diff_lines
 
 ROOT_PACKAGE = "atelier2"
 SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
@@ -131,6 +136,158 @@ def oversized_files(project_root: Path) -> tuple[Offender, ...]:
         if line_count >= FILE_LINE_THRESHOLD:
             offenders.append(Offender(relative, relative, line_count))
     return tuple(offenders)
+
+
+@dataclass(frozen=True, slots=True)
+class LineCensus:
+    """One module's physical lines, split into code and documentation.
+
+    Documentation is a docstring expression's own lines (from `ast`, at the
+    canonical module/class/function docstring position) plus any line
+    carrying a `#` comment (from `tokenize`); every other non-blank line
+    counts as code.
+    """
+
+    code_lines: int
+    documentation_lines: int
+
+
+def _docstring_line_numbers(tree: ast.Module) -> set[int]:
+    line_numbers: set[int] = set()
+    definition_nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if not isinstance(node, definition_nodes) or not node.body:
+            continue
+        statement = node.body[0]
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+            and statement.end_lineno is not None
+        ):
+            line_numbers.update(range(statement.lineno, statement.end_lineno + 1))
+    return line_numbers
+
+
+def _comment_line_numbers(source: str) -> set[int]:
+    return {
+        token.start[0]
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+    }
+
+
+def census(source: str) -> LineCensus:
+    """A module's code and documentation line counts, from its own text."""
+    tree = ast.parse(source)
+    documentation_line_numbers = _docstring_line_numbers(tree) | _comment_line_numbers(
+        source
+    )
+    code_line_count = sum(
+        1
+        for line_number, line in enumerate(source.splitlines(), start=1)
+        if line_number not in documentation_line_numbers and line.strip()
+    )
+    return LineCensus(code_line_count, len(documentation_line_numbers))
+
+
+def _blob_content(project_root: Path, revision: str, relative_path: str) -> str | None:
+    """A file's text at one revision, or None when that path does not exist
+    there -- a file the diff added or removed between base and head."""
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{relative_path}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _changed_source_paths(project_root: Path, base: str, head: str) -> tuple[str, ...]:
+    prefix = f"{SOURCE_PACKAGE_DIRECTORY}/"
+    return tuple(
+        sorted(
+            path
+            for path in git_diff_lines(
+                project_root,
+                base,
+                head,
+                "--name-only",
+                rename_detection="--no-renames",
+            )
+            if path.strip() and path.startswith(prefix) and path.endswith(".py")
+        )
+    )
+
+
+def _census_or_raise(relative_path: str, revision: str, content: str) -> LineCensus:
+    try:
+        return census(content)
+    except (SyntaxError, tokenize.TokenError) as error:
+        raise SizeRatchetError(
+            f"{relative_path} at {revision} is not readable as Python: {error}"
+        ) from error
+
+
+def _census_at_revision(
+    project_root: Path, revision: str, relative_path: str
+) -> LineCensus:
+    """A path's line census at one revision -- (0, 0) when that revision does
+    not carry it, so a brand-new file can never look like it lost
+    documentation it never had a chance to have."""
+    content = _blob_content(project_root, revision, relative_path)
+    if content is None:
+        return LineCensus(0, 0)
+    return _census_or_raise(relative_path, revision, content)
+
+
+@dataclass(frozen=True, slots=True)
+class ChangedFileReport:
+    """One touched source file: its densification problem, if any, and how
+    many lines it sits under (positive) or over (negative) the file ceiling."""
+
+    path: str
+    problem: str | None
+    ceiling_distance: int
+
+
+def densification_report(
+    project_root: Path, base: str, head: str
+) -> tuple[ChangedFileReport, ...]:
+    """Every touched source file's distance to the file ceiling, and red only
+    where code grew while comment or docstring lines shrank in the same file
+    -- the shape of change that hides growth behind deleted explanation
+    instead of an honest split, independent of where the file ends up
+    relative to the ceiling.
+
+    A file the diff only deleted from, or only moved without editing, cannot
+    turn up red here: its code line count did not grow, or its base census
+    reads as (0, 0) because the path is new -- either way the two conditions
+    below cannot both hold.
+    """
+    reports: list[ChangedFileReport] = []
+    for relative_path in _changed_source_paths(project_root, base, head):
+        head_content = _blob_content(project_root, head, relative_path)
+        if head_content is None:
+            continue
+        head_census = _census_or_raise(relative_path, head, head_content)
+        base_census = _census_at_revision(project_root, base, relative_path)
+        code_delta = head_census.code_lines - base_census.code_lines
+        documentation_delta = (
+            head_census.documentation_lines - base_census.documentation_lines
+        )
+        problem = None
+        if code_delta > 0 and documentation_delta < 0:
+            problem = (
+                f"{relative_path}: code grew by {code_delta} lines while "
+                f"comment and docstring lines shrank by {-documentation_delta} lines"
+            )
+        line_count = len(head_content.splitlines())
+        reports.append(
+            ChangedFileReport(relative_path, problem, FILE_LINE_THRESHOLD - line_count)
+        )
+    return tuple(reports)
 
 
 def oversized_functions(project_root: Path) -> tuple[Offender, ...]:
@@ -303,12 +460,53 @@ def size_ratchet_problems(project_root: Path) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """`--base` is optional: without it the file, function, and complexity
+    ratchets run exactly as they did before the densification signal existed."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base",
+        default=None,
+        help=(
+            "a revision to diff against --head for the densification signal "
+            "-- a touched file whose code lines grew while its comment or "
+            "docstring lines shrank; omitted, only the file, function, and "
+            "complexity ratchets run"
+        ),
+    )
+    parser.add_argument(
+        "--head", default="HEAD", help="the range's head revision (default: HEAD)"
+    )
+    return parser.parse_args(argv)
+
+
+def _ceiling_distance_line(report: ChangedFileReport) -> str:
+    state = "under" if report.ceiling_distance >= 0 else "over"
+    return (
+        f"{report.path}: {abs(report.ceiling_distance)} lines {state} the "
+        f"{FILE_LINE_THRESHOLD}-line ceiling"
+    )
+
+
 def main() -> int:
     project_root = Path.cwd()
+    arguments = _arguments()
     try:
-        problems = size_ratchet_problems(project_root)
+        problems = list(size_ratchet_problems(project_root))
+        if arguments.base is not None:
+            file_reports = densification_report(
+                project_root, arguments.base, arguments.head
+            )
+            for report in file_reports:
+                print(_ceiling_distance_line(report), flush=True)
+            problems.extend(
+                f"densification: {report.problem}"
+                for report in file_reports
+                if report.problem is not None
+            )
     except (
         SizeRatchetError,
+        CorridorError,
         FileNotFoundError,
         KeyError,
         TypeError,

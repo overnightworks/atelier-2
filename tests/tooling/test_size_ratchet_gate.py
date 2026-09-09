@@ -19,8 +19,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_size_ratchet.py"
+REPORT_CORRIDOR = Path("scripts") / "report_corridor.py"
 BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
+FILE_LINE_THRESHOLD = 800
 
 LONG_FUNCTION_MODULE = "funcs.py"
 LONG_FUNCTION_NAME = "long_function"
@@ -32,6 +34,10 @@ BRANCHY_QUALIFIED_NAME = f"atelier2.branchy.{BRANCHY_FUNCTION_NAME}"
 
 BIG_MODULE = "big.py"
 BIG_MODULE_PATH = str(SOURCE_PACKAGE / BIG_MODULE)
+
+DENSIFYING_MODULE = "densifying.py"
+DENSIFYING_MODULE_PATH = str(SOURCE_PACKAGE / DENSIFYING_MODULE)
+GIT_IDENTITY = ("-c", "user.name=test-builder", "-c", "user.email=test-builder@invalid")
 
 
 def a_function_of(name: str, total_lines: int) -> str:
@@ -56,12 +62,38 @@ def a_file_of(line_count: int) -> str:
     return "\n".join(f"value_{index} = {index}" for index in range(line_count)) + "\n"
 
 
+def a_module_with_documentation(function_count: int) -> str:
+    """A module docstring line, a comment line, then `function_count` tiny
+    two-line functions -- the shape a documented module has before it is
+    compacted down to its code alone."""
+    functions = "\n\n".join(
+        f"def function_{index}(x: int) -> int:\n    return x + {index}"
+        for index in range(function_count)
+    )
+    return (
+        '"""Why this module exists: a tradeoff worth remembering."""\n\n'
+        "# keep this guard because it protects a known invariant\n"
+        f"{functions}\n"
+    )
+
+
+def a_module_without_documentation(function_count: int) -> str:
+    """The same tiny functions as `a_module_with_documentation`, carrying no
+    docstring or comment at all."""
+    functions = "\n\n".join(
+        f"def function_{index}(x: int) -> int:\n    return x + {index}"
+        for index in range(function_count)
+    )
+    return f"{functions}\n"
+
+
 def scratch_project(
     tmp_path: Path, modules: dict[str, str], baseline: str = ""
 ) -> Path:
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
+    shutil.copy2(PROJECT_ROOT / REPORT_CORRIDOR, project / REPORT_CORRIDOR)
     package = project / SOURCE_PACKAGE
     package.mkdir(parents=True)
     for module, source in modules.items():
@@ -74,6 +106,44 @@ def scratch_project(
 def run_gate(project: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(GATE)],
+        cwd=project,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=project, check=True, capture_output=True, text=True
+    )
+
+
+def scratch_git_project(tmp_path: Path) -> Path:
+    """A scratch project like `scratch_project`, but a real git repository so
+    the densification signal has a base and a head revision to diff."""
+    project = scratch_project(tmp_path, {})
+    _git(project, "init", "--quiet")
+    return project
+
+
+def write_module(project: Path, name: str, source: str) -> None:
+    (project / SOURCE_PACKAGE / name).write_text(source, encoding="utf-8")
+
+
+def delete_module(project: Path, name: str) -> None:
+    (project / SOURCE_PACKAGE / name).unlink()
+
+
+def commit(project: Path, message: str) -> str:
+    _git(project, "add", "-A")
+    _git(project, *GIT_IDENTITY, "commit", "--quiet", "-m", message)
+    return _git(project, "rev-parse", "HEAD").stdout.strip()
+
+
+def run_gate_with_base(project: Path, base: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(GATE), "--base", base],
         cwd=project,
         check=False,
         capture_output=True,
@@ -241,3 +311,98 @@ def test_a_baseline_named_complex_function_at_its_baseline_value_is_quiet(
     result = run_gate(project)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("base_source", "head_source", "expect_red"),
+    [
+        pytest.param(
+            a_module_with_documentation(function_count=1),
+            a_module_without_documentation(function_count=2),
+            True,
+            id="code grows while comment and docstring lines shrink is red",
+        ),
+        pytest.param(
+            a_module_with_documentation(function_count=2),
+            a_module_without_documentation(function_count=1),
+            False,
+            id="a deletion that shrinks code and documentation together is quiet",
+        ),
+        pytest.param(
+            a_module_with_documentation(function_count=1),
+            a_module_with_documentation(function_count=2),
+            False,
+            id="code grows while documentation is unchanged is quiet",
+        ),
+        pytest.param(
+            a_module_with_documentation(function_count=1),
+            a_module_without_documentation(function_count=1),
+            False,
+            id="documentation shrinks while code is unchanged is quiet",
+        ),
+    ],
+)
+def test_densification_gate_reads_code_growth_against_documentation_loss(
+    tmp_path: Path, base_source: str, head_source: str, expect_red: bool
+) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, DENSIFYING_MODULE, base_source)
+    base = commit(project, "base")
+    write_module(project, DENSIFYING_MODULE, head_source)
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    if expect_red:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert DENSIFYING_MODULE_PATH in result.stderr
+        assert "code grew by" in result.stderr
+        assert "shrank by" in result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, DENSIFYING_MODULE, a_module_with_documentation(function_count=2))
+    base = commit(project, "base")
+    write_module(project, DENSIFYING_MODULE, a_module_with_documentation(function_count=1))
+    write_module(project, "densifying_extracted.py", a_module_with_documentation(1))
+    commit(project, "split one function into its own module")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_pure_rename_without_edits_is_quiet(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    content = a_module_with_documentation(function_count=1)
+    write_module(project, "before_rename.py", content)
+    base = commit(project, "base")
+    delete_module(project, "before_rename.py")
+    write_module(project, "after_rename.py", content)
+    commit(project, "rename without editing")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_report_names_each_touched_files_distance_to_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    base = commit(project, "base")
+    write_module(project, "touched.py", a_file_of(10))
+    commit(project, "grows to ten lines")
+    touched_path = str(SOURCE_PACKAGE / "touched.py")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    distance = FILE_LINE_THRESHOLD - 10
+    assert f"{touched_path}: {distance} lines under the {FILE_LINE_THRESHOLD}-line ceiling" in (
+        result.stdout
+    )
