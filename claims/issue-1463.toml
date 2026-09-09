@@ -1,0 +1,8 @@
+claim_id = "55a1504b32b547418d40238b7f9e8141"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
+branch = "claude/issue-1463-policy-read"
+scope = ["src/atelier2/api/routes/queue.py", "src/atelier2/api/wire/queue.py", "src/atelier2/api/openapi.py", "tests/integration"]
+opened_commit = "6002e1d4ada28d2e0589bc5053900b4a67a9ea22"
+whole_reason = "Route, Wire-Vertrag, eingefrorenes OpenAPI und Integrationstest eines Lesewegs landen nur zusammen gruen."
