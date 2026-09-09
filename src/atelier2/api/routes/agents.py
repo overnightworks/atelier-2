@@ -74,7 +74,7 @@ async def publish_auth_profile_revision_route(
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_auth_profile_revision(
+        lambda: context.use_cases.agent_catalog.publish_auth_profile_revision(
             body.profile_id, body.revision_number, body.provider_id, body.auth_mode
         ),
     )
@@ -114,7 +114,9 @@ async def list_auth_profile_revisions_route(
             raise ApiProblem("invalid-revision-hash") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_auth_profile_revisions(after, limit),
+        lambda: context.use_cases.agent_catalog.list_auth_profile_revisions(
+            after, limit
+        ),
     )
     match result:
         case AuthProfileRevisionsListed(items, next_after):
@@ -147,7 +149,7 @@ async def publish_agent_configuration_revision_route(
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_agent_configuration_revision(
+        lambda: context.use_cases.agent_catalog.publish_agent_configuration_revision(
             body.model,
             body.auth_profile_revision_hash,
             body.executor_revision,
@@ -194,7 +196,9 @@ async def list_agent_configuration_revisions_route(
             raise ApiProblem("invalid-revision-hash") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_agent_configuration_revisions(after, limit),
+        lambda: context.use_cases.agent_catalog.list_agent_configuration_revisions(
+            after, limit
+        ),
     )
     match result:
         case AgentConfigurationRevisionsListed(items, next_after):

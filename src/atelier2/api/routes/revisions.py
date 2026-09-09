@@ -24,14 +24,14 @@ from atelier2.api.openapi import (
     LIBRARY_ADDITIONS_PATH,
     LIBRARY_RECOGNITIONS_PATH,
 )
-from atelier2.api.problems import (
-    ApiProblem,
+from atelier2.api.problem_vocabulary import (
     adapter_operation_document_problem_code,
     agent_definition_document_problem_code,
     budget_document_problem_code,
     schema_document_problem_code,
     tool_grant_document_problem_code,
 )
+from atelier2.api.problems import ApiProblem
 from atelier2.api.projection.workflows import (
     workflow_revision_detail_resource,
     workflow_revision_page_resource,
@@ -183,7 +183,7 @@ async def publish_schema_revision_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_schema_revision(document),
+        lambda: context.use_cases.definitions.publish_schema_revision(document),
     )
     match result:
         case SchemaPublicationCreated(revision):
@@ -237,7 +237,7 @@ async def get_schema_revision_route(
     parsed = _revision_hash_or_refuse(schema_revision_hash, PublishedRevisionHash)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_schema_revision(parsed),
+        lambda: context.use_cases.definitions.get_schema_revision(parsed),
     )
     match result:
         case SchemaRevisionRead(revision):
@@ -261,7 +261,7 @@ async def publish_budget_revision_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_budget_revision(document),
+        lambda: context.use_cases.definitions.publish_budget_revision(document),
     )
     match result:
         case BudgetPublicationCreated(revision):
@@ -297,7 +297,7 @@ async def publish_tool_grant_revision_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_tool_grant_revision(document),
+        lambda: context.use_cases.definitions.publish_tool_grant_revision(document),
     )
     match result:
         case ToolGrantPublicationCreated(revision):
@@ -337,7 +337,9 @@ async def publish_adapter_operation_revision_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_adapter_operation_revision(document),
+        lambda: context.use_cases.definitions.publish_adapter_operation_revision(
+            document
+        ),
     )
     match result:
         case AdapterOperationPublicationCreated(revision):
@@ -377,7 +379,9 @@ async def publish_agent_definition_revision_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_agent_definition_revision(document),
+        lambda: context.use_cases.definitions.publish_agent_definition_revision(
+            document
+        ),
     )
     match result:
         case AgentDefinitionPublicationCreated(revision):
@@ -417,7 +421,9 @@ async def list_agent_definition_revisions_route(
         after = _revision_hash_or_refuse(after_revision_hash, PublishedRevisionHash)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_agent_definition_revisions(after, limit),
+        lambda: context.use_cases.agent_catalog.list_agent_definition_revisions(
+            after, limit
+        ),
     )
     match result:
         case AgentDefinitionRevisionsListed(items, next_after):
@@ -462,7 +468,7 @@ async def get_agent_definition_revision_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_agent_definition_revision(parsed),
+        lambda: context.use_cases.agent_catalog.get_agent_definition_revision(parsed),
     )
     match result:
         case AgentDefinitionRevisionRead(published):
@@ -520,7 +526,9 @@ async def recognize_library_document_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.classify_definition_document(document, file_name),
+        lambda: context.use_cases.definitions.classify_definition_document(
+            document, file_name
+        ),
     )
     return resource_response(_recognition_resource(result), HTTPStatus.OK)
 
@@ -597,7 +605,7 @@ async def add_library_document_route(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.admit_library_addition(
+        lambda: context.use_cases.definitions.admit_library_addition(
             document, kind, catalog_actor, activated
         ),
     )
@@ -628,7 +636,7 @@ async def get_library_addition_route(
         raise ApiProblem("invalid-request") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.read_library_addition(identifier),
+        lambda: context.use_cases.definitions.read_library_addition(identifier),
     )
     match result:
         case LibraryAdditionFound(entry):
@@ -661,7 +669,9 @@ async def publish_revision(
     document = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_workflow_revision(document),
+        lambda: context.use_cases.workflow_revisions.publish_workflow_revision(
+            document
+        ),
     )
     match result:
         case PublicationCreated(read):
@@ -710,7 +720,9 @@ async def _summary_page(
 ) -> WorkflowRevisionPageResource:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_workflow_revisions(after, limit),
+        lambda: context.use_cases.workflow_revisions.list_workflow_revisions(
+            after, limit
+        ),
     )
     match result:
         case WorkflowRevisionsListed(revision_hashes, next_after):
@@ -738,7 +750,9 @@ async def _described_page(
 ) -> VersionedWorkflowRevisionPageResource:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_described_workflow_revisions(after, limit),
+        lambda: context.use_cases.workflow_revisions.list_described_workflow_revisions(
+            after, limit
+        ),
     )
     match result:
         case WorkflowRevisionsDescribed():
@@ -783,7 +797,7 @@ async def found_catalog_lineage_route(
 
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.found_catalog_lineage(
+        lambda: context.use_cases.catalog_lineage.found_catalog_lineage(
             request.kind,
             PublishedRevisionHash(request.catalog_revision_hash),
             display_name,
@@ -818,7 +832,9 @@ async def get_revision_by_name(
     asked: object = position if position == "head" else _asked_position(position)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.resolve_catalog_name(kind, query, asked),
+        lambda: context.use_cases.catalog_lineage.resolve_catalog_name(
+            kind, query, asked
+        ),
     )
     match result:
         case CatalogNameResolved(lineage_id, revision, revision_number, display_name):
@@ -852,7 +868,7 @@ async def get_revision(
     parsed = _revision_hash_or_refuse(workflow_revision_hash, parse_revision_hash)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_workflow_revision(parsed),
+        lambda: context.use_cases.workflow_revisions.get_workflow_revision(parsed),
     )
     match result:
         case WorkflowRevisionRead():

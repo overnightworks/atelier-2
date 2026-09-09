@@ -233,19 +233,8 @@ class ApiPorts:
 
 
 @dataclass(frozen=True)
-class ApiUseCases:
-    """The application calls, already bound to their ports by the composition.
-
-    Every field is a call, not a protocol: the port is spent at composition time,
-    and what a route holds is the decision, whose result type belongs to
-    `atelier2.application`. A field annotated with anything that resolves to
-    `atelier2.ports` would hand the port straight back through this record — which
-    is the evasion `scripts/check_architecture.py` reads these annotations for.
-
-    The calls stay synchronous because admitting one to the process-wide query
-    budget is the API's decision, not the application's: the route runs them
-    through its own bounded runner and owns the refusal a full budget produces.
-    """
+class WorkflowRevisionUseCases:
+    """Reading and publishing workflow revisions."""
 
     get_workflow_revision: Callable[[WorkflowRevisionHash], GetWorkflowRevisionResult]
     list_workflow_revisions: Callable[
@@ -254,6 +243,13 @@ class ApiUseCases:
     list_described_workflow_revisions: Callable[
         [WorkflowRevisionHash | None, int], ListDescribedWorkflowRevisionsResult
     ]
+    publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
+
+
+@dataclass(frozen=True)
+class RunUseCases:
+    """Reading a run, its nodes, and its event stream."""
+
     get_run: Callable[[RunId], GetRunResult]
     get_node_detail: Callable[[RunId, str], GetNodeDetailUseCaseResult]
     list_runs: Callable[[RunId | None, int, RunState | None], ListRunsResult]
@@ -263,9 +259,45 @@ class ApiUseCases:
         [RunId | None, int | None, int, tuple[tuple[RunId, int], ...]],
         ReadAttentionEventsResult,
     ]
-    publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
+
+
+@dataclass(frozen=True)
+class RunControlUseCases:
+    """Starting, forking, answering, and cancelling a run."""
+
+    start_published_run: Callable[
+        [
+            RunId,
+            WorkflowRevisionHash,
+            tuple[AuthoredAgentBinding, ...] | None,
+            tuple[AuthoredOrder, ...],
+        ],
+        StartPublishedRunResult,
+    ]
+    fork_run: Callable[[RunId, str, str], ForkRunResult]
+    answer_wait: Callable[
+        [RunId, WorkflowRevisionHash, str, NodeExecutionId, WaitAnswerActor, bytes],
+        AnswerWaitResult,
+    ]
+    reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
+    cancel_agent_attempt: Callable[
+        [CancelAgentAttemptRequest], CancelAgentAttemptResult
+    ]
+    cancel_run: Callable[[RunId, str, NodeExecutionId], CancelRunResult]
+
+
+@dataclass(frozen=True)
+class ArtifactUseCases:
+    """Publishing and reading artifact blobs."""
+
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     read_artifact: Callable[[ArtifactHash], ReadArtifactResult]
+
+
+@dataclass(frozen=True)
+class DefinitionDocumentUseCases:
+    """Publishing schema, budget, tool-grant, adapter-operation, and agent-definition documents, and the library intake they arrive through."""
+
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
     get_schema_revision: Callable[[PublishedRevisionHash], GetSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
@@ -284,6 +316,12 @@ class ApiUseCases:
         AdmitLibraryAdditionResult,
     ]
     read_library_addition: Callable[[CatalogIntakeId], ReadLibraryAdditionResult]
+
+
+@dataclass(frozen=True)
+class AgentCatalogUseCases:
+    """Reading agent definitions and publishing agent configuration and auth-profile revisions."""
+
     list_agent_definition_revisions: Callable[
         [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
     ]
@@ -301,15 +339,25 @@ class ApiUseCases:
         ListAgentConfigurationRevisionsResult,
     ]
     list_auth_profile_revisions: Callable[
-        [AuthProfileRevisionHash | None, int],
-        ListAuthProfileRevisionsResult,
+        [AuthProfileRevisionHash | None, int], ListAuthProfileRevisionsResult
     ]
+
+
+@dataclass(frozen=True)
+class ProjectUseCases:
+    """Reading the served project or projects."""
+
     list_projects: Callable[[], ListProjectsResult]
     get_project: Callable[[ProjectId], GetProjectResult]
+
+
+@dataclass(frozen=True)
+class ModelConfigurationUseCases:
+    """Reading and publishing model registries and a project's model defaults."""
+
     get_model_registry: Callable[[str], GetModelRegistryResult]
     publish_model_registry: Callable[
-        [str, int, tuple[tuple[str, str], ...]],
-        PublishModelRegistryUseCaseResult,
+        [str, int, tuple[tuple[str, str], ...]], PublishModelRegistryUseCaseResult
     ]
     validate_model_registry_entry: Callable[
         [str, str], PublishModelRegistryUseCaseResult
@@ -322,32 +370,12 @@ class ApiUseCases:
     get_project_model_resolution: Callable[
         [str, str, tuple[tuple[str, str], ...]], GetProjectModelResolutionResult
     ]
-    start_published_run: Callable[
-        [
-            RunId,
-            WorkflowRevisionHash,
-            tuple[AuthoredAgentBinding, ...] | None,
-            tuple[AuthoredOrder, ...],
-        ],
-        StartPublishedRunResult,
-    ]
-    fork_run: Callable[[RunId, str, str], ForkRunResult]
-    answer_wait: Callable[
-        [
-            RunId,
-            WorkflowRevisionHash,
-            str,
-            NodeExecutionId,
-            WaitAnswerActor,
-            bytes,
-        ],
-        AnswerWaitResult,
-    ]
-    reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
-    cancel_agent_attempt: Callable[
-        [CancelAgentAttemptRequest], CancelAgentAttemptResult
-    ]
-    cancel_run: Callable[[RunId, str, NodeExecutionId], CancelRunResult]
+
+
+@dataclass(frozen=True)
+class CatalogLineageUseCases:
+    """Naming, founding, admitting to, and retiring a catalog lineage."""
+
     resolve_catalog_name: Callable[
         [RevisionKind, CatalogLineageQuery, object], CatalogNameResult
     ]
@@ -375,6 +403,12 @@ class ApiUseCases:
         [CatalogLineageId, CatalogActor, CatalogActivatedAt],
         RetireCatalogLineageUseCaseResult,
     ]
+
+
+@dataclass(frozen=True)
+class ProjectSourceUseCases:
+    """Reading, connecting, disconnecting, and rotating a project's source connections."""
+
     get_project_source_connection: Callable[
         [ProjectId], GetServedProjectSourceConnectionResult
     ]
@@ -388,6 +422,12 @@ class ApiUseCases:
     rotate_project_source_token: Callable[
         [ProjectId, ProjectSourceId, str], RotateProjectSourceTokenResult
     ]
+
+
+@dataclass(frozen=True)
+class QueueUseCases:
+    """Reading and changing the queue projection, and the tracker import and redeploy status reads beside it."""
+
     confirm_queue_proposal: Callable[
         [ConfirmQueueProposal], ConfirmQueueProposalOutcome
     ]
@@ -398,6 +438,37 @@ class ApiUseCases:
     list_queue_items: Callable[[QueueItemId | None, int], ListQueueItemsOutcome]
     import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
     read_redeploy_status: Callable[[], ReadRedeployStatusResult]
+
+
+@dataclass(frozen=True)
+class ApiUseCases:
+    """The application calls, already bound to their ports by the composition.
+
+    Every field is one further record of just such calls, each a use case the
+    composition already bound rather than a protocol: the port is spent at
+    composition time, and what a route holds is the decision, whose result
+    type belongs to `atelier2.application`. A field -- at any depth -- that
+    resolves to `atelier2.ports` would hand the port straight back through
+    this record, which is the evasion `scripts/check_architecture.py` reads
+    these annotations for, recursing through exactly the records this module
+    declares.
+
+    The calls stay synchronous because admitting one to the process-wide query
+    budget is the API's decision, not the application's: the route runs them
+    through its own bounded runner and owns the refusal a full budget produces.
+    """
+
+    workflow_revisions: WorkflowRevisionUseCases
+    runs: RunUseCases
+    run_control: RunControlUseCases
+    artifacts: ArtifactUseCases
+    definitions: DefinitionDocumentUseCases
+    agent_catalog: AgentCatalogUseCases
+    projects: ProjectUseCases
+    model_configuration: ModelConfigurationUseCases
+    catalog_lineage: CatalogLineageUseCases
+    project_sources: ProjectSourceUseCases
+    queue: QueueUseCases
 
 
 @dataclass(frozen=True)

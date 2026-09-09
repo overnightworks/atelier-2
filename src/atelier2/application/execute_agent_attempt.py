@@ -10,6 +10,9 @@ from atelier2.application.publish_artifact import (
     ArtifactPublicationInvalid,
     publish_artifact,
 )
+from atelier2.application.read_attempt_workspace_tree import (
+    read_attempt_workspace_tree,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.agent_attempts import (
     AgentAttemptFailureCode,
@@ -318,7 +321,7 @@ def _ended_after_the_provider(
     """
 
     try:
-        written = _the_tree_the_attempt_left(lease, project)
+        written = read_attempt_workspace_tree(lease, project)
     except CandidateNotKept:
         # Reading the tree only ever saves work, so a store that cannot answer
         # costs the saving and not the attempt: everything below runs exactly as
@@ -409,7 +412,7 @@ def _ended_under_a_passed_check(
     """
 
     try:
-        verified = _the_tree_the_attempt_left(lease, project)
+        verified = read_attempt_workspace_tree(lease, project)
         if verified is not None and not verified.changed_the_pinned_tree:
             return store.complete_candidate_unchanged(
                 execution, _unchanged_verdict(verified, result), result.transcript
@@ -491,34 +494,6 @@ def _warn_attempt(execution: AgentAttemptExecution, event: str, ending: str) -> 
     )
 
 
-def _the_tree_the_attempt_left(
-    lease: AgentAttemptWorkspaceLease, project: PinnedProjectSource | None
-) -> LeasedWorkingTree | None:
-    """What stands in the lease now, named against the pin it started from.
-
-    Nothing is anchored under the attempt: this reads the lease and must not by
-    itself keep work no ending has decided to keep.
-
-    Asked twice on one attempt, at the two moments its answer can differ.
-    Before the granted check, because "changed nothing" is what saves paying
-    for one at all. After it, because the check runs in the same workspace and
-    a command that writes there leaves a tree the earlier reading never saw --
-    and the patch handed to whoever judges the candidate has to be the tree
-    that is kept, not the one that stood before the check.
-
-    Asked only of an attempt that redeems a grant, because that is the only
-    attempt for which "changed nothing" is a failure. A node that pinned no
-    grant may honestly answer without touching a file -- a reviewer reading a
-    candidate and judging it is exactly that -- and there is no verification
-    cost to save there either. A runtime pointed at no project has no pin the
-    work would be a change to and no store to name a tree in.
-    """
-
-    if project is None or project.grant is None:
-        return None
-    return project.candidates.written(project.pin, lease)
-
-
 def _unchanged_verdict(written: LeasedWorkingTree, result: AgentExecutionResult) -> str:
     """Why this attempt ended, with what the provider claimed beside it.
 
@@ -538,12 +513,20 @@ def _with_recorded_transcript(
     result: AgentExecutionResult | AgentExecutionFailure,
     clock: Callable[[], RecordedAt],
 ) -> AgentExecutionResult | AgentExecutionFailure:
-    """Stamp decoded events at the one boundary that records their transcript."""
+    """Stamp decoded events at the one boundary that records their transcript.
+
+    Built through each type's own constructor rather than `dataclasses.replace`,
+    so the narrowed branch is what the return type actually is, not a claim
+    about it.
+    """
 
     transcript = result.transcript
     if transcript is None:
         return result
-    return replace(result, transcript=transcript.with_recorded_moment(clock()))
+    moment = transcript.with_recorded_moment(clock())
+    if isinstance(result, AgentExecutionResult):
+        return AgentExecutionResult(result.output_bytes, moment)
+    return AgentExecutionFailure(result.code, moment)
 
 
 def _keep_what_the_attempt_made(
@@ -628,7 +611,7 @@ def _kept_candidate_diff(
     """
 
     try:
-        written = _the_tree_the_attempt_left(lease, project)
+        written = read_attempt_workspace_tree(lease, project)
         if project is None or written is None:
             return NOTHING_TO_KEEP
         patch = project.candidates.changes(written)

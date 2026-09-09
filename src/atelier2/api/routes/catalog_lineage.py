@@ -72,7 +72,7 @@ async def admit_catalog_member_route(
         raise ApiProblem("invalid-request") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.admit_catalog_member(
+        lambda: context.use_cases.catalog_lineage.admit_catalog_member(
             request.kind,
             identity,
             PublishedRevisionHash(request.catalog_revision_hash),
@@ -106,7 +106,9 @@ async def retire_catalog_lineage_route(
 
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.retire_catalog_lineage(identity, actor, activated_at),
+        lambda: context.use_cases.catalog_lineage.retire_catalog_lineage(
+            identity, actor, activated_at
+        ),
     )
     match result:
         case CatalogLineageRetired() | CatalogRetirementExisting():

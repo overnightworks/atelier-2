@@ -68,7 +68,9 @@ async def get_project_source_connection_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_project_source_connection(project_id),
+        lambda: context.use_cases.project_sources.get_project_source_connection(
+            project_id
+        ),
     )
     match result:
         case ProjectSourceConnectionRead(revision, public_address):
@@ -117,7 +119,7 @@ async def list_project_sources_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_project_sources(project_id),
+        lambda: context.use_cases.project_sources.list_project_sources(project_id),
     )
     match result:
         case ProjectSourcesRead(sources):
@@ -144,7 +146,7 @@ async def connect_project_source_route(
     token = request.token.get_secret_value()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.connect_project_source(
+        lambda: context.use_cases.project_sources.connect_project_source(
             project_id, request.address, token
         ),
     )
@@ -172,7 +174,9 @@ async def disconnect_project_source_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.disconnect_project_source(project_id, source_id),
+        lambda: context.use_cases.project_sources.disconnect_project_source(
+            project_id, source_id
+        ),
     )
     match result:
         case ProjectSourceDisconnectedSuccessfully():
@@ -198,7 +202,7 @@ async def rotate_project_source_token_route(
     token = request.token.get_secret_value()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.rotate_project_source_token(
+        lambda: context.use_cases.project_sources.rotate_project_source_token(
             project_id, source_id, token
         ),
     )

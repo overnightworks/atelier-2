@@ -102,7 +102,7 @@ async def put_model_registry_route(
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_model_registry(
+        lambda: context.use_cases.model_configuration.publish_model_registry(
             provider_id,
             body.revision_number,
             tuple(
@@ -155,7 +155,7 @@ async def validate_model_registry_entry_route(
 ) -> JSONResponse:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.validate_model_registry_entry(
+        lambda: context.use_cases.model_configuration.validate_model_registry_entry(
             provider_id, body.agent_configuration_revision_hash
         ),
     )
@@ -193,7 +193,7 @@ async def get_model_registry_route(
 ) -> ModelRegistryRevisionResource:
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_model_registry(provider_id),
+        lambda: context.use_cases.model_configuration.get_model_registry(provider_id),
     )
     match result:
         case ModelRegistryRead(revision):
@@ -225,7 +225,7 @@ async def put_project_model_defaults_route(
     project = _project_id(public_project_reference, context)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_project_model_defaults(
+        lambda: context.use_cases.model_configuration.publish_project_model_defaults(
             project.value,
             body.revision_number,
             tuple(
@@ -270,7 +270,9 @@ async def get_project_model_defaults_route(
     project = _project_id(public_project_reference, context)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_project_model_defaults(project.value),
+        lambda: context.use_cases.model_configuration.get_project_model_defaults(
+            project.value
+        ),
     )
     match result:
         case ProjectModelDefaultsRead(revision):
@@ -297,7 +299,7 @@ async def resolve_project_models_route(
     project = _project_id(public_project_reference, context)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_project_model_resolution(
+        lambda: context.use_cases.model_configuration.get_project_model_resolution(
             project.value,
             body.workflow_revision_hash,
             tuple(

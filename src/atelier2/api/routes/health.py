@@ -29,7 +29,7 @@ async def health(context: ApiContext = api_context_dependency) -> HealthResource
 def _redeploy_blocked_resource(
     context: ApiContext,
 ) -> RedeployBlockedResource | None:
-    match context.use_cases.read_redeploy_status():
+    match context.use_cases.queue.read_redeploy_status():
         case RedeployBlocked(blocked_since, reason):
             return RedeployBlockedResource(blocked_since=blocked_since, reason=reason)
         case RedeployStatusUnreadable():

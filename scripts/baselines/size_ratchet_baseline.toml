@@ -90,10 +90,6 @@ path = "src/atelier2/api/openapi.py"
 lines = 1221
 
 [[file]]
-path = "src/atelier2/api/problems.py"
-lines = 850
-
-[[file]]
 path = "src/atelier2/api/routes/revisions.py"
 lines = 887
 
@@ -380,10 +376,6 @@ lines = 64
 [[function]]
 qualified_name = "atelier2.adapters.grok_subscription.attest_grok_workspace_tool_invocation"
 lines = 62
-
-[[function]]
-qualified_name = "atelier2.api.app.bound_use_cases"
-lines = 354
 
 [[function]]
 qualified_name = "atelier2.api.app.create_app"

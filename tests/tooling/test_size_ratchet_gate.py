@@ -19,8 +19,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_size_ratchet.py"
+DOCUMENTATION_LINES = Path("scripts") / "python_documentation_lines.py"
 BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
+FILE_LINE_THRESHOLD = 800
 
 LONG_FUNCTION_MODULE = "funcs.py"
 LONG_FUNCTION_NAME = "long_function"
@@ -32,6 +34,10 @@ BRANCHY_QUALIFIED_NAME = f"atelier2.branchy.{BRANCHY_FUNCTION_NAME}"
 
 BIG_MODULE = "big.py"
 BIG_MODULE_PATH = str(SOURCE_PACKAGE / BIG_MODULE)
+
+DENSIFYING_MODULE = "densifying.py"
+DENSIFYING_MODULE_PATH = str(SOURCE_PACKAGE / DENSIFYING_MODULE)
+GIT_IDENTITY = ("-c", "user.name=test-builder", "-c", "user.email=test-builder@invalid")
 
 
 def a_function_of(name: str, total_lines: int) -> str:
@@ -56,12 +62,67 @@ def a_file_of(line_count: int) -> str:
     return "\n".join(f"value_{index} = {index}" for index in range(line_count)) + "\n"
 
 
+def a_module_with_documentation(function_count: int) -> str:
+    """A module docstring line, a comment line, then `function_count` tiny
+    two-line functions -- the shape a documented module has before it is
+    compacted down to its code alone."""
+    functions = "\n\n".join(
+        f"def function_{index}(x: int) -> int:\n    return x + {index}"
+        for index in range(function_count)
+    )
+    return (
+        '"""Why this module exists: a tradeoff worth remembering."""\n\n'
+        "# keep this guard because it protects a known invariant\n"
+        f"{functions}\n"
+    )
+
+
+def a_module_without_documentation(function_count: int) -> str:
+    """The same tiny functions as `a_module_with_documentation`, carrying no
+    docstring or comment at all."""
+    functions = "\n\n".join(
+        f"def function_{index}(x: int) -> int:\n    return x + {index}"
+        for index in range(function_count)
+    )
+    return f"{functions}\n"
+
+
+def a_documented_function(name: str, extra_code_lines: int = 0) -> str:
+    """A function with its own one-line docstring plus `extra_code_lines`
+    more lines of pure code -- so deleting the whole function removes code
+    and documentation together, never one without the other."""
+    body = "\n".join(
+        f"    value_{index} = {index}" for index in range(extra_code_lines)
+    )
+    body = f"{body}\n" if body else ""
+    return (
+        f"def {name}(x: int) -> int:\n"
+        f'    """One-line docstring for {name}."""\n'
+        f"{body}"
+        "    return x\n"
+    )
+
+
+def a_function_without_documentation(name: str, extra_code_lines: int = 0) -> str:
+    """The same shape as `a_documented_function`, carrying no docstring."""
+    body = "\n".join(
+        f"    value_{index} = {index}" for index in range(extra_code_lines)
+    )
+    body = f"{body}\n" if body else ""
+    return f"def {name}(x: int) -> int:\n{body}    return x\n"
+
+
+def a_module_of(*functions: str) -> str:
+    return "\n".join(functions)
+
+
 def scratch_project(
     tmp_path: Path, modules: dict[str, str], baseline: str = ""
 ) -> Path:
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
+    shutil.copy2(PROJECT_ROOT / DOCUMENTATION_LINES, project / DOCUMENTATION_LINES)
     package = project / SOURCE_PACKAGE
     package.mkdir(parents=True)
     for module, source in modules.items():
@@ -74,6 +135,44 @@ def scratch_project(
 def run_gate(project: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(GATE)],
+        cwd=project,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args], cwd=project, check=True, capture_output=True, text=True
+    )
+
+
+def scratch_git_project(tmp_path: Path) -> Path:
+    """A scratch project like `scratch_project`, but a real git repository so
+    the densification signal has a base and a head revision to diff."""
+    project = scratch_project(tmp_path, {})
+    _git(project, "init", "--quiet")
+    return project
+
+
+def write_module(project: Path, name: str, source: str) -> None:
+    (project / SOURCE_PACKAGE / name).write_text(source, encoding="utf-8")
+
+
+def delete_module(project: Path, name: str) -> None:
+    (project / SOURCE_PACKAGE / name).unlink()
+
+
+def commit(project: Path, message: str) -> str:
+    _git(project, "add", "-A")
+    _git(project, *GIT_IDENTITY, "commit", "--quiet", "-m", message)
+    return _git(project, "rev-parse", "HEAD").stdout.strip()
+
+
+def run_gate_with_base(project: Path, base: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(GATE), "--base", base],
         cwd=project,
         check=False,
         capture_output=True,
@@ -241,3 +340,315 @@ def test_a_baseline_named_complex_function_at_its_baseline_value_is_quiet(
     result = run_gate(project)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("base_source", "head_source", "expect_red"),
+    [
+        pytest.param(
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(a_documented_function("kept")),
+            False,
+            id="deleting a whole documented function that raises the share is quiet",
+        ),
+        pytest.param(
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 8),
+            ),
+            True,
+            id="a docstring disappears while its code stays put is red",
+        ),
+        pytest.param(
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 4),
+            ),
+            True,
+            id="code and documentation shrink together but share still falls is red",
+        ),
+        pytest.param(
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 8),
+            ),
+            a_module_of(a_documented_function("kept")),
+            False,
+            id="code shrinks while documentation is unchanged is quiet",
+        ),
+    ],
+)
+def test_densification_gate_reads_the_documentation_share(
+    tmp_path: Path, base_source: str, head_source: str, expect_red: bool
+) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, DENSIFYING_MODULE, base_source)
+    base = commit(project, "base")
+    write_module(project, DENSIFYING_MODULE, head_source)
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    if expect_red:
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert DENSIFYING_MODULE_PATH in result.stderr
+        assert "documentation share fell from" in result.stderr
+        assert "disappeared" in result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_trailing_comment_counts_as_code_and_documentation_together(
+    tmp_path: Path,
+) -> None:
+    """Regression: a line like `return x  # why` must not count only as
+    documentation and hide its own code from the census -- three functions,
+    two lines of code each, one of them with a trailing comment, read as 6
+    code lines and 1 documentation line, not 5 and 1."""
+    project = scratch_git_project(tmp_path)
+    base_source = (
+        "def guarded(x: int) -> int:\n"
+        "    return x  # keep this guard because it protects a known invariant\n"
+        "\n"
+        "def plain_one(x: int) -> int:\n"
+        "    return x + 1\n"
+        "\n"
+        "def plain_two(x: int) -> int:\n"
+        "    return x + 2\n"
+    )
+    head_source = base_source.replace(
+        "    return x  # keep this guard because it protects a known invariant\n",
+        "    return x\n",
+    )
+    write_module(project, DENSIFYING_MODULE, base_source)
+    base = commit(project, "base")
+    write_module(project, DENSIFYING_MODULE, head_source)
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert DENSIFYING_MODULE_PATH in result.stderr
+    assert "documentation share fell from" in result.stderr
+    assert "1 of its own comment or docstring lines disappeared" in result.stderr
+
+
+def test_a_non_ascii_filename_is_not_silently_dropped(tmp_path: Path) -> None:
+    """Regression: git quotes a `--name-status` path that carries a
+    non-ASCII byte unless the diff is read with `-z`; a quoted path fails
+    the source-package prefix check and would be silently skipped, hiding
+    a real densification instead of reporting it."""
+    module_name = "straße.py"
+    project = scratch_git_project(tmp_path)
+    write_module(
+        project, module_name, a_documented_function("guarded", extra_code_lines=8)
+    )
+    base = commit(project, "base")
+    write_module(
+        project,
+        module_name,
+        a_function_without_documentation("guarded", extra_code_lines=8),
+    )
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(SOURCE_PACKAGE / module_name) in result.stderr
+
+
+def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(
+        project, DENSIFYING_MODULE, a_module_with_documentation(function_count=2)
+    )
+    base = commit(project, "base")
+    write_module(
+        project, DENSIFYING_MODULE, a_module_with_documentation(function_count=1)
+    )
+    write_module(project, "densifying_extracted.py", a_module_with_documentation(1))
+    commit(project, "split one function into its own module")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_split_that_moves_documentation_to_a_sibling_file_is_quiet(
+    tmp_path: Path,
+) -> None:
+    """Regression for the honest split this item exists for: a documented
+    function -- its code and its own docstring together -- moves whole out
+    of one file into a brand-new sibling. The origin file alone looks like
+    it lost documentation, but the diff's total is unchanged, only
+    relocated, so the gate stays quiet."""
+    project = scratch_git_project(tmp_path)
+    moved_function = a_documented_function("moved", extra_code_lines=20)
+    kept_function = a_documented_function("kept")
+    write_module(project, "origin.py", a_module_of(kept_function, moved_function))
+    base = commit(project, "base")
+    write_module(project, "origin.py", a_module_of(kept_function))
+    write_module(project, "extracted.py", a_module_of(moved_function))
+    commit(project, "split the moved function into its own module")
+    rename_status = _git(
+        project, "diff", "-M", "--name-status", f"{base}...HEAD"
+    ).stdout
+    assert not rename_status.startswith("R"), (
+        "this scenario must exercise the no-rename-detected split path, "
+        f"the actual failure mode: {rename_status!r}"
+    )
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_foreign_densification_landed_after_the_pr_opened_is_not_charged_to_it(
+    tmp_path: Path,
+) -> None:
+    """Regression for the CI base-selection bug: a `pull_request` event's
+    checked-out commit is GitHub's merge of the PR branch onto the target
+    branch's *current* tip, not the PR's opening-time fork point. Diffing
+    against the stale fork point blames this PR for a completely unrelated
+    file another landing densified after the PR opened; diffing against the
+    target branch's current tip -- the merge commit's own first parent --
+    correctly sees this PR touched nothing there."""
+    project = scratch_git_project(tmp_path)
+    write_module(
+        project, "unrelated.py", a_documented_function("guarded", extra_code_lines=8)
+    )
+    fork_point = commit(project, "shared history before the pull request opened")
+    main_branch = _git(project, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+    _git(project, "checkout", "-q", "-b", "pr-branch")
+    write_module(project, "pr_owned.py", a_file_of(3))
+    commit(project, "the pull request's own, unrelated change")
+
+    _git(project, "checkout", "-q", main_branch)
+    write_module(
+        project,
+        "unrelated.py",
+        a_function_without_documentation("guarded", extra_code_lines=8),
+    )
+    commit(project, "a foreign landing strips a docstring while its code stays put")
+
+    # GitHub's own pull_request merge ref parents the base branch first and
+    # the PR branch second -- checkout the target branch and merge the PR
+    # branch into it, not the other way around, so HEAD^1 lands on the
+    # target branch's own tip the way it does for that real ref.
+    current_target_tip = _git(project, "rev-parse", main_branch).stdout.strip()
+    _git(project, "checkout", "-q", main_branch)
+    _git(project, *GIT_IDENTITY, "merge", "-q", "--no-edit", "pr-branch")
+
+    result_at_current_tip = run_gate_with_base(project, current_target_tip)
+    result_at_stale_fork_point = run_gate_with_base(project, fork_point)
+
+    assert result_at_current_tip.returncode == 0, (
+        result_at_current_tip.stdout + result_at_current_tip.stderr
+    )
+    assert result_at_stale_fork_point.returncode == 1, (
+        "the stale fork point must still see the foreign densification, or "
+        "this scenario proves nothing about the fix"
+    )
+
+
+def test_a_pure_rename_without_edits_is_quiet(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    content = a_module_with_documentation(function_count=1)
+    write_module(project, "before_rename.py", content)
+    base = commit(project, "base")
+    delete_module(project, "before_rename.py")
+    write_module(project, "after_rename.py", content)
+    commit(project, "rename without editing")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_rename_combined_with_densification_is_still_red(tmp_path: Path) -> None:
+    """Regression: a `git mv` must not exempt real densification. The base
+    census for a renamed path is read from the path it was renamed from, so
+    `git mv module.py renamed.py` plus deleted docstrings still counts
+    against the file it came from, not as a brand-new, undocumented file."""
+    project = scratch_git_project(tmp_path)
+    base_source = a_module_of(
+        a_documented_function("one", extra_code_lines=3),
+        a_documented_function("two", extra_code_lines=3),
+        a_documented_function("three", extra_code_lines=3),
+    )
+    write_module(project, "before_rename.py", base_source)
+    base = commit(project, "base")
+    delete_module(project, "before_rename.py")
+    head_source = a_module_of(
+        a_function_without_documentation("one", extra_code_lines=3),
+        a_function_without_documentation("two", extra_code_lines=3),
+        a_function_without_documentation("three", extra_code_lines=3),
+    )
+    write_module(project, "after_rename.py", head_source)
+    commit(project, "rename and drop the docstrings")
+    rename_status = _git(
+        project, "diff", "-M", "--name-status", f"{base}...HEAD"
+    ).stdout
+    assert rename_status.startswith("R"), (
+        f"this scenario must exercise git's own rename detection: {rename_status!r}"
+    )
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(SOURCE_PACKAGE / "after_rename.py") in result.stderr
+    assert "documentation share fell from" in result.stderr
+
+
+def test_the_report_names_each_touched_files_distance_to_the_ceiling(
+    tmp_path: Path,
+) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    base = commit(project, "base")
+    write_module(project, "touched.py", a_file_of(10))
+    commit(project, "grows to ten lines")
+    touched_path = str(SOURCE_PACKAGE / "touched.py")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    distance = FILE_LINE_THRESHOLD - 10
+    assert (
+        f"{touched_path}: {distance} lines under the {FILE_LINE_THRESHOLD}-line ceiling"
+        in (result.stdout)
+    )
+
+
+def test_an_unresolvable_base_is_refused(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    commit(project, "base")
+
+    result = run_gate_with_base(project, "does-not-exist-in-this-repository")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Size ratchet refused" in result.stderr
+
+
+def test_an_empty_base_is_refused_not_read_as_no_base(tmp_path: Path) -> None:
+    """Regression: `f"{base}...{head}"` turns into `...HEAD` when `base` is
+    empty, and git reads an omitted left side of a range as `HEAD` -- an
+    empty `--base` must not silently diff `HEAD...HEAD` and pass quiet."""
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    commit(project, "base")
+
+    result = run_gate_with_base(project, "")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Size ratchet refused" in result.stderr

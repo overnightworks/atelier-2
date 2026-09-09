@@ -13,7 +13,8 @@ from atelier2.api._support import (
 )
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import ARTIFACT_PATH, ARTIFACTS_PATH
-from atelier2.api.problems import ApiProblem, artifact_problem_code
+from atelier2.api.problem_vocabulary import artifact_problem_code
+from atelier2.api.problems import ApiProblem
 from atelier2.api.references import ArtifactHashPath
 from atelier2.api.wire.resources import ArtifactResource
 from atelier2.application.publish_artifact import (
@@ -61,7 +62,7 @@ async def publish_artifact_route(
     content = await request.body()
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.publish_artifact(content),
+        lambda: context.use_cases.artifacts.publish_artifact(content),
     )
     match result:
         case ArtifactPublicationCreated(artifact):
@@ -107,7 +108,7 @@ async def read_artifact_route(
         raise ApiProblem("invalid-artifact-hash") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.read_artifact(parsed),
+        lambda: context.use_cases.artifacts.read_artifact(parsed),
     )
     match result:
         case ArtifactRead(artifact):
