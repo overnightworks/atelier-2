@@ -1,0 +1,8 @@
+claim_id = "1dee01559f534187af149648f4e7dcc2"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "1dcda12fcbef99532941314a8461b04ca0742647"
+branch = "claude/issue-1481-claim-release"
+scope = ["src/atelier2/adapters/dbos/runtime.py", "src/atelier2/adapters/agent_claim_cli.py", "tests/integration"]
+opened_commit = "cf863d8a0e509ad4db75d847747742e78fcfff09"
+whole_reason = "Der Reconciler, seine CLI-Seite und sein Integrationsbeweis landen zusammen."
