@@ -1,7 +1,9 @@
 # ADR 0005: CI enforces package boundaries
 
 - Status: ACCEPTED 2026-08-13 — implemented: the gate landed with this record and
-  runs in the quality lane on every pull request
+  runs in the quality lane on every pull request. The source-module count in the
+  Decision, and the Consequences bullet that priced it, are amended 2026-09-09
+  (issue #1471): the wrapper requires nameability, not a counted inventory.
 
 ## Context
 
@@ -55,6 +57,22 @@ is not remeasured fails the count before any later import of the tree.
 `route-port-problems` walks nested packages, so the same reach under
 `api/routes/<group>/` fails that named preflight.
 
+**Amendment 2026-09-09 (Operator-Ruling 2026-09-09,
+[#1471](https://github.com/overnightworks/atelier-2/issues/1471)): the wrapper
+owns nameability, not a counted inventory.** The exact count and the duty to
+remeasure it are gone. A number answered the wrong question: it stayed green when
+one module replaced another and went red when nothing was broken, so four lanes
+in one day raised the same line for no defect, and a file beside the package it
+could never see at all. What it groped at is that a contract can only judge a
+file the analysis turned into a module. The wrapper therefore requires every
+`.py` file under `src/` to be nameable as a module of the `atelier2` package —
+inside that package, through directories that carry `__init__.py`, under names
+Python can spell — and refuses each failing file with its path and its reason.
+Ownership *inside* the package is not the wrapper's: the exhaustive layer
+contract above already refuses an undeclared sibling. Growth needs no
+remeasurement, and the counted inventory survives only as a reported number in
+the preflight line.
+
 The quality lane runs `uv run --locked python scripts/check_architecture.py`
 immediately after dependency installation. The wrapper then delegates to Import
 Linter with caching disabled and timings visible. The wrapper and
@@ -81,6 +99,15 @@ not as independently maintained counts in this record.
 - Adding or deleting source without remeasurement fails even when the change is
   intentional; this is the explicit cost of detecting a silently empty,
   unexpectedly shrunken, or unexpectedly grown scan.
+- **Amendment 2026-09-09 (Operator-Ruling 2026-09-09,
+  [#1471](https://github.com/overnightworks/atelier-2/issues/1471)): the bullet
+  above no longer holds.** That cost is not paid and its three cases have their
+  own owners: a silently empty scan fails at `use-case-record-problems`, because
+  the module it resolves is not this tree's module; a shrunken scan fails the
+  layer contract as a missing layer only where it loses a declared layer, and a
+  deleted leaf that breaks no import is as little a defect as a grown scan. What
+  fails instead is a source file the import analysis cannot see, named with its
+  path.
 
 ## Supersedes
 
