@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.functions import Function
 
+import atelier2.adapters.dbos.runtime as dbos_runtime_module
 import atelier2.application.advance_queue as advance_queue_module
 from atelier2.adapters.dbos import schema as schema_module
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -171,6 +172,7 @@ from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
 
 PROJECT = ProjectId("project1")
+_QUEUE_SWEEP_PATIENCE_SECONDS = 5.0
 FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
 SECOND_READ = RecordedAt("2026-09-02T09:00:00Z")
 THIRD_READ = RecordedAt("2026-09-03T09:00:00Z")
@@ -1882,6 +1884,100 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
             if getattr(record, "event", None)
             == "queue_label_admission_source_unreadable"
         ] == [(logging.WARNING, unreadable.detail)]
+    finally:
+        runtime.close()
+
+
+def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The import rides the sweep's own clock; a steady repeat tick touches nothing.
+
+    No caller writes a queue row here -- not this test, not the import route.
+    The launch's own sweep observes the first labelled tracker item and starts
+    it from the policy's defaults. A tracker item that only appears afterwards
+    is observed by the next tick, asked for by `request_queue_sweep()` the way
+    an admitted item already asks for one, without anyone calling the import
+    route in between -- the proof that the import runs on every tick, not only
+    at launch. A further tick that reads the same tracker answer again leaves
+    both items' durable rows exactly as they were -- the proof that a repeat
+    import is a no-op, not a second admission.
+    """
+
+    label = "bereit"
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    first_read = RecordedAt("2026-09-09T09:00:00Z")
+    first_item = ObservedOpenTrackerItem(
+        TrackerItemReference("gh:1236"), "labelled", (label,)
+    )
+    tracker = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved((first_item,), first_read),
+        snapshot_answer=_SCOPED_SNAPSHOT,
+    )
+    runtime = _runtime(
+        tmp_path / "atelier.sqlite", project_root=project_root, tracker=tracker
+    )
+    swept = Event()
+    real_advance_queue = dbos_runtime_module.advance_queue
+
+    def _advance_queue_and_signal(*args: object, **kwargs: object) -> None:
+        real_advance_queue(*args, **kwargs)
+        swept.set()
+
+    monkeypatch.setattr(dbos_runtime_module, "advance_queue", _advance_queue_and_signal)
+    try:
+        lineage_id, _revision_hash = found_lineage(runtime.engine)
+        queue = DbosQueueProjectionStore(runtime.engine)
+        assert isinstance(
+            queue.put_policy(
+                QueueProjectPolicyRevision(
+                    PROJECT,
+                    1,
+                    2,
+                    label,
+                    QueueProjectPolicyDefaults(
+                        lineage_id,
+                        QueuePriorityRank(5),
+                        QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+                    ),
+                ),
+                0,
+            ),
+            QueueProjectPolicyPublished,
+        )
+        first_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:1236"))
+
+        runtime.launch()
+
+        first_snapshot = _snapshots_by_reference(queue)[first_reference.tracker_item]
+        assert first_snapshot.state is QueueItemState.ADMITTED
+        assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
+
+        second_item = ObservedOpenTrackerItem(
+            TrackerItemReference("gh:5555"), "newly labelled", (label,)
+        )
+        second_listing = OpenTrackerItemsObserved(
+            (first_item, second_item), RecordedAt("2026-09-09T09:05:00Z")
+        )
+        tracker.open_items_answer = second_listing
+        swept.clear()
+        runtime.request_queue_sweep()
+        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
+
+        second_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:5555"))
+        second_snapshot = _snapshots_by_reference(queue)[second_reference.tracker_item]
+        assert second_snapshot.state is QueueItemState.ADMITTED
+        assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
+
+        before = _snapshots_by_reference(queue)
+        swept.clear()
+        runtime.request_queue_sweep()
+        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
+
+        assert _snapshots_by_reference(queue) == before
+        assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
+        assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
     finally:
         runtime.close()
 

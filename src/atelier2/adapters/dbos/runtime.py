@@ -82,6 +82,18 @@ from atelier2.application.converge_driverless_attempts import (
 from atelier2.application.converge_uncontinuable_runs import (
     converge_uncontinuable_runs,
 )
+from atelier2.application.import_project_source_issues import (
+    ImportProjectSourceIssuesOutcome,
+    ProjectSourceIssuesImported,
+    import_project_source_issues,
+)
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectSourceNotConnected,
+    ReadUnavailable,
+    SourcePayloadMalformed,
+    WriteUnavailable,
+)
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import (
@@ -1006,6 +1018,75 @@ def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
             assert_never(unreachable)
 
 
+def _log_project_source_import(outcome: ImportProjectSourceIssuesOutcome) -> None:
+    """Say what this sweep's import observed from the tracker, and what it could not.
+
+    Import shares the admission label's clock and its silence rule: a steady
+    tick that observes nothing new leaves no trace, and only a name the import
+    could not carry forward or a store the import could not reach is worth an
+    operator's attention here.
+    """
+
+    match outcome:
+        case ProjectSourceIssuesImported(observed, newly_observed, skipped):
+            for item in skipped:
+                _LOG.warning(
+                    "The tracker import could not carry tracker item %s forward (%s).",
+                    item.reference.value,
+                    item.reason,
+                    extra={
+                        "event": "project_source_import_item_skipped",
+                        "reference": item.reference.value,
+                    },
+                )
+            if newly_observed or skipped:
+                _LOG.info(
+                    "Tracker import swept: %d observed, %d newly observed, %d skipped.",
+                    observed,
+                    newly_observed,
+                    len(skipped),
+                    extra={
+                        "event": "project_source_import_swept",
+                        "observed": observed,
+                        "newly_observed": newly_observed,
+                        "skipped": len(skipped),
+                    },
+                )
+        case ProjectSourceNotConnected():
+            return
+        case SourcePayloadMalformed(detail):
+            _LOG.warning(
+                "The tracker import could not read the tracker's payload (%s).",
+                detail,
+                extra={
+                    "event": "project_source_import_payload_malformed",
+                    "detail": detail,
+                },
+            )
+        case ReadUnavailable(detail):
+            _LOG.warning(
+                "The tracker import could not read the tracker (%s).",
+                detail,
+                extra={
+                    "event": "project_source_import_read_unavailable",
+                    "detail": detail,
+                },
+            )
+        case WriteUnavailable():
+            _LOG.warning(
+                "The tracker import could not write the observed items; the "
+                "next tick asks again.",
+                extra={"event": "project_source_import_write_unavailable"},
+            )
+        case DurableStateCorrupt():
+            _LOG.warning(
+                "The tracker import found the durable queue state corrupt.",
+                extra={"event": "project_source_import_state_corrupt"},
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
     return {
         "name": "atelier2",
@@ -1232,13 +1313,14 @@ class _DbosProcessOwner:
 
     @staticmethod
     def _advance_queue(bound: _BoundRuntime) -> None:
-        """Admit what the automation label names, then start each launch once.
+        """Import the tracker's open items, admit what the label names, then start each launch once.
 
-        Admission first: an item the label admits in this sweep is one the
-        same sweep can start, rather than one waiting for the next process
-        start. Without a served project or a connected tracker there is no
-        policy to read and no label to read it against, so only the start half
-        runs.
+        Import first: a tracker item this sweep has never seen has no row for
+        the label step to read, so the same tick that notices a freshly
+        labelled item also admits and starts it, rather than waiting for a
+        caller of the import route. Without a served project or a connected
+        tracker there is no source to import and no policy to read a label
+        against, so only the start half runs.
         """
 
         # Local import: `starter` imports `DbosRuntimeSettings` from this module,
@@ -1249,6 +1331,9 @@ class _DbosProcessOwner:
         project = bound.settings.project_id
         tracker = bound.tracker_item_source
         if project is not None and tracker is not None:
+            _log_project_source_import(
+                import_project_source_issues(project, tracker, queue)
+            )
             _log_queue_label_admission(
                 admit_queue_items_by_label(queue, project=project, tracker=tracker)
             )
