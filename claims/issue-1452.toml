@@ -1,8 +1,0 @@
-claim_id = "3a71f64a275744fc9bd5684c77e853ab"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
-branch = "claude/issue-1452-pr-title"
-scope = ["src/atelier2/adapters/github/live_effects.py", "tests/integration/test_github_open_pr_live.py", "src/atelier2/adapters/github", "scripts/check_architecture.py"]
-opened_commit = "b411a0c35aedef022b7ada5aff48ed4a58ea466e"
-whole_reason = "Ein neues Quellmodul und die deklarierte Modul-Zahl gehoeren in denselben Commit."
