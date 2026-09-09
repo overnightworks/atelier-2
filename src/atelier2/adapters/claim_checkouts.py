@@ -69,6 +69,7 @@ class ClaimCheckoutRootRefused(ValueError):
 class _RegisteredWorktree:
     path: str
     locked: bool
+    lock_reason: str | None
 
 
 def _checkout_name(run_id: RunId) -> str:
@@ -86,12 +87,15 @@ def _registered_worktrees(listed: str) -> dict[str, _RegisteredWorktree]:
         if not lines or not lines[0].startswith(_WORKTREE_PATH_PREFIX):
             continue
         path = lines[0].removeprefix(_WORKTREE_PATH_PREFIX)
-        locked = any(
-            line == _WORKTREE_LOCKED_LINE
-            or line.startswith(f"{_WORKTREE_LOCKED_LINE} ")
-            for line in lines[1:]
-        )
-        registered[path] = _RegisteredWorktree(path, locked)
+        lock_reason: str | None = None
+        locked = False
+        for line in lines[1:]:
+            if line == _WORKTREE_LOCKED_LINE:
+                locked = True
+            elif line.startswith(f"{_WORKTREE_LOCKED_LINE} "):
+                locked = True
+                lock_reason = line.removeprefix(f"{_WORKTREE_LOCKED_LINE} ")
+        registered[path] = _RegisteredWorktree(path, locked, lock_reason)
     return registered
 
 
@@ -150,6 +154,22 @@ class LocalClaimCheckouts:
             failure=f"the worktree administration of {self._project_checkout} could "
             "not be pruned",
         )
+
+    def standing_run_ids(self) -> tuple[RunId, ...]:
+        """The runs this adapter currently holds a checkout for under its own root.
+
+        The lock reason is the run id this adapter wrote; a checkout under
+        another path, or one whose lock never named a run, is not ours to close.
+        """
+
+        held: list[RunId] = []
+        for registered in self._registered().values():
+            if registered.lock_reason is None:
+                continue
+            if not Path(registered.path).resolve().is_relative_to(self._root):
+                continue
+            held.append(RunId(registered.lock_reason))
+        return tuple(sorted(held, key=lambda run_id: run_id.value))
 
     def _forget(self, path: Path, run_id: RunId) -> None:
         """Remove the run's registered worktree, standing or vanished; else nothing."""

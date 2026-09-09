@@ -8,6 +8,7 @@ from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
+from sqlalchemy.engine import Engine
 
 from atelier2.adapters.attempt_workspace_files import AttemptWorkspaceFileAccess
 from atelier2.adapters.dbos.advancer import (
@@ -84,6 +85,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.work_item_claims import (
     WorkItemClaimLedger,
+    close_checkouts_of_terminal_runs,
     hold_work_item_claim,
     refuse_unattested_pin,
 )
@@ -570,6 +572,7 @@ def _declared_output_schema_document(
 @dataclass
 class _DurableRunWorkflows:
     db: SQLAlchemyDatasource
+    engine: Engine
     executors: AgentExecutorMap
     attempts: AgentAttemptStore
     session: AgentSession | None
@@ -689,9 +692,23 @@ class _DurableRunWorkflows:
         if unclaimed is not None:
             return unclaimed
         outcome = self.execute_v2_attempt(attempt.execution, attempt.executor, binding)
-        return self.continue_run_after(
+        state = self.continue_run_after(
             outcome, binding, run_id, revision_hash, node_id, binding.round_ordinal
         )
+        self._close_terminal_claim_checkout(run_id)
+        return state
+
+    def _close_terminal_claim_checkout(self, run_id: RunId) -> None:
+        """Remove this run's claim checkout once the store already records it ended.
+
+        A failed attempt can write FAILED while `continue_run_after` still
+        answers STARTED; the store is the decision, not that return.
+        """
+
+        ledger = self.work_item_claims
+        if ledger is None:
+            return
+        close_checkouts_of_terminal_runs(self.engine, ledger.checkouts, (run_id,))
 
     def continue_run_after(
         self,
@@ -918,6 +935,7 @@ class _DurableRunWorkflows:
             is None
         ):
             redrive_index = self.sleep_before_redrive(redrive_index)
+        self._close_terminal_claim_checkout(RunId(run_id))
         return self.attempts.load(attempt.attempt_id).state.value
 
     def durable_agent_attempt_replacement(self, attempt_id: str) -> str:
@@ -940,6 +958,7 @@ class _DurableRunWorkflows:
             replacement.node_id,
             reconstructed.binding.round_ordinal,
         )
+        self._close_terminal_claim_checkout(replacement.run_id)
         return self.attempts.load(replacement.attempt_id).state.value
 
     def durable_node(self, run_id: str, revision_hash: str, node_id: str) -> str:
@@ -1148,6 +1167,7 @@ class _DurableRunWorkflows:
 
 def register_durable_run_workflow(
     datasource: SQLAlchemyDatasource,
+    engine: Engine,
     agent_executors_v2: AgentExecutorMap,
     agent_attempt_store: AgentAttemptStore,
     agent_session: AgentSession | None,
@@ -1162,6 +1182,7 @@ def register_durable_run_workflow(
 ) -> None:
     _DurableRunWorkflows(
         datasource,
+        engine,
         agent_executors_v2,
         agent_attempt_store,
         agent_session,

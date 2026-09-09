@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.work_item_claims import (
     WorkItemClaimHeld,
     WorkItemClaimLedger,
     WorkItemClaimRefused,
+    close_checkouts_of_terminal_runs,
     hold_prepared_claim,
     hold_work_item_claim,
     out_of_order_reason,
@@ -207,6 +208,20 @@ class _CheckoutsWhoseOpenAndCloseFail:
 
     def close(self, run_id: RunId) -> None:
         raise ClaimCheckoutUnavailable(self.close_sentence)
+
+
+class _CheckoutsWhoseCloseFails:
+    """Close raises, so a standing checkout is left for the next tick."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def open(self, run_id: RunId, branch: HeadBranch, pin: object) -> Path:
+        raise AssertionError("a failing close is proven without opening a checkout")
+
+    def close(self, run_id: RunId) -> None:
+        self.attempts += 1
+        raise ClaimCheckoutUnavailable("the claim checkout could not be removed")
 
 
 CHECKOUT = Path("/claim-checkout")
@@ -798,6 +813,86 @@ def test_a_refused_claim_leaves_no_claim_checkout(
 
     assert started_node.claim_checkout() is None
     assert not any((tmp_path / "door-checkouts").iterdir())
+
+
+def _hold_claim_checkout(started_node: _StartedBuilderNode, tmp_path: Path) -> None:
+    executable = fake_agent_claim_executable(tmp_path, "checkout")
+    assert (
+        started_node.hold(started_node.ledger(AgentClaimCli(executable, tmp_path)))
+        is None
+    )
+    assert started_node.claim_checkout() is not None
+
+
+def _end_run(
+    started_node: _StartedBuilderNode, state: RunState = RunState.FAILED
+) -> None:
+    with started_node.runtime.engine.begin() as connection:
+        connection.execute(
+            sa.update(runs)
+            .where(runs.c.run_id == started_node.run_id.value)
+            .values(state=state.value, terminal_hash="a" * 64)
+        )
+
+
+def test_a_terminal_run_leaves_no_claim_checkout(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    _hold_claim_checkout(started_node, tmp_path)
+    _end_run(started_node)
+
+    close_checkouts_of_terminal_runs(
+        started_node.runtime.engine,
+        started_node.checkouts,
+        (started_node.run_id,),
+    )
+
+    assert started_node.claim_checkout() is None
+    assert started_node.standing()[0] == RunState.FAILED.value
+
+
+def test_a_checkout_under_running_work_stays(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    _hold_claim_checkout(started_node, tmp_path)
+    held = started_node.claim_checkout()
+
+    close_checkouts_of_terminal_runs(
+        started_node.runtime.engine,
+        started_node.checkouts,
+        started_node.checkouts.standing_run_ids(),
+    )
+
+    assert started_node.claim_checkout() == held
+    assert started_node.standing()[0] == RunState.STARTED.value
+
+
+def test_a_failed_cleanup_leaves_the_run_and_the_next_tick_retries(
+    started_node: _StartedBuilderNode, tmp_path: Path
+) -> None:
+    _hold_claim_checkout(started_node, tmp_path)
+    _end_run(started_node)
+    before = started_node.standing()
+    failing = _CheckoutsWhoseCloseFails()
+
+    close_checkouts_of_terminal_runs(
+        started_node.runtime.engine,
+        failing,
+        started_node.checkouts.standing_run_ids(),
+    )
+
+    assert failing.attempts == 1
+    assert started_node.standing() == before
+    assert started_node.claim_checkout() is not None
+
+    close_checkouts_of_terminal_runs(
+        started_node.runtime.engine,
+        started_node.checkouts,
+        started_node.checkouts.standing_run_ids(),
+    )
+
+    assert started_node.claim_checkout() is None
+    assert started_node.standing() == before
 
 
 def test_a_replay_that_finds_its_claim_checkout_gone_makes_it_again_without_the_ledger(
