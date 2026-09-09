@@ -29,7 +29,7 @@ async def list_projects_route(
     context: ApiContext = api_context_dependency,
 ) -> ProjectListResource:
     result = await run_control_query(
-        context.control_runner, context.use_cases.list_projects
+        context.control_runner, context.use_cases.projects.list_projects
     )
     match result:
         case ProjectListRead() as projects:
@@ -54,7 +54,7 @@ async def get_project_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_project(project_id),
+        lambda: context.use_cases.projects.get_project(project_id),
     )
     match result:
         case ProjectRead() as project:

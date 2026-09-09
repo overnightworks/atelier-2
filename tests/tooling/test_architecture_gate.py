@@ -551,7 +551,7 @@ def reach_a_port_from_a_read_of_an_allowlisted_module(project: Path) -> None:
     events = project / "src/atelier2/api/routes/events.py"
     source = events.read_text(encoding="utf-8")
     replaced = source.replace(
-        "        lambda: context.use_cases.prepare_run_events(run_id, after_sequence),",
+        "        lambda: context.use_cases.runs.prepare_run_events(run_id, after_sequence),",
         "        lambda: prepare_run_events(\n"
         "            run_id, after_sequence, context.ports.run_event_queries\n"
         "        ),",

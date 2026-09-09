@@ -257,7 +257,7 @@ async def start_run_route(
         orders = tuple(_authored_order(order) for order in body.orders)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.start_published_run(
+        lambda: context.use_cases.run_control.start_published_run(
             run_id, revision_hash, bindings, orders
         ),
     )
@@ -353,7 +353,7 @@ async def list_runs(
             ) from None
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_runs(boundary, limit, parsed_state),
+        lambda: context.use_cases.runs.list_runs(boundary, limit, parsed_state),
     )
     match result:
         case RunsListed(runs, next_after):
@@ -403,7 +403,7 @@ async def fork_run_route(
     origin_run_id = decode_public_reference(public_ref, context.limits)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.fork_run(
+        lambda: context.use_cases.run_control.fork_run(
             origin_run_id, body.idempotency_key, body.restart_from_node_id
         ),
     )
@@ -457,7 +457,7 @@ async def get_node_detail_route(
         raise ApiProblem("node-not-found") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.get_node_detail(run_id, node_id),
+        lambda: context.use_cases.runs.get_node_detail(run_id, node_id),
     )
     match result:
         case NodeDetailRead(detail):
@@ -519,7 +519,7 @@ async def cancel_agent_attempt_route(
         raise ApiProblem("invalid-agent-attempt-id") from error
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.cancel_agent_attempt(request),
+        lambda: context.use_cases.run_control.cancel_agent_attempt(request),
     )
     match result:
         case CancellationAccepted(terminal=terminal):
@@ -565,7 +565,7 @@ async def answer_run_route(
     answer_bytes = decode_base64(body.answer_base64, context.limits)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.answer_wait(
+        lambda: context.use_cases.run_control.answer_wait(
             run_id,
             revision_hash,
             body.node_id,
@@ -640,7 +640,7 @@ async def reconcile_run_route(
     )
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.reconcile_run(reconciliation_request),
+        lambda: context.use_cases.run_control.reconcile_run(reconciliation_request),
     )
     match result:
         case ReconciliationAcceptedPending() | ReconciliationExistingPending():
@@ -694,7 +694,7 @@ async def cancel_run_route(
     expected_node_execution_id = NodeExecutionId(body.expected_node_execution_id)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.cancel_run(
+        lambda: context.use_cases.run_control.cancel_run(
             run_id, body.idempotency_key, expected_node_execution_id
         ),
     )
@@ -738,7 +738,7 @@ async def cancel_run_route(
 async def _run_resource_of(run_id: RunId, context: ApiContext) -> RunResourceV3:
     return await load_run_resource(
         run_id,
-        context.use_cases.get_run,
+        context.use_cases.runs.get_run,
         context.control_runner,
         context.limits,
     )
