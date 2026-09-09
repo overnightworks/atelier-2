@@ -1107,9 +1107,11 @@ two one owner *and* deleting its entry.
 ## The size and complexity ratchet
 
 `uv run --locked python scripts/check_size_ratchet.py` holds three more debt
-shapes in `src/atelier2` from growing: files at 800 lines or more, functions
-and methods at 60 lines or more (measured with `ast`), and functions ruff's
-`C901` McCabe check reports over a complexity of 15.
+shapes in `src/atelier2` and `scripts/` from growing: files at 800 lines or
+more, functions and methods at 60 lines or more (measured with `ast`), and
+functions ruff's `C901` McCabe check reports over a complexity of 15. This is
+the only one of the ratchets above that also measures `scripts/` itself, so
+the check scripts stay honest about their own size.
 `scripts/baselines/size_ratchet_baseline.toml` names every path or qualified symbol this tree already carries at its current
 value. An offender missing from the baseline, or one that grew past its listed
 value, turns the gate red; a listed entry that no longer offends is an orphan

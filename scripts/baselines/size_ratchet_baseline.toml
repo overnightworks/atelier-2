@@ -6,6 +6,14 @@
 # baseline does not yet name, turns the gate red.
 
 [[file]]
+path = "scripts/check_acceptance.py"
+lines = 931
+
+[[file]]
+path = "scripts/check_architecture.py"
+lines = 1073
+
+[[file]]
 path = "src/atelier2/adapters/agent_process_watchdog.py"
 lines = 1196
 
@@ -528,6 +536,22 @@ lines = 115
 [[function]]
 qualified_name = "atelier2.ports.agent_executions.AgentExecutorRegistry.__init__"
 lines = 84
+
+[[function]]
+qualified_name = "scripts.check_acceptance.acceptance_problems"
+lines = 65
+
+[[function]]
+qualified_name = "scripts.check_architecture._use_case_record_field_problems"
+lines = 72
+
+[[function]]
+qualified_name = "scripts.check_architecture.read_architecture_configuration"
+lines = 67
+
+[[function]]
+qualified_name = "scripts.check_dead_code.main"
+lines = 68
 
 [[complexity]]
 qualified_name = "atelier2.api.routes.runs.start_run_route"
