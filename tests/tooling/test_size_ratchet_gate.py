@@ -364,9 +364,13 @@ def test_densification_gate_reads_code_growth_against_documentation_loss(
 
 def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
     project = scratch_git_project(tmp_path)
-    write_module(project, DENSIFYING_MODULE, a_module_with_documentation(function_count=2))
+    write_module(
+        project, DENSIFYING_MODULE, a_module_with_documentation(function_count=2)
+    )
     base = commit(project, "base")
-    write_module(project, DENSIFYING_MODULE, a_module_with_documentation(function_count=1))
+    write_module(
+        project, DENSIFYING_MODULE, a_module_with_documentation(function_count=1)
+    )
     write_module(project, "densifying_extracted.py", a_module_with_documentation(1))
     commit(project, "split one function into its own module")
 
@@ -403,6 +407,7 @@ def test_the_report_names_each_touched_files_distance_to_the_ceiling(
 
     assert result.returncode == 0, result.stdout + result.stderr
     distance = FILE_LINE_THRESHOLD - 10
-    assert f"{touched_path}: {distance} lines under the {FILE_LINE_THRESHOLD}-line ceiling" in (
-        result.stdout
+    assert (
+        f"{touched_path}: {distance} lines under the {FILE_LINE_THRESHOLD}-line ceiling"
+        in (result.stdout)
     )
