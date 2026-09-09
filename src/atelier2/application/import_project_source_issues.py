@@ -90,9 +90,11 @@ def import_project_source_issues(
     observation and never touches an admission. What the tracker no longer
     lists leaves the open set in the same durable step -- the import derives
     that retirement rather than asking the tracker for a lifecycle (ADR 0016,
-    2026-09-01 amendment). An item the run could not read is still in that
-    open set: skip is not absence, so the last good observation is handed
-    through rather than letting set-difference retire it.
+    2026-09-01 amendment).
+
+    An item the run could not read is still in that open set: skip is not
+    absence, so the last good observation is handed through rather than
+    letting set-difference retire it.
     """
 
     if project is None or source is None:
