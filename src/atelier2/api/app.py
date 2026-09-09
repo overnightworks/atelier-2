@@ -137,319 +137,218 @@ from atelier2.contracts.workflow_projections import (
 from atelier2.ports.durable_run_forks import DurableRunForker
 
 
-def bound_use_cases(
-    ports: ApiPorts,
-    projection_limit: WorkflowPublicationLimits,
-    enriched_page_budget: EnrichedPageBudget,
-    served_project_id: ProjectId | None,
-    source_id_generator: Callable[[], ProjectSourceId],
-    connection_clock: Callable[[], RecordedAt],
-) -> ApiUseCases:
-    """Spend the ports here, so that nothing below this line can reach one."""
-    return ApiUseCases(
-        get_workflow_revision=lambda revision_hash: get_workflow_revision(
+def _bind_workflow_revision_read_use_cases(
+    ports: ApiPorts, enriched_page_budget: EnrichedPageBudget
+):
+    return (
+        lambda revision_hash: get_workflow_revision(
             revision_hash,
             ports.workflow_revision_queries,
             ports.published_revision_registry,
         ),
-        resolve_catalog_name=lambda kind, query, position: resolve_catalog_name(
-            kind, query, position, ports.catalog_resolver
-        ),
-        found_catalog_lineage=lambda kind, revision_hash, name, actor, at: (
-            found_catalog_lineage(
-                kind,
-                revision_hash,
-                name,
-                actor,
-                at,
-                ports.catalog_resolver,
-                ports.catalog_admissions,
-                ports.workflow_document_parser,
-                ports.agent_definition_parser,
-                ports.workflow_revision_queries,
-            )
-        ),
-        admit_catalog_member=lambda kind, lineage_id, revision_hash, actor, at: (
-            admit_catalog_member(
-                kind,
-                lineage_id,
-                revision_hash,
-                actor,
-                at,
-                ports.catalog_resolver,
-                ports.catalog_admissions,
-                ports.workflow_document_parser,
-                ports.agent_definition_parser,
-                ports.workflow_revision_queries,
-            )
-        ),
-        retire_catalog_lineage=lambda lineage_id, actor, at: retire_catalog_lineage(
-            lineage_id, actor, at, ports.catalog_admissions
-        ),
-        list_workflow_revisions=lambda after, limit: list_workflow_revisions(
+        lambda after, limit: list_workflow_revisions(
             after, limit, ports.workflow_revision_queries
         ),
-        list_described_workflow_revisions=(
-            lambda after, limit: list_described_workflow_revisions(
-                after,
-                limit,
-                enriched_page_budget,
-                ports.workflow_revision_queries,
-                ports.published_revision_resolver_sessions,
-            )
+        lambda after, limit: list_described_workflow_revisions(
+            after,
+            limit,
+            enriched_page_budget,
+            ports.workflow_revision_queries,
+            ports.published_revision_resolver_sessions,
         ),
-        get_run=lambda run_id: get_run(run_id, ports.run_queries),
-        get_node_detail=lambda run_id, node_id: get_node_detail(
-            run_id, node_id, ports.run_queries
-        ),
-        list_runs=lambda after, limit, state=None: list_runs(
+    )
+
+
+def _bind_run_read_use_cases(ports: ApiPorts):
+    return (
+        lambda run_id: get_run(run_id, ports.run_queries),
+        lambda run_id, node_id: get_node_detail(run_id, node_id, ports.run_queries),
+        lambda after, limit, state=None: list_runs(
             after, limit, ports.run_queries, state
         ),
-        prepare_run_events=lambda run_id, after_sequence: prepare_run_events(
+        lambda run_id, after_sequence: prepare_run_events(
             run_id, after_sequence, ports.run_event_queries
         ),
-        read_run_events=lambda run_id, after_sequence, page_size: read_run_events(
-            run_id,
-            after_sequence,
-            page_size,
-            ports.run_event_queries,
+        lambda run_id, after_sequence, page_size: read_run_events(
+            run_id, after_sequence, page_size, ports.run_event_queries
         ),
-        read_attention_events=(
-            lambda after_run_id, after_sequence, page_size, excluded_identities=(): (
-                read_attention_events(
-                    after_run_id,
-                    after_sequence,
-                    page_size,
-                    ports.run_event_queries,
-                    excluded_identities,
-                )
+        lambda after_run_id, after_sequence, page_size, excluded_identities=(): (
+            read_attention_events(
+                after_run_id,
+                after_sequence,
+                page_size,
+                ports.run_event_queries,
+                excluded_identities,
             )
         ),
-        publish_workflow_revision=lambda document: publish_workflow_revision(
+    )
+
+
+def _bind_content_publication_use_cases(
+    ports: ApiPorts, projection_limit: WorkflowPublicationLimits
+):
+    return (
+        lambda document: publish_workflow_revision(
             document,
             ports.workflow_revision_publisher,
             ports.workflow_document_parser,
             projection_limit,
             ports.published_revision_registry,
         ),
-        publish_artifact=lambda content: publish_artifact(
-            content, ports.artifact_publisher
-        ),
-        read_artifact=lambda artifact_hash: read_artifact(
-            artifact_hash, ports.artifact_reader
-        ),
-        publish_schema_revision=lambda document: publish_schema_revision(
+        lambda content: publish_artifact(content, ports.artifact_publisher),
+        lambda artifact_hash: read_artifact(artifact_hash, ports.artifact_reader),
+    )
+
+
+def _bind_definition_document_use_cases(ports: ApiPorts):
+    return (
+        lambda document: publish_schema_revision(
             document, ports.published_revision_registry
         ),
-        get_schema_revision=lambda revision_hash: get_schema_revision(
+        lambda revision_hash: get_schema_revision(
             revision_hash, ports.published_revision_registry
         ),
-        publish_budget_revision=lambda document: publish_budget_revision(
+        lambda document: publish_budget_revision(
             document, ports.published_revision_registry
         ),
-        publish_tool_grant_revision=lambda document: publish_tool_grant_revision(
+        lambda document: publish_tool_grant_revision(
             document, ports.published_revision_registry
         ),
-        publish_adapter_operation_revision=lambda document: (
-            publish_adapter_operation_revision(
-                document, ports.published_revision_registry
+        lambda document: publish_adapter_operation_revision(
+            document, ports.published_revision_registry
+        ),
+        lambda document: publish_agent_definition_revision(
+            document,
+            ports.agent_definition_parser,
+            ports.agent_definition_renderer,
+            ports.published_revision_registry,
+        ),
+        lambda document, file_name: classify_definition_document(
+            document,
+            file_name,
+            ports.workflow_document_parser,
+            ports.agent_definition_parser,
+        ),
+        lambda document, kind, actor, activated_at: admit_library_addition(
+            document, kind, actor, activated_at, ports.catalog_intakes
+        ),
+        lambda intake_id: read_library_addition(intake_id, ports.catalog_intakes),
+    )
+
+
+def _bind_agent_catalog_use_cases(ports: ApiPorts):
+    return (
+        lambda after, limit: list_agent_definition_revisions(
+            after,
+            limit,
+            ports.published_revision_listing,
+            ports.agent_definition_parser,
+        ),
+        lambda revision_hash: get_agent_definition_revision(
+            revision_hash,
+            ports.published_revision_registry,
+            ports.agent_definition_parser,
+        ),
+        lambda profile_id, revision_number, provider_id, auth_mode: (
+            publish_auth_profile_revision(
+                profile_id,
+                revision_number,
+                provider_id,
+                auth_mode,
+                ports.agent_configuration_catalog,
             )
         ),
-        publish_agent_definition_revision=lambda document: (
-            publish_agent_definition_revision(
-                document,
-                ports.agent_definition_parser,
-                ports.agent_definition_renderer,
-                ports.published_revision_registry,
+        lambda model, auth_profile_hash, executor_revision, capability: (
+            publish_agent_configuration_revision(
+                model,
+                auth_profile_hash,
+                executor_revision,
+                capability,
+                ports.agent_configuration_catalog,
             )
         ),
-        classify_definition_document=lambda document, file_name: (
-            classify_definition_document(
-                document,
-                file_name,
-                ports.workflow_document_parser,
-                ports.agent_definition_parser,
-            )
+        lambda after, limit: list_agent_configuration_revisions(
+            after, limit, ports.agent_configuration_catalog
         ),
-        admit_library_addition=lambda document, kind, actor, activated_at: (
-            admit_library_addition(
-                document, kind, actor, activated_at, ports.catalog_intakes
-            )
+        lambda after, limit: list_auth_profile_revisions(
+            after, limit, ports.agent_configuration_catalog
         ),
-        read_library_addition=lambda intake_id: read_library_addition(
-            intake_id, ports.catalog_intakes
-        ),
-        list_agent_definition_revisions=(
-            lambda after, limit: list_agent_definition_revisions(
-                after,
-                limit,
-                ports.published_revision_listing,
-                ports.agent_definition_parser,
-            )
-        ),
-        get_agent_definition_revision=lambda revision_hash: (
-            get_agent_definition_revision(
-                revision_hash,
-                ports.published_revision_registry,
-                ports.agent_definition_parser,
-            )
-        ),
-        publish_auth_profile_revision=(
-            lambda profile_id, revision_number, provider_id, auth_mode: (
-                publish_auth_profile_revision(
-                    profile_id,
-                    revision_number,
-                    provider_id,
-                    auth_mode,
-                    ports.agent_configuration_catalog,
-                )
-            )
-        ),
-        publish_agent_configuration_revision=(
-            lambda model, auth_profile_hash, executor_revision, capability: (
-                publish_agent_configuration_revision(
-                    model,
-                    auth_profile_hash,
-                    executor_revision,
-                    capability,
-                    ports.agent_configuration_catalog,
-                )
-            )
-        ),
-        list_agent_configuration_revisions=(
-            lambda after, limit: list_agent_configuration_revisions(
-                after, limit, ports.agent_configuration_catalog
-            )
-        ),
-        list_auth_profile_revisions=(
-            lambda after, limit: list_auth_profile_revisions(
-                after, limit, ports.agent_configuration_catalog
-            )
-        ),
-        list_projects=lambda: list_projects(
-            served_project_id, ports.host_configuration_channel
-        ),
-        get_project=lambda project_id: get_project(
+    )
+
+
+def _bind_project_use_cases(served_project_id: ProjectId | None, ports: ApiPorts):
+    return (
+        lambda: list_projects(served_project_id, ports.host_configuration_channel),
+        lambda project_id: get_project(
             project_id, served_project_id, ports.host_configuration_channel
         ),
-        get_project_source_connection=lambda project_id: (
-            get_served_project_source_connection(
-                project_id,
-                served_project_id,
-                ports.host_configuration_channel,
-                ports.project_source_connection_channel,
-                ports.project_source_connector,
-            )
-        ),
-        list_project_sources=lambda project_id: list_served_project_sources(
-            project_id,
-            served_project_id,
-            ports.host_configuration_channel,
-            ports.project_source_connection_channel,
-            ports.project_source_connector,
-        ),
-        connect_project_source=lambda project_id, address, token: (
-            connect_managed_project_source(
-                project_id,
-                served_project_id,
-                address,
-                token,
-                ports.host_configuration_channel,
-                ports.project_source_connection_channel,
-                ports.project_source_connector,
-                ports.project_source_credential_store,
-                source_id_generator,
-                connection_clock,
-            )
-        ),
-        disconnect_project_source=lambda project_id, source_id: (
-            disconnect_project_source(
-                project_id,
-                served_project_id,
-                source_id,
-                ports.host_configuration_channel,
-                ports.project_source_connection_channel,
-            )
-        ),
-        rotate_project_source_token=lambda project_id, source_id, token: (
-            rotate_project_source_token(
-                project_id,
-                served_project_id,
-                source_id,
-                token,
-                ports.host_configuration_channel,
-                ports.project_source_connection_channel,
-                ports.project_source_connector,
-                ports.project_source_credential_store,
-            )
-        ),
-        get_model_registry=lambda provider_id: get_model_registry(
+    )
+
+
+def _bind_model_configuration_use_cases(
+    served_project_id: ProjectId | None, ports: ApiPorts
+):
+    return (
+        lambda provider_id: get_model_registry(
             provider_id, ports.host_configuration_channel
         ),
-        publish_model_registry=lambda provider_id, revision_number, entries: (
-            publish_model_registry(
-                provider_id,
-                revision_number,
-                entries,
-                ports.host_configuration_channel,
-                ports.agent_configuration_catalog,
-                ports.model_registry_discoverer,
-            )
+        lambda provider_id, revision_number, entries: publish_model_registry(
+            provider_id,
+            revision_number,
+            entries,
+            ports.host_configuration_channel,
+            ports.agent_configuration_catalog,
+            ports.model_registry_discoverer,
         ),
-        validate_model_registry_entry=(
-            lambda provider_id, configuration_hash: validate_model_registry_entry(
-                provider_id,
-                configuration_hash,
-                ports.host_configuration_channel,
-                ports.agent_configuration_catalog,
-                ports.model_registry_validator,
-            )
+        lambda provider_id, configuration_hash: validate_model_registry_entry(
+            provider_id,
+            configuration_hash,
+            ports.host_configuration_channel,
+            ports.agent_configuration_catalog,
+            ports.model_registry_validator,
         ),
-        get_project_model_defaults=lambda project_id: get_project_model_defaults(
+        lambda project_id: get_project_model_defaults(
             project_id, served_project_id, ports.host_configuration_channel
         ),
-        publish_project_model_defaults=(
-            lambda project_id, revision_number, defaults: (
-                publish_project_model_defaults(
-                    project_id,
-                    served_project_id,
-                    revision_number,
-                    defaults,
-                    ports.host_configuration_channel,
-                )
-            )
+        lambda project_id, revision_number, defaults: publish_project_model_defaults(
+            project_id,
+            served_project_id,
+            revision_number,
+            defaults,
+            ports.host_configuration_channel,
         ),
-        get_project_model_resolution=(
-            lambda project_id, workflow_revision_hash, overrides: (
-                get_project_model_resolution(
-                    project_id,
-                    served_project_id,
-                    workflow_revision_hash,
-                    overrides,
-                    ports.host_configuration_channel,
-                    ports.workflow_revision_queries,
-                    ports.agent_configuration_catalog,
-                )
-            )
-        ),
-        start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
-            start_published_run(
-                run_id,
-                revision_hash,
-                bindings,
-                ports.published_run_starter,
-                orders,
+        lambda project_id, workflow_revision_hash, overrides: (
+            get_project_model_resolution(
+                project_id,
                 served_project_id,
-                ports.tracker_item_source,
+                workflow_revision_hash,
+                overrides,
+                ports.host_configuration_channel,
+                ports.workflow_revision_queries,
+                ports.agent_configuration_catalog,
             )
         ),
-        fork_run=lambda origin_run_id, idempotency_key, restart_from_node_id: fork_run(
+    )
+
+
+def _bind_run_control_use_cases(served_project_id: ProjectId | None, ports: ApiPorts):
+    return (
+        lambda run_id, revision_hash, bindings, orders=(): start_published_run(
+            run_id,
+            revision_hash,
+            bindings,
+            ports.published_run_starter,
+            orders,
+            served_project_id,
+            ports.tracker_item_source,
+        ),
+        lambda origin_run_id, idempotency_key, restart_from_node_id: fork_run(
             origin_run_id,
             idempotency_key,
             restart_from_node_id,
             cast(DurableRunForker, ports.published_run_starter),
         ),
-        answer_wait=lambda run_id, revision_hash, node_id, execution_id, actor, answer_bytes: (
+        lambda run_id, revision_hash, node_id, execution_id, actor, answer_bytes: (
             answer_wait_result(
                 run_id,
                 revision_hash,
@@ -460,36 +359,152 @@ def bound_use_cases(
                 ports.wait_answerer,
             )
         ),
-        cancel_agent_attempt=lambda request: cancel_agent_attempt(
-            request, ports.agent_attempt_canceller
-        ),
-        cancel_run=lambda run_id, idempotency_key, expected_node_execution_id: (
-            cancel_run_result(
-                run_id,
-                idempotency_key,
-                expected_node_execution_id,
-                ports.agent_attempt_canceller,
-            )
-        ),
-        reconcile_run=lambda request: reconcile_run(
+        lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
         ),
-        confirm_queue_proposal=lambda command: confirm_queue_proposal(
-            command, ports.queue_projection
+        lambda request: cancel_agent_attempt(request, ports.agent_attempt_canceller),
+        lambda run_id, idempotency_key, expected_node_execution_id: cancel_run_result(
+            run_id,
+            idempotency_key,
+            expected_node_execution_id,
+            ports.agent_attempt_canceller,
         ),
-        plan_queue_item=lambda command: plan_queue_item(
-            command, ports.queue_projection
+    )
+
+
+def _bind_catalog_lineage_use_cases(ports: ApiPorts):
+    return (
+        lambda kind, query, position: resolve_catalog_name(
+            kind, query, position, ports.catalog_resolver
         ),
-        put_queue_project_policy=lambda policy, expected_revision: (
-            put_queue_project_policy(policy, expected_revision, ports.queue_projection)
+        lambda kind, revision_hash, name, actor, at: found_catalog_lineage(
+            kind,
+            revision_hash,
+            name,
+            actor,
+            at,
+            ports.catalog_resolver,
+            ports.catalog_admissions,
+            ports.workflow_document_parser,
+            ports.agent_definition_parser,
+            ports.workflow_revision_queries,
         ),
-        list_queue_items=lambda after, limit: list_queue_items(
-            after, limit, ports.queue_projection
+        lambda kind, lineage_id, revision_hash, actor, at: admit_catalog_member(
+            kind,
+            lineage_id,
+            revision_hash,
+            actor,
+            at,
+            ports.catalog_resolver,
+            ports.catalog_admissions,
+            ports.workflow_document_parser,
+            ports.agent_definition_parser,
+            ports.workflow_revision_queries,
         ),
-        import_project_source_issues=lambda: import_project_source_issues(
+        lambda lineage_id, actor, at: retire_catalog_lineage(
+            lineage_id, actor, at, ports.catalog_admissions
+        ),
+    )
+
+
+def _bind_project_source_connection_use_cases(
+    served_project_id: ProjectId | None,
+    ports: ApiPorts,
+    source_id_generator: Callable[[], ProjectSourceId],
+    connection_clock: Callable[[], RecordedAt],
+):
+    return (
+        lambda project_id: get_served_project_source_connection(
+            project_id,
+            served_project_id,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+            ports.project_source_connector,
+        ),
+        lambda project_id: list_served_project_sources(
+            project_id,
+            served_project_id,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+            ports.project_source_connector,
+        ),
+        lambda project_id, address, token: connect_managed_project_source(
+            project_id,
+            served_project_id,
+            address,
+            token,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+            ports.project_source_connector,
+            ports.project_source_credential_store,
+            source_id_generator,
+            connection_clock,
+        ),
+        lambda project_id, source_id: disconnect_project_source(
+            project_id,
+            served_project_id,
+            source_id,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+        ),
+        lambda project_id, source_id, token: rotate_project_source_token(
+            project_id,
+            served_project_id,
+            source_id,
+            token,
+            ports.host_configuration_channel,
+            ports.project_source_connection_channel,
+            ports.project_source_connector,
+            ports.project_source_credential_store,
+        ),
+    )
+
+
+def _bind_queue_use_cases(served_project_id: ProjectId | None, ports: ApiPorts):
+    return (
+        lambda command: confirm_queue_proposal(command, ports.queue_projection),
+        lambda command: plan_queue_item(command, ports.queue_projection),
+        lambda policy, expected_revision: put_queue_project_policy(
+            policy, expected_revision, ports.queue_projection
+        ),
+        lambda after, limit: list_queue_items(after, limit, ports.queue_projection),
+        lambda: import_project_source_issues(
             served_project_id, ports.tracker_item_source, ports.queue_projection
         ),
-        read_redeploy_status=lambda: read_redeploy_status(ports.redeploy_status_reader),
+        lambda: read_redeploy_status(ports.redeploy_status_reader),
+    )
+
+
+def bound_use_cases(
+    ports: ApiPorts,
+    projection_limit: WorkflowPublicationLimits,
+    enriched_page_budget: EnrichedPageBudget,
+    served_project_id: ProjectId | None,
+    source_id_generator: Callable[[], ProjectSourceId],
+    connection_clock: Callable[[], RecordedAt],
+) -> ApiUseCases:
+    """Spend the ports here, so that nothing below this line can reach one.
+
+    Each `_bind_*_use_cases` helper below hands back one contiguous slice of
+    `ApiUseCases`, in the exact field order that dataclass declares -- the only
+    contract this splice relies on -- so the positional unpacking below stays
+    exactly as type-checked per call as a flat keyword literal would be,
+    without duplicating each field's type here a second time.
+    """
+    return ApiUseCases(
+        *_bind_workflow_revision_read_use_cases(ports, enriched_page_budget),
+        *_bind_run_read_use_cases(ports),
+        *_bind_content_publication_use_cases(ports, projection_limit),
+        *_bind_definition_document_use_cases(ports),
+        *_bind_agent_catalog_use_cases(ports),
+        *_bind_project_use_cases(served_project_id, ports),
+        *_bind_model_configuration_use_cases(served_project_id, ports),
+        *_bind_run_control_use_cases(served_project_id, ports),
+        *_bind_catalog_lineage_use_cases(ports),
+        *_bind_project_source_connection_use_cases(
+            served_project_id, ports, source_id_generator, connection_clock
+        ),
+        *_bind_queue_use_cases(served_project_id, ports),
     )
 
 
