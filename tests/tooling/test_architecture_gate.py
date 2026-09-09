@@ -459,6 +459,36 @@ QUARANTINED_IMPORT = (
 )
 
 
+def hide_a_port_behind_a_nested_record(project: Path) -> None:
+    """Add a nested use-case record whose own field resolves to a port.
+
+    Proves the recursive walk does not stop at the first record it opens: a
+    port hidden one level below `ApiUseCases`, behind a field of a record the
+    routes reach through a field of their own, must still be refused -- exactly
+    as one on `ApiUseCases` itself always was.
+    """
+    context = project / "src/atelier2/api/context.py"
+    source = context.read_text(encoding="utf-8")
+    marker = "@dataclass(frozen=True)\nclass ApiUseCases:\n"
+    assert source.count(marker) == 1
+    source = source.replace(
+        "from atelier2.api.limits import ApiLimits\n",
+        f"from atelier2.api.limits import ApiLimits\n{RUN_QUERIES_IMPORT}\n",
+        1,
+    )
+    leaky_record = (
+        "@dataclass(frozen=True)\nclass _LeakyUseCases:\n    leaked: RunQueries\n\n\n"
+    )
+    class_start = source.index(marker)
+    source = source[:class_start] + leaky_record + source[class_start:]
+    body_start = source.index(marker) + len(marker)
+    body_end = source.index("\n\n\n", body_start)
+    context.write_text(
+        source[:body_end] + "\n    leaky: _LeakyUseCases" + source[body_end:],
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "imported"),
     [
@@ -502,6 +532,17 @@ def test_a_use_case_record_that_disappears_fails(tmp_path: Path) -> None:
 
     assert_named_preflight_failed(result, "use-case-record-problems")
     assert "declares no ApiUseCases" in result.stderr
+
+
+@pytest.mark.proves("the-use-case-record-cannot-hand-a-route-a-port")
+def test_a_port_hidden_behind_a_nested_use_case_record_fails(tmp_path: Path) -> None:
+    project = copied_project(tmp_path)
+    hide_a_port_behind_a_nested_record(project)
+
+    result = run_gate(project)
+
+    assert_named_preflight_failed(result, "use-case-record-problems")
+    assert "ApiUseCases.leaky.leaked" in result.stderr
 
 
 @pytest.mark.proves("no-route-reaches-a-port-and-the-verification-says-so")
