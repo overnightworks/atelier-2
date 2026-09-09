@@ -3,6 +3,6 @@ agent = "Claude Opus 5 (head)"
 role = "builder"
 base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
 branch = "claude/issue-1467-ratchet-signal"
-scope = ["scripts/check_size_ratchet.py", ".github/workflows/ci.yml", "tests/tooling"]
+scope = ["scripts/check_size_ratchet.py", ".github/workflows/ci.yml", "tests/tooling", "scripts/check_changed_narrative.py", "scripts"]
 opened_commit = "8b960c3c77ebfac7b8bc1849622eea541f3f0988"
 whole_reason = "Ein Gate und seine Verdrahtung landen zusammen, sonst erreicht es kein Aufrufer."
