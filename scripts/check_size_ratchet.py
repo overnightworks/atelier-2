@@ -1,13 +1,14 @@
 """The size and complexity ratchet: today's oversized code may not grow.
 
-`src/atelier2` already carries files, functions, and branchy functions past the
-thresholds below. Fixing all of them is not this gate's job; holding today's
-debt from growing is. `size_ratchet_baseline.toml` names every offender this
-tree already carries at its current value: a path or qualified symbol over its
-threshold but missing from the baseline is new debt, and one that grew past its
-baseline value is growth -- both are red. An entry that no longer offends is an
-orphan and is red too, so the baseline never grows quietly; shrinking a listed
-offender is green and asks nothing of this file.
+`src/atelier2` and `scripts/` -- the source package and the check scripts
+that enforce it -- already carry files, functions, and branchy functions past
+the thresholds below. Fixing all of them is not this gate's job; holding
+today's debt from growing is. `size_ratchet_baseline.toml` names every
+offender this tree already carries at its current value: a path or qualified
+symbol over its threshold but missing from the baseline is new debt, and one
+that grew past its baseline value is growth -- both are red. An entry that no
+longer offends is an orphan and is red too, so the baseline never grows
+quietly; shrinking a listed offender is green and asks nothing of this file.
 
 Follows the pattern of the duplicate ratchet in `scripts/check_architecture.py`.
 """
@@ -33,8 +34,22 @@ from python_documentation_lines import (
     docstring_line_slices,
 )
 
-ROOT_PACKAGE = "atelier2"
-SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
+
+@dataclass(frozen=True, slots=True)
+class ScannedRoot:
+    """One directory tree the ratchet measures, and the package name its
+    qualified symbols are rooted at."""
+
+    directory: str
+    root_package: str
+
+
+# Every directory tree this ratchet measures -- the source package plus the
+# check scripts that enforce it, so the gate also measures its own guards.
+SCANNED_ROOTS = (
+    ScannedRoot("src/atelier2", "atelier2"),
+    ScannedRoot("scripts", "scripts"),
+)
 
 # Past this many lines a module no longer fits in one reviewing pass.
 FILE_LINE_THRESHOLD = 800
@@ -86,11 +101,11 @@ COMPLEXITY_TABLE = RatchetTable(
 )
 
 
-def _module_name(module_path: Path, source_root: Path) -> str:
+def _module_name(module_path: Path, source_root: Path, root_package: str) -> str:
     parts = module_path.relative_to(source_root).with_suffix("").parts
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
-    return ".".join((ROOT_PACKAGE, *parts))
+    return ".".join((root_package, *parts))
 
 
 def _qualified_definitions(
@@ -116,28 +131,30 @@ def _function_length(node: FunctionDefinition) -> int:
 def source_functions(
     project_root: Path,
 ) -> tuple[tuple[str, str, FunctionDefinition], ...]:
-    """Every function and method of the source package: name, path, and node."""
-    source_root = project_root / SOURCE_PACKAGE_DIRECTORY
+    """Every function and method of every scanned root: name, path, and node."""
     functions: list[tuple[str, str, FunctionDefinition]] = []
-    for module_path in sorted(source_root.rglob("*.py")):
-        relative = module_path.relative_to(project_root).as_posix()
-        module = ast.parse(
-            module_path.read_text(encoding="utf-8"), filename=str(module_path)
-        )
-        module_name = _module_name(module_path, source_root)
-        for qualified_name, node in _qualified_definitions(module, module_name):
-            functions.append((qualified_name, relative, node))
+    for root in SCANNED_ROOTS:
+        source_root = project_root / root.directory
+        for module_path in sorted(source_root.rglob("*.py")):
+            relative = module_path.relative_to(project_root).as_posix()
+            module = ast.parse(
+                module_path.read_text(encoding="utf-8"), filename=str(module_path)
+            )
+            module_name = _module_name(module_path, source_root, root.root_package)
+            for qualified_name, node in _qualified_definitions(module, module_name):
+                functions.append((qualified_name, relative, node))
     return tuple(functions)
 
 
 def oversized_files(project_root: Path) -> tuple[Offender, ...]:
-    source_root = project_root / SOURCE_PACKAGE_DIRECTORY
     offenders: list[Offender] = []
-    for module_path in sorted(source_root.rglob("*.py")):
-        relative = module_path.relative_to(project_root).as_posix()
-        line_count = sum(1 for _ in module_path.open(encoding="utf-8"))
-        if line_count >= FILE_LINE_THRESHOLD:
-            offenders.append(Offender(relative, relative, line_count))
+    for root in SCANNED_ROOTS:
+        source_root = project_root / root.directory
+        for module_path in sorted(source_root.rglob("*.py")):
+            relative = module_path.relative_to(project_root).as_posix()
+            line_count = sum(1 for _ in module_path.open(encoding="utf-8"))
+            if line_count >= FILE_LINE_THRESHOLD:
+                offenders.append(Offender(relative, relative, line_count))
     return tuple(offenders)
 
 
@@ -252,19 +269,25 @@ def _verify_revision(project_root: Path, revision: str, flag: str) -> None:
         )
 
 
+def _is_scanned_path(path: str) -> bool:
+    return path.endswith(".py") and any(
+        path.startswith(f"{root.directory}/") for root in SCANNED_ROOTS
+    )
+
+
 def _changed_source_paths(
     project_root: Path, base: str, head: str
 ) -> tuple[ChangedPath, ...]:
-    """Every touched path under the source package, base path included, so a
+    """Every touched path under a scanned root, base path included, so a
     rename's base-side census reads the file it was renamed from rather than
     (0, 0) -- otherwise a `git mv` plus any rewrite would read as a brand-new
     file no matter what the rewrite did.
 
     Read with `-z`: git quotes a path in its usual, newline-terminated
     `--name-status` output whenever it carries a non-ASCII or otherwise
-    unsafe byte, and a quoted path would fail the prefix check below and be
-    silently dropped. A NUL-terminated record has nothing to quote, so
-    there is no escaping to decode and no second decoder to keep in step
+    unsafe byte, and a quoted path would fail the scanned-root check below
+    and be silently dropped. A NUL-terminated record has nothing to quote,
+    so there is no escaping to decode and no second decoder to keep in step
     with check_changed_narrative.py's own.
     """
     _verify_revision(project_root, base, "base")
@@ -278,7 +301,6 @@ def _changed_source_paths(
     )
     if result.returncode != 0:
         raise SizeRatchetError(f"git diff failed: {result.stderr.strip()}")
-    prefix = f"{SOURCE_PACKAGE_DIRECTORY}/"
     fields = [field for field in result.stdout.split("\0") if field]
     changed: list[ChangedPath] = []
     index = 0
@@ -290,7 +312,7 @@ def _changed_source_paths(
         else:
             base_path = head_path = fields[index + 1]
             index += 2
-        if head_path.startswith(prefix) and head_path.endswith(".py"):
+        if _is_scanned_path(head_path):
             changed.append(ChangedPath(head_path, base_path))
     return tuple(sorted(changed, key=lambda changed_path: changed_path.head_path))
 
@@ -460,7 +482,7 @@ def _ruff_complexity_findings(project_root: Path) -> list[dict[str, Any]]:
         [
             "ruff",
             "check",
-            SOURCE_PACKAGE_DIRECTORY,
+            *(root.directory for root in SCANNED_ROOTS),
             "--select",
             RUFF_COMPLEXITY_RULE,
             "--output-format=json",

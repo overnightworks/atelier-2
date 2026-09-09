@@ -22,11 +22,21 @@ GATE = Path("scripts") / "check_size_ratchet.py"
 DOCUMENTATION_LINES = Path("scripts") / "python_documentation_lines.py"
 BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
+SCRIPTS_DIRECTORY = Path("scripts")
 FILE_LINE_THRESHOLD = 800
 
 LONG_FUNCTION_MODULE = "funcs.py"
 LONG_FUNCTION_NAME = "long_function"
 LONG_FUNCTION_QUALIFIED_NAME = f"atelier2.funcs.{LONG_FUNCTION_NAME}"
+
+SCRIPTS_LONG_FUNCTION_MODULE = "script_funcs.py"
+SCRIPTS_LONG_FUNCTION_QUALIFIED_NAME = f"scripts.script_funcs.{LONG_FUNCTION_NAME}"
+
+SCRIPTS_BIG_MODULE = "big_script.py"
+SCRIPTS_BIG_MODULE_PATH = str(SCRIPTS_DIRECTORY / SCRIPTS_BIG_MODULE)
+
+SCRIPTS_DENSIFYING_MODULE = "densifying_script.py"
+SCRIPTS_DENSIFYING_MODULE_PATH = str(SCRIPTS_DIRECTORY / SCRIPTS_DENSIFYING_MODULE)
 
 BRANCHY_MODULE = "branchy.py"
 BRANCHY_FUNCTION_NAME = "branchy"
@@ -158,6 +168,12 @@ def scratch_git_project(tmp_path: Path) -> Path:
 
 def write_module(project: Path, name: str, source: str) -> None:
     (project / SOURCE_PACKAGE / name).write_text(source, encoding="utf-8")
+
+
+def write_scripts_module(project: Path, name: str, source: str) -> None:
+    """A module under the scripts/ scanned root, proving the ratchet reads
+    every scanned root and not only the source package."""
+    (project / SCRIPTS_DIRECTORY / name).write_text(source, encoding="utf-8")
 
 
 def delete_module(project: Path, name: str) -> None:
@@ -317,6 +333,30 @@ def test_a_baseline_named_file_at_its_baseline_value_is_quiet(tmp_path: Path) ->
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_an_oversized_file_under_scripts_is_refused(tmp_path: Path) -> None:
+    project = scratch_project(tmp_path, {})
+    write_scripts_module(project, SCRIPTS_BIG_MODULE, a_file_of(800))
+
+    result = run_gate(project)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert SCRIPTS_BIG_MODULE_PATH in result.stderr
+
+
+def test_an_oversized_function_under_scripts_carries_a_scripts_qualified_name(
+    tmp_path: Path,
+) -> None:
+    project = scratch_project(tmp_path, {})
+    write_scripts_module(
+        project, SCRIPTS_LONG_FUNCTION_MODULE, a_function_of(LONG_FUNCTION_NAME, 60)
+    )
+
+    result = run_gate(project)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert SCRIPTS_LONG_FUNCTION_QUALIFIED_NAME in result.stderr
+
+
 def test_a_function_over_the_complexity_threshold_is_refused(tmp_path: Path) -> None:
     project = scratch_project(
         tmp_path, {BRANCHY_MODULE: a_branchy_function(BRANCHY_FUNCTION_NAME, 15)}
@@ -439,6 +479,28 @@ def test_a_trailing_comment_counts_as_code_and_documentation_together(
     assert DENSIFYING_MODULE_PATH in result.stderr
     assert "documentation share fell from" in result.stderr
     assert "1 of its own comment or docstring lines disappeared" in result.stderr
+
+
+def test_the_densification_signal_also_covers_scripts(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    write_scripts_module(
+        project,
+        SCRIPTS_DENSIFYING_MODULE,
+        a_documented_function("guarded", extra_code_lines=8),
+    )
+    base = commit(project, "base")
+    write_scripts_module(
+        project,
+        SCRIPTS_DENSIFYING_MODULE,
+        a_function_without_documentation("guarded", extra_code_lines=8),
+    )
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert SCRIPTS_DENSIFYING_MODULE_PATH in result.stderr
+    assert "documentation share fell from" in result.stderr
 
 
 def test_a_non_ascii_filename_is_not_silently_dropped(tmp_path: Path) -> None:
