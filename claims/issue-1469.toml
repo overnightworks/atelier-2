@@ -1,7 +1,0 @@
-claim_id = "12d0ea0563c9465f9ebcfc753aed9bbd"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
-branch = "claude/issue-1469-problem-vocabulary"
-scope = ["src/atelier2/api/problems.py", "scripts/baselines/size_ratchet_baseline.toml", "scripts/check_architecture.py"]
-opened_commit = "fde4857e88a3aec54f682b2f2058b7118440a2cf"
