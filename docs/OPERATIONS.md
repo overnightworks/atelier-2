@@ -371,6 +371,34 @@ commit and instant) to `redeploy-status.json` beside the live database
 `redeploy: {blocked_since, reason}`, and a status file that exists but does
 not parse is named as unreadable rather than read as "no problem" (#1186).
 
+### Which models a provider offers
+
+The model lists a registry publication reads come from the shared provider
+library `overnightworks-agent-providers`, which owns every agent CLI's own
+vocabulary. This deployment states its provider facts once at Serve start --
+the executables and credential directories `serve-live.sh` names, and the
+scratch root beneath which every provider child works -- and asks. It states no
+API key: this host runs subscription CLIs.
+
+Grok and Codex answer with their CLI's own model list. Claude answers nothing:
+its CLI prints aliases (`opus`, `sonnet`), while a registry here holds full
+model ids (`claude-opus-5`), so a Claude id stays *not checked* until the
+validation door checks it. A provider this deployment does not serve, and a
+provider the library does not know, leave a registry publication unwritten
+rather than publishing an empty list -- an empty catalog would read as "unknown
+at this provider" and stop every model of it from starting.
+
+A configured credential file that is missing is logged by path, never by
+content, and its provider is reported logged out. On a host serving two of the
+three providers that line is expected for the third at every publication.
+
+The library is pinned in `pyproject.toml` by commit, not by version: it is on a
+candidate branch that both its hosts are proving before it is released, and a
+version tag on a candidate is how an intermediate state becomes somebody's
+contract. Raising that pin does *not* turn over the provider-probe receipts
+below -- their digest covers this repository's own provider modules, and no
+billed turn runs through the library yet. It must, before one does.
+
 ### Live provider canaries
 
 The billed loopback host process is installed as the systemd user unit

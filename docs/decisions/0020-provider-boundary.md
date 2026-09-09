@@ -5,8 +5,9 @@
   -- `runner/session.py`, `runner/executors.py`, and the rest of the
   container-hosted cluster ADR 0009 describes -- was deleted for having no
   live caller; its code stays reachable in Git history for reference and is
-  not to be revived) — step 1 carries the typed policy and the decider seam;
-  steps 2-6 are not implemented
+  not to be revived), 2026-09-09 (issue #1430: §8, catalog knowledge belongs to
+  the shared provider library) — step 1 carries the typed policy and the
+  decider seam; steps 2-6 are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
@@ -200,6 +201,38 @@ first implementation of the session port and stays until the port moves behind a
 Runner that a caller has pulled into life. Nothing else in ADR 0009's trust
 boundary changes — it remains the target for isolation and multi-user
 execution.
+
+### 8. Which models exist is the shared library's answer, not a second one here
+
+The boundary has two halves. A *turn* is §1's session port. A *catalog* — which
+models a provider offers, and whether it is logged in at all — is a separate
+question with a separate answer, and `overnightworks-agent-providers` owns it.
+This repository holds one adapter over `agent_providers.catalog`
+(`adapters/agent_provider_catalog.py`), an import contract that keeps the
+library inside it, and no CLI vocabulary of its own; the host states its
+deployment facts once, in `serve()`, and asks. Two truths about which models
+exist may not coexist for a day, so the host-side discovery this replaced was
+deleted in the same change.
+
+Claude stays outside that answer. The library's Claude route lists the aliases
+the CLI's `/model` prints (`opus`, `sonnet`), while a model registry here names
+full model ids (`claude-opus-5`). Membership in an alias list is no evidence
+about a registry id, so Claude reports no model list at all and its ids stay
+unchecked until the validation door checks one — the honest answer, and the one
+that keeps `checked` meaning what §5's seam and the start path read it as.
+
+That validation door is untouched by this record. It runs the composed
+executor's own prepared command and decoder, which is the only thing that knows
+this deployment's configuration and executor revision; a catalog's membership
+test cannot replace it and is not offered as one.
+
+**The one carried limitation, amending ADR 0009 §6.** A catalog probe runs
+against a mode-0400 copy of the operator's credential in a private, disposable
+home, so the operator's own file is never written and a direct overwrite fails.
+A refresh that creates a new file and renames it over that copy still succeeds
+silently, against the copy alone. ADR 0009 §6's guarantee therefore reads, for
+the catalog half: the operator's credential cannot be rewritten, not that every
+refresh attempt is visible.
 
 ## Consequences
 

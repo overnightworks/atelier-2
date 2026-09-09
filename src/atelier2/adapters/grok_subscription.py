@@ -216,7 +216,7 @@ _CONFIG_SOURCE = "config"
 
 _JOB_DIRECTORY_PREFIX = "atelier2-grok-job-"
 _CONFIG_FILE_NAME = "config.toml"
-_AUTHENTICATION_FILE_NAME = "auth.json"
+AUTHENTICATION_FILE_NAME = "auth.json"
 _JOB_DIRECTORY_MODE = 0o700
 _CONFIG_FILE_MODE = 0o600
 _AUTHENTICATION_FILE_MODE = 0o400
@@ -470,7 +470,7 @@ class GrokSubscriptionSettings:
             raise ValueError(
                 "the Grok credential directory must be an existing directory"
             )
-        authentication = credential_directory / _AUTHENTICATION_FILE_NAME
+        authentication = credential_directory / AUTHENTICATION_FILE_NAME
         try:
             authentication_status = authentication.stat(follow_symlinks=False)
         except OSError as error:
@@ -688,7 +688,7 @@ def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
 
 
 def _authentication_bytes(settings: GrokSubscriptionSettings) -> bytes:
-    path = settings.credential_directory / _AUTHENTICATION_FILE_NAME
+    path = settings.credential_directory / AUTHENTICATION_FILE_NAME
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         status = os.fstat(descriptor)
@@ -718,7 +718,7 @@ def _open_job_directory(settings: GrokSubscriptionSettings) -> Path:
     prepared = False
     try:
         _write_private_file(
-            directory / _AUTHENTICATION_FILE_NAME,
+            directory / AUTHENTICATION_FILE_NAME,
             _authentication_bytes(settings),
             _AUTHENTICATION_FILE_MODE,
         )

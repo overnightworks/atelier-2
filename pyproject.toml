@@ -14,6 +14,7 @@ dependencies = [
     "githubkit==0.16.1",
     "httpx==0.28.1",
     "jsonschema==4.26.0",
+    "overnightworks-agent-providers @ git+https://github.com/overnightworks/agent-providers.git@0ef2e3229dd705c9459e477743eaf7370fa32720",
     "pydantic==2.13.4",
     "pyyaml==6.0.3",
     "sqlalchemy==2.0.51",
@@ -226,11 +227,32 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "error"
 
+# The shared provider layer owns the CLI vocabulary and the catalog probes;
+# one adapter speaks to it, so a second import site cannot start provider
+# children with facts no deployment stated.
+[[tool.importlinter.contracts]]
+id = "agent-providers-owner"
+name = "The provider library stays inside its catalog adapter"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["agent_providers"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.adapters.agent_provider_catalog -> agent_providers",
+]
+unmatched_ignore_imports_alerting = "error"
+
 [tool.ruff.lint.per-file-ignores]
 # Runtime lifecycle must preserve the initiating failure while collecting every
 # independently failing third-party cleanup operation, and one failed queue
 # sweep must end its own turn rather than the tick that runs it.
 "src/atelier2/adapters/dbos/runtime.py" = ["BLE001"]
+
+# The provider layer is a sibling repository pinned by commit, not a PyPI
+# release, and a direct reference is the only form that states one exact tree.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/atelier2"]

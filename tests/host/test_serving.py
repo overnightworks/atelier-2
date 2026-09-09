@@ -5,16 +5,10 @@
 arming (`#7`): the serve flag that arms and always attests the doors
 executor, its refusal without the Claude deployment, its absence
 leaving the doors unserved, and the doors executor's own registry entry
-(capability, carrier, startability) once armed. It also owns
-`_discover_grok_models`/`_discover_codex_models`'
-credential isolation (`#1009`): no test elsewhere exercises those two
-host-level probes, so their own private-directory discipline is proven here
-rather than left unproven."""
+(capability, carrier, startability) once armed."""
 
 from __future__ import annotations
 
-import os
-import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -26,17 +20,12 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
 )
-from atelier2.adapters.codex_subscription import (
-    CodexSandboxMode,
-    CodexSubscriptionSettings,
-)
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.run_store import load_run_orders
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
-from atelier2.adapters.grok_subscription import GrokSubscriptionSettings
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
@@ -94,8 +83,6 @@ from atelier2.contracts.work_items import (
 from atelier2.host import main
 from atelier2.host.serving import (
     HostSettings,
-    _discover_codex_models,
-    _discover_grok_models,
     compose_application,
 )
 from atelier2.ports.agent_configurations import AgentConfigurationRevisionPage
@@ -439,206 +426,6 @@ def test_the_published_conductor_configuration_is_startable_where_doors_are_arme
         assert listed[configuration.revision_hash] is True
     finally:
         runtime.close()
-
-
-def _write_executable(path: Path, source: str) -> Path:
-    path.write_text("#!/usr/bin/env python3\n" + source)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    return path
-
-
-# Stands in for grok's `models` subcommand: rather than listing real models,
-# it reports the private home this probe was launched with and the auth.json
-# bytes it can read there -- exactly what `_discover_grok_models`'s own
-# isolation depends on, without a billed CLI.
-DISCOVERING_GROK = """
-import os, sys
-from pathlib import Path
-
-home = os.environ.get("GROK_HOME", "")
-auth = (Path(home) / "auth.json").read_text() if home else ""
-print("Available models:")
-print(f"* HOME={home}")
-print(f"* AUTH={auth}")
-"""
-
-
-def _grok_discovery_deployment(
-    tmp_path: Path, source: str = DISCOVERING_GROK
-) -> GrokSubscriptionSettings:
-    executable = _write_executable(tmp_path / "grok", source)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    credentials = tmp_path / "grok-home"
-    credentials.mkdir()
-    authentication = credentials / "auth.json"
-    authentication.write_bytes(b"{}")
-    authentication.chmod(0o600)
-    return GrokSubscriptionSettings(
-        executable, workspace, credentials, os.environ.get("PATH", "/usr/bin")
-    )
-
-
-def test_grok_model_discovery_never_runs_inside_the_operators_credential_directory(
-    tmp_path: Path,
-) -> None:
-    """The live deployment served `--grok-credential-directory` here directly.
-
-    `_discover_grok_models` used to name that operator directory as `HOME` and
-    `GROK_HOME` for a spawned process; this proves it now spawns into a
-    private, disposable copy instead, that the copy carries the material the
-    probe needs, and that the copy is already gone once the probe returns.
-    """
-
-    settings = _grok_discovery_deployment(tmp_path)
-
-    models = _discover_grok_models(settings, timeout_seconds=5.0)
-
-    reported = dict(entry.split("=", 1) for entry in models)
-    assert reported["AUTH"] == "{}"
-    assert reported["HOME"] != str(settings.credential_directory)
-    assert not Path(reported["HOME"]).exists()
-
-
-# A `models` subcommand that refuses outright, after recording the private
-# home it was launched with beside itself -- the one channel left once
-# `_discover_grok_models` never returns a value to read the home back from.
-DISCOVERING_GROK_FAILING = """
-import os, sys
-from pathlib import Path
-
-home = os.environ.get("GROK_HOME", "")
-(Path(sys.argv[0]).resolve().parent / "observed-home.txt").write_text(home)
-sys.stderr.write("synthetic Grok refusal\\n")
-raise SystemExit(1)
-"""
-
-
-def test_grok_model_discovery_removes_its_private_home_after_a_failing_run(
-    tmp_path: Path,
-) -> None:
-    settings = _grok_discovery_deployment(tmp_path, DISCOVERING_GROK_FAILING)
-
-    with pytest.raises(ValueError, match="Grok model discovery failed"):
-        _discover_grok_models(settings, timeout_seconds=5.0)
-
-    reported_home = (tmp_path / "observed-home.txt").read_text()
-    assert reported_home != str(settings.credential_directory)
-    assert not Path(reported_home).exists()
-
-
-# Stands in for `codex app-server`'s JSON-RPC handshake: rather than listing
-# real models, it reports the private home this probe was launched with and
-# the auth.json bytes it can read there -- exactly what
-# `_discover_codex_models`'s own isolation depends on, without a billed CLI.
-DISCOVERING_CODEX = """
-import json, sys, os
-from pathlib import Path
-
-
-def send(message):
-    sys.stdout.write(json.dumps(message) + "\\n")
-    sys.stdout.flush()
-
-
-home = os.environ.get("CODEX_HOME", "")
-auth = (Path(home) / "auth.json").read_text() if home else ""
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    message = json.loads(line)
-    if message.get("method") == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {}})
-    elif message.get("method") == "model/list":
-        send(
-            {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {
-                    "data": [
-                        {"model": f"HOME={home}"},
-                        {"model": f"AUTH={auth}"},
-                    ]
-                },
-            }
-        )
-"""
-
-
-def _codex_discovery_deployment(
-    tmp_path: Path, source: str = DISCOVERING_CODEX
-) -> CodexSubscriptionSettings:
-    executable = _write_executable(tmp_path / "codex", source)
-    credentials = tmp_path / "codex-home"
-    credentials.mkdir()
-    authentication = credentials / "auth.json"
-    authentication.write_bytes(b"{}")
-    authentication.chmod(0o600)
-    return CodexSubscriptionSettings(
-        executable,
-        credentials,
-        os.environ.get("PATH", "/usr/bin"),
-        CodexSandboxMode.READ_ONLY,
-    )
-
-
-def test_codex_model_discovery_never_runs_inside_the_operators_credential_directory(
-    tmp_path: Path,
-) -> None:
-    """`_discover_codex_models` used to name the operator's own `CODEX_HOME`.
-
-    Unreachable from the live serve command line today, but the same proof as
-    Grok's above: the spawned `app-server` process gets a private, disposable
-    copy instead, that copy carries the material the probe needs, and it is
-    already gone once the probe returns.
-    """
-
-    settings = _codex_discovery_deployment(tmp_path)
-
-    models = _discover_codex_models(
-        settings, timeout_seconds=5.0, termination_grace_seconds=5.0
-    )
-
-    reported = dict(entry.split("=", 1) for entry in models)
-    assert reported["AUTH"] == "{}"
-    assert reported["HOME"] != str(settings.credential_directory)
-    assert not Path(reported["HOME"]).exists()
-
-
-# An `app-server` that answers the `initialize` handshake with garbage
-# JSON-RPC (no `result` field), after recording the private home it was
-# launched with beside itself -- the one channel left once
-# `_discover_codex_models` never returns a value to read the home back from.
-DISCOVERING_CODEX_FAILING = """
-import json, sys, os
-from pathlib import Path
-
-home = os.environ.get("CODEX_HOME", "")
-(Path(sys.argv[0]).resolve().parent / "observed-home.txt").write_text(home)
-
-message = json.loads(sys.stdin.readline())
-sys.stdout.write(
-    json.dumps({"jsonrpc": "2.0", "id": message["id"], "malformed": True}) + "\\n"
-)
-sys.stdout.flush()
-"""
-
-
-def test_codex_model_discovery_removes_its_private_home_after_a_failing_run(
-    tmp_path: Path,
-) -> None:
-    settings = _codex_discovery_deployment(tmp_path, DISCOVERING_CODEX_FAILING)
-
-    with pytest.raises(TypeError, match="Codex model discovery returned no result"):
-        _discover_codex_models(
-            settings, timeout_seconds=5.0, termination_grace_seconds=5.0
-        )
-
-    reported_home = (tmp_path / "observed-home.txt").read_text()
-    assert reported_home != str(settings.credential_directory)
-    assert not Path(reported_home).exists()
 
 
 _QUEUE_STARTED_PROJECT = ProjectId("studio")

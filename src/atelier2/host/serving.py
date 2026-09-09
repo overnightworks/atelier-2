@@ -1,17 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-import selectors
-import signal
-import stat
 import subprocess
 import tempfile
-import time
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
@@ -20,6 +14,11 @@ import uvicorn
 from fastapi import FastAPI
 from starlette.types import Lifespan
 
+from atelier2.adapters.agent_provider_catalog import (
+    AgentProviderCatalog,
+    ProviderCatalogDeployment,
+    configure_provider_catalog,
+)
 from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
     bounded_process_streams,
@@ -33,7 +32,6 @@ from atelier2.adapters.claude_subscription import (
     ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.codex_subscription import (
-    CODEX_SUBSCRIPTION_EXECUTOR_KEY,
     CodexSubscriptionExecutorFactory,
     CodexSubscriptionSettings,
 )
@@ -67,8 +65,6 @@ from atelier2.adapters.github import (
 )
 from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
 from atelier2.adapters.grok_subscription import (
-    GROK_SUBSCRIPTION_EXECUTOR_KEY,
-    GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
@@ -152,9 +148,6 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.effects import EffectAdapterFactory, EffectAdapterRegistry
 from atelier2.ports.host_configuration import (
-    ProviderModelDiscovery,
-    ProviderModelDiscoveryResult,
-    ProviderModelDiscoveryUnsupported,
     ProviderModelInspectionUnavailable,
     ProviderModelValidationResult,
 )
@@ -645,7 +638,33 @@ def _own_service_url(settings: HostSettings) -> str:
     return f"http://{address}:{settings.port}"
 
 
-_MODEL_DISCOVERY_OUTPUT_BYTES = 1_048_576
+def _provider_catalog_deployment(
+    settings: HostSettings,
+) -> ProviderCatalogDeployment | None:
+    """This deployment's provider facts, or nothing when it serves none.
+
+    A scratch root and a billed provider imply each other on `HostSettings`,
+    so its absence is exactly the deployment that has no provider child to
+    state facts about.
+    """
+
+    if settings.agent_scratch_root is None:
+        return None
+    return ProviderCatalogDeployment(
+        settings.claude_subscription,
+        settings.grok_subscription,
+        settings.codex_subscription,
+        settings.agent_scratch_root,
+    )
+
+
+def _provider_catalog(settings: HostSettings) -> AgentProviderCatalog:
+    deployment = _provider_catalog_deployment(settings)
+    return AgentProviderCatalog(
+        frozenset() if deployment is None else deployment.served_providers()
+    )
+
+
 _MODEL_VALIDATION_JOB = b"Reply with exactly OK."
 _MODEL_VALIDATION_RUN_ID = RunId("provider-model-validation")
 _MODEL_VALIDATION_WORKFLOW_HASH = WorkflowRevisionHash("0" * 64)
@@ -653,65 +672,18 @@ _MODEL_VALIDATION_NODE_ID = "provider-model-validation"
 
 
 @dataclass(frozen=True)
-class HostProviderModelInspector:
-    """Derive registry trust from the composed provider operations.
+class HostProviderModelValidator:
+    """Derive registry trust from one real attempt down the composed path.
 
-    Discovery is a non-billed pinned-CLI operation. Validation deliberately
-    travels through the same prepared command and decoder as a real attempt;
-    the host therefore marks a model checked only when that adapter can use a
-    provider answer, not because a child happened to exit zero.
+    Validation deliberately travels through the same prepared command and
+    decoder as a real attempt; the host therefore marks a model checked only
+    when that adapter can use a provider answer, not because a child happened
+    to exit zero. That is the whole reason it is not the catalog's membership
+    test: no list knows this deployment's configuration or executor revision.
     """
 
     registry: AgentExecutorRegistry
-    codex_settings: CodexSubscriptionSettings | None
-    grok_settings: GrokSubscriptionSettings | None
     inspection_timeout_seconds: float
-    termination_grace_seconds: float
-
-    def discover_models(
-        self,
-        configuration: AgentConfigurationRevision,
-        auth_profile: AuthProfileRevision,
-    ) -> ProviderModelDiscoveryResult:
-        key = AgentExecutorKey(
-            auth_profile.provider_id, configuration.executor_revision
-        )
-        try:
-            if key == CODEX_SUBSCRIPTION_EXECUTOR_KEY:
-                if self.codex_settings is None:
-                    return ProviderModelInspectionUnavailable()
-                return ProviderModelDiscovery(
-                    frozenset(
-                        _discover_codex_models(
-                            self.codex_settings,
-                            self.inspection_timeout_seconds,
-                            self.termination_grace_seconds,
-                        )
-                    )
-                )
-            if key in (
-                GROK_SUBSCRIPTION_EXECUTOR_KEY,
-                GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
-            ):
-                if self.grok_settings is None:
-                    return ProviderModelInspectionUnavailable()
-                return ProviderModelDiscovery(
-                    frozenset(
-                        _discover_grok_models(
-                            self.grok_settings, self.inspection_timeout_seconds
-                        )
-                    )
-                )
-            return ProviderModelDiscoveryUnsupported()
-        except (
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-            BoundedProcessFailure,
-            subprocess.SubprocessError,
-        ):
-            return ProviderModelInspectionUnavailable()
 
     def validate_model(
         self,
@@ -830,271 +802,6 @@ def _model_validation_request(
         _MODEL_VALIDATION_JOB,
         maximum_assistant_turns=1,
     )
-
-
-_MODEL_DISCOVERY_JOB_DIRECTORY_PREFIX = "atelier2-model-discovery-"
-_MODEL_DISCOVERY_JOB_DIRECTORY_MODE = 0o700
-# Both the Grok and Codex CLIs keep this file, at private (0600) permissions,
-# as their credential record -- established from the pinned executables' own
-# strings (Codex: "Paste or type your API key below. It will be stored
-# locally in auth.json") and from each CLI's own live credential directory,
-# the same way #993 established Claude's credential file. Model discovery
-# asks a provider account what it may serve; it runs no job and grants no
-# tool, so this is the only file it needs, whatever else the operator's
-# directory also holds.
-_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME = "auth.json"
-_MODEL_DISCOVERY_CREDENTIAL_FILE_MODE = 0o400
-_MODEL_DISCOVERY_PRIVATE_FILE_FLAGS = (
-    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-)
-_MAXIMUM_MODEL_DISCOVERY_CREDENTIAL_FILE_BYTES = 1_048_576
-
-
-def _model_discovery_credential_bytes(credential_directory: Path) -> bytes:
-    """Read one provider's own `auth.json`, and nothing else it holds."""
-
-    path = credential_directory / _MODEL_DISCOVERY_CREDENTIAL_FILE_NAME
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        status = os.fstat(descriptor)
-        if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) & 0o077:
-            raise ValueError(
-                f"the {_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME} credential file "
-                "must be a private regular file"
-            )
-        chunks: list[bytes] = []
-        size = 0
-        while True:
-            chunk = os.read(descriptor, 65_536)
-            if not chunk:
-                return b"".join(chunks)
-            size += len(chunk)
-            if size > _MAXIMUM_MODEL_DISCOVERY_CREDENTIAL_FILE_BYTES:
-                raise ValueError(
-                    f"the {_MODEL_DISCOVERY_CREDENTIAL_FILE_NAME} credential "
-                    "file exceeds its private copy bound"
-                )
-            chunks.append(chunk)
-    finally:
-        os.close(descriptor)
-
-
-@contextmanager
-def _private_model_discovery_home(credential_directory: Path) -> Iterator[Path]:
-    """One private, disposable directory holding a copy of `auth.json` alone.
-
-    Model discovery spawns a real provider process, so it is never handed the
-    operator's own credential directory to run in -- mirroring the discipline
-    the job path already carries for a real attempt (`claude_subscription`,
-    `grok_subscription`, `codex_subscription`). The directory is removed on
-    every exit from this context, success, refusal or exception alike,
-    because `TemporaryDirectory.__exit__` runs unconditionally.
-    """
-
-    payload = _model_discovery_credential_bytes(credential_directory)
-    with tempfile.TemporaryDirectory(
-        prefix=_MODEL_DISCOVERY_JOB_DIRECTORY_PREFIX
-    ) as directory_name:
-        directory = Path(directory_name)
-        os.chmod(directory, _MODEL_DISCOVERY_JOB_DIRECTORY_MODE)
-        descriptor = os.open(
-            directory / _MODEL_DISCOVERY_CREDENTIAL_FILE_NAME,
-            _MODEL_DISCOVERY_PRIVATE_FILE_FLAGS,
-            _MODEL_DISCOVERY_CREDENTIAL_FILE_MODE,
-        )
-        try:
-            remaining = memoryview(payload)
-            while remaining:
-                written = os.write(descriptor, remaining)
-                if written < 1:
-                    raise OSError(
-                        "private model-discovery credential file write made no progress"
-                    )
-                remaining = remaining[written:]
-        finally:
-            os.close(descriptor)
-        yield directory
-
-
-def _discover_grok_models(
-    settings: GrokSubscriptionSettings, timeout_seconds: float
-) -> tuple[str, ...]:
-    with _private_model_discovery_home(settings.credential_directory) as home:
-        process = subprocess.Popen(
-            (str(settings.executable), "models"),
-            cwd=settings.workspace,
-            env={
-                "HOME": str(home),
-                "GROK_HOME": str(home),
-                "PATH": settings.search_path,
-            },
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        return_code, standard_output, _standard_error = bounded_process_streams(
-            process, timeout_seconds, _MODEL_DISCOVERY_OUTPUT_BYTES
-        )
-    if return_code != 0:
-        raise ValueError("Grok model discovery failed")
-    models: list[str] = []
-    in_models = False
-    for line in standard_output.decode("utf-8").splitlines():
-        if line.strip() == "Available models:":
-            in_models = True
-            continue
-        stripped = line.strip()
-        if not in_models or not stripped:
-            continue
-        if not stripped.startswith(("* ", "- ")):
-            raise ValueError("Grok model discovery returned an unknown shape")
-        model_id = stripped[2:].removesuffix(" (default)")
-        if not model_id:
-            raise ValueError("Grok model discovery returned an empty id")
-        models.append(model_id)
-    if not models:
-        raise ValueError("Grok model discovery returned no models")
-    return tuple(models)
-
-
-def _discover_codex_models(
-    settings: CodexSubscriptionSettings,
-    timeout_seconds: float,
-    termination_grace_seconds: float,
-) -> tuple[str, ...]:
-    with _private_model_discovery_home(settings.credential_directory) as home:
-        process = subprocess.Popen(
-            (str(settings.executable), "app-server"),
-            cwd=home,
-            env={
-                "HOME": str(home),
-                "CODEX_HOME": str(home),
-                "PATH": settings.search_path,
-            },
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        assert process.stdin is not None and process.stdout is not None
-        deadline = time.monotonic() + timeout_seconds
-        try:
-            _send_json_rpc(
-                process,
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "clientInfo": {
-                            "name": "atelier2",
-                            "title": "Atelier 2",
-                            "version": "1",
-                        },
-                        "capabilities": {},
-                    },
-                },
-            )
-            _read_json_rpc_result(process, 1, deadline)
-            _send_json_rpc(
-                process,
-                {"jsonrpc": "2.0", "method": "initialized", "params": {}},
-            )
-            _send_json_rpc(
-                process,
-                {"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}},
-            )
-            result = _read_json_rpc_result(process, 2, deadline)
-            data = result.get("data")
-            if not isinstance(data, list):
-                raise TypeError("Codex model discovery returned no data list")
-            models: list[str] = []
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                model_id = item.get("model")
-                if isinstance(model_id, str):
-                    models.append(model_id)
-            if len(models) != len(data) or not models:
-                raise ValueError("Codex model discovery returned an unknown shape")
-            return tuple(models)
-        finally:
-            process.stdin.close()
-            _terminate_inspection_process(process, termination_grace_seconds)
-
-
-def _send_json_rpc(process: subprocess.Popen[bytes], message: object) -> None:
-    assert process.stdin is not None
-    process.stdin.write(json.dumps(message, separators=(",", ":")).encode("utf-8"))
-    process.stdin.write(b"\n")
-    process.stdin.flush()
-
-
-def _read_json_rpc_result(
-    process: subprocess.Popen[bytes], request_id: int, deadline: float
-) -> dict[str, object]:
-    assert process.stdout is not None
-    descriptor = process.stdout.fileno()
-    os.set_blocking(descriptor, False)
-    buffered = bytearray()
-    with selectors.DefaultSelector() as selector:
-        selector.register(descriptor, selectors.EVENT_READ)
-        while time.monotonic() < deadline:
-            ready = selector.select(max(0, deadline - time.monotonic()))
-            if not ready:
-                break
-            chunk = os.read(
-                descriptor, _MODEL_DISCOVERY_OUTPUT_BYTES + 1 - len(buffered)
-            )
-            if not chunk:
-                break
-            buffered.extend(chunk)
-            if len(buffered) > _MODEL_DISCOVERY_OUTPUT_BYTES:
-                raise BoundedProcessFailure(
-                    "model discovery response exceeded its bound"
-                )
-            while b"\n" in buffered:
-                line, _, remainder = buffered.partition(b"\n")
-                buffered = bytearray(remainder)
-                result = _json_rpc_result_of(line, request_id)
-                if result is not None:
-                    return result
-    raise BoundedProcessFailure("model discovery did not answer in time")
-
-
-def _json_rpc_result_of(
-    line: bytes | bytearray, request_id: int
-) -> dict[str, object] | None:
-    """The result this line answers `request_id` with; any other message is passed over."""
-    try:
-        message = json.loads(line)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("Codex model discovery returned invalid JSON") from error
-    if not isinstance(message, dict) or message.get("id") != request_id:
-        return None
-    result = message.get("result")
-    if not isinstance(result, dict):
-        raise TypeError("Codex model discovery returned no result")
-    return result
-
-
-def _terminate_inspection_process(
-    process: subprocess.Popen[bytes], termination_grace_seconds: float
-) -> None:
-    try:
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=termination_grace_seconds)
-    except ProcessLookupError:
-        process.wait(timeout=termination_grace_seconds)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=termination_grace_seconds)
-    finally:
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
 
 
 def _log_unstartable_executors(settings: HostSettings) -> None:
@@ -1311,12 +1018,9 @@ def compose_application(
         seat = _seat_of(settings)
         lifespan = _serve_lifespan(runtime, seat, close_runtime_at_shutdown)
         artifact_store = DbosArtifactStore(runtime.engine)
-        provider_models = HostProviderModelInspector(
+        provider_model_validator = HostProviderModelValidator(
             runtime.agent_executor_registry,
-            settings.codex_subscription,
-            settings.grok_subscription,
             settings.model_inspection_timeout_seconds,
-            settings.agent_termination_grace_seconds,
         )
         app = create_app(
             source_commit=settings.source_commit,
@@ -1368,8 +1072,8 @@ def compose_application(
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
                 request_queue_sweep=runtime.request_queue_sweep,
                 tracker_item_source=tracker_item_source,
-                model_registry_discoverer=provider_models,
-                model_registry_validator=provider_models,
+                model_registry_discoverer=_provider_catalog(settings),
+                model_registry_validator=provider_model_validator,
                 redeploy_status_reader=filesystem_redeploy_status_reader(
                     redeploy_status_path(settings.database_path)
                 ),
@@ -1407,6 +1111,13 @@ SERVE_SHUTDOWN_CONNECTION_GRACE_SECONDS = 10
 def serve(settings: HostSettings) -> None:
     configure_process_logging()
     _log_unstartable_executors(settings)
+    # The provider layer is configured once per process, and this is the one
+    # process that runs provider children. `compose_application` deliberately
+    # does not, because every test that composes an app would install a
+    # second, differing deployment over the first.
+    deployment = _provider_catalog_deployment(settings)
+    if deployment is not None:
+        configure_provider_catalog(deployment)
     app, runtime = compose_application(settings, close_runtime_at_shutdown=True)
     try:
         uvicorn.Server(
