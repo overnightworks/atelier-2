@@ -12,6 +12,14 @@ from typing import Final, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
 from atelier2.application.plan_queue_item import plan_queue_item
+from atelier2.application.queue_label_declines import (
+    ExclusiveLaneOccupancy,
+    QueueLabelAdmissionDeclined,
+    QueueLabelAdmissionScopeMalformed,
+    QueueLabelAdmissionScopeMissing,
+    QueueLabelAdmissionTrackerItemUnknown,
+    colliding_lane,
+)
 from atelier2.application.queue_sweep_reads import (
     QueueAdvanceCorrupt,
     QueueAdvanceUnavailable,
@@ -39,7 +47,6 @@ from atelier2.application.start_published_run import (
     start_published_run,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
-from atelier2.contracts.definition_sources import MAXIMUM_REPOSITORY_PATH_CHARACTERS
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
@@ -207,43 +214,6 @@ class QueueAutomationSourceUnreadable:
 
 
 @dataclass(frozen=True)
-class QueueLabelAdmissionScopeMissing:
-    """The labelled item's body names no scope list, so the rule does not admit it."""
-
-
-@dataclass(frozen=True)
-class QueueLabelAdmissionScopeMalformed:
-    """A scope-list line is not a relative path, so the rule does not admit the item."""
-
-    token: str
-
-
-def _queue_label_admission_declined_reason(outcome: object) -> str:
-    name = type(outcome).__name__
-    if not isinstance(outcome, QueueLabelAdmissionScopeMalformed):
-        return name
-    return f"{name}: {' '.join(outcome.token.split())[:MAXIMUM_REPOSITORY_PATH_CHARACTERS]}"
-
-
-@dataclass(frozen=True)
-class QueueLabelAdmissionTrackerItemUnknown:
-    """The tracker does not know this labelled item, so the rule does not admit it."""
-
-
-@dataclass(frozen=True)
-class QueueLabelAdmissionDeclined:
-    """One labelled item the projection did not newly admit, in its own words."""
-
-    item_id: QueueItemId
-    outcome: (
-        QueueAdmissionOutcome
-        | QueueLabelAdmissionScopeMissing
-        | QueueLabelAdmissionScopeMalformed
-        | QueueLabelAdmissionTrackerItemUnknown
-    )
-
-
-@dataclass(frozen=True)
 class QueueLabelAdmissionsDecided:
     """What the rule decided about every labelled item of this project."""
 
@@ -268,13 +238,16 @@ def admit_queue_items_by_label(
     *,
     project: ProjectId,
     tracker: TrackerItemSource,
+    occupancy: ExclusiveLaneOccupancy | None = None,
     page_limit: int = MAXIMUM_PAGE_ITEMS,
 ) -> QueueLabelAdmissionOutcome:
     """Admit every item the project's automation label names, and no other.
 
     The label is the operator's own signal in the tracker (REQ-QUEUE-08). It is
     read at the instant the rule decides, so an item whose label was removed
-    before the sweep is not admitted by it.
+    before the sweep is not admitted by it. `occupancy` is the claim ledger the
+    door reads later, asked here so an item another lane already stands on is
+    left as it is instead of starting into that refusal.
 
     What the rule may admit is the projection's `confirm` CAS under
     `AUTOMATION_RULE`. A missing, malformed, or unknown scope is declined
@@ -287,7 +260,9 @@ def admit_queue_items_by_label(
     listing = open_tracker_items(tracker, project, label)
     if isinstance(listing, TrackerSourceUnavailable | TrackerPayloadMalformed):
         return QueueAutomationSourceUnreadable(listing.detail)
-    return _admit_labelled(queue, tracker, policy, label, listing.labelled, page_limit)
+    return _admit_labelled(
+        queue, tracker, policy, label, listing.labelled, page_limit, occupancy
+    )
 
 
 def _admit_labelled(
@@ -297,6 +272,7 @@ def _admit_labelled(
     label: str,
     labelled: frozenset[QueueItemId],
     page_limit: int,
+    occupancy: ExclusiveLaneOccupancy | None,
 ) -> QueueLabelAdmissionsDecided | QueueAutomationSourceUnreadable:
     items = tuple(
         item
@@ -305,7 +281,7 @@ def _admit_labelled(
     )
     scopes: list[WorkItemScope | QueueLabelAdmissionDeclined] = []
     for item in items:
-        scope = _work_item_scope(tracker, item)
+        scope = _work_item_scope(tracker, item, occupancy)
         if isinstance(scope, QueueAutomationSourceUnreadable):
             return scope
         scopes.append(scope)
@@ -327,7 +303,9 @@ def _admit_labelled(
 
 
 def _work_item_scope(
-    tracker: TrackerItemSource, item: QueueItemSnapshot
+    tracker: TrackerItemSource,
+    item: QueueItemSnapshot,
+    occupancy: ExclusiveLaneOccupancy | None,
 ) -> WorkItemScope | QueueLabelAdmissionDeclined | QueueAutomationSourceUnreadable:
     item_id = item.item_reference.item_id
     match tracker.snapshot(item.item_reference.tracker_item):
@@ -342,6 +320,9 @@ def _work_item_scope(
                 return QueueLabelAdmissionDeclined(
                     item_id, QueueLabelAdmissionScopeMissing()
                 )
+            touched = colliding_lane(occupancy, item.item_reference.tracker_item, scope)
+            if touched is not None:
+                return QueueLabelAdmissionDeclined(item_id, touched)
             return scope
         case TrackerItemUnknown():
             return QueueLabelAdmissionDeclined(

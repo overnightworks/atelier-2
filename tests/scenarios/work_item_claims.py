@@ -15,6 +15,7 @@ from atelier2.ports.work_item_claims import (
     ClaimReceipt,
     ClaimRefusal,
     ClaimReleaseOutcome,
+    ClaimTouch,
 )
 
 
@@ -37,9 +38,11 @@ class FakeWorkItemClaims:
 
     claim_answer: ClaimReceipt | ClaimRefusal | None = None
     read_back_answer: ClaimReadback = field(default_factory=ClaimAbsent)
+    standing_claims_answer: tuple[ClaimTouch, ...] | ClaimRefusal = ()
     release_answer: ClaimRefusal | None = None
     claim_requests: list[ClaimRequest] = field(default_factory=list)
     read_back_requests: list[tuple[int, str, Path]] = field(default_factory=list)
+    standing_claims_reads: int = 0
     release_requests: list[tuple[int, RunId, str, ClaimReleaseOutcome]] = field(
         default_factory=list
     )
@@ -64,6 +67,10 @@ class FakeWorkItemClaims:
     def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
         self.read_back_requests.append((item, claim_id, checkout))
         return self.read_back_answer
+
+    def standing_claims(self) -> tuple[ClaimTouch, ...] | ClaimRefusal:
+        self.standing_claims_reads += 1
+        return self.standing_claims_answer
 
     def release(
         self,

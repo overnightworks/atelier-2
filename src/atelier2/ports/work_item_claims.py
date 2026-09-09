@@ -25,12 +25,18 @@ class ClaimRefusalReason(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ClaimTouch:
-    """One active ledger claim whose scope touches a newly acquired claim."""
+    """One active ledger claim: the lane holding it, and the scope it stands on."""
 
     item: int | None
     claim_id: str
     agent: str
     scope: tuple[PurePosixPath, ...]
+
+    @property
+    def lane(self) -> str:
+        """How a refusal names this claim: its work item, or the agent without one."""
+
+        return f"item {self.item}" if self.item is not None else self.agent
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +130,18 @@ class WorkItemClaims(Protocol):
         reasons: ClaimReasons,
         checkout: Path,
     ) -> ClaimReceipt | ClaimRefusal: ...
+
+    def standing_claims(self) -> tuple[ClaimTouch, ...] | ClaimRefusal:
+        """Every claim the ledger holds right now, taking none to find out.
+
+        The occupancy question of a caller that holds no claim yet, and the
+        only operation here that answers it: `claim` would have to take a claim
+        to ask, and `read_back` answers only under a claim id such a caller
+        does not have. The answer carries every lane, this caller's own
+        included, because which one is its own is the lane identity the caller
+        knows and this port does not.
+        """
+        ...
 
     def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
         """What the ledger holds under this exact claim id, in full.

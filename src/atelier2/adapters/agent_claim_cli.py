@@ -115,8 +115,8 @@ class AgentClaimCli:
     """Runs the claim command in the run's claim checkout.
 
     `working_directory` is the project checkout whose store the command owns;
-    a release runs there, a claim and its read-back in the checkout they are
-    given.
+    a release and an occupancy read run there, a claim and its read-back in the
+    checkout they are given.
     """
 
     def __init__(
@@ -178,18 +178,19 @@ class AgentClaimCli:
             )
         return acquired
 
+    def standing_claims(self) -> tuple[ClaimTouch, ...] | ClaimRefusal:
+        standing = self._claims_of_store(self._working_directory)
+        if isinstance(standing, ClaimRefusal):
+            return standing
+        return tuple(
+            ClaimTouch(claim.item, claim.claim_id, claim.agent, claim.scope)
+            for claim in standing
+        )
+
     def read_back(self, item: int, claim_id: str, checkout: Path) -> ClaimReadback:
-        payload = self._json_payload("status", _JSON_FLAG, cwd=checkout)
-        if isinstance(payload, ClaimRefusal):
-            return payload
-        try:
-            _require_fields(payload, _STATUS_FIELDS)
-            if payload["issue"] is not None:
-                _integer(payload["issue"])
-            _text(payload["state"])
-            claims = tuple(_status_claim(value) for value in _list(payload["claims"]))
-        except (TypeError, ValueError) as violation:
-            return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
+        claims = self._claims_of_store(checkout)
+        if isinstance(claims, ClaimRefusal):
+            return claims
         held = tuple(claim for claim in claims if claim.claim_id == claim_id)
         if not held:
             return ClaimAbsent()
@@ -260,6 +261,25 @@ class AgentClaimCli:
         ):
             return other_release
         return None
+
+    def _claims_of_store(self, cwd: Path) -> tuple[_StandingClaim, ...] | ClaimRefusal:
+        """Every live claim the store lists, as `aco status --json` states them.
+
+        One reader for both questions this adapter answers from the store, so
+        the command's output shape is parsed in a single place.
+        """
+
+        payload = self._json_payload("status", _JSON_FLAG, cwd=cwd)
+        if isinstance(payload, ClaimRefusal):
+            return payload
+        try:
+            _require_fields(payload, _STATUS_FIELDS)
+            if payload["issue"] is not None:
+                _integer(payload["issue"])
+            _text(payload["state"])
+            return tuple(_status_claim(value) for value in _list(payload["claims"]))
+        except (TypeError, ValueError) as violation:
+            return ClaimRefusal(ClaimRefusalReason.UNKNOWN, str(violation))
 
     def _json_payload(
         self, *arguments: str, cwd: Path

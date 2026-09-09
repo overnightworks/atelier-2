@@ -65,6 +65,7 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
+from atelier2.adapters.github.tracker_reference import github_issue_number_or_none
 from atelier2.adapters.project_verification import declared_project
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.advance_queue import (
@@ -72,7 +73,6 @@ from atelier2.application.advance_queue import (
     QueueAutomationSourceUnreadable,
     QueueLabelAdmissionOutcome,
     QueueLabelAdmissionsDecided,
-    _queue_label_admission_declined_reason,
     admit_queue_items_by_label,
     advance_queue,
 )
@@ -86,6 +86,9 @@ from atelier2.application.import_project_source_issues import (
     ImportProjectSourceIssuesOutcome,
     ProjectSourceIssuesImported,
     import_project_source_issues,
+)
+from atelier2.application.queue_label_declines import (
+    queue_label_admission_declined_reason,
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
@@ -130,6 +133,7 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeReceiptRefused,
     read_provider_probe_receipt,
 )
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.when import recorded_instant
@@ -154,6 +158,7 @@ from atelier2.ports.effects import (
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.published_revisions import CatalogNameFound
+from atelier2.ports.work_item_claims import ClaimRefusal, ClaimTouch, WorkItemClaims
 
 _LOG = logging.getLogger("atelier2")
 
@@ -968,6 +973,54 @@ def _agent_executor_map(
     }
 
 
+class _LedgerLaneOccupancy:
+    """The claim ledger, telling one sweep which lanes are not an item's own.
+
+    A lane is named on the ledger by its work item number, which is this
+    adapter's grammar to read: the reference the queue carries is translated
+    here, and an item addressed in another tracker's grammar is left with no
+    lane of its own to exclude, so nothing of the ledger is held against it.
+    """
+
+    def __init__(self, claims: WorkItemClaims) -> None:
+        self._claims = claims
+        self._standing: tuple[ClaimTouch, ...] | None = None
+
+    def foreign_claims(
+        self, tracker_item: TrackerItemReference
+    ) -> tuple[ClaimTouch, ...]:
+        item = github_issue_number_or_none(tracker_item)
+        if item is None:
+            return ()
+        return tuple(claim for claim in self._read_once() if claim.item != item)
+
+    def _read_once(self) -> tuple[ClaimTouch, ...]:
+        """The ledger's live claims, read once for the sweep this serves.
+
+        One ledger command per sweep and not one per labelled item: the answer
+        is the same for all of them. A ledger that does not answer is said out
+        loud and read as no claim at all, which leaves the admission deciding
+        as it did before and the door refusing what it must.
+        """
+
+        if self._standing is not None:
+            return self._standing
+        standing = self._claims.standing_claims()
+        if isinstance(standing, ClaimRefusal):
+            _LOG.warning(
+                "The claim ledger did not say which lanes stand where (%s); "
+                "the admission decides without it.",
+                standing.detail,
+                extra={
+                    "event": "queue_label_admission_ledger_unread",
+                    "detail": standing.detail,
+                },
+            )
+            standing = ()
+        self._standing = standing
+        return standing
+
+
 def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
     """Say what the automation label admitted this sweep, and what it did not.
 
@@ -996,7 +1049,7 @@ def _log_queue_label_admission(outcome: QueueLabelAdmissionOutcome) -> None:
                 _LOG.info(
                     "The automation label did not admit queue item %s (%s).",
                     decision.item_id.value,
-                    _queue_label_admission_declined_reason(decision.outcome),
+                    queue_label_admission_declined_reason(decision.outcome),
                     extra={
                         "event": "queue_label_admission_declined",
                         "item_id": decision.item_id.value,
@@ -1354,8 +1407,16 @@ class _DbosProcessOwner:
             _log_project_source_import(
                 import_project_source_issues(project, tracker, queue)
             )
+            ledger = bound.work_item_claims
             _log_queue_label_admission(
-                admit_queue_items_by_label(queue, project=project, tracker=tracker)
+                admit_queue_items_by_label(
+                    queue,
+                    project=project,
+                    tracker=tracker,
+                    occupancy=(
+                        None if ledger is None else _LedgerLaneOccupancy(ledger.claims)
+                    ),
+                )
             )
         advance_queue(
             queue,
