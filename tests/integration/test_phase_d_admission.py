@@ -141,6 +141,7 @@ from atelier2.ports.issue_observation import (
     WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
+    CatalogResolver,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
@@ -153,11 +154,13 @@ from atelier2.ports.queue_projection import (
     QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
+    QueueProjection,
     QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
     QueueReadUnavailable,
 )
+from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 from tests.scenarios.api import (
     api_limits,
     api_ports,
@@ -1921,9 +1924,27 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
     swept = Event()
     real_advance_queue = dbos_runtime_module.advance_queue
 
-    def _advance_queue_and_signal(*args: object, **kwargs: object) -> None:
-        real_advance_queue(*args, **kwargs)
+    def _advance_queue_and_signal(
+        queue: QueueProjection,
+        catalog: CatalogResolver,
+        starter: DurablePublishedRunStarter,
+        *,
+        workflow_document_parser: WorkflowDocumentParser | None,
+        served_project: ProjectId | None = None,
+        tracker: TrackerItemSource | None = None,
+        page_limit: int = MAXIMUM_PAGE_ITEMS,
+    ) -> tuple[QueueAdvanceOutcome, ...]:
+        outcome = real_advance_queue(
+            queue,
+            catalog,
+            starter,
+            workflow_document_parser=workflow_document_parser,
+            served_project=served_project,
+            tracker=tracker,
+            page_limit=page_limit,
+        )
         swept.set()
+        return outcome
 
     monkeypatch.setattr(dbos_runtime_module, "advance_queue", _advance_queue_and_signal)
     try:

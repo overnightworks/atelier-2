@@ -1024,59 +1024,33 @@ def _log_project_source_import(outcome: ImportProjectSourceIssuesOutcome) -> Non
     Import shares the admission label's clock and its silence rule: a steady
     tick that observes nothing new leaves no trace, and only a name the import
     could not carry forward or a store the import could not reach is worth an
-    operator's attention here.
+    operator's attention here. Each refusal owns its own line below so this
+    match reads as the outcome's shape, not as the wording of every case.
     """
 
     match outcome:
-        case ProjectSourceIssuesImported(observed, newly_observed, skipped):
-            for item in skipped:
-                _LOG.warning(
-                    "The tracker import could not carry tracker item %s forward (%s).",
-                    item.reference.value,
-                    item.reason,
-                    extra={
-                        "event": "project_source_import_item_skipped",
-                        "reference": item.reference.value,
-                    },
-                )
-            if newly_observed or skipped:
-                _LOG.info(
-                    "Tracker import swept: %d observed, %d newly observed, %d skipped.",
-                    observed,
-                    newly_observed,
-                    len(skipped),
-                    extra={
-                        "event": "project_source_import_swept",
-                        "observed": observed,
-                        "newly_observed": newly_observed,
-                        "skipped": len(skipped),
-                    },
-                )
+        case ProjectSourceIssuesImported() as imported:
+            _log_project_source_import_swept(imported)
         case ProjectSourceNotConnected():
             return
         case SourcePayloadMalformed(detail):
-            _LOG.warning(
+            _log_project_source_import_refused(
+                "project_source_import_payload_malformed",
                 "The tracker import could not read the tracker's payload (%s).",
                 detail,
-                extra={
-                    "event": "project_source_import_payload_malformed",
-                    "detail": detail,
-                },
             )
         case ReadUnavailable(detail):
-            _LOG.warning(
+            _log_project_source_import_refused(
+                "project_source_import_read_unavailable",
                 "The tracker import could not read the tracker (%s).",
                 detail,
-                extra={
-                    "event": "project_source_import_read_unavailable",
-                    "detail": detail,
-                },
             )
-        case WriteUnavailable():
-            _LOG.warning(
-                "The tracker import could not write the observed items; the "
-                "next tick asks again.",
-                extra={"event": "project_source_import_write_unavailable"},
+        case WriteUnavailable(detail):
+            _log_project_source_import_refused(
+                "project_source_import_write_unavailable",
+                "The tracker import could not write the observed items (%s); "
+                "the next tick asks again.",
+                detail,
             )
         case DurableStateCorrupt():
             _LOG.warning(
@@ -1085,6 +1059,46 @@ def _log_project_source_import(outcome: ImportProjectSourceIssuesOutcome) -> Non
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _log_project_source_import_swept(imported: ProjectSourceIssuesImported) -> None:
+    """One line per tracker item the import could not carry forward, then a summary.
+
+    Silent on a steady tick, the same rule the caller's docstring names: nothing
+    worth an operator's attention happened when every item stayed as it was.
+    """
+
+    for item in imported.skipped:
+        _LOG.warning(
+            "The tracker import could not carry tracker item %s forward (%s).",
+            item.reference.value,
+            item.reason,
+            extra={
+                "event": "project_source_import_item_skipped",
+                "reference": item.reference.value,
+            },
+        )
+    if imported.newly_observed or imported.skipped:
+        _LOG.info(
+            "Tracker import swept: %d observed, %d newly observed, %d skipped.",
+            imported.observed,
+            imported.newly_observed,
+            len(imported.skipped),
+            extra={
+                "event": "project_source_import_swept",
+                "observed": imported.observed,
+                "newly_observed": imported.newly_observed,
+                "skipped": len(imported.skipped),
+            },
+        )
+
+
+def _log_project_source_import_refused(
+    event: str, message: str, detail: str | None
+) -> None:
+    """One warning line for an import refusal that leaves the queue as it was."""
+
+    _LOG.warning(message, detail, extra={"event": event, "detail": detail})
 
 
 def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
