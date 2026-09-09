@@ -20,6 +20,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_size_ratchet.py"
 REPORT_CORRIDOR = Path("scripts") / "report_corridor.py"
+DOCUMENTATION_LINES = Path("scripts") / "python_documentation_lines.py"
 BASELINE = Path("scripts") / "baselines" / "size_ratchet_baseline.toml"
 SOURCE_PACKAGE = Path("src") / "atelier2"
 FILE_LINE_THRESHOLD = 800
@@ -87,6 +88,35 @@ def a_module_without_documentation(function_count: int) -> str:
     return f"{functions}\n"
 
 
+def a_documented_function(name: str, extra_code_lines: int = 0) -> str:
+    """A function with its own one-line docstring plus `extra_code_lines`
+    more lines of pure code -- so deleting the whole function removes code
+    and documentation together, never one without the other."""
+    body = "\n".join(
+        f"    value_{index} = {index}" for index in range(extra_code_lines)
+    )
+    body = f"{body}\n" if body else ""
+    return (
+        f"def {name}(x: int) -> int:\n"
+        f'    """One-line docstring for {name}."""\n'
+        f"{body}"
+        "    return x\n"
+    )
+
+
+def a_function_without_documentation(name: str, extra_code_lines: int = 0) -> str:
+    """The same shape as `a_documented_function`, carrying no docstring."""
+    body = "\n".join(
+        f"    value_{index} = {index}" for index in range(extra_code_lines)
+    )
+    body = f"{body}\n" if body else ""
+    return f"def {name}(x: int) -> int:\n{body}    return x\n"
+
+
+def a_module_of(*functions: str) -> str:
+    return "\n".join(functions)
+
+
 def scratch_project(
     tmp_path: Path, modules: dict[str, str], baseline: str = ""
 ) -> Path:
@@ -94,6 +124,7 @@ def scratch_project(
     (project / "scripts").mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
     shutil.copy2(PROJECT_ROOT / REPORT_CORRIDOR, project / REPORT_CORRIDOR)
+    shutil.copy2(PROJECT_ROOT / DOCUMENTATION_LINES, project / DOCUMENTATION_LINES)
     package = project / SOURCE_PACKAGE
     package.mkdir(parents=True)
     for module, source in modules.items():
@@ -317,32 +348,47 @@ def test_a_baseline_named_complex_function_at_its_baseline_value_is_quiet(
     ("base_source", "head_source", "expect_red"),
     [
         pytest.param(
-            a_module_with_documentation(function_count=1),
-            a_module_without_documentation(function_count=2),
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(a_documented_function("kept")),
+            False,
+            id="deleting a whole documented function that raises the share is quiet",
+        ),
+        pytest.param(
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 8),
+            ),
             True,
-            id="code grows while comment and docstring lines shrink is red",
+            id="a docstring disappears while its code stays put is red",
         ),
         pytest.param(
-            a_module_with_documentation(function_count=2),
-            a_module_without_documentation(function_count=1),
-            False,
-            id="a deletion that shrinks code and documentation together is quiet",
+            a_module_of(
+                a_documented_function("kept"), a_documented_function("deleted", 8)
+            ),
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 4),
+            ),
+            True,
+            id="code and documentation shrink together but share still falls is red",
         ),
         pytest.param(
-            a_module_with_documentation(function_count=1),
-            a_module_with_documentation(function_count=2),
+            a_module_of(
+                a_documented_function("kept"),
+                a_function_without_documentation("deleted", 8),
+            ),
+            a_module_of(a_documented_function("kept")),
             False,
-            id="code grows while documentation is unchanged is quiet",
-        ),
-        pytest.param(
-            a_module_with_documentation(function_count=1),
-            a_module_without_documentation(function_count=1),
-            False,
-            id="documentation shrinks while code is unchanged is quiet",
+            id="code shrinks while documentation is unchanged is quiet",
         ),
     ],
 )
-def test_densification_gate_reads_code_growth_against_documentation_loss(
+def test_densification_gate_reads_the_documentation_share(
     tmp_path: Path, base_source: str, head_source: str, expect_red: bool
 ) -> None:
     project = scratch_git_project(tmp_path)
@@ -356,10 +402,43 @@ def test_densification_gate_reads_code_growth_against_documentation_loss(
     if expect_red:
         assert result.returncode == 1, result.stdout + result.stderr
         assert DENSIFYING_MODULE_PATH in result.stderr
-        assert "code grew by" in result.stderr
-        assert "shrank by" in result.stderr
+        assert "documentation share fell from" in result.stderr
+        assert "disappeared" in result.stderr
     else:
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_trailing_comment_counts_as_code_and_documentation_together(
+    tmp_path: Path,
+) -> None:
+    """Regression: a line like `return x  # why` must not count only as
+    documentation and hide its own code from the census -- three functions,
+    two lines of code each, one of them with a trailing comment, read as 6
+    code lines and 1 documentation line, not 5 and 1."""
+    project = scratch_git_project(tmp_path)
+    base_source = (
+        "def guarded(x: int) -> int:\n"
+        "    return x  # keep this guard because it protects a known invariant\n"
+        "\n"
+        "def plain_one(x: int) -> int:\n"
+        "    return x + 1\n"
+        "\n"
+        "def plain_two(x: int) -> int:\n"
+        "    return x + 2\n"
+    )
+    head_source = base_source.replace(
+        "    return x  # keep this guard because it protects a known invariant\n",
+        "    return x\n",
+    )
+    write_module(project, DENSIFYING_MODULE, base_source)
+    base = commit(project, "base")
+    write_module(project, DENSIFYING_MODULE, head_source)
+    commit(project, "head")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "documentation share fell from 0.14 to 0.00" in result.stderr
 
 
 def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
@@ -393,6 +472,41 @@ def test_a_pure_rename_without_edits_is_quiet(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_a_rename_combined_with_densification_is_still_red(tmp_path: Path) -> None:
+    """Regression: a `git mv` must not exempt real densification. The base
+    census for a renamed path is read from the path it was renamed from, so
+    `git mv module.py renamed.py` plus deleted docstrings still counts
+    against the file it came from, not as a brand-new, undocumented file."""
+    project = scratch_git_project(tmp_path)
+    base_source = a_module_of(
+        a_documented_function("one", extra_code_lines=3),
+        a_documented_function("two", extra_code_lines=3),
+        a_documented_function("three", extra_code_lines=3),
+    )
+    write_module(project, "before_rename.py", base_source)
+    base = commit(project, "base")
+    delete_module(project, "before_rename.py")
+    head_source = a_module_of(
+        a_function_without_documentation("one", extra_code_lines=3),
+        a_function_without_documentation("two", extra_code_lines=3),
+        a_function_without_documentation("three", extra_code_lines=3),
+    )
+    write_module(project, "after_rename.py", head_source)
+    commit(project, "rename and drop the docstrings")
+    rename_status = _git(
+        project, "diff", "-M", "--name-status", f"{base}...HEAD"
+    ).stdout
+    assert rename_status.startswith("R"), (
+        f"this scenario must exercise git's own rename detection: {rename_status!r}"
+    )
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(SOURCE_PACKAGE / "after_rename.py") in result.stderr
+    assert "documentation share fell from" in result.stderr
+
+
 def test_the_report_names_each_touched_files_distance_to_the_ceiling(
     tmp_path: Path,
 ) -> None:
@@ -411,3 +525,14 @@ def test_the_report_names_each_touched_files_distance_to_the_ceiling(
         f"{touched_path}: {distance} lines under the {FILE_LINE_THRESHOLD}-line ceiling"
         in (result.stdout)
     )
+
+
+def test_an_unresolvable_base_is_refused(tmp_path: Path) -> None:
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    commit(project, "base")
+
+    result = run_gate_with_base(project, "does-not-exist-in-this-repository")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Size ratchet refused" in result.stderr

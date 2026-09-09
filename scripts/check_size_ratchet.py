@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import io
 import json
 import re
 import subprocess
@@ -28,6 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from python_documentation_lines import (
+    LineSlice,
+    comment_line_slices,
+    docstring_line_slices,
+)
 from report_corridor import CorridorError, git_diff_lines
 
 ROOT_PACKAGE = "atelier2"
@@ -140,85 +144,118 @@ def oversized_files(project_root: Path) -> tuple[Offender, ...]:
 
 @dataclass(frozen=True, slots=True)
 class LineCensus:
-    """One module's physical lines, split into code and documentation.
-
-    Documentation is a docstring expression's own lines (from `ast`, at the
-    canonical module/class/function docstring position) plus any line
-    carrying a `#` comment (from `tokenize`); every other non-blank line
-    counts as code.
+    """One module's physical lines: how many carry documentation (a docstring
+    expression at its canonical position, or a `#` comment) and how many
+    carry code. A line can be both -- a statement with a trailing comment, or
+    a one-line function whose header precedes its docstring -- so the two
+    counts are independent, not a partition of the file's line count.
     """
 
     code_lines: int
     documentation_lines: int
 
 
-def _docstring_line_numbers(tree: ast.Module) -> set[int]:
-    line_numbers: set[int] = set()
-    definition_nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-    for node in ast.walk(tree):
-        if not isinstance(node, definition_nodes) or not node.body:
+def _has_code_outside_documentation(
+    line: str, *documentation_slices: LineSlice | None
+) -> bool:
+    covered = [False] * len(line)
+    for line_slice in documentation_slices:
+        if line_slice is None:
             continue
-        statement = node.body[0]
-        if (
-            isinstance(statement, ast.Expr)
-            and isinstance(statement.value, ast.Constant)
-            and isinstance(statement.value.value, str)
-            and statement.end_lineno is not None
+        for column in range(
+            max(line_slice.start_column, 0), min(line_slice.end_column, len(line))
         ):
-            line_numbers.update(range(statement.lineno, statement.end_lineno + 1))
-    return line_numbers
-
-
-def _comment_line_numbers(source: str) -> set[int]:
-    return {
-        token.start[0]
-        for token in tokenize.generate_tokens(io.StringIO(source).readline)
-        if token.type == tokenize.COMMENT
-    }
+            covered[column] = True
+    return any(
+        character.strip() and not is_covered
+        for character, is_covered in zip(line, covered)
+    )
 
 
 def census(source: str) -> LineCensus:
-    """A module's code and documentation line counts, from its own text."""
+    """A module's code and documentation line counts, from its own text --
+    built on the same docstring and comment slices `check_changed_narrative.py`
+    reads, so both gates agree on what documentation is."""
     tree = ast.parse(source)
-    documentation_line_numbers = _docstring_line_numbers(tree) | _comment_line_numbers(
-        source
-    )
-    code_line_count = sum(
-        1
-        for line_number, line in enumerate(source.splitlines(), start=1)
-        if line_number not in documentation_line_numbers and line.strip()
-    )
+    lines = source.splitlines()
+    docstring_slices = docstring_line_slices(lines, tree)
+    comment_slices = comment_line_slices(source)
+    documentation_line_numbers = docstring_slices.keys() | comment_slices.keys()
+    code_line_count = 0
+    for line_number, line in enumerate(lines, start=1):
+        docstring_slice = docstring_slices.get(line_number)
+        comment_slice = comment_slices.get(line_number)
+        if docstring_slice is None and comment_slice is None:
+            if line.strip():
+                code_line_count += 1
+        elif _has_code_outside_documentation(line, docstring_slice, comment_slice):
+            code_line_count += 1
     return LineCensus(code_line_count, len(documentation_line_numbers))
+
+
+def _blob_exists(project_root: Path, revision: str, relative_path: str) -> bool:
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}:{relative_path}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def _blob_content(project_root: Path, revision: str, relative_path: str) -> str | None:
     """A file's text at one revision, or None when that path does not exist
-    there -- a file the diff added or removed between base and head."""
+    there -- a file the diff added or removed between base and head. Once
+    existence is confirmed, a `git show` failure is a real error, not a
+    missing path, and is raised rather than read as a silent exemption."""
+    if not _blob_exists(project_root, revision, relative_path):
+        return None
     result = subprocess.run(
         ["git", "show", f"{revision}:{relative_path}"],
         cwd=project_root,
         check=False,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
-    return result.stdout if result.returncode == 0 else None
-
-
-def _changed_source_paths(project_root: Path, base: str, head: str) -> tuple[str, ...]:
-    prefix = f"{SOURCE_PACKAGE_DIRECTORY}/"
-    return tuple(
-        sorted(
-            path
-            for path in git_diff_lines(
-                project_root,
-                base,
-                head,
-                "--name-only",
-                rename_detection="--no-renames",
-            )
-            if path.strip() and path.startswith(prefix) and path.endswith(".py")
+    if result.returncode != 0:
+        raise SizeRatchetError(
+            f"could not read {relative_path} at {revision}: {result.stderr.strip()}"
         )
-    )
+    return result.stdout
+
+
+@dataclass(frozen=True, slots=True)
+class ChangedPath:
+    """One file the diff touched: its path at head, and the path git's
+    rename detection paired it with at base -- the same as its head path
+    unless the diff renamed it."""
+
+    head_path: str
+    base_path: str
+
+
+def _changed_source_paths(
+    project_root: Path, base: str, head: str
+) -> tuple[ChangedPath, ...]:
+    """Every touched path under the source package, base path included, so a
+    rename's base-side census reads the file it was renamed from rather than
+    (0, 0) -- otherwise a `git mv` plus any rewrite would read as a brand-new
+    file no matter what the rewrite did."""
+    prefix = f"{SOURCE_PACKAGE_DIRECTORY}/"
+    changed: list[ChangedPath] = []
+    for line in git_diff_lines(
+        project_root, base, head, "--name-status", rename_detection="-M"
+    ):
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if fields[0].startswith("R"):
+            base_path, head_path = fields[1], fields[2]
+        else:
+            base_path = head_path = fields[1]
+        if head_path.startswith(prefix) and head_path.endswith(".py"):
+            changed.append(ChangedPath(head_path, base_path))
+    return tuple(sorted(changed, key=lambda changed_path: changed_path.head_path))
 
 
 def _census_or_raise(relative_path: str, revision: str, content: str) -> LineCensus:
@@ -234,12 +271,43 @@ def _census_at_revision(
     project_root: Path, revision: str, relative_path: str
 ) -> LineCensus:
     """A path's line census at one revision -- (0, 0) when that revision does
-    not carry it, so a brand-new file can never look like it lost
+    not carry it, so a genuinely new file can never look like it lost
     documentation it never had a chance to have."""
     content = _blob_content(project_root, revision, relative_path)
     if content is None:
         return LineCensus(0, 0)
     return _census_or_raise(relative_path, revision, content)
+
+
+def _documentation_share(line_census: LineCensus) -> float:
+    total = line_census.code_lines + line_census.documentation_lines
+    return line_census.documentation_lines / total if total else 0.0
+
+
+def _densification_problem(
+    path: str, base_census: LineCensus, head_census: LineCensus
+) -> str | None:
+    """Red where documentation lines disappeared and, with them, the file's
+    documentation share fell -- independent of the file's own size, and
+    independent of the sign of its code-line change. Deleting a documented
+    function whole can raise the share even as it removes documentation, and
+    stays quiet; deleting only the explanation while its code stays put
+    cannot raise the share, and is exactly the shape a stealth compaction
+    takes."""
+    documentation_delta = (
+        head_census.documentation_lines - base_census.documentation_lines
+    )
+    if documentation_delta >= 0:
+        return None
+    base_share = _documentation_share(base_census)
+    head_share = _documentation_share(head_census)
+    if head_share >= base_share:
+        return None
+    return (
+        f"{path}: documentation share fell from {base_share:.2f} to "
+        f"{head_share:.2f} as {-documentation_delta} comment or docstring "
+        "lines disappeared"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,37 +323,25 @@ class ChangedFileReport:
 def densification_report(
     project_root: Path, base: str, head: str
 ) -> tuple[ChangedFileReport, ...]:
-    """Every touched source file's distance to the file ceiling, and red only
-    where code grew while comment or docstring lines shrank in the same file
-    -- the shape of change that hides growth behind deleted explanation
-    instead of an honest split, independent of where the file ends up
-    relative to the ceiling.
-
-    A file the diff only deleted from, or only moved without editing, cannot
-    turn up red here: its code line count did not grow, or its base census
-    reads as (0, 0) because the path is new -- either way the two conditions
-    below cannot both hold.
-    """
+    """Every touched source file's distance to the file ceiling, and every
+    file whose documentation share fell as its documentation lines
+    disappeared -- reported and gated respectively, in one pass over the
+    same diff."""
     reports: list[ChangedFileReport] = []
-    for relative_path in _changed_source_paths(project_root, base, head):
-        head_content = _blob_content(project_root, head, relative_path)
+    for changed_path in _changed_source_paths(project_root, base, head):
+        head_content = _blob_content(project_root, head, changed_path.head_path)
         if head_content is None:
             continue
-        head_census = _census_or_raise(relative_path, head, head_content)
-        base_census = _census_at_revision(project_root, base, relative_path)
-        code_delta = head_census.code_lines - base_census.code_lines
-        documentation_delta = (
-            head_census.documentation_lines - base_census.documentation_lines
+        head_census = _census_or_raise(changed_path.head_path, head, head_content)
+        base_census = _census_at_revision(project_root, base, changed_path.base_path)
+        problem = _densification_problem(
+            changed_path.head_path, base_census, head_census
         )
-        problem = None
-        if code_delta > 0 and documentation_delta < 0:
-            problem = (
-                f"{relative_path}: code grew by {code_delta} lines while "
-                f"comment and docstring lines shrank by {-documentation_delta} lines"
-            )
         line_count = len(head_content.splitlines())
         reports.append(
-            ChangedFileReport(relative_path, problem, FILE_LINE_THRESHOLD - line_count)
+            ChangedFileReport(
+                changed_path.head_path, problem, FILE_LINE_THRESHOLD - line_count
+            )
         )
     return tuple(reports)
 
@@ -461,17 +517,16 @@ def size_ratchet_problems(project_root: Path) -> tuple[str, ...]:
 
 
 def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """`--base` is optional: without it the file, function, and complexity
-    ratchets run exactly as they did before the densification signal existed."""
+    """Without `--base`, only the file, function, and complexity ratchets run."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base",
         default=None,
         help=(
             "a revision to diff against --head for the densification signal "
-            "-- a touched file whose code lines grew while its comment or "
-            "docstring lines shrank; omitted, only the file, function, and "
-            "complexity ratchets run"
+            "-- a touched file whose documentation share fell as its comment "
+            "or docstring lines disappeared; omitted, only the file, "
+            "function, and complexity ratchets run"
         ),
     )
     parser.add_argument(

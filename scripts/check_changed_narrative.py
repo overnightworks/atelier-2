@@ -12,6 +12,7 @@ import tokenize
 from collections.abc import Iterator
 from pathlib import Path
 
+from python_documentation_lines import comment_line_slices, docstring_line_slices
 from report_corridor import CorridorError, git_diff_lines
 
 CHECKED_SOURCE_ROOTS = ("src", "scripts")
@@ -137,60 +138,24 @@ def _added_line_numbers(
     return changed_lines
 
 
-def _comment_texts(source: str) -> dict[int, str]:
-    return {
-        token.start[0]: token.string
-        for token in tokenize.generate_tokens(io.StringIO(source).readline)
-        if token.type == tokenize.COMMENT
-    }
-
-
-def _docstring_texts(source_lines: list[str], tree: ast.AST) -> dict[int, str]:
-    """Per docstring line, only the docstring's own slice of that physical
-    line -- never any code sharing the line, such as a one-line function's
-    header before the opening quotes."""
-
-    texts: dict[int, str] = {}
-    nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-    for node in ast.walk(tree):
-        if not isinstance(node, nodes) or not node.body:
-            continue
-        statement = node.body[0]
-        if not (
-            isinstance(statement, ast.Expr)
-            and isinstance(statement.value, ast.Constant)
-            and isinstance(statement.value.value, str)
-            and statement.end_lineno is not None
-            and statement.end_col_offset is not None
-        ):
-            continue
-        for line_number in range(statement.lineno, statement.end_lineno + 1):
-            line = source_lines[line_number - 1]
-            start_column = (
-                statement.col_offset if line_number == statement.lineno else 0
-            )
-            end_column = (
-                statement.end_col_offset
-                if line_number == statement.end_lineno
-                else len(line)
-            )
-            texts[line_number] = line[start_column:end_column]
-    return texts
-
-
 def _narrative_texts(source: str) -> dict[int, str]:
     """A line can carry both a docstring slice and a trailing comment (a
     one-line docstring followed by `# ...`); search both, never let one
     overwrite the other."""
 
     tree = ast.parse(source)
-    texts = dict(_docstring_texts(source.splitlines(), tree))
-    for line_number, comment_text in _comment_texts(source).items():
+    texts = {
+        line_number: line_slice.text
+        for line_number, line_slice in docstring_line_slices(
+            source.splitlines(), tree
+        ).items()
+    }
+    for line_number, comment_slice in comment_line_slices(source).items():
         docstring_text = texts.get(line_number)
         texts[line_number] = (
-            comment_text
+            comment_slice.text
             if docstring_text is None
-            else f"{docstring_text}\n{comment_text}"
+            else f"{docstring_text}\n{comment_slice.text}"
         )
     return texts
 
