@@ -438,7 +438,7 @@ def test_a_trailing_comment_counts_as_code_and_documentation_together(
     result = run_gate_with_base(project, base)
 
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "documentation share fell from 0.14 to 0.00" in result.stderr
+    assert "documentation share fell from 0.1429 to 0.0000" in result.stderr
 
 
 def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None:
@@ -452,6 +452,35 @@ def test_a_file_split_leaves_the_shrunken_old_file_quiet(tmp_path: Path) -> None
     )
     write_module(project, "densifying_extracted.py", a_module_with_documentation(1))
     commit(project, "split one function into its own module")
+
+    result = run_gate_with_base(project, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_split_that_moves_documentation_to_a_sibling_file_is_quiet(
+    tmp_path: Path,
+) -> None:
+    """Regression for the honest split this item exists for: a documented
+    function -- its code and its own docstring together -- moves whole out
+    of one file into a brand-new sibling. The origin file alone looks like
+    it lost documentation, but the diff's total is unchanged, only
+    relocated, so the gate stays quiet."""
+    project = scratch_git_project(tmp_path)
+    moved_function = a_documented_function("moved", extra_code_lines=20)
+    kept_function = a_documented_function("kept")
+    write_module(project, "origin.py", a_module_of(kept_function, moved_function))
+    base = commit(project, "base")
+    write_module(project, "origin.py", a_module_of(kept_function))
+    write_module(project, "extracted.py", a_module_of(moved_function))
+    commit(project, "split the moved function into its own module")
+    rename_status = _git(
+        project, "diff", "-M", "--name-status", f"{base}...HEAD"
+    ).stdout
+    assert not rename_status.startswith("R"), (
+        "this scenario must exercise the no-rename-detected split path, "
+        f"the actual failure mode: {rename_status!r}"
+    )
 
     result = run_gate_with_base(project, base)
 

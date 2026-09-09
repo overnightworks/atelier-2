@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tokenize
 import tomllib
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -284,29 +284,40 @@ def _documentation_share(line_census: LineCensus) -> float:
     return line_census.documentation_lines / total if total else 0.0
 
 
-def _densification_problem(
-    path: str, base_census: LineCensus, head_census: LineCensus
-) -> str | None:
-    """Red where documentation lines disappeared and, with them, the file's
-    documentation share fell -- independent of the file's own size, and
-    independent of the sign of its code-line change. Deleting a documented
-    function whole can raise the share even as it removes documentation, and
-    stays quiet; deleting only the explanation while its code stays put
-    cannot raise the share, and is exactly the shape a stealth compaction
-    takes."""
+def _sum_censuses(censuses: Iterable[LineCensus]) -> LineCensus:
+    code_lines = documentation_lines = 0
+    for line_census in censuses:
+        code_lines += line_census.code_lines
+        documentation_lines += line_census.documentation_lines
+    return LineCensus(code_lines, documentation_lines)
+
+
+def _is_densifying(base_census: LineCensus, head_census: LineCensus) -> bool:
+    """True where documentation lines disappeared and, with them, the
+    documentation share fell -- independent of size, and independent of the
+    sign of the code-line change. Deleting a documented function whole can
+    raise the share even as it removes documentation, and is quiet; deleting
+    only the explanation while its code stays put cannot raise the share,
+    and is exactly the shape a stealth compaction takes."""
     documentation_delta = (
         head_census.documentation_lines - base_census.documentation_lines
     )
     if documentation_delta >= 0:
-        return None
-    base_share = _documentation_share(base_census)
-    head_share = _documentation_share(head_census)
-    if head_share >= base_share:
-        return None
+        return False
+    return _documentation_share(head_census) < _documentation_share(base_census)
+
+
+def _densification_message(
+    path: str, base_census: LineCensus, head_census: LineCensus
+) -> str:
+    documentation_delta = (
+        head_census.documentation_lines - base_census.documentation_lines
+    )
     return (
-        f"{path}: documentation share fell from {base_share:.2f} to "
-        f"{head_share:.2f} as {-documentation_delta} comment or docstring "
-        "lines disappeared"
+        f"{path}: documentation share fell from "
+        f"{_documentation_share(base_census):.4f} to "
+        f"{_documentation_share(head_census):.4f} as "
+        f"{-documentation_delta} of its own comment or docstring lines disappeared"
     )
 
 
@@ -320,27 +331,68 @@ class ChangedFileReport:
     ceiling_distance: int
 
 
-def densification_report(
+@dataclass(frozen=True, slots=True)
+class _TouchedFile:
+    path: str
+    base_census: LineCensus
+    head_census: LineCensus
+    head_line_count: int
+
+
+def _touched_files(
     project_root: Path, base: str, head: str
-) -> tuple[ChangedFileReport, ...]:
-    """Every touched source file's distance to the file ceiling, and every
-    file whose documentation share fell as its documentation lines
-    disappeared -- reported and gated respectively, in one pass over the
-    same diff."""
-    reports: list[ChangedFileReport] = []
+) -> tuple[_TouchedFile, ...]:
+    touched: list[_TouchedFile] = []
     for changed_path in _changed_source_paths(project_root, base, head):
         head_content = _blob_content(project_root, head, changed_path.head_path)
         if head_content is None:
             continue
         head_census = _census_or_raise(changed_path.head_path, head, head_content)
         base_census = _census_at_revision(project_root, base, changed_path.base_path)
-        problem = _densification_problem(
-            changed_path.head_path, base_census, head_census
+        touched.append(
+            _TouchedFile(
+                changed_path.head_path,
+                base_census,
+                head_census,
+                len(head_content.splitlines()),
+            )
         )
-        line_count = len(head_content.splitlines())
+    return tuple(touched)
+
+
+def densification_report(
+    project_root: Path, base: str, head: str
+) -> tuple[ChangedFileReport, ...]:
+    """Every touched source file's distance to the file ceiling, plus a
+    problem for each file that lost documentation of its own -- but only
+    once the diff as a whole is densifying.
+
+    The verdict is read from the diff's summed censuses, not any one file's
+    own: a split or a rename moves lines between files without shrinking
+    the diff's own total, so the file that lines moved out of cannot trip
+    this alone, and the file they moved into only adds to the total. Naming
+    each file that lost documentation, once the whole diff is red, keeps the
+    report pointing at the actual loss rather than only the aggregate.
+    """
+    touched = _touched_files(project_root, base, head)
+    diff_base = _sum_censuses(entry.base_census for entry in touched)
+    diff_head = _sum_censuses(entry.head_census for entry in touched)
+    diff_is_densifying = _is_densifying(diff_base, diff_head)
+
+    reports: list[ChangedFileReport] = []
+    for entry in touched:
+        problem = None
+        file_documentation_delta = (
+            entry.head_census.documentation_lines
+            - entry.base_census.documentation_lines
+        )
+        if diff_is_densifying and file_documentation_delta < 0:
+            problem = _densification_message(
+                entry.path, entry.base_census, entry.head_census
+            )
         reports.append(
             ChangedFileReport(
-                changed_path.head_path, problem, FILE_LINE_THRESHOLD - line_count
+                entry.path, problem, FILE_LINE_THRESHOLD - entry.head_line_count
             )
         )
     return tuple(reports)
