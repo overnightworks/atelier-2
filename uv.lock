@@ -55,6 +55,7 @@ dependencies = [
     { name = "githubkit" },
     { name = "httpx" },
     { name = "jsonschema" },
+    { name = "overnightworks-agent-providers" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
@@ -81,6 +82,7 @@ requires-dist = [
     { name = "githubkit", specifier = "==0.16.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "overnightworks-agent-providers", git = "https://github.com/overnightworks/agent-providers.git?rev=0ef2e3229dd705c9459e477743eaf7370fa32720" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "sqlalchemy", specifier = "==2.0.51" },
@@ -518,6 +520,16 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8f/d2/640b5149cd5688bc0ad1fdbb4df6a2f7b84a093c8d787c27d566132f8b8b/openapi_spec_validator-0.9.0.tar.gz", hash = "sha256:6d648cff6490ebb799dcfe273792f2941c050158854c721f086599d845da78b8", size = 1756839, upload-time = "2026-05-20T09:23:18.871Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/d8/321ff889330acca2e3097f3d4f80a40bcc41b6d34d302978ab32c449520b/openapi_spec_validator-0.9.0-py3-none-any.whl", hash = "sha256:222fecffc7714f6d0a6ad62c0e4b66cc2b7dbfafb7b93acfc6c308abbdb51af8", size = 50328, upload-time = "2026-05-20T09:23:17.017Z" },
+]
+
+[[package]]
+name = "overnightworks-agent-providers"
+version = "0.1.2"
+source = { git = "https://github.com/overnightworks/agent-providers.git?rev=0ef2e3229dd705c9459e477743eaf7370fa32720#0ef2e3229dd705c9459e477743eaf7370fa32720" }
+dependencies = [
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [[package]]

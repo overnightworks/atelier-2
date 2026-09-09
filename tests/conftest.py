@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from agent_providers.config import reset_config
 
 if TYPE_CHECKING:
     from atelier2.adapters.dbos.runtime import _DbosProcessOwner
@@ -90,6 +91,20 @@ def dbos_logging_isolation() -> Iterator[None]:
         yield
     finally:
         root.handlers = inherited
+
+
+@pytest.fixture
+def provider_runtime_per_test() -> Iterator[None]:
+    """No test inherits, or leaves behind, another test's provider deployment.
+
+    The provider library installs one configuration per process and refuses a
+    differing second one, so a test that configures owns that installation for
+    its own duration.
+    """
+
+    reset_config()
+    yield
+    reset_config()
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

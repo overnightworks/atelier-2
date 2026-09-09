@@ -18,16 +18,6 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         ),
     },
     {
-        "names": ("contracts/agents.py:API_KEY",),
-        "why": (
-            "An AuthMode member; claude_subscription.py, codex_subscription.py "
-            "and grok_subscription.py each refuse a bound profile whose auth "
-            "mode `is not AuthMode.SUBSCRIPTION`, so the negative member is "
-            "selected by comparison, never named, and its own tests construct "
-            "it directly to prove that refusal."
-        ),
-    },
-    {
         "names": (
             "adapters/agent_client_protocol.py:END_TURN",
             "adapters/agent_client_protocol.py:MAX_TOKENS",

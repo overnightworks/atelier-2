@@ -5,8 +5,10 @@
   -- `runner/session.py`, `runner/executors.py`, and the rest of the
   container-hosted cluster ADR 0009 describes -- was deleted for having no
   live caller; its code stays reachable in Git history for reference and is
-  not to be revived) — step 1 carries the typed policy and the decider seam;
-  steps 2-6 are not implemented
+  not to be revived), 2026-09-09 (issue #1430: §8, catalog knowledge belongs to
+  the shared provider library, and §6's credential promise loses its visibility
+  half by operator ruling of the same day) — step 1 carries the typed policy
+  and the decider seam; steps 2-6 are not implemented
 - Date: 2026-09-04
 - Decision authority: the operator ruling of 2026-09-04 on proposal
   [#1177](https://github.com/FlexOr2/atelier-2/issues/1177), which owns the
@@ -201,6 +203,46 @@ Runner that a caller has pulled into life. Nothing else in ADR 0009's trust
 boundary changes — it remains the target for isolation and multi-user
 execution.
 
+### 8. Which models exist is the shared library's answer, not a second one here
+
+The boundary has two halves. A *turn* is §1's session port. A *catalog* — which
+models a provider offers, and whether it is logged in at all — is a separate
+question with a separate answer, and `overnightworks-agent-providers` owns it.
+This repository holds one adapter over `agent_providers.catalog`
+(`adapters/agent_provider_catalog.py`), an import contract that keeps the
+library inside it, and no CLI vocabulary of its own; the host states its
+deployment facts once, in `serve()`, and asks. Two truths about which models
+exist may not coexist for a day, so the host-side discovery this replaced was
+deleted in the same change.
+
+Claude stays outside that answer. The library's Claude route lists the aliases
+the CLI's `/model` prints (`opus`, `sonnet`), while a model registry here names
+full model ids (`claude-opus-5`). Membership in an alias list is no evidence
+about a registry id, so Claude reports no model list at all and its ids stay
+unchecked until the validation door checks one — the honest answer, and the one
+that keeps `checked` meaning what §5's seam and the start path read it as.
+
+That validation door is untouched by this record. It runs the composed
+executor's own prepared command and decoder, which is the only thing that knows
+this deployment's configuration and executor revision; a catalog's membership
+test cannot replace it and is not offered as one.
+
+**The credential property, set here and inherited from ADR 0009 §6.** A
+catalog probe never sees the operator's credential directory. It runs in a
+private home holding one mode-0400 copy, that home is removed when the probe
+ends, and a direct overwrite of the copy fails. ADR 0009 §6 is the standard
+this meets; its own mechanism -- a read-only bind mount into a Runner
+container -- is deleted with that container, so this record sets the property
+positively rather than inheriting a live mount.
+
+One half of §6's promise is given up here: a refresh that creates a new file
+and renames it over the disposable copy succeeds **silently** and is discarded
+with the private home, so the operator is never told it happened. That is an
+operator ruling of 2026-09-09, recorded as a dated amendment beside §6 itself
+in [ADR 0009](0009-runner-trust.md) -- the protection holds, no credential of
+the operator's is written, lost, or made reachable, and the visibility is
+released because nothing offers it today.
+
 ## Consequences
 
 - What falls: the per-CLI stream parsers and schema-flag branches in the Claude
@@ -240,14 +282,17 @@ proof is one real `issue-to-pr` run reaching its review node with that builder.
 
 ## Supersedes and amends
 
-No ADR is superseded. This record **amends ADR 0009** in one place, dated
-2026-09-04 and noted there: the process watchdog is no longer a predecessor
-retained only for deletion but the first implementation of the session port, and
-the Agent Runner is deleted; the session port is the owner of live provider
-execution. ADR 0009's trust boundary, its containment
-rules (§1) and its credential rules (§6, including the condition on a writable
-copy) stand unchanged as the target of that move, and ADR 0008's turn-limiter
-and money-absent rules stand unchanged.
+No ADR is superseded. This record **amends ADR 0009** in two places, each
+dated and noted there. 2026-09-04: the process watchdog is no longer a
+predecessor retained only for deletion but the first implementation of the
+session port, and the Agent Runner is deleted; the session port is the owner of
+live provider execution. 2026-09-09 (§8, operator ruling): §6's read-only
+credential ingress keeps its protection but loses its promise that a writing
+token refresh fails visibly, for the catalog path that meets its standard
+without its deleted mount. ADR 0009's trust boundary, its containment rules
+(§1), and the rest of §6 including the condition on a writable copy stand
+unchanged as the target of that move, and ADR 0008's turn-limiter and
+money-absent rules stand unchanged.
 
 The print-mode invocation design being replaced was never a decision record: it
 lives in the subscription adapters' own docstrings and in their executor

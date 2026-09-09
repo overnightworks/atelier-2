@@ -27,6 +27,7 @@ EXPECTED_CONTRACT_NAMES = {
     "schema-owner": "JSON Schema evaluation stays inside one profile owner",
     "yaml-owner": "PyYAML stays inside its document adapters",
     "httpx-owner": "httpx stays inside its declared transport owners",
+    "agent-providers-owner": "The provider library stays inside its catalog adapter",
 }
 ROOT_PACKAGE = "atelier2"
 PORT_PACKAGE = "atelier2.ports"

@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26, 2026-09-04, 2026-09-05 (see [ADR 0020](0020-provider-boundary.md): the watchdog is the first session implementation; the container-hosted Runner this record describes -- the candidate image, `atelier2-runner-launcher`, and the disposable #301-A harness -- was deleted 2026-09-05, issue #1252, for having no live caller in 485 live attempts, and lives on in Git history for whoever names a caller next); disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26, 2026-09-04, 2026-09-05 (see [ADR 0020](0020-provider-boundary.md): the watchdog is the first session implementation; the container-hosted Runner this record describes -- the candidate image, `atelier2-runner-launcher`, and the disposable #301-A harness -- was deleted 2026-09-05, issue #1252, for having no live caller in 485 live attempts, and lives on in Git history for whoever names a caller next), 2026-09-09 (see the §6 amendment below: the provider catalog path inherits this record's credential standard and gives up its visibility half); disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [#21](https://github.com/FlexOr2/atelier-2/issues/21) owns
@@ -222,6 +222,23 @@ refresh needs to write its credential store fails loud and visibly under the
 read-only mount: the run breaks with a named, observable error rather than
 hanging silently, and no credential data is lost, because nothing was ever
 writable to lose.
+
+**2026-09-09 amendment ([ADR 0020 §8](0020-provider-boundary.md), operator
+ruling 2026-09-09, issue #1430): the provider catalog path inherits this
+standard and gives up its visibility half.** The read-only ingress above is a
+Runner-container surface, and that container is deleted (see the status line);
+no catalog probe ever ran beneath it. ADR 0020 §8 therefore sets the same
+protection positively as its own: a probe never sees the operator's credential
+directory at all, it runs in a private home holding one mode-0400 copy, that
+home is removed when the probe ends, and a direct overwrite of the copy fails.
+What is given up there is the sentence above it: a refresh that creates a new
+file and renames it over the copy succeeds **silently**, against the disposable
+copy alone, and is discarded with the private home, so the operator is never
+told it happened. The operator ruled that acceptable on 2026-09-09 -- the
+protection this rule exists for holds, since no credential of the operator's is
+written, lost, or made reachable, while no mechanism offers the visibility
+today and its absence destroys nothing. The read-only ingress rule itself
+stands unchanged for whatever revives the Runner.
 
 **2026-08-23 amendment (Operator-Ruling B, #540-Journal): a lease is a request,
 not an authorization.** The local carrier form is a host launcher process

@@ -34,7 +34,7 @@ peers, and permits dependencies only toward the right of this derived view:
 
 <!-- architecture-contract-view:start -->
 ```text
-contracts: layers, root-facade, dbos-owner, githubkit-owner, wire-projection-split, route-vocabulary, schema-owner, yaml-owner, httpx-owner
+contracts: layers, root-facade, dbos-owner, githubkit-owner, wire-projection-split, route-vocabulary, schema-owner, yaml-owner, httpx-owner, agent-providers-owner
 preflights: port-sentence-problems, api-port-record-problems, use-case-record-problems, route-port-problems, duplicate-problems
 layers: __main__ > host > api | adapters > application > ports > contracts
 dbos-owner: atelier2.adapters.dbos
@@ -44,7 +44,10 @@ root-facade-forbids: __main__, host, api, adapters, application, ports
 <!-- architecture-contract-view:end -->
 
 The root facade cannot bypass ports through a package or descendant import.
-Only `atelier2.adapters.dbos` may import DBOS or SQLAlchemy. Only the YAML
+Only `atelier2.adapters.dbos` may import DBOS or SQLAlchemy. Only
+`atelier2.adapters.agent_provider_catalog` may import the shared provider
+library, so nothing else can start a provider child from facts no deployment
+stated. Only the YAML
 document adapters named above may import PyYAML; application code or any other
 adapter that reaches the library directly fails yaml-owner. JSON Schema
 evaluation stays inside its profile owner. Wire schemas name no port type,

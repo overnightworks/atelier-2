@@ -163,7 +163,7 @@ _SEARCH_PATH_VARIABLE = "PATH"
 
 _JOB_DIRECTORY_PREFIX = "atelier2-codex-job-"
 _JOB_DIRECTORY_MODE = 0o700
-_AUTHENTICATION_FILE_NAME = "auth.json"
+AUTHENTICATION_FILE_NAME = "auth.json"
 # The copied credential is handed out read-only: nothing this executor asks
 # the CLI to do needs it to rewrite the copy in place, and the CLI's own
 # credential rewrites go through a temp-file-plus-rename replace (see the
@@ -493,13 +493,13 @@ def _authentication_bytes(settings: CodexSubscriptionSettings) -> bytes:
     profile.
     """
 
-    path = settings.credential_directory / _AUTHENTICATION_FILE_NAME
+    path = settings.credential_directory / AUTHENTICATION_FILE_NAME
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode) or stat.S_IMODE(status.st_mode) & 0o077:
             raise ValueError(
-                f"the Codex {_AUTHENTICATION_FILE_NAME} must be a private regular file"
+                f"the Codex {AUTHENTICATION_FILE_NAME} must be a private regular file"
             )
         chunks: list[bytes] = []
         size = 0
@@ -510,7 +510,7 @@ def _authentication_bytes(settings: CodexSubscriptionSettings) -> bytes:
             size += len(chunk)
             if size > _MAXIMUM_AUTHENTICATION_FILE_BYTES:
                 raise ValueError(
-                    f"the Codex {_AUTHENTICATION_FILE_NAME} exceeds its private "
+                    f"the Codex {AUTHENTICATION_FILE_NAME} exceeds its private "
                     "copy bound"
                 )
             chunks.append(chunk)
@@ -537,7 +537,7 @@ def _open_job_directory(settings: CodexSubscriptionSettings) -> Path:
     prepared = False
     try:
         _write_private_file(
-            directory / _AUTHENTICATION_FILE_NAME,
+            directory / AUTHENTICATION_FILE_NAME,
             _authentication_bytes(settings),
             _AUTHENTICATION_FILE_MODE,
         )
