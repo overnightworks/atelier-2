@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql.functions import Function
 
+import atelier2.adapters.dbos.runtime as dbos_runtime_module
 import atelier2.application.advance_queue as advance_queue_module
 from atelier2.adapters.dbos import schema as schema_module
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -27,6 +28,7 @@ from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionSto
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
+    _log_project_source_import,
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
@@ -140,6 +142,7 @@ from atelier2.ports.issue_observation import (
     WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
+    CatalogResolver,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
@@ -152,11 +155,13 @@ from atelier2.ports.queue_projection import (
     QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
+    QueueProjection,
     QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
     QueueProjectPolicyPublished,
     QueueReadUnavailable,
 )
+from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 from tests.scenarios.api import (
     api_limits,
     api_ports,
@@ -169,6 +174,7 @@ from tests.scenarios.catalog_lineages import (
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
+from tests.scenarios.runtime import wait_for_sweep
 
 PROJECT = ProjectId("project1")
 FIRST_READ = RecordedAt("2026-09-01T09:00:00Z")
@@ -1875,6 +1881,7 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
 
         snapshots = _snapshots_by_reference(queue)
         assert snapshots[proposed.tracker_item].state is QueueItemState.PROPOSED
+        assert snapshots[proposed.tracker_item].retired_at is None
         assert _launch_bindings(runtime.engine, proposed.item_id) == ()
         assert [
             (record.levelno, getattr(record, "detail", None))
@@ -1882,6 +1889,152 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
             if getattr(record, "event", None)
             == "queue_label_admission_source_unreadable"
         ] == [(logging.WARNING, unreadable.detail)]
+    finally:
+        runtime.close()
+
+
+def test_the_import_refusal_line_names_its_reason_only_when_one_has_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The operator's journal line, not the translation's own variables.
+
+    A refusal that carries a reason names it in parentheses; one that carries
+    none ends the sentence clean -- no empty parenthesis, no the word "None"
+    standing in for silence. `WriteUnavailable` is both an optional-detail
+    outcome and the one this rendering once got wrong; `SourcePayloadMalformed`
+    and `ReadUnavailable` share the same renderer, so proving it here proves it
+    for them too.
+    """
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        _log_project_source_import(WriteUnavailable("the store's write timed out"))
+        _log_project_source_import(WriteUnavailable())
+
+    refusals = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "project_source_import_write_unavailable"
+    ]
+    assert [record.getMessage() for record in refusals] == [
+        (
+            "The tracker import could not write the observed items "
+            "(the store's write timed out); the next tick asks again."
+        ),
+        "The tracker import could not write the observed items; the next tick asks again.",
+    ]
+    assert [getattr(record, "detail", None) for record in refusals] == [
+        "the store's write timed out",
+        None,
+    ]
+
+
+def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The import rides the sweep's own clock; a steady repeat tick touches nothing.
+
+    No caller writes a queue row here -- not this test, not the import route.
+    The launch's own sweep observes the first labelled tracker item and starts
+    it from the policy's defaults. A tracker item that only appears afterwards
+    is observed by the next tick, asked for by `request_queue_sweep()` the way
+    an admitted item already asks for one, without anyone calling the import
+    route in between -- the proof that the import runs on every tick, not only
+    at launch. A further tick that reads the same tracker answer again leaves
+    both items' durable rows exactly as they were -- the proof that a repeat
+    import is a no-op, not a second admission.
+    """
+
+    label = "bereit"
+    project_root = tmp_path / "operator-project"
+    project_root.mkdir()
+    first_read = RecordedAt("2026-09-09T09:00:00Z")
+    first_item = ObservedOpenTrackerItem(
+        TrackerItemReference("gh:1236"), "labelled", (label,)
+    )
+    tracker = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved((first_item,), first_read),
+        snapshot_answer=_SCOPED_SNAPSHOT,
+    )
+    runtime = _runtime(
+        tmp_path / "atelier.sqlite", project_root=project_root, tracker=tracker
+    )
+    swept = Event()
+    real_advance_queue = dbos_runtime_module.advance_queue
+
+    def _advance_queue_and_signal(
+        queue: QueueProjection,
+        catalog: CatalogResolver,
+        starter: DurablePublishedRunStarter,
+        *,
+        workflow_document_parser: WorkflowDocumentParser | None,
+        served_project: ProjectId | None = None,
+        tracker: TrackerItemSource | None = None,
+        page_limit: int = MAXIMUM_PAGE_ITEMS,
+    ) -> tuple[QueueAdvanceOutcome, ...]:
+        outcome = real_advance_queue(
+            queue,
+            catalog,
+            starter,
+            workflow_document_parser=workflow_document_parser,
+            served_project=served_project,
+            tracker=tracker,
+            page_limit=page_limit,
+        )
+        swept.set()
+        return outcome
+
+    monkeypatch.setattr(dbos_runtime_module, "advance_queue", _advance_queue_and_signal)
+    try:
+        lineage_id, _revision_hash = found_lineage(runtime.engine)
+        queue = DbosQueueProjectionStore(runtime.engine)
+        assert isinstance(
+            queue.put_policy(
+                QueueProjectPolicyRevision(
+                    PROJECT,
+                    1,
+                    2,
+                    label,
+                    QueueProjectPolicyDefaults(
+                        lineage_id,
+                        QueuePriorityRank(5),
+                        QueueAutomationDisposition.AUTOMATION_AUTHORIZED,
+                    ),
+                ),
+                0,
+            ),
+            QueueProjectPolicyPublished,
+        )
+        first_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:1236"))
+
+        runtime.launch()
+
+        first_snapshot = _snapshots_by_reference(queue)[first_reference.tracker_item]
+        assert first_snapshot.state is QueueItemState.ADMITTED
+        assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
+
+        second_item = ObservedOpenTrackerItem(
+            TrackerItemReference("gh:5555"), "newly labelled", (label,)
+        )
+        second_listing = OpenTrackerItemsObserved(
+            (first_item, second_item), RecordedAt("2026-09-09T09:05:00Z")
+        )
+        tracker.open_items_answer = second_listing
+        wait_for_sweep(runtime, swept)
+
+        second_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:5555"))
+        second_snapshot = _snapshots_by_reference(queue)[second_reference.tracker_item]
+        assert second_snapshot.state is QueueItemState.ADMITTED
+        assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
+
+        before = _snapshots_by_reference(queue)
+        wait_for_sweep(runtime, swept)
+
+        after = _snapshots_by_reference(queue)
+        assert after == before
+        assert after[first_reference.tracker_item].retired_at is None
+        assert after[second_reference.tracker_item].retired_at is None
+        assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
+        assert len(_launch_bindings(runtime.engine, second_reference.item_id)) == 1
     finally:
         runtime.close()
 

@@ -100,7 +100,11 @@ from atelier2.host.serving import (
 )
 from atelier2.ports.agent_configurations import AgentConfigurationRevisionPage
 from atelier2.ports.agent_executions import AgentExecutorCarrier
-from atelier2.ports.issue_observation import WorkItemRevisionObserved
+from atelier2.ports.issue_observation import (
+    ObservedOpenTrackerItem,
+    OpenTrackerItemsObserved,
+    WorkItemRevisionObserved,
+)
 from atelier2.ports.published_revisions import CatalogLineageFounded
 from atelier2.ports.queue_projection import QueueItemsPage, QueueItemsReconciled
 from tests.integration.test_claude_atelier_doors import doors_deployment, doors_flags
@@ -662,14 +666,25 @@ def test_a_queue_started_run_carries_the_admitted_items_tracker_reference(
     """
 
     tracker_reference = TrackerItemReference("gh:9001")
+    observed_at = RecordedAt("2026-09-04T09:00:00Z")
     revision = ObservedWorkItemRevision(
         tracker_reference,
         WorkItemKind.ISSUE,
         b"push the candidate before the pull request opens",
         WorkItemChangeMarker('W/"9001"'),
-        RecordedAt("2026-09-04T09:00:00Z"),
+        observed_at,
     )
-    tracker = FakeTrackerItemSource(snapshot_answer=WorkItemRevisionObserved(revision))
+    # A served project bound to a tracker is a composition the queue sweep's
+    # own tick imports through, so the fake must answer the same open-items
+    # read the real one would -- the run's own item, or ADR 0016's set
+    # difference would retire the row this test seeds by hand below.
+    tracker = FakeTrackerItemSource(
+        open_items_answer=OpenTrackerItemsObserved(
+            (ObservedOpenTrackerItem(tracker_reference, "push before the pr", ()),),
+            observed_at,
+        ),
+        snapshot_answer=WorkItemRevisionObserved(revision),
+    )
     project_root = tmp_path / "operator-project"
     project_root.mkdir()
     runtime = DbosRuntime(
@@ -711,7 +726,6 @@ def test_a_queue_started_run_carries_the_admitted_items_tracker_reference(
 
         queue = DbosQueueProjectionStore(engine)
         item_reference = WorkItemReference(_QUEUE_STARTED_PROJECT, tracker_reference)
-        observed_at = RecordedAt("2026-09-04T09:00:00Z")
         queue.put_policy(
             QueueProjectPolicyRevision(_QUEUE_STARTED_PROJECT, 1, 1, None), 0
         )
