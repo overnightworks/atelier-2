@@ -90,10 +90,6 @@ path = "src/atelier2/api/openapi.py"
 lines = 1221
 
 [[file]]
-path = "src/atelier2/api/problems.py"
-lines = 850
-
-[[file]]
 path = "src/atelier2/api/routes/revisions.py"
 lines = 887
 

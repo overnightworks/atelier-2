@@ -10,8 +10,8 @@ from urllib.parse import quote
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
+from atelier2.api.problem_vocabulary import PROBLEM_DEFINITIONS
 from atelier2.api.problems import (
-    PROBLEM_DEFINITIONS,
     PROBLEM_TYPE_PREFIX,
     durable_projection_unrepresentable_detail,
     problem_resource,

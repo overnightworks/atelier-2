@@ -6,7 +6,7 @@ from typing import cast
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from atelier2.api.problems import artifact_problem_code
+from atelier2.api.problem_vocabulary import artifact_problem_code
 from atelier2.api.references import (
     MAXIMUM_RUN_ORDERS,
     base64_characters_for,

@@ -13,7 +13,8 @@ from atelier2.api._support import (
 )
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import ARTIFACT_PATH, ARTIFACTS_PATH
-from atelier2.api.problems import ApiProblem, artifact_problem_code
+from atelier2.api.problem_vocabulary import artifact_problem_code
+from atelier2.api.problems import ApiProblem
 from atelier2.api.references import ArtifactHashPath
 from atelier2.api.wire.resources import ArtifactResource
 from atelier2.application.publish_artifact import (

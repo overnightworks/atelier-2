@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from atelier2.api.app import COCKPIT_HOME_PATH, create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import OPERATION_PROBLEMS
+from atelier2.api.problem_vocabulary import PROBLEM_DEFINITIONS
 from atelier2.api.problems import (
-    PROBLEM_DEFINITIONS,
     PROBLEM_TYPE_PREFIX,
     problem_resource,
 )
