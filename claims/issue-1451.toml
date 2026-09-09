@@ -1,8 +1,0 @@
-claim_id = "e2d284d176514ef3a2d419ff386d4b24"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
-branch = "claude/issue-1451-import-tick"
-scope = ["src/atelier2/adapters/dbos/runtime.py", "tests/integration/test_phase_d_admission.py", "tests"]
-opened_commit = "db0d6993ee31bb1222044ac7ff2610c07914f29d"
-whole_reason = "Ein zweiter Aufrufer des Imports wird in jedem Szenario sichtbar, das den Sweep taktet."
