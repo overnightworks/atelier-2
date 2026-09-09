@@ -47,6 +47,7 @@ _UNRESOLVED_OUTCOME = _UnresolvedOutcome()
 SOURCE_DIRECTORY = "src"
 SOURCE_PACKAGE_DIRECTORY = "src/atelier2"
 PACKAGE_MARKER = "__init__.py"
+UNNAMEABLE_SOURCE_HEADLINE = "source files the import analysis cannot see"
 PORT_PACKAGE_DIRECTORY = "src/atelier2/ports"
 HTTP_SENTENCE_MARKERS = ("API limits", "HTTP", "status code")
 API_PACKAGE_DIRECTORY = "src/atelier2/api"
@@ -226,7 +227,7 @@ def unnameable_source_problems(project_root: Path) -> tuple[str, ...]:
 
 def unnameable_source_refusal(problems: tuple[str, ...]) -> str:
     return (
-        "source files the import analysis cannot see:\n  "
+        f"{UNNAMEABLE_SOURCE_HEADLINE}:\n  "
         + "\n  ".join(problems)
         + f"\nevery file under {SOURCE_DIRECTORY} must be a module of the "
         f"{ROOT_PACKAGE} package, or no contract judges it"

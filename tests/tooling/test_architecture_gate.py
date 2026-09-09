@@ -43,11 +43,12 @@ def assert_named_preflight_failed(
 
 
 def assert_unnameable_source_refused(
-    result: subprocess.CompletedProcess[str], path: str
+    result: subprocess.CompletedProcess[str], refusal: str
 ) -> None:
+    script = load_architecture_script()
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "source files the import analysis cannot see:" in result.stderr
-    assert path in result.stderr, result.stderr
+    assert script.UNNAMEABLE_SOURCE_HEADLINE in result.stderr, result.stderr
+    assert refusal in result.stderr, result.stderr
 
 
 def add_contract_to_host_import(project: Path) -> None:
@@ -227,27 +228,24 @@ def add_a_source_module(project: Path) -> None:
     (project / "src/atelier2/contracts/extra.py").write_text("", encoding="utf-8")
 
 
-def add_a_module_beside_the_package(project: Path) -> str:
+def add_a_module_beside_the_package(project: Path) -> None:
     beside = project / "src/tooling"
     beside.mkdir()
     (beside / "__init__.py").touch()
     (beside / "helper.py").touch()
-    return "src/tooling/helper.py"
 
 
-def add_a_module_under_a_directory_python_cannot_name(project: Path) -> str:
+def add_a_module_under_a_directory_python_cannot_name(project: Path) -> None:
     unnameable = project / "src/atelier2/api/route-group"
     unnameable.mkdir()
     (unnameable / "__init__.py").touch()
     (unnameable / "health.py").touch()
-    return "src/atelier2/api/route-group/health.py"
 
 
-def add_a_module_under_a_directory_that_is_no_package(project: Path) -> str:
+def add_a_module_under_a_directory_that_is_no_package(project: Path) -> None:
     loose = project / "src/atelier2/api/group"
     loose.mkdir()
     (loose / "health.py").touch()
-    return "src/atelier2/api/group/health.py"
 
 
 def remove_contract(project: Path) -> None:
@@ -268,23 +266,38 @@ def change_layer(project: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "unnameable",
+    ("unnameable", "refusal"),
     [
-        add_a_module_beside_the_package,
-        add_a_module_under_a_directory_python_cannot_name,
-        add_a_module_under_a_directory_that_is_no_package,
+        (
+            add_a_module_beside_the_package,
+            "src/tooling/helper.py: it lies outside the atelier2 package",
+        ),
+        (
+            add_a_module_under_a_directory_python_cannot_name,
+            (
+                "src/atelier2/api/route-group/health.py: "
+                "the directory 'route-group' is not a Python name"
+            ),
+        ),
+        (
+            add_a_module_under_a_directory_that_is_no_package,
+            (
+                "src/atelier2/api/group/health.py: "
+                "atelier2/api/group carries no __init__.py"
+            ),
+        ),
     ],
     ids=["beside-the-package", "unnameable-directory", "no-package"],
 )
-def test_a_source_file_the_analysis_cannot_see_is_refused_by_its_path(
-    tmp_path: Path, unnameable: Callable[[Path], str]
+def test_a_source_file_the_analysis_cannot_see_is_refused_with_its_path_and_reason(
+    tmp_path: Path, unnameable: Callable[[Path], None], refusal: str
 ) -> None:
     project = copied_project(tmp_path)
-    invisible = unnameable(project)
+    unnameable(project)
 
     result = run_gate(project)
 
-    assert_unnameable_source_refused(result, invisible)
+    assert_unnameable_source_refused(result, refusal)
 
 
 def test_a_new_module_inside_a_declared_layer_keeps_the_gate_green(
