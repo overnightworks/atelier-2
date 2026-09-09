@@ -10,6 +10,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts") / "check_changed_narrative.py"
 DIFF_READER = Path("scripts") / "report_corridor.py"
+DOCUMENTATION_LINES = Path("scripts") / "python_documentation_lines.py"
 GIT_IDENTITY = ("-c", "user.name=test-builder", "-c", "user.email=test-builder@invalid")
 
 
@@ -19,6 +20,7 @@ def scratch_repository(tmp_path: Path) -> Path:
     scripts.mkdir(parents=True)
     shutil.copy2(PROJECT_ROOT / GATE, project / GATE)
     shutil.copy2(PROJECT_ROOT / DIFF_READER, project / DIFF_READER)
+    shutil.copy2(PROJECT_ROOT / DOCUMENTATION_LINES, project / DOCUMENTATION_LINES)
     _git(project, "init", "--quiet")
     return project
 

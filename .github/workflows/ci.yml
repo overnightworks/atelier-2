@@ -340,8 +340,26 @@ jobs:
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
 
+      # A deletion-sensitive gate cannot use pull_request.base.sha: that SHA
+      # is pinned to when the PR was opened, while the checked-out commit is
+      # GitHub's merge of the PR branch onto the target branch's current tip
+      # -- so a stale base would judge this PR against every landing that
+      # reached the target branch after it opened. HEAD^1 is that current
+      # tip, the merge commit's own first parent, so the diff it drives
+      # covers only what this PR's own commits changed. merge_group and
+      # push events already carry a same-run base and are untouched.
       - name: Check the size and complexity ratchet
-        run: uv run --locked python scripts/check_size_ratchet.py
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            SIZE_RATCHET_BASE_SHA="$(git rev-parse HEAD^1)"
+          else
+            SIZE_RATCHET_BASE_SHA="${MERGE_GROUP_BASE_SHA:-${PUSH_BEFORE_SHA}}"
+          fi
+          uv run --locked python scripts/check_size_ratchet.py --base "${SIZE_RATCHET_BASE_SHA}"
 
       - name: Check the core test import ratchet
         run: uv run --locked python scripts/check_core_test_imports.py
