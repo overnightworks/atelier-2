@@ -1,13 +1,10 @@
 """Read what tree currently stands in an attempt's leased workspace.
 
 **Why here and not inline in attempt execution.** Whether a leased tree still
-matches its pin is a fact about the lease and the pin alone, asked at more
-than one moment across an attempt's ending: once before a granted check, to
-save paying for one where nothing changed, and once after, because the check
-runs in the same workspace and may leave a tree the earlier reading never saw.
-Each caller only ever asks this question; none of them derive the answer
-themselves, so the one place that reads it also carries why it may be asked
-more than once and what each asking is allowed to conclude.
+matches its pin is a fact about the lease and the pin alone; every caller only
+ever asks it, never derives the answer itself. The reader's own docstring
+carries why it may be asked more than once and what each asking is allowed to
+conclude.
 """
 
 from __future__ import annotations
@@ -24,6 +21,13 @@ def read_attempt_workspace_tree(
 
     Nothing is anchored under the attempt: this reads the lease and must not by
     itself keep work no ending has decided to keep.
+
+    Asked twice on one attempt, at the two moments its answer can differ.
+    Before the granted check, because "changed nothing" is what saves paying
+    for one at all. After it, because the check runs in the same workspace and
+    a command that writes there leaves a tree the earlier reading never saw --
+    and the patch handed to whoever judges the candidate has to be the tree
+    that is kept, not the one that stood before the check.
 
     Asked only of an attempt that redeems a grant, because that is the only
     attempt for which "changed nothing" is a failure. A node that pinned no
