@@ -1984,7 +1984,9 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
         tracker.open_items_answer = second_listing
         swept.clear()
         runtime.request_queue_sweep()
-        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
+        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), (
+            "the asked-for sweep never ran"
+        )
 
         second_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:5555"))
         second_snapshot = _snapshots_by_reference(queue)[second_reference.tracker_item]
@@ -1994,7 +1996,9 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
         before = _snapshots_by_reference(queue)
         swept.clear()
         runtime.request_queue_sweep()
-        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), "the asked-for sweep never ran"
+        assert swept.wait(_QUEUE_SWEEP_PATIENCE_SECONDS), (
+            "the asked-for sweep never ran"
+        )
 
         assert _snapshots_by_reference(queue) == before
         assert len(_launch_bindings(runtime.engine, first_reference.item_id)) == 1
