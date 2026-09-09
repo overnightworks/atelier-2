@@ -2449,7 +2449,7 @@ export function createCockpitApi(
         fetcher,
         after === undefined
           ? "/atelier/api/v1/workflow-revisions?limit=50&view=described"
-          : `/atelier/api/v1/workflow-revisions?limit=50&view=described&after=${encodeURIComponent(after)}`,
+          : `/atelier/api/v1/workflow-revisions?limit=50&view=described&after_revision_hash=${encodeURIComponent(after)}`,
         {},
         [200],
         VersionedWorkflowRevisionPageResource,
