@@ -140,7 +140,11 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
+from atelier2.ports.effects import (
+    EffectAdapter,
+    EffectAdapterFactory,
+    HeadBranchPullRequests,
+)
 from atelier2.ports.issue_observation import (
     ObservedOpenTrackerItem,
     OpenTrackerItemsObserved,
@@ -1565,11 +1569,13 @@ def main() -> None:
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
         *,
         tracker_item_source: TrackerItemSource | None,
+        head_branch_pull_requests: HeadBranchPullRequests | None,
     ) -> DbosRuntime:
-        if tracker_item_source is not None:
+        if tracker_item_source is not None or head_branch_pull_requests is not None:
             raise RuntimeError(
                 "the e2e harness connects no project source, so it substitutes "
-                "its own fixture tracker; a live one would reach the network"
+                "its own fixture tracker and reads no branch; a live surface "
+                "would reach the network"
             )
         factories = (
             *agent_factories_v2,

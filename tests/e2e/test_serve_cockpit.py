@@ -321,14 +321,13 @@ def _compose_with_scratch(settings: object, scratch_root: ScratchRootWithPath):
         runtime_settings: object,
         effect_factory: object,
         agent_factories_v2: tuple,
-        *,
-        tracker_item_source: object = None,
+        **surfaces: object,
     ) -> object:
         return harness.DbosRuntime(
             harness.replace(runtime_settings, agent_scratch_root=scratch_root.path),
             effect_factory,
             (*agent_factories_v2, factory, harness.baseline_agent_executor_factory()),
-            tracker_item_source=tracker_item_source,
+            **surfaces,
         )
 
     with patch.object(harness.serving, "DbosRuntime", side_effect=build_runtime):
@@ -680,8 +679,7 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
         runtime_settings: object,
         effect_factory: object,
         agent_factories_v2: tuple,
-        *,
-        tracker_item_source: object = None,
+        **surfaces: object,
     ) -> object:
         return harness.DbosRuntime(
             harness.replace(runtime_settings, agent_scratch_root=scratch["root"].path),
@@ -692,7 +690,7 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
                 v2,
                 harness.baseline_agent_executor_factory(),
             ),
-            tracker_item_source=tracker_item_source,
+            **surfaces,
         )
 
     def compose() -> tuple:
