@@ -233,6 +233,25 @@ class ChangedPath:
     base_path: str
 
 
+def _verify_revision(project_root: Path, revision: str, flag: str) -> None:
+    """Refuse a revision that is not a commit this checkout knows, before it
+    ever reaches a git range expression. An empty or blank `--base` is the
+    concrete case this exists for: `f"{base}...{head}"` turns into
+    `...HEAD` when `base` is empty, and git reads an omitted left side of a
+    range as `HEAD` -- silently diffing `HEAD...HEAD`, an empty diff that
+    exits clean instead of refusing."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SizeRatchetError(
+            f"--{flag} {revision!r} is not a commit this checkout knows"
+        )
+
+
 def _changed_source_paths(
     project_root: Path, base: str, head: str
 ) -> tuple[ChangedPath, ...]:
@@ -248,6 +267,8 @@ def _changed_source_paths(
     there is no escaping to decode and no second decoder to keep in step
     with check_changed_narrative.py's own.
     """
+    _verify_revision(project_root, base, "base")
+    _verify_revision(project_root, head, "head")
     result = subprocess.run(
         ["git", "diff", "-M", "-z", "--name-status", f"{base}...{head}"],
         cwd=project_root,

@@ -638,3 +638,17 @@ def test_an_unresolvable_base_is_refused(tmp_path: Path) -> None:
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "Size ratchet refused" in result.stderr
+
+
+def test_an_empty_base_is_refused_not_read_as_no_base(tmp_path: Path) -> None:
+    """Regression: `f"{base}...{head}"` turns into `...HEAD` when `base` is
+    empty, and git reads an omitted left side of a range as `HEAD` -- an
+    empty `--base` must not silently diff `HEAD...HEAD` and pass quiet."""
+    project = scratch_git_project(tmp_path)
+    write_module(project, "touched.py", a_file_of(1))
+    commit(project, "base")
+
+    result = run_gate_with_base(project, "")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Size ratchet refused" in result.stderr
