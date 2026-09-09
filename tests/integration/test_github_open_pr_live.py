@@ -87,10 +87,16 @@ AGENT_OUTPUT = b"the predecessor agent's answer, published as the pull request b
 HEAD_BRANCH = HeadBranch("atelier2/work-item/" + "a" * 64)
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 PROJECT_ROOT = Path(__file__).parents[2]
-ACCEPTANCE_LINE = (
-    "Literal acceptance sentence(s): none: opened by the Atelier "
-    f"from work item {HEAD_BRANCH.value}"
-)
+
+
+def acceptance_line_for(identity: str) -> str:
+    return (
+        "Literal acceptance sentence(s): none: opened by the Atelier "
+        f"from work item {identity}"
+    )
+
+
+ACCEPTANCE_LINE = acceptance_line_for(HEAD_BRANCH.value)
 
 
 @dataclass
@@ -880,6 +886,15 @@ def _candidate_report_bytes(summary: str, changed_paths: list[str]) -> bytes:
     )
 
 
+# A first sentence past the title cap (72), used by every test proving what a
+# rendered title and its acceptance line do when a sentence does not fit.
+_OVERLONG_FIRST_SENTENCE_SUMMARY = (
+    "Extends the reviewer pipeline to read configuration from the shared "
+    "settings service before it ever dispatches any live effect at all. "
+    "It also fixes a typo."
+)
+
+
 @dataclass(frozen=True)
 class _RenderingCase:
     body_bytes: bytes
@@ -927,12 +942,21 @@ RENDERING_CASES = (
                 " effect",
                 [],
             ),
-            "Extends the reviewer pipeline to also read configuration from the shared",
+            "Extends the reviewer pipeline to also read configuration from the…",
             "Extends the reviewer pipeline to also read configuration from the"
             " shared settings service before it dispatches any live effect",
             (),
         ),
-        id="long-summary-with-no-sentence-boundary-cuts-the-title-at-72-characters",
+        id="long-summary-with-no-sentence-boundary-cuts-at-a-word-boundary-with-an-ellipsis",
+    ),
+    pytest.param(
+        _RenderingCase(
+            _candidate_report_bytes(_OVERLONG_FIRST_SENTENCE_SUMMARY, []),
+            "Extends the reviewer pipeline to read configuration from the shared…",
+            _OVERLONG_FIRST_SENTENCE_SUMMARY,
+            (),
+        ),
+        id="found-sentence-boundary-too-long-cuts-at-a-word-boundary-with-an-ellipsis",
     ),
 )
 
@@ -984,8 +1008,28 @@ def test_execute_renders_the_work_item_and_closure_before_acceptance(
     body = str(server.pull_requests[0]["body"])
     assert (
         "Changed paths:\n- src/example.py\n\nWork-Item: #1232\n\nCloses #1232\n\n"
-        f"{ACCEPTANCE_LINE}"
+        f"{acceptance_line_for('gh:1232')}"
     ) in body
+
+
+def test_the_acceptance_line_names_the_work_item_reference_over_the_branch(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+) -> None:
+    intent = effect_intent(
+        _candidate_report_bytes(_OVERLONG_FIRST_SENTENCE_SUMMARY, []),
+        work_item_reference=TrackerItemReference("gh:1232"),
+    )
+
+    adapter = factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    body = str(server.pull_requests[0]["body"])
+    assert acceptance_line_for("gh:1232") in body
+    assert HEAD_BRANCH.value not in body
 
 
 def test_execute_without_a_work_item_reference_opens_without_typed_lines(
@@ -1174,7 +1218,7 @@ def test_a_long_summary_is_truncated_but_the_work_item_lines_survive(
     assert "[truncated at 4000 characters]" in body
     assert "Work-Item: #1232" in body
     assert "Closes #1232" in body
-    assert ACCEPTANCE_LINE in body
+    assert acceptance_line_for("gh:1232") in body
     assert body_carries_request_hash(body, intent.request.request_hash.value)
 
 

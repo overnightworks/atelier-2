@@ -131,6 +131,11 @@ MAXIMUM_PULL_REQUEST_LISTING_PAGES = 10
 _MAXIMUM_RENDERED_TITLE_CHARACTERS = 72
 _SENTENCE_TERMINATOR = re.compile(r"[.!?](?:\s|$)")
 
+# Marks a title cut before its sentence ended, so a reader never mistakes the
+# cut for the sentence's own end. It counts as one of the 72 characters like
+# every other glyph, so the marked title still fits the same cap.
+_TITLE_TRUNCATION_MARK = "…"
+
 # A candidate's own summary is provider text: unbounded, and never rendered
 # into Markdown without a ceiling. 4000 bounds the complete rendered body --
 # prose, acceptance line, and trailer together -- keeping it readable and
@@ -430,25 +435,48 @@ def _summary_and_changed_paths(raw_body: str) -> tuple[str, tuple[str, ...]]:
     return summary, ()
 
 
+def _truncated_at_word_boundary(sentence: str) -> str:
+    """Cut a sentence that does not fit the title cap at its last whole word.
+
+    A character cut at the cap can land inside a word; this instead gives up
+    the width the truncation mark itself needs, then backs off to the last
+    space still inside that budget. A sentence with no space that early keeps
+    its own character cut rather than collapsing to an empty title.
+    """
+
+    budget = _MAXIMUM_RENDERED_TITLE_CHARACTERS - len(_TITLE_TRUNCATION_MARK)
+    truncated = sentence[:budget]
+    boundary = truncated.rfind(" ")
+    if boundary > 0:
+        truncated = truncated[:boundary]
+    return f"{truncated.rstrip()}{_TITLE_TRUNCATION_MARK}"
+
+
 def _rendered_title(summary: str) -> str:
     stripped = summary.strip()
     if not stripped:
         return _DEFAULT_PULL_REQUEST_TITLE
     first_line = stripped.splitlines()[0]
     ending = _SENTENCE_TERMINATOR.search(first_line)
-    sentence = first_line[: ending.start() + 1] if ending else first_line
-    title = sentence.strip()[:_MAXIMUM_RENDERED_TITLE_CHARACTERS].strip()
+    sentence = (first_line[: ending.start() + 1] if ending else first_line).strip()
+    if len(sentence) > _MAXIMUM_RENDERED_TITLE_CHARACTERS:
+        title = _truncated_at_word_boundary(sentence)
+    else:
+        title = sentence
     return title or _DEFAULT_PULL_REQUEST_TITLE
 
 
-def _acceptance_line(head_branch: HeadBranch) -> str:
+def _acceptance_line(request: OpenPullRequest) -> str:
     # The default exemption every Atelier-opened pull request states until an
-    # item with `proves(...)` sentences supplies the real identifiers; the
-    # branch name is the one work-item identity already carried this far.
-    return (
-        f"{ACCEPTANCE_LINE_PREFIX}: none: opened by the Atelier "
-        f"from work item {head_branch.value}"
+    # item with `proves(...)` sentences supplies the real identifiers. A
+    # reader recognizes the work-item reference; the branch name is only the
+    # fallback identity when the request carries no reference at all.
+    identity = (
+        request.work_item_reference.value
+        if request.work_item_reference is not None
+        else request.head_branch.value
     )
+    return f"{ACCEPTANCE_LINE_PREFIX}: none: opened by the Atelier from work item {identity}"
 
 
 def _bounded_prose(prose: str, tail: str) -> str:
@@ -481,7 +509,7 @@ def _rendered_open_pull_request(
     # acceptance line and marker: truncating a long candidate summary must
     # never also drop the lines a queue landing classifies this pull request by.
     tail = (
-        f"{classification}\n\n{_acceptance_line(request.head_branch)}"
+        f"{classification}\n\n{_acceptance_line(request)}"
         f"\n\n{marker_line(request_hash)}\n"
     )
     return _RenderedOpenPullRequest(
