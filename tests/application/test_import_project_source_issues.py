@@ -22,7 +22,10 @@ from atelier2.application.refusals import (
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS,
+    QUEUE_PROJECTION_REVISION_OBSERVED,
     QueueItemId,
+    QueueItemSnapshot,
+    QueueItemState,
     QueueItemTrackerObservation,
     QueueLaunchBinding,
     ReleaseQueueLaunch,
@@ -40,6 +43,7 @@ from atelier2.ports.issue_observation import (
     TrackerSourceUnavailable,
 )
 from atelier2.ports.queue_projection import (
+    QueueItemsPage,
     QueueItemsReconciled,
     QueueLaunchReleased,
     QueueLaunchRunOpen,
@@ -56,6 +60,7 @@ class _QueueRecording:
     """The queue projection reduced to what an import may do with it."""
 
     answer: ReconcileQueueItemsResult
+    projected: tuple[QueueItemSnapshot, ...] = ()
     reconciliations: list[
         tuple[
             ProjectId,
@@ -96,8 +101,9 @@ class _QueueRecording:
         self.released.append(command)
         return QueueLaunchReleased()
 
-    def list_items(self, after: object, limit: object) -> Never:
-        raise AssertionError("an import never reads the projection")
+    def list_items(self, after: QueueItemId | None, limit: int) -> QueueItemsPage:
+        assert after is None, "this fixture serves exactly one page"
+        return QueueItemsPage(self.projected, None)
 
 
 def _listing(*items: tuple[str, str]) -> FakeTrackerItemSource:
@@ -116,6 +122,16 @@ def _item_ids(*references: str) -> tuple[QueueItemId, ...]:
     return tuple(
         WorkItemReference(PROJECT, TrackerItemReference(reference)).item_id
         for reference in references
+    )
+
+
+def _observed_snapshot(reference: str, title: str) -> QueueItemSnapshot:
+    return QueueItemSnapshot(
+        WorkItemReference(PROJECT, TrackerItemReference(reference)),
+        QueueItemState.OBSERVED,
+        QUEUE_PROJECTION_REVISION_OBSERVED,
+        None,
+        observation=QueueItemTrackerObservation(title, OBSERVED_AT),
     )
 
 
@@ -200,6 +216,67 @@ def test_an_unusable_title_is_named_and_skipped_and_the_rest_is_observed(
             OBSERVED_AT,
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["", "x" * (MAXIMUM_QUEUE_ITEM_TITLE_CHARACTERS + 1)],
+    ids=["empty", "overlong"],
+)
+def test_a_previously_observed_item_whose_title_becomes_unusable_is_not_retired(
+    title: str,
+) -> None:
+    observed = _item_ids("gh:79")
+    queue = _QueueRecording(
+        QueueItemsReconciled(observed, (), ()),
+        projected=(_observed_snapshot("gh:79", "Was readable"),),
+    )
+    with pytest.raises(ValueError) as refusal:
+        QueueItemTrackerObservation(title, OBSERVED_AT)
+
+    outcome = import_project_source_issues(PROJECT, _listing(("gh:79", title)), queue)
+
+    assert outcome == ProjectSourceIssuesImported(
+        observed=1,
+        newly_observed=0,
+        skipped=(
+            SkippedProjectSourceItem(TrackerItemReference("gh:79"), str(refusal.value)),
+        ),
+    )
+    assert queue.reconciliations == [
+        (
+            PROJECT,
+            (
+                (
+                    WorkItemReference(PROJECT, TrackerItemReference("gh:79")),
+                    QueueItemTrackerObservation("Was readable", OBSERVED_AT),
+                ),
+            ),
+            OBSERVED_AT,
+        )
+    ]
+
+
+def test_an_item_missing_from_the_source_is_still_retired() -> None:
+    remaining = _item_ids("gh:79")
+    queue = _QueueRecording(QueueItemsReconciled(remaining, (), ()))
+
+    import_project_source_issues(
+        PROJECT,
+        _listing(("gh:79", "Still open"), ("gh:652", "Closed later")),
+        queue,
+    )
+    outcome = import_project_source_issues(
+        PROJECT, _listing(("gh:79", "Still open")), queue
+    )
+
+    assert outcome == ProjectSourceIssuesImported(
+        observed=1, newly_observed=0, skipped=()
+    )
+    assert [
+        tuple(reference.tracker_item.value for reference, _ in items)
+        for _, items, _ in queue.reconciliations
+    ] == [("gh:79", "gh:652"), ("gh:79",)]
 
 
 @pytest.mark.parametrize(

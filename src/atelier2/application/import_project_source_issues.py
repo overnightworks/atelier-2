@@ -27,11 +27,14 @@ from atelier2.application.refusals import (
     WriteUnavailable,
 )
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
+    QueueItemId,
     QueueItemTrackerObservation,
     TrackerItemReference,
     WorkItemReference,
 )
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
@@ -40,7 +43,12 @@ from atelier2.ports.issue_observation import (
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
 )
-from atelier2.ports.queue_projection import QueueItemsReconciled, QueueProjection
+from atelier2.ports.queue_projection import (
+    QueueItemsPage,
+    QueueItemsReconciled,
+    QueueProjection,
+    QueueReadUnavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,10 @@ def import_project_source_issues(
     lists leaves the open set in the same durable step -- the import derives
     that retirement rather than asking the tracker for a lifecycle (ADR 0016,
     2026-09-01 amendment).
+
+    An item the run could not read is still in that open set: skip is not
+    absence, so the last good observation is handed through rather than
+    letting set-difference retire it.
     """
 
     if project is None or source is None:
@@ -101,6 +113,13 @@ def import_project_source_issues(
                     )
                     continue
                 items.append((WorkItemReference(project, item.reference), observation))
+            if skipped:
+                kept = _still_open_skipped_observations(
+                    queue, project, tuple(skipped), observed_at
+                )
+                if not isinstance(kept, tuple):
+                    return kept
+                items.extend(kept)
         case TrackerSourceUnavailable(detail):
             return ReadUnavailable(detail)
         case TrackerPayloadMalformed(detail):
@@ -118,3 +137,60 @@ def import_project_source_issues(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _still_open_skipped_observations(
+    queue: QueueProjection,
+    project: ProjectId,
+    skipped: tuple[SkippedProjectSourceItem, ...],
+    observed_at: RecordedAt,
+) -> (
+    tuple[tuple[WorkItemReference, QueueItemTrackerObservation], ...]
+    | ReadUnavailable
+    | DurableStateCorrupt
+):
+    """Restate the last good title of a skipped row so set-difference does not retire it.
+
+    `reconcile_open_items` treats the handed-in tuple as the whole open set:
+    absence is retirement (ADR 0016). A skipped item is still in the tracker's
+    listing, so it has not left the pullable set; the port has no third
+    "leave untouched" answer, and an unusable title cannot form a fresh
+    observation. The last readable title at this run's time is the only way
+    the open set still names it.
+    """
+
+    wanted = {item.reference for item in skipped}
+    found: dict[TrackerItemReference, QueueItemTrackerObservation] = {}
+    after: QueueItemId | None = None
+    while True:
+        match queue.list_items(after, MAXIMUM_PAGE_ITEMS):
+            case QueueItemsPage(page_items, next_after):
+                for snapshot in page_items:
+                    reference = snapshot.item_reference
+                    observation = snapshot.observation
+                    if (
+                        reference.project == project
+                        and reference.tracker_item in wanted
+                        and snapshot.retired_at is None
+                        and observation is not None
+                    ):
+                        found.setdefault(
+                            reference.tracker_item,
+                            QueueItemTrackerObservation(observation.title, observed_at),
+                        )
+                if next_after is None:
+                    return tuple(
+                        (
+                            WorkItemReference(project, item.reference),
+                            found[item.reference],
+                        )
+                        for item in skipped
+                        if item.reference in found
+                    )
+                after = next_after
+            case QueueReadUnavailable():
+                return ReadUnavailable()
+            case PortDurableStateCorrupt():
+                return DurableStateCorrupt()
+            case _ as unreachable:
+                assert_never(unreachable)
