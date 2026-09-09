@@ -1,0 +1,8 @@
+claim_id = "fd80f1ee03344961a11ba41e8f87c2f4"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "192f3142244e04c6cd2665ac3292435ff764497a"
+branch = "claude/issue-1430-provider-catalog"
+scope = ["pyproject.toml", "src/atelier2/adapters/agent_provider_catalog.py", "src/atelier2/host/serving.py", "tests/adapters", "tests/host/test_serving.py", "docs/decisions/0020-provider-boundary.md", "docs/OPERATIONS.md"]
+opened_commit = "cd2ea6371ee05964de212cd6d3a0a5b586fd1615"
+whole_reason = "Zwei Wahrheiten ueber welche Modelle es gibt duerfen keinen Tag koexistieren: Adapter, Pin, Loeschung des Eigenbaus und die Dokumentation landen zusammen."
