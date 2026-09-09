@@ -1,0 +1,8 @@
+claim_id = "6dff3df816f04c89b5880f5b9b3a6469"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "1dcda12fcbef99532941314a8461b04ca0742647"
+branch = "claude/issue-1484-stream-survives"
+scope = ["src/atelier2/adapters/dbos/queries.py", "src/atelier2/api/projection/events.py", "tests/integration"]
+opened_commit = "99520f1827cc172ed2c087ae95d159a19efe4cfe"
+whole_reason = "Der Leser, seine Projektion und der Beweis landen zusammen."
