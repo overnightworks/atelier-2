@@ -28,6 +28,7 @@ from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionSto
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
+    _log_project_source_import,
     create_canonical_engine,
 )
 from atelier2.adapters.dbos.schema import (
@@ -1890,6 +1891,41 @@ def test_a_serve_launch_admits_nothing_and_warns_when_the_tracker_cannot_be_read
         ] == [(logging.WARNING, unreadable.detail)]
     finally:
         runtime.close()
+
+
+def test_the_import_refusal_line_names_its_reason_only_when_one_has_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The operator's journal line, not the translation's own variables.
+
+    A refusal that carries a reason names it in parentheses; one that carries
+    none ends the sentence clean -- no empty parenthesis, no the word "None"
+    standing in for silence. `WriteUnavailable` is both an optional-detail
+    outcome and the one this rendering once got wrong; `SourcePayloadMalformed`
+    and `ReadUnavailable` share the same renderer, so proving it here proves it
+    for them too.
+    """
+
+    with caplog.at_level(logging.WARNING, logger="atelier2"):
+        _log_project_source_import(WriteUnavailable("the store's write timed out"))
+        _log_project_source_import(WriteUnavailable())
+
+    refusals = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "project_source_import_write_unavailable"
+    ]
+    assert [record.getMessage() for record in refusals] == [
+        (
+            "The tracker import could not write the observed items "
+            "(the store's write timed out); the next tick asks again."
+        ),
+        "The tracker import could not write the observed items; the next tick asks again.",
+    ]
+    assert [getattr(record, "detail", None) for record in refusals] == [
+        "the store's write timed out",
+        None,
+    ]
 
 
 def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_changes_nothing(
