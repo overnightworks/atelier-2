@@ -24,14 +24,14 @@ from atelier2.api.openapi import (
     LIBRARY_ADDITIONS_PATH,
     LIBRARY_RECOGNITIONS_PATH,
 )
-from atelier2.api.problems import (
-    ApiProblem,
+from atelier2.api.problem_vocabulary import (
     adapter_operation_document_problem_code,
     agent_definition_document_problem_code,
     budget_document_problem_code,
     schema_document_problem_code,
     tool_grant_document_problem_code,
 )
+from atelier2.api.problems import ApiProblem
 from atelier2.api.projection.workflows import (
     workflow_revision_detail_resource,
     workflow_revision_page_resource,

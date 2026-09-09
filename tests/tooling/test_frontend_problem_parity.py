@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from atelier2.api.problems import PROBLEM_DEFINITIONS
+from atelier2.api.problem_vocabulary import PROBLEM_DEFINITIONS
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 
 PROJECT_ROOT = Path(__file__).parents[2]
