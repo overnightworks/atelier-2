@@ -3,6 +3,6 @@ agent = "Claude Opus 5 (head)"
 role = "builder"
 base = "c1ea714203a456855fdbcdbde9e4aacfdedf96e5"
 branch = "claude/issue-1470-use-case-binders"
-scope = ["src/atelier2/api/app.py", "scripts/baselines/size_ratchet_baseline.toml", "src/atelier2/api/context.py", "src/atelier2/api/routes"]
+scope = ["src/atelier2/api/app.py", "scripts/baselines/size_ratchet_baseline.toml", "src/atelier2/api/context.py", "src/atelier2/api/routes", "scripts/check_architecture.py", "tests/tooling"]
 opened_commit = "e1bfd35faa8ba0bdb854ba07be0a6bef2efa2d8a"
 whole_reason = "Ein Teil-Vertrag ohne seine Aufrufstellen kompiliert nicht und umgekehrt; die Umgruppierung landet in einem Zug."
