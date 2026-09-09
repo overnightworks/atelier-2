@@ -341,7 +341,9 @@ jobs:
         run: uv run --locked python scripts/check_architecture.py
 
       - name: Check the size and complexity ratchet
-        run: uv run --locked python scripts/check_size_ratchet.py
+        env:
+          CORRIDOR_BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}
+        run: uv run --locked python scripts/check_size_ratchet.py --base "${CORRIDOR_BASE_SHA}"
 
       - name: Check the core test import ratchet
         run: uv run --locked python scripts/check_core_test_imports.py
