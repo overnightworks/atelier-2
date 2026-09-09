@@ -1,8 +1,0 @@
-claim_id = "1bd06ff17fa546068275d1f2b876d8b0"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "5d4bf082991bc5c9ebefd9be3ffd55fecc10d19c"
-branch = "claude/issue-1455-admission-lane"
-scope = ["src/atelier2/application/advance_queue.py", "tests/application/test_admit_queue_items_by_label.py", "src/atelier2/ports/work_item_claims.py", "src/atelier2/adapters/agent_claim_cli.py", "src/atelier2/adapters/dbos/runtime.py", "scripts/check_architecture.py"]
-opened_commit = "93c214a769f2fd463adad3b3c4a414a10c93085e"
-whole_reason = "Port, Adapter, Anwendung, Verdrahtung und die deklarierte Modul-Zahl ergeben erst zusammen einen Aufrufer."
