@@ -1,7 +1,0 @@
-claim_id = "b6c62f1b1f484db293aaae1b9d13d815"
-agent = "Claude Fable 5.1 (head)"
-role = "builder"
-base = "ea8e237203c48335709d5864febc21a0402f82c8"
-branch = "claude/issue-1460-skip-retire"
-scope = ["src/atelier2/application/import_project_source_issues.py", "tests/application/test_import_project_source_issues.py"]
-opened_commit = "3062a646cfb8017cb3dc11c0ad3fc8ad6f5db2ab"
