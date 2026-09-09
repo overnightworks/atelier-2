@@ -1,0 +1,7 @@
+claim_id = "b9b8bde1547a456e900354e90b9fb3a0"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "693e3266f973217c2e67327a50afbfc65a396acd"
+branch = "claude/issue-1479-ratchet-scope"
+scope = ["scripts/check_size_ratchet.py", "scripts/baselines/size_ratchet_baseline.toml", "tests/tooling/test_size_ratchet_gate.py"]
+opened_commit = "e79738ad4556babe976b19d850c0982466189634"
