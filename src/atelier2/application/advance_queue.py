@@ -7,7 +7,7 @@ govern the start, never the admission.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Final, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
@@ -20,6 +20,7 @@ from atelier2.application.queue_label_declines import (
     QueueLabelAdmissionTrackerItemUnknown,
     colliding_lane,
 )
+from atelier2.application.queue_launch_binding import resolved_launch_binding
 from atelier2.application.queue_sweep_reads import (
     QueueAdvanceCorrupt,
     QueueAdvanceUnavailable,
@@ -27,7 +28,6 @@ from atelier2.application.queue_sweep_reads import (
     active_policy,
     open_tracker_items,
     projected_items,
-    reserved_launch,
 )
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -47,8 +47,6 @@ from atelier2.application.start_published_run import (
     start_published_run,
 )
 from atelier2.contracts.agent_modes import AgentModeMismatch
-from atelier2.contracts.catalog_v3 import CatalogLineageId
-from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
@@ -79,7 +77,6 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import (
     UNSUCCESSFUL_TERMINAL_RUN_STATES,
-    RunId,
     RunState,
     WorkflowRevisionHash,
 )
@@ -103,8 +100,6 @@ from atelier2.ports.issue_observation import (
     WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
-    CatalogNameFound,
-    CatalogNameMissing,
     CatalogResolver,
     PublishedRevisionFound,
     PublishedRevisionMissing,
@@ -124,7 +119,6 @@ from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 _LOG = logging.getLogger("atelier2")
 
-_QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
 # Durable reason, then the label that authorized it.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
@@ -561,55 +555,7 @@ def _ended_launch(
             assert_never(unreachable)
 
 
-def _proposed_launch_binding(
-    item: QueueItemSnapshot, catalog: CatalogResolver
-) -> QueueLaunchBinding | QueueItemBlocked:
-    """The launch binding the item's admitted proposal names, unreserved.
-
-    Raises `QueueAdvanceCorrupt` when the item does not carry one complete
-    admitted proposal; returns a `QueueItemBlocked` in place of a binding
-    wherever admission or the catalog leaves nothing to bind yet.
-    """
-    proposal = item.proposal
-    admission = item.admission
-    if (
-        item.state is QueueItemState.ADMITTED
-        and proposal is None
-        and admission is not None
-        and admission.authority is None
-        and admission.proposal_revision is None
-    ):
-        return QueueItemBlocked(
-            item.item_reference.item_id,
-            (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
-        )
-    if (
-        item.state is not QueueItemState.ADMITTED
-        or proposal is None
-        or admission is None
-        or admission.authority is None
-        or admission.proposal_revision is None
-    ):
-        raise QueueAdvanceCorrupt(
-            "the queue item does not carry one complete admitted proposal"
-        )
-    if item.blockers:
-        return QueueItemBlocked(item.item_reference.item_id, item.blockers)
-    revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
-    if revision_hash is None:
-        return QueueItemBlocked(
-            item.item_reference.item_id,
-            (QueueBlockerKind.BINDING_UNRESOLVED,),
-        )
-    return QueueLaunchBinding(
-        item.item_reference.item_id,
-        admission.proposal_revision,
-        _derive_run_id(item.item_reference.item_id, admission.proposal_revision.value),
-        revision_hash,
-    )
-
-
-def _resolved_launch_binding(
+def _judged_launch_binding(
     item: QueueItemSnapshot,
     queue: QueueProjection,
     catalog: CatalogResolver,
@@ -618,31 +564,31 @@ def _resolved_launch_binding(
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
 ) -> QueueLaunchBinding | QueueItemBlocked:
-    """The item's proposed binding, judged and reserved, or why neither holds.
+    """The item's proposed binding, judged by a start that keeps nothing, then reserved.
 
-    Judged first, by `start_judge` over a store that keeps nothing, so a start
-    it would refuse never holds a place under the project's cap.
+    `resolved_launch_binding` owns proposing and reserving the binding; this
+    sweep owns what judging one means, so the judgment it asks for recurses
+    through `_advance_one` itself, over `start_judge` rather than the real
+    starter, and only its blockers cross back.
     """
-    proposed = _proposed_launch_binding(item, catalog)
-    if isinstance(proposed, QueueItemBlocked):
-        return proposed
-    judged_item: QueueItemSnapshot = replace(item, launch_binding=proposed)
-    judged = _advance_one(
-        judged_item,
-        queue,
-        catalog,
-        start_judge,
-        start_judge,
-        workflow_document_parser,
-        served_project,
-        tracker,
-    )
-    if isinstance(judged, QueueItemBlocked):
-        return judged
-    reserved = reserved_launch(queue, proposed)
-    if isinstance(reserved, QueueItemSnapshot):
-        return QueueItemBlocked(reserved.item_reference.item_id, reserved.blockers)
-    return reserved
+
+    def judge(judged_item: QueueItemSnapshot) -> tuple[QueueBlockerKind, ...] | None:
+        judged = _advance_one(
+            judged_item,
+            queue,
+            catalog,
+            start_judge,
+            start_judge,
+            workflow_document_parser,
+            served_project,
+            tracker,
+        )
+        return judged.blockers if isinstance(judged, QueueItemBlocked) else None
+
+    resolved = resolved_launch_binding(item, queue, catalog=catalog, judge=judge)
+    if isinstance(resolved, QueueLaunchBinding):
+        return resolved
+    return QueueItemBlocked(item.item_reference.item_id, resolved)
 
 
 def _advance_one(
@@ -657,7 +603,7 @@ def _advance_one(
 ) -> QueueAdvanceOutcome | None:
     binding = item.launch_binding
     if binding is None:
-        resolved = _resolved_launch_binding(
+        resolved = _judged_launch_binding(
             item,
             queue,
             catalog,
@@ -735,26 +681,6 @@ def _advance_one(
             raise QueueAdvanceCorrupt("run start answered an unknown outcome")
 
 
-def _resolve_head(
-    lineage_id: CatalogLineageId, catalog: CatalogResolver
-) -> WorkflowRevisionHash | None:
-    match catalog.resolve_name(RevisionKind.WORKFLOW, lineage_id, "head"):
-        case CatalogNameFound(revision_hash=revision_hash):
-            return WorkflowRevisionHash(revision_hash.value)
-        case CatalogNameMissing():
-            return None
-        case PublishedRevisionsUnavailable():
-            raise QueueAdvanceUnavailable(
-                f"the catalog could not resolve workflow lineage {lineage_id.value}"
-            )
-        case PortDurableStateCorrupt():
-            raise QueueAdvanceCorrupt(
-                f"workflow lineage {lineage_id.value} has corrupt catalog state"
-            )
-        case _:
-            raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
-
-
 def _bound_work_item_order(
     item: QueueItemSnapshot,
     binding: QueueLaunchBinding,
@@ -818,15 +744,3 @@ def _resolve_document(
             )
         case _:
             raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
-
-
-def _derive_run_id(item_id: QueueItemId, proposal_revision: int) -> RunId:
-    return RunId(
-        Sha256Hash.of(
-            frame(
-                _QUEUE_ITEM_RUN_DOMAIN,
-                item_id.value.encode("ascii"),
-                str(proposal_revision).encode("ascii"),
-            )
-        ).value
-    )

@@ -106,10 +106,6 @@ path = "src/atelier2/api/wire/resources.py"
 lines = 1715
 
 [[file]]
-path = "src/atelier2/application/advance_queue.py"
-lines = 832
-
-[[file]]
 path = "src/atelier2/application/project_connections.py"
 lines = 1149
 
