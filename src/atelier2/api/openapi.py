@@ -677,7 +677,7 @@ def install_openapi_document_route(
     """
     install_custom_openapi(app, limits)
 
-    def serve_openapi_document(request: Request) -> JSONResponse:
+    async def serve_openapi_document(request: Request) -> JSONResponse:
         # Mirrors FastAPI's own automatic `openapi_url` route (installed here
         # instead, per this function's docstring): a server this app sits
         # behind under a path prefix advertises that prefix as the document's
