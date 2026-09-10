@@ -183,20 +183,51 @@ def scan_definition_source(
         scanned = reader.scan(revision.configuration)
     except DefinitionSourceUnreadable as refused:
         return ScanRefused(refused.refusal, refused.detail)
-    carried = _validated(scanned.files, parser, limits)
-    if isinstance(carried, ScannedDocumentInvalid):
-        return carried
     intaken = sources.latest_intakes(source_id)
     if isinstance(intaken, DurableWriteUnavailable):
         return ReadUnavailable()
     if isinstance(intaken, PortDurableStateCorrupt):
         return DurableStateCorrupt()
+    changed = _kind_changed(scanned.files, intaken)
+    if changed is not None:
+        return changed
+    carried = _validated(scanned.files, parser, limits)
+    if isinstance(carried, ScannedDocumentInvalid):
+        return carried
     return DefinitionSourceScanned(
         revision,
         scanned.commit,
         _compared(scanned.files, carried, intaken),
         carried,
     )
+
+
+def _kind_changed(
+    files: tuple[SelectedFile, ...], intaken: Mapping[RepositoryPath, SourceIntake]
+) -> ScanRefused | None:
+    """The first path the source now claims as another kind than it was taken in as.
+
+    A path's continuity has one kind: a workflow path's history is a lineage, a
+    schema's or a budget's is none, and taking the path in as another kind
+    would graft onto it a history it does not have. Asked before any document
+    is read, because the changed selection is the cause and a reader's refusal
+    would only name a symptom of it.
+    """
+
+    for selected in files:
+        previous = intaken.get(selected.path)
+        if previous is not None and previous.revision_kind is not (
+            selected.selection.kind
+        ):
+            return ScanRefused(
+                DefinitionSourceRefusal.KIND_CHANGED,
+                f"{selected.path.value} was taken in as "
+                f"{previous.revision_kind.value} and is now selected as "
+                f"{selected.selection.kind.value}; a path keeps the kind it was "
+                "first taken in as, so move the file to a new path or select it "
+                f"as {previous.revision_kind.value} again",
+            )
+    return None
 
 
 def _validated(

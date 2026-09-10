@@ -62,6 +62,7 @@ from atelier2.contracts.definition_sources import (
     DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
+    DefinitionSourceRefusal,
     DefinitionSourceRevision,
     DefinitionSourceSelection,
     RepositoryLocation,
@@ -1192,6 +1193,33 @@ def test_a_source_reconnected_with_workflows_alone_reads_again_in_the_build_befo
     monkeypatch.setattr(*selection_kinds_before)
     assert connect(database, repository) == source_id
     assert intake(database, source_id) == 0
+
+
+def test_a_path_taken_in_as_a_schema_refuses_to_be_taken_in_as_a_workflow(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A changed kind is a named refusal with its way out, never a store gone corrupt."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"definitions/result.yaml": a_schema()})
+    source_id = connect(database, repository, ("definitions/*.yaml=schema",))
+    assert intake(database, source_id) == 0
+    commit_to(repository, {"definitions/result.yaml": workflow_named("result")})
+    connect(database, repository, ("definitions/*.yaml=workflow",))
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith(DefinitionSourceRefusal.KIND_CHANGED.value)
+    assert (
+        "definitions/result.yaml was taken in as schema and is now selected as "
+        "workflow" in refused
+    )
+    assert "move the file to a new path" in refused
+    assert "cannot read back" not in refused
+    assert logical_dump(database) == settled
 
 
 def test_an_intake_refuses_a_commit_the_ref_has_moved_away_from(

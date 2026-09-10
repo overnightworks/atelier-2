@@ -100,6 +100,7 @@ class DefinitionSourceRefusal(StrEnum):
     NO_SELECTED_FILES = "definition_source_no_selected_files"
     SYMLINK_SELECTED = "definition_source_symlink_selected"
     GITLINK_SELECTED = "definition_source_gitlink_selected"
+    KIND_CHANGED = "definition_source_kind_changed"
 
 
 class AmbiguousSelection(ValueError):

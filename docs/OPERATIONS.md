@@ -883,8 +883,11 @@ reading it would read a repository the operator never named. All three
 commands refuse before writing anything, in one closed vocabulary:
 `definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
 `_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
-`_symlink_selected`, `_gitlink_selected`. A selected file the publication door
-would refuse is reported in that door's own words, and stops the scan.
+`_symlink_selected`, `_gitlink_selected`, `_kind_changed`. The last names a path
+a selection now claims as another kind than it was taken in as: a path keeps
+its first kind, so move the file to a new path or restore the selection. A
+selected file the publication door would refuse is reported in that door's own
+words, and stops the scan.
 
 ```bash
 atelier2 definition-source intake --database /path/to/atelier.sqlite \
