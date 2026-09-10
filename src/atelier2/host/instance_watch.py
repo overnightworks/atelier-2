@@ -201,45 +201,52 @@ def _reading_findings(
     true of a deadline, of a reading that broke, and of a reading process that
     died -- silence from a dead reader must never pass for an instance with
     nothing to report. The reading's own account of what went wrong comes
-    first, because it is the one that explains the rest.
+    first, because it is the one that explains the rest; how it ended is read
+    against what it had already said.
     """
 
     findings: list[WatchFinding] = []
     if reading.failure is not None:
         findings.append(_reader_failed_finding(reading, reading.failure))
+    findings.extend(_ending_findings(reading, budget))
+    return tuple(findings)
+
+
+def _ending_findings(
+    reading: InstanceReading, budget: ReadingBudget
+) -> tuple[WatchFinding, ...]:
+    """What the way the reading ended has to answer for.
+
+    A reading that said its last word is complete, and nothing its process
+    then does on the way out takes that back: one slow to leave is stopped by
+    this read itself, and the code that stop produces says how loaded the
+    observer's own machine was, not what the instance answered.
+
+    What an ending can add is therefore only ever about a reading that never
+    got to say it: one whose process would not be killed, one the deadline
+    interrupted, and one that is simply gone -- including one that named its
+    trouble and died anyway, because what ended that process is not what it
+    reported. A reading that named its trouble and then left cleanly is a
+    reader that broke, and that failure is the whole finding.
+    """
+
+    if reading.reader_ended:
+        return ()
     if not reading.reader_reaped:
-        findings.append(_reader_died_finding(reading, _UNKILLABLE_SENTENCE))
-    elif reading.deadline_passed:
-        findings.append(
+        return (_reader_died_finding(reading, _UNKILLABLE_SENTENCE),)
+    if reading.deadline_passed:
+        return (
             WatchFinding(
                 WatchFindingKind.READING_CUT_SHORT,
                 _unread_endpoint(reading),
                 f"{_CUT_SHORT_SENTENCE} of {budget.deadline_seconds} seconds",
-            )
+            ),
         )
-    elif not _left_cleanly(reading):
-        findings.append(
-            _reader_died_finding(
-                reading, f"it ended with code {reading.reader_exit_code}"
-            )
-        )
-    return tuple(findings)
-
-
-def _left_cleanly(reading: InstanceReading) -> bool:
-    """Whether the reading process's own ending adds nothing to the records it
-    sent.
-
-    A reader that named its trouble and then exited cleanly is a reader that
-    broke, not one that died, and the failure it named is the whole finding.
-    One that named its trouble and died anyway is both, because what ended it
-    is not what it reported. A reader that named nothing is clean only when it
-    said its last word.
-    """
-
-    if reading.reader_exit_code != _CLEAN_EXIT_CODE:
-        return False
-    return reading.failure is not None or reading.reader_ended
+    if reading.failure is not None and reading.reader_exit_code == _CLEAN_EXIT_CODE:
+        return ()
+    return (
+        _reader_died_finding(reading, f"it ended with code {reading.reader_exit_code}"),
+    )
 
 
 def _reader_died_finding(reading: InstanceReading, why: str) -> WatchFinding:
@@ -270,8 +277,9 @@ def _reader_failed_finding(
 
 
 _CLEAN_EXIT_CODE: Final = 0
-"""What the reading process comes back with when it read everything it was
-asked to; anything else, including a signal's negative code, is a death."""
+"""What the reading process comes back with when it left on its own; in a
+reading that never said its last word, anything else -- a signal's negative
+code included -- is a death."""
 
 _UNKILLABLE_SENTENCE: Final = (
     "it ignored being stopped and being killed and was still running when "

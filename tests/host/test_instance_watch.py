@@ -101,6 +101,7 @@ from tests.host.reader_entries import (
     hangs_on_after_closing_the_pipe,
     ignores_being_stopped,
     interrupted_supervision,
+    lingers_after_its_last_word,
     logs_a_reply_to_a_file,
     names_its_trouble_then_dies,
     signals_its_first_frame,
@@ -1712,6 +1713,27 @@ def test_a_reader_that_breaks_names_the_phase_and_leaves_cleanly() -> None:
     assert finding.kind == WatchFindingKind.READER_FAILED
     assert ReaderPhase.SETUP.value in finding.detail
     assert watch_exit_code(report) != 0
+
+
+def test_a_reading_that_finished_is_clean_however_its_process_then_goes() -> None:
+    """A reader that said its last word and was then slow to leave is stopped
+    by this read itself. The code that stop produces is the observer's own
+    doing on its own machine, and turning it into a finding would say a
+    reading died that had in fact finished -- which is what a runner slow
+    enough to outlast that grace makes this report say.
+    """
+
+    reading = supervised_reading(
+        lingers_after_its_last_word.__name__, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    assert reading.reader_ended
+    assert not reading.deadline_passed
+    assert reading.reader_reaped
+    assert reading.reader_exit_code != _CLEAN_EXIT_CODE
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    assert report.findings == ()
+    assert watch_exit_code(report) == 0
 
 
 def test_a_reader_that_cannot_put_its_client_away_says_so_and_nothing_else() -> None:

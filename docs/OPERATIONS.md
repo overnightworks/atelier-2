@@ -645,6 +645,13 @@ it did not die, and the report says one thing. One that named its trouble and
 died anyway says both, because what ended that process is not what it
 reported.
 
+The last word decides all of that. Once it has arrived the reading is
+complete, and nothing the reading process then does on its way out is a
+finding: a process slow to leave is stopped by the watch itself, and the code
+that stop produces belongs to the observer's own machine, not to the instance
+that had answered every door. Only a reading that never got to say it can be
+cut short, gone, or dead.
+
 A process rather than a timer, because a deadline that has to interrupt a
 blocking read from inside can only do it by throwing into somebody else's
 code: an exception landing in httpx's connection pool leaves that lock held
