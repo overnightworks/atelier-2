@@ -18,16 +18,6 @@ interface OperationRoot {
   readonly keptStatuses: readonly string[];
 }
 
-/**
- * One property this file drops from a named schema before walking `$ref`s,
- * so a field a later slice still owns by hand -- and has not yet replaced --
- * never pulls its own transitive schemas into an earlier slice's output.
- */
-interface SchemaPropertyOmission {
-  readonly schemaName: string;
-  readonly propertyName: string;
-}
-
 const HEALTH_OPERATION_PATH = "/atelier/api/v1/health";
 
 const HEALTH_ROOTS: readonly OperationRoot[] = [
@@ -150,16 +140,6 @@ const RUNS_RAIL_AND_NODES_ROOTS: readonly OperationRoot[] = [
   },
 ];
 
-/**
- * `NodeDetailResource.transcript` reaches the attempt-transcript event union,
- * which stays a hand-written mirror until container row 6 replaces it; this
- * omission keeps that union, and everything it references, out of this
- * project's output so this slice generates only the roots it actually calls.
- */
-const RUNS_RAIL_AND_NODES_PROPERTY_OMISSIONS: readonly SchemaPropertyOmission[] = [
-  { schemaName: "NodeDetailResource", propertyName: "transcript" },
-];
-
 const AUTH_AGENT_AND_QUEUE_ROOTS: readonly OperationRoot[] = [
   {
     path: "/atelier/api/v1/auth-profile-revisions",
@@ -227,40 +207,9 @@ function collectSchemaNames(
   return collected;
 }
 
-function omitSchemaProperties(
-  schemas: Record<string, unknown>,
-  omissions: readonly SchemaPropertyOmission[],
-): Record<string, unknown> {
-  if (omissions.length === 0) return schemas;
-  const patched = { ...schemas };
-  for (const omission of omissions) {
-    const schema = patched[omission.schemaName] as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    if (!schema?.properties || !(omission.propertyName in schema.properties)) {
-      throw new Error(
-        `orval.config.ts expected schema ${omission.schemaName} to declare property ${omission.propertyName} in the frozen document`,
-      );
-    }
-    const keptProperties = Object.fromEntries(
-      Object.entries(schema.properties).filter(
-        ([propertyName]) => propertyName !== omission.propertyName,
-      ),
-    );
-    patched[omission.schemaName] = { ...schema, properties: keptProperties };
-  }
-  return patched;
-}
-
-function restrictToOperations(
-  roots: readonly OperationRoot[],
-  propertyOmissions: readonly SchemaPropertyOmission[] = [],
-) {
+function restrictToOperations(roots: readonly OperationRoot[]) {
   return function restrict(spec: OpenApiDocument): OpenApiDocument {
-    const schemas = omitSchemaProperties(
-      spec.components?.schemas ?? {},
-      propertyOmissions,
-    );
+    const schemas = spec.components?.schemas ?? {};
     const keptSchemaNames = new Set<string>();
     const keptPaths: NonNullable<OpenApiDocument["paths"]> = {};
     for (const root of roots) {
@@ -389,12 +338,7 @@ export default defineConfig({
   runsRailAndNodes: {
     input: {
       target: "../tests/api/openapi_frozen.json",
-      override: {
-        transformer: restrictToOperations(
-          RUNS_RAIL_AND_NODES_ROOTS,
-          RUNS_RAIL_AND_NODES_PROPERTY_OMISSIONS,
-        ),
-      },
+      override: { transformer: restrictToOperations(RUNS_RAIL_AND_NODES_ROOTS) },
     },
     output: {
       target: "./src/api/generated/runsRailAndNodes.zod.ts",

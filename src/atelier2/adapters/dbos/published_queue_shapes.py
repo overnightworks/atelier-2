@@ -215,6 +215,29 @@ CREATE TABLE queue_launch_bindings (
 """
 """The launch-binding table V44 introduced, unmoved until the V55 release."""
 
+_V55_QUEUE_LAUNCH_BINDINGS = """
+CREATE TABLE queue_launch_bindings (
+	item_id TEXT NOT NULL,
+	proposal_revision INTEGER NOT NULL,
+	project_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	workflow_revision_hash TEXT NOT NULL,
+	ended_run_state TEXT,
+	restart_ordinal INTEGER NOT NULL,
+	PRIMARY KEY (item_id, proposal_revision),
+	FOREIGN KEY(item_id, proposal_revision, project_id) REFERENCES queue_proposal_revisions (item_id, proposal_revision, project_id),
+	FOREIGN KEY(workflow_revision_hash) REFERENCES workflow_revisions (revision_hash),
+	CHECK (proposal_revision >= 1),
+	CHECK (length(run_id) > 0),
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (ended_run_state IN ('CANCELLED', 'FAILED')),
+	CHECK (restart_ordinal >= 0),
+	UNIQUE (run_id)
+)
+
+"""
+"""The launch-binding table V55 published, keyed by the proposal revision."""
+
 
 PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (44, "queue_items"): _V44_QUEUE_ITEMS,
@@ -252,6 +275,9 @@ PUBLISHED_QUEUE_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     # the proposal revision, so the shape every version from V44 to V54
     # published is the one text above.
     (54, "queue_launch_bindings"): _V44_QUEUE_LAUNCH_BINDINGS,
+    # V56 moves no queue table, but the declaration now speaks for V56, so the
+    # hop onto V55 builds the shape V55 published from this record.
+    (55, "queue_launch_bindings"): _V55_QUEUE_LAUNCH_BINDINGS,
     (51, "queue_project_policy_revisions"): _V51_QUEUE_PROJECT_POLICY_REVISIONS,
     (51, "queue_proposal_revisions"): _V51_QUEUE_PROPOSAL_REVISIONS,
     # V53 widens the attempt table's vocabulary and moves neither of these, so

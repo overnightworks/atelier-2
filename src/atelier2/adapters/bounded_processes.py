@@ -3,6 +3,7 @@ import selectors
 import signal
 import subprocess
 import time
+from typing import IO
 
 
 class BoundedProcessFailure(OSError): ...
@@ -32,43 +33,62 @@ def bounded_process_streams(
 
     if process.stdout is None or process.stderr is None:
         raise BoundedProcessFailure("bounded process has no readable streams")
-    streams = (process.stdout, process.stderr)
     deadline = time.monotonic() + timeout_seconds
-    standard_output = bytearray()
-    standard_error = bytearray()
     try:
-        with selectors.DefaultSelector() as selector:
-            for stream, output in zip(streams, (standard_output, standard_error)):
-                descriptor = stream.fileno()
-                os.set_blocking(descriptor, False)
-                selector.register(descriptor, selectors.EVENT_READ, output)
-            while selector.get_map():
-                try:
-                    ready_streams = selector.select(max(0, deadline - time.monotonic()))
-                except OverflowError as error:
-                    raise BoundedProcessFailure("process deadline failed") from error
-                if not ready_streams:
-                    raise BoundedProcessFailure("process did not answer in time")
-                for ready, _events in ready_streams:
-                    output = ready.data
-                    chunk = os.read(ready.fd, maximum_output_bytes + 1 - len(output))
-                    if not chunk:
-                        selector.unregister(ready.fd)
-                        continue
-                    output += chunk
-                    if len(output) > maximum_output_bytes:
-                        raise BoundedProcessFailure(
-                            f"bounded process answered with more than {maximum_output_bytes} bytes"
-                        )
-        try:
-            return_code = process.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired as error:
-            raise BoundedProcessFailure(
-                "bounded process did not answer in time"
-            ) from error
+        standard_output, standard_error = _read_bounded_streams(
+            process.stdout, process.stderr, deadline, maximum_output_bytes
+        )
+        return_code = _awaited_return_code(process, deadline)
         return return_code, bytes(standard_output), bytes(standard_error)
     finally:
         _reap_process(process, deadline)
+
+
+def _read_bounded_streams(
+    stdout: IO[bytes], stderr: IO[bytes], deadline: float, maximum_output_bytes: int
+) -> tuple[bytearray, bytearray]:
+    """Both streams, read until each closes, none exceeding the byte bound,
+    none outliving the deadline."""
+
+    standard_output = bytearray()
+    standard_error = bytearray()
+    with selectors.DefaultSelector() as selector:
+        for stream, output in ((stdout, standard_output), (stderr, standard_error)):
+            descriptor = stream.fileno()
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ, output)
+        while selector.get_map():
+            _read_ready_streams(selector, deadline, maximum_output_bytes)
+    return standard_output, standard_error
+
+
+def _read_ready_streams(
+    selector: selectors.BaseSelector, deadline: float, maximum_output_bytes: int
+) -> None:
+    try:
+        ready_streams = selector.select(max(0, deadline - time.monotonic()))
+    except OverflowError as error:
+        raise BoundedProcessFailure("process deadline failed") from error
+    if not ready_streams:
+        raise BoundedProcessFailure("process did not answer in time")
+    for ready, _events in ready_streams:
+        output = ready.data
+        chunk = os.read(ready.fd, maximum_output_bytes + 1 - len(output))
+        if not chunk:
+            selector.unregister(ready.fd)
+            continue
+        output += chunk
+        if len(output) > maximum_output_bytes:
+            raise BoundedProcessFailure(
+                f"bounded process answered with more than {maximum_output_bytes} bytes"
+            )
+
+
+def _awaited_return_code(process: subprocess.Popen[bytes], deadline: float) -> int:
+    try:
+        return process.wait(timeout=max(0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired as error:
+        raise BoundedProcessFailure("bounded process did not answer in time") from error
 
 
 def _reap_process(process: subprocess.Popen[bytes], deadline: float) -> None:

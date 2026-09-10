@@ -6,22 +6,32 @@ from fastapi.testclient import TestClient
 
 from atelier2.api.app import create_app
 from atelier2.api.openapi import QUEUE_ITEMS_PATH
+from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
+    QueueAdmission,
+    QueueAdmissionRationale,
+    QueueAutomationDisposition,
+    QueueDecisionAuthority,
     QueueItemId,
     QueueItemSnapshot,
     QueueItemState,
     QueueItemTrackerObservation,
+    QueueLaunchBinding,
+    QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProposal,
     TrackerItemReference,
     WorkItemReference,
 )
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.queue_projection import QueueItemsPage
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 TITLE_OBSERVED_AT = RecordedAt("2026-09-01T14:00:00Z")
 RETIRED_AT = RecordedAt("2026-09-02T09:30:00Z")
+LINEAGE = CatalogLineageId("b" * 64)
 
 
 @dataclass
@@ -159,3 +169,139 @@ def test_queue_listing_walks_pages_in_the_order_the_projection_serves_them() -> 
     ]
     assert second_body["next_after"] is None
     assert queue.calls == [(None, 2), (second.item_reference.item_id, 2)]
+
+
+def test_queue_listing_serves_a_proposed_item_with_its_proposal() -> None:
+    proposal = QueueProposal(
+        QueuePriorityRank(1),
+        LINEAGE,
+        (),
+        QueueAutomationDisposition.HUMAN_REQUIRED,
+    )
+    proposed = QueueItemSnapshot(
+        WorkItemReference(ProjectId("atelier"), TrackerItemReference("gh:500")),
+        QueueItemState.PROPOSED,
+        QueueProjectionRevision(1),
+        None,
+        proposal,
+    )
+    queue = QueueReader((QueueItemsPage((proposed,), None),))
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(queue_projection=queue),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = client.get(QUEUE_ITEMS_PATH)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["state"] == "PROPOSED"
+    assert item["proposal"] == {
+        "revision": 1,
+        "priority": {"rank": 1},
+        "workflow_lineage_id": LINEAGE.value,
+        "prerequisite_item_ids": [],
+        "automation_disposition": "HUMAN_REQUIRED",
+        "policy_revision": None,
+        "source": proposal.source.value,
+    }
+    assert item["admission"] is None
+    assert item["launch_binding"] is None
+
+
+def test_queue_listing_serves_an_admitted_item_with_its_admission_and_binding() -> None:
+    proposal = QueueProposal(
+        QueuePriorityRank(1),
+        LINEAGE,
+        (),
+        QueueAutomationDisposition.HUMAN_REQUIRED,
+    )
+    admission = QueueAdmission(
+        LINEAGE,
+        QueueAdmissionRationale("the operator picked this item"),
+        QueueDecisionAuthority.OPERATOR,
+        QueueProjectionRevision(1),
+    )
+    reference = WorkItemReference(ProjectId("atelier"), TrackerItemReference("gh:501"))
+    binding = QueueLaunchBinding(
+        reference.item_id,
+        QueueProjectionRevision(1),
+        RunId("run-1"),
+        WorkflowRevisionHash("a" * 64),
+    )
+    admitted = QueueItemSnapshot(
+        reference,
+        QueueItemState.ADMITTED,
+        QueueProjectionRevision(2),
+        admission,
+        proposal,
+        binding,
+    )
+    queue = QueueReader((QueueItemsPage((admitted,), None),))
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(queue_projection=queue),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = client.get(QUEUE_ITEMS_PATH)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["state"] == "ADMITTED"
+    assert item["proposal"]["revision"] == 1
+    assert item["admission"] == {
+        "proposal_revision": 1,
+        "authority": "OPERATOR",
+        "rationale": "the operator picked this item",
+    }
+    assert item["launch_binding"] == {
+        "proposal_revision": 1,
+        "run_id": "run-1",
+        "workflow_revision_hash": "a" * 64,
+    }
+
+
+def test_queue_listing_serves_a_legacy_admission_without_a_proposal() -> None:
+    admission = QueueAdmission(
+        LINEAGE,
+        QueueAdmissionRationale("carried over before proposals existed"),
+    )
+    admitted = QueueItemSnapshot(
+        WorkItemReference(ProjectId("atelier"), TrackerItemReference("gh:502")),
+        QueueItemState.ADMITTED,
+        QueueProjectionRevision(0),
+        admission,
+    )
+    queue = QueueReader((QueueItemsPage((admitted,), None),))
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(queue_projection=queue),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = client.get(QUEUE_ITEMS_PATH)
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["state"] == "ADMITTED"
+    assert item["proposal"] is None
+    assert item["admission"] == {
+        "proposal_revision": None,
+        "authority": None,
+        "rationale": "carried over before proposals existed",
+    }
+    assert item["launch_binding"] is None

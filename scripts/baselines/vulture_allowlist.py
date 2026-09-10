@@ -120,6 +120,7 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
     },
     {
         "names": (
+            "adapters/dbos/node_binding_codec.py:auth_hash",
             "adapters/dbos/node_binding_codec.py:tool_capability",
             "adapters/dbos/node_binding_codec.py:project_commit",
             "adapters/dbos/node_binding_codec.py:project_tree",
