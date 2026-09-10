@@ -1,0 +1,8 @@
+claim_id = "f8e5f0c363ff4299933a983150032004"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1499-intake-schemas-budgets"
+scope = ["src/atelier2/contracts/definition_sources.py", "src/atelier2/application/scan_definition_source.py", "src/atelier2/application/intake_definition_source.py", "src/atelier2/ports/definition_sources.py", "src/atelier2/adapters/dbos/definition_source_store.py", "src/atelier2/adapters/dbos/catalog_store.py", "scripts/serve_live_update.sh", "docs/OPERATIONS.md"]
+opened_commit = "688155dbf1ea9f1579f5ad6ec785be4c2c8b1be8"
+whole_reason = "Die neue Auswahlart geht in einem Schnitt durch Contract, Scan, Intake, Port und Store, sonst ist die Aufnahme nicht mehr ganz-oder-gar-nicht; Skript und Runbook ziehen in derselben Landung mit."
