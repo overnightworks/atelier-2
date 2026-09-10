@@ -1,0 +1,8 @@
+claim_id = "e5ae74f33f394af2a3c0ae2b3ec8b3a1"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1490-sonar-parameters"
+scope = ["src/atelier2/adapters/dbos/run_transitions.py", "src/atelier2/contracts/agents.py", "tests/integration/test_v3_self_driving_run.py"]
+opened_commit = "eb679046e01527aacad31d708fc7e853cbbfc7ea"
+whole_reason = "Ein Parameterobjekt aendert die Signatur und damit jeden Aufrufer in derselben Landung; getrennt waere der Baum dazwischen rot."
