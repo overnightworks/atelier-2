@@ -1,0 +1,215 @@
+format_version: 3
+name: head-loop
+description: >-
+  The circle the head walks for one work item, written down as a catalog
+  document. A planner re-questions whether the item's problem still exists,
+  the operator pulls it or cancels the run, a reviewer judges the plan the
+  item carries, a workspace-tool builder implements it against the project's
+  own declared verification, an independently cast reviewer judges the
+  candidate, and the pull request opens from the builder's report once the
+  operator releases it.
+graph_inputs:
+  - name: context
+    schema:
+      ref: work-item
+      revision: "0bffb19e43509cb4cb446dd33c1d70b0d19f8a9a65cbe270d382edc2860d2921"
+  - name: owner_documents
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: requestion
+    type: agent
+    role: planner
+    mode: headless
+    instruction: >-
+      Ask whether the work item carried under "context" still names a problem
+      that exists. Read it against the owner documents carried under
+      "owner_documents": a landing, a ruling, or the vision itself may have
+      overtaken it since it was written. You cannot read files, run anything,
+      or use tools in this headless call; these artifacts are your only
+      evidence, and you ask no questions.
+      Answer still_a_problem only when the item's problem survives that
+      question, and overtaken when one of those artifacts already answers it.
+      Quote the sentence you judged by under "evidence" -- from the item or
+      from an owner document, never from your own knowledge -- and put under
+      "reason" what the head would otherwise close this item with.
+    inputs:
+      - name: context
+        from:
+          graph_input: context
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: requestion_result
+          revision: "a807aa16656a1bb4e662139316e9cb888c7931a5885951cb4829aeba9f06a79c"
+  - id: pull
+    type: wait
+    depends_on: [requestion]
+    prompt: >-
+      Read the re-questioning result of the node before this one. Nothing has
+      been built and nothing has been claimed yet; what you release here is
+      the item itself. Answer "pull" to pull it into the build. There is no
+      second answer -- to leave the item where it is, cancel this run.
+    inputs:
+      - name: requestion_result
+        from:
+          node: requestion
+          output: result
+    outputs:
+      - name: decision
+        schema:
+          ref: head_loop_pull_decision
+          revision: "34fcd50ef281d4f478c343929788540fefbf4fdd4e49e3d2942b9384deb674a0"
+  - id: plan_review
+    type: agent
+    role: reviewer
+    mode: headless
+    depends_on: [pull]
+    instruction: >-
+      Review the item body carried under "item_body" against the owner
+      documents carried under "owner_documents". The pull decision carried
+      under "context" is the operator's own ruling that this item is worth
+      building; it settles that question and never contradicts the item body.
+      You cannot read files, run anything, or use tools in this headless call;
+      these artifacts are your only evidence. Pass a plan only when its risks,
+      steps, files, and tests are sufficient to implement the item without
+      contradicting its owners; otherwise revise it. Revise only with at least
+      one risk; cannot-judge must carry a reason.
+    inputs:
+      - name: item_body
+        from:
+          graph_input: context
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+      - name: context
+        from:
+          node: pull
+          output: decision
+    outputs:
+      - name: result
+        schema:
+          ref: plan_review_result
+          revision: "24047faf4bda64a285d13abd3ae40229aee9258bf8bd488ce63863d542c877f6"
+  - id: build
+    type: agent
+    role: builder
+    kind: build
+    mode: headless_with_tools
+    depends_on: [plan_review]
+    instruction: >-
+      You are working in an isolated snapshot of the repository at the pinned
+      commit: deliberately no .git directory, no gh, no agent-claim, and no
+      board access. The atelier holds this item's lane claim for this run
+      before you start, so the repository's guidance about claiming and
+      pushing asks nothing of you here. Read AGENTS.md in this workspace and
+      work to it. Implement the work item carried under "context": its body
+      is the whole brief, and nothing outside this workspace is yours to
+      change. The reviewed plan carried under "plan" is the route through it;
+      where that plan and the item body disagree, follow the body and name the
+      disagreement in your summary. Leave the tree green -- the atelier runs
+      the project's own declared verification here after you finish, and a red
+      one ends the attempt with no candidate.
+      Your edited workspace is the candidate: the atelier captures it and
+      publishes it through the push-atelier-commit grant on its own, so you
+      call no tool to publish and none exists here. Return a JSON object
+      whose "summary" says what you changed and why, and whose
+      "changed_paths" lists every file path your change touched.
+    tools:
+      - ref: run-project-verification
+        revision: "a64dd78cdc218418bfeb28a54e8c61c1fd296da2cfcb628c3daabf491023eb9c"
+      - ref: push-atelier-commit
+        revision: "32eb46fb44f23c97a7b978a9de08c8a764281e6944426bb823329cfc7f9c5b1a"
+    # The same class of work as push-before-open-pr's builder -- explore, edit,
+    # verify -- so it takes that document's measured turn bound rather than the
+    # read-then-answer default the workspace executor ships.
+    budget:
+      ref: push-implement
+      revision: "da6b2bf8fbf5e16b31cd788c4547003f970422aaf2316eb9d2b485b676707b15"
+    inputs:
+      - name: context
+        from:
+          graph_input: context
+      - name: plan
+        from:
+          node: plan_review
+          output: result
+    outputs:
+      - name: candidate_report
+        schema:
+          ref: issue_to_pr_candidate_report
+          revision: "94e46306f25f4cd1682fe843713ffd73359cb2d33ee6a4d196ad48571eb55171"
+  - id: review
+    type: agent
+    role: reviewer
+    kind: review
+    family_differs_from: builder
+    binding_constraint:
+      distinct_from: build
+    mode: headless
+    depends_on: [build]
+    instruction: >-
+      Judge the candidate carried under "candidate_report" against the work
+      item carried under "context"; that item's body is the contract the
+      change owes. That report carries the builder's own summary and changed
+      paths, and under "candidate_diff" the atelier's own patch of the tree
+      the builder left -- read that diff and judge what it actually does to
+      the code. You cannot read files, run anything, or use tools in this
+      headless call, and you are not asked to: the project's own verification
+      already passed on this tree before the candidate was kept, and the pull
+      request runs the project's checks in CI, so judge the change and not the
+      test result. Where the diff says it was cut, judge what you can see and
+      name what you could not. Answer cannot-judge only where the evidence is
+      genuinely too thin, with the reason instead of a guess. Approve when
+      nothing you find blocks the pull request; otherwise revise. Revise only
+      with at least one finding; cannot-judge must carry a reason.
+    inputs:
+      - name: context
+        from:
+          graph_input: context
+      - name: candidate_report
+        from:
+          node: build
+          output: candidate_report
+    outputs:
+      - name: result
+        schema:
+          ref: code_review_result
+          revision: "e2078399680746e474a6c52e5aa0924e1bd8225a8b51f155e49362de854a6938"
+  - id: authorize_pr
+    type: wait
+    depends_on: [review]
+    prompt: >-
+      Read the review result of the node before this one and the candidate
+      report it judged. The commit is already pushed to its own branch;
+      what you release here is the pull request. Answer "open-pr" to open
+      it. There is no second answer -- to refuse, cancel this run.
+    inputs:
+      - name: review_result
+        from:
+          node: review
+          output: result
+      - name: candidate_report
+        from:
+          node: build
+          output: candidate_report
+    outputs:
+      - name: authorization
+        schema:
+          ref: issue_to_pr_release_decision
+          revision: "b0326aef6f8597b1679e33f101c787787a1697cc0ccf9bafcef08ef26f86c05c"
+  - id: open_pr
+    type: action
+    operation:
+      ref: open-pr
+      revision: "420440a07ba8d6f2ba953d02e50d3889a4128ce42fe3e8562fead9523e341f37"
+    depends_on: [authorize_pr]
+    inputs:
+      - name: body
+        from:
+          node: build
+          output: candidate_report

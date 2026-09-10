@@ -346,6 +346,24 @@ stands as an idea of its own (#969). The form between an idea and a cuttable
 item, where a refine step proposes expectation lines until the item is regulated
 enough to cut, has its own owner (#843).
 
+The catalog also carries the circle the head walks for one work item.
+`workflows/head-loop.yaml` is one line of seven nodes: a headless planner
+re-questions whether the item's problem still exists or a landing, a ruling or
+the vision has overtaken it; a wait asks the operator to pull the item, which is
+the only question before anything is built; a reviewer judges the plan the item
+carries against its owner documents; then the builder, review, release and
+open-PR nodes of `issue-to-pr` follow, under the same tool grants, budget,
+schemas and adapter operations. Two things about the builder differ: it is
+handed the reviewed plan under `plan` and follows the item body where the two
+disagree, and it pins no model, so the cast rather than the document decides
+which provider builds. Plan review and candidate review are one role, filled
+once, in a provider family different from the builder's. Its two waits are
+answer-or-cancel doors: their schemas admit one word
+each, so refusing means cancelling the run. What the document is not: there is
+no fix round, so a `revise` still ends at the release wait exactly as in
+`issue-to-pr`; and there is no landing door, so nothing here merges a pull
+request, and the board projection after a landing stays the head's own work.
+
 V1's graph is intentionally narrow: Agent delegates its configured job and exact
 output contract through an injected provider-neutral executor and atomically
 records a distinct success receipt with its existing event and successor. Action
