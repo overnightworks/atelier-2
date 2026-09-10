@@ -540,40 +540,60 @@ def test_a_run_today_cannot_project_is_named_and_the_feed_delivers_the_others(
     )
 
 
-def test_a_store_error_while_projecting_a_row_still_ends_the_feed_loudly(
+def _malformed_store(statement: str) -> DatabaseError:
+    return DatabaseError(
+        statement, None, sqlite3.DatabaseError("database disk image is malformed")
+    )
+
+
+def _refuse_attempt_reads(
+    _connection: Any,
+    _cursor: Any,
+    statement: str,
+    _parameters: Any,
+    _context: Any,
+    _executemany: bool,
+) -> None:
+    if "FROM agent_attempts" in statement:
+        raise _malformed_store(statement)
+
+
+def _refuse_every_connection(_connection: Any) -> None:
+    raise _malformed_store("connect")
+
+
+STORE_ERRORS = (
+    pytest.param(
+        "before_cursor_execute", _refuse_attempt_reads, id="while-projecting-a-row"
+    ),
+    pytest.param(
+        "engine_connect", _refuse_every_connection, id="while-opening-the-connection"
+    ),
+)
+"""Where a store error meets the feed: inside one run's projection, or before
+any row, while the page's connection opens."""
+
+
+@pytest.mark.parametrize(("hook", "refuse"), STORE_ERRORS)
+def test_a_store_error_ends_the_feed_loudly_and_blames_no_run(
     runtime: tuple[DbosRuntime, AgentConfigurationRevision, WorkflowRevision],
     caplog: pytest.LogCaptureFixture,
+    hook: str,
+    refuse: Callable[..., None],
 ) -> None:
     """A store error proves nothing about one run, so no run is blamed for it."""
     started, configuration, _workflow = runtime
     _seed_failure_on_a_refused_revision(started, configuration)
 
-    def refuse_attempt_reads(
-        _connection: Any,
-        _cursor: Any,
-        statement: str,
-        parameters: Any,
-        _context: Any,
-        _executemany: bool,
-    ) -> None:
-        if "FROM agent_attempts" in statement:
-            raise DatabaseError(
-                statement,
-                parameters,
-                sqlite3.DatabaseError("database disk image is malformed"),
-            )
-
-    engine_events.listen(started.engine, "before_cursor_execute", refuse_attempt_reads)
-    try:
-        with (
-            caplog.at_level(logging.ERROR, logger=PROCESS_LOGGER_NAME),
-            live_attention_server(started) as port,
-        ):
+    with (
+        caplog.at_level(logging.ERROR, logger=PROCESS_LOGGER_NAME),
+        live_attention_server(started) as port,
+    ):
+        engine_events.listen(started.engine, hook, refuse)
+        try:
             frames = _feed_until(port, lambda: None, lambda _frame: True)
-    finally:
-        engine_events.remove(
-            started.engine, "before_cursor_execute", refuse_attempt_reads
-        )
+        finally:
+            engine_events.remove(started.engine, hook, refuse)
 
     assert [_frame_event(frame) for frame in frames] == ["STREAM_FAILED"]
     failure = frames[0]["data"]
@@ -585,5 +605,6 @@ def test_a_store_error_while_projecting_a_row_still_ends_the_feed_loudly(
     assert all(
         record.getMessage().endswith(": DatabaseError")
         and "agent_attempts" not in record.getMessage()
+        and "malformed" not in record.getMessage()
         for record in journal
     )

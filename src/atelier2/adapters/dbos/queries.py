@@ -14,6 +14,7 @@ from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos import attention_events
 from atelier2.adapters.dbos.agent_attempt_store import (
     attempt_from_record,
     compose_agent_node_job_for_attempt,
@@ -24,7 +25,6 @@ from atelier2.adapters.dbos.artifact_store import (
     read_stored_artifact,
     read_stored_artifacts,
 )
-from atelier2.adapters.dbos.attention_events import answer_attention_event_page
 from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
@@ -2869,7 +2869,7 @@ class DbosQueries:
         require_page_limit(limit, "event")
         try:
             with self._connection() as connection:
-                return answer_attention_event_page(
+                return attention_events.load_attention_event_page(
                     connection,
                     after_run_id,
                     after_sequence,
@@ -2882,6 +2882,15 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
+        except (
+            RevisionHashCollision,
+            RunTransitionConflict,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            DatabaseError,
+        ) as error:
+            return attention_events.journal_unreadable_attention_page(error)
 
     @staticmethod
     def _event_projection(

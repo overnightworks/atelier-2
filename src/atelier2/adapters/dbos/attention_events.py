@@ -16,14 +16,13 @@ from typing import Any, Final
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import DatabaseError, OperationalError
 
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.schema import event_instants, run_events, runs
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.run_projections import bounded_run_row_defect_detail
-from atelier2.contracts.runs import RevisionHashCollision, RunId
+from atelier2.contracts.runs import RunId
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
@@ -36,7 +35,6 @@ from atelier2.ports.run_events import (
 )
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
-    ProjectionLimitExceeded,
     QueryDurableStateCorrupt,
 )
 
@@ -76,47 +74,18 @@ ProjectEvent = Callable[
 ]
 
 
-def answer_attention_event_page(
-    connection: Connection,
-    after_run_id: RunId | None,
-    after_sequence: int | None,
-    limit: int,
-    projection_limit: DurableProjectionLimit,
-    project_event: ProjectEvent,
-    excluded_identities: tuple[tuple[RunId, int], ...],
-) -> ReadAttentionEventPageResult:
-    """One page of the feed, or its refusal when no single row explains a failure.
+def journal_unreadable_attention_page(error: Exception) -> QueryDurableStateCorrupt:
+    """Refuse a page no single row explains, and say so in the journal.
 
-    The size bound and an unreachable store stay the caller's to answer.
+    Only the failure's class: a store error's text carries its SQL and bound
+    parameters, and the journal formatter redacts nothing.
     """
-    try:
-        return load_attention_event_page(
-            connection,
-            after_run_id,
-            after_sequence,
-            limit,
-            projection_limit,
-            project_event,
-            excluded_identities,
-        )
-    except (ProjectionLimitExceeded, OperationalError):
-        raise
-    except (
-        RevisionHashCollision,
-        RunTransitionConflict,
-        TypeError,
-        ValueError,
-        RuntimeError,
-        DatabaseError,
-    ) as error:
-        # The class alone: a store error's text carries its SQL and bound
-        # parameters, and the journal formatter redacts nothing.
-        _LOG.error(
-            "attention event page unreadable: %s",
-            bounded_run_row_defect_detail(error),
-            extra={"event": ATTENTION_PAGE_UNREADABLE_EVENT},
-        )
-        return QueryDurableStateCorrupt()
+    _LOG.error(
+        "attention event page unreadable: %s",
+        bounded_run_row_defect_detail(error),
+        extra={"event": ATTENTION_PAGE_UNREADABLE_EVENT},
+    )
+    return QueryDurableStateCorrupt()
 
 
 def load_attention_event_page(

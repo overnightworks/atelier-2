@@ -165,15 +165,15 @@ describe("the runs the feed names unreadable", () => {
     expect(again.map((row) => row.public_run_reference)).toEqual([publicReference]);
   });
 
-  it("drops the row once the feed delivers a readable event of that run", () => {
+  it("keeps the row when the feed delivers a readable event of that run", () => {
     const named = feedDefectiveAfter([], applyAttentionFrame(live, namedUnreadable));
 
-    const readAgain = feedDefectiveAfter(
+    const afterReadableEvent = feedDefectiveAfter(
       named,
       applyAttentionFrame(live, JSON.stringify(agentFailed()))
     );
 
-    expect(readAgain).toEqual([]);
+    expect(afterReadableEvent).toEqual(named);
   });
 });
 

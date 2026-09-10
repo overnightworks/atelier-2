@@ -113,15 +113,14 @@ function decoderFailure(hold: AttentionHold): AppliedAttentionFrame {
 /**
  * The runs the feed has named unreadable, after one more frame.
  *
- * A readable event of a named run is the feed confirming that run reads
- * again, so its row leaves; the feed replays every run on reconnect, so a
- * repaired run is cleared by the next connect rather than never.
+ * A named run stands until the page is loaded again. Nothing the feed sends
+ * later confirms it reads: another event of the same run says nothing about
+ * the one that failed, and a resumed connection skips what it already sent.
  */
 export function feedDefectiveAfter(
   rows: readonly DefectiveRunRow[],
   applied: AppliedAttentionFrame
 ): DefectiveRunRow[] {
-  if (applied.unreadable !== null) return withDefectiveRow(rows, applied.unreadable);
-  const readable = applied.event?.public_run_reference;
-  return rows.filter((row) => row.public_run_reference !== readable);
+  if (applied.unreadable === null) return [...rows];
+  return withDefectiveRow(rows, applied.unreadable);
 }
