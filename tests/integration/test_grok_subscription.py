@@ -17,7 +17,6 @@ import pytest
 import sqlalchemy as sa
 from dbos import DBOSClient
 
-from atelier2.adapters.bwrap_sandbox import resolved_sandbox_executable
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -135,6 +134,7 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     publish_checked_model_registry,
     runtime_workspace_owner,
+    stand_in_bubblewrap,
     workspace_files_nobody_opens,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
@@ -311,15 +311,15 @@ def grok_subscription_deployment(
     authentication = credentials / "auth.json"
     authentication.write_bytes(b"{}")
     authentication.chmod(0o600)
-    search_path = os.environ.get("PATH", "/usr/bin")
+    bubblewrap = stand_in_bubblewrap(tmp_path)
     return GrokSubscriptionSettings(
         executable,
         workspace,
         credentials,
-        search_path,
-        # This host's own bubblewrap, because the attestations below really
-        # fence a start; the fake toolchain above is what does not run.
-        resolved_sandbox_executable(search_path),
+        # Ahead of this host's own, so a deployment fake names the enforcer its
+        # search path really carries wherever this suite runs.
+        os.pathsep.join((str(bubblewrap.parent), os.environ.get("PATH", "/usr/bin"))),
+        bubblewrap,
     )
 
 
@@ -2957,25 +2957,4 @@ def test_an_executable_that_answers_a_jobless_grok_invocation_successfully_is_re
     settings = grok_subscription_deployment(tmp_path, "raise SystemExit(0)\n")
 
     with pytest.raises(GrokExecutableUnsupported, match="jobless"):
-        attest_grok_workspace_tool_invocation(settings)
-
-
-def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
-    tmp_path: Path,
-) -> None:
-    """The gap this attestation exists for: a version answer is not startability.
-
-    The refusal quotes whatever the failed start said, and inside the fence
-    that sentence is the enforcer's: it is the process that got as far as
-    trying to run this executable.
-    """
-
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    assert verify_grok_capability(settings.executable) in CONFORMANT_GROK_VERSIONS
-    settings.executable.write_text(
-        "#!/atelier2/no/such/interpreter\n", encoding="utf-8"
-    )
-    settings.executable.chmod(0o755)
-
-    with pytest.raises(GrokExecutableUnsupported, match="No such file or directory"):
         attest_grok_workspace_tool_invocation(settings)

@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -28,6 +28,14 @@ from atelier2.adapters.bwrap_sandbox import (
     toolchain_sandbox,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.grok_capability import (
+    CONFORMANT_GROK_VERSIONS,
+    verify_grok_capability,
+)
+from atelier2.adapters.grok_subscription import (
+    GrokExecutableUnsupported,
+    attest_grok_workspace_tool_invocation,
+)
 from atelier2.contracts.agent_attempts import AgentAttemptCancellationDisposition
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.sandbox_grants import SandboxUnavailable
@@ -38,6 +46,10 @@ from atelier2.ports.agent_executions import (
 )
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_agent_process_supervisor import cancel_and_release
+from tests.integration.test_grok_subscription import (
+    INTROSPECTING_GROK,
+    grok_subscription_deployment,
+)
 from tests.scenarios.agents import (
     NOTHING_IS_PERMITTED,
     agent_attempt_execution,
@@ -356,6 +368,31 @@ def test_a_prompt_of_shell_metacharacters_is_carried_and_never_run(
 
     assert completion.standard_output.decode("utf-8") == prompt
     assert not marker.exists()
+
+
+def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The gap the Grok attestation exists for: a version answer is not startability.
+
+    The refusal quotes whatever the failed start said, and inside the fence
+    that sentence is the enforcer's: it is the process that got as far as
+    trying to run this executable. So the proof stands here, where the
+    enforcer is this host's own rather than a stand-in.
+    """
+
+    settings = replace(
+        grok_subscription_deployment(tmp_path, INTROSPECTING_GROK),
+        sandbox_executable=ENFORCER,
+    )
+    assert verify_grok_capability(settings.executable) in CONFORMANT_GROK_VERSIONS
+    settings.executable.write_text(
+        "#!/atelier2/no/such/interpreter\n", encoding="utf-8"
+    )
+    settings.executable.chmod(0o755)
+
+    with pytest.raises(GrokExecutableUnsupported, match="No such file or directory"):
+        attest_grok_workspace_tool_invocation(settings)
 
 
 def test_a_fenced_child_holds_no_descriptor_of_this_host(tmp_path: Path) -> None:

@@ -312,17 +312,28 @@ def _version_answering(program: str, version: str | None) -> str:
 
 
 def stand_in_bubblewrap(directory: Path) -> Path:
-    """An executable named `bwrap` that fences nothing.
+    """An executable named `bwrap` that runs what it is handed, fencing nothing.
 
     A deployment fake has to name the enforcer its launches would start, and a
-    test that never starts one only needs a path that could be it. Every proof
-    about the fence itself names this host's own bubblewrap instead.
+    machine without bubblewrap still has to prove everything that is not the
+    fence: which vector a provider is started with, and what it answers. So
+    this stand-in reads that vector the way the enforcer does -- its own
+    options, then the command behind `--` -- and runs the command where the
+    launch already stands. Every proof about the fence itself names this
+    host's own bubblewrap instead, in `tests/integration/test_bwrap_fence.py`.
     """
 
     tools = directory / "tools"
     tools.mkdir(exist_ok=True)
     bubblewrap = tools / "bwrap"
-    bubblewrap.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    bubblewrap.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import sys\n"
+        'command = sys.argv[sys.argv.index("--") + 1 :]\n'
+        "os.execvp(command[0], command)\n",
+        encoding="utf-8",
+    )
     bubblewrap.chmod(0o755)
     return bubblewrap
 
