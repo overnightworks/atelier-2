@@ -2994,6 +2994,7 @@ function problemVariant<
                   "override-not-registered",
                   "workflow-model-not-registered",
                   "workflow-model-ambiguous",
+                  "model-not-in-node-mode",
                   "no-project-default",
                   "family-difference-unavailable",
                 ]),

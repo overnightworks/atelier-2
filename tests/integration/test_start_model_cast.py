@@ -113,6 +113,17 @@ nodes:
     difficulty: 2
 """ + declared_output()
 
+TOOL_BEARING_ROLE_DOCUMENT = b"""format_version: 3
+name: One tool-bearing role
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless_with_tools
+    instruction: Build the candidate.
+    difficulty: 2
+""" + declared_output()
+
 TWO_ROLE_DOCUMENT = (
     b"""format_version: 3
 name: Two configured roles
@@ -248,7 +259,9 @@ def publish_workflow(
 
 
 def publish_configuration(
-    runtime: DbosRuntime, model: str
+    runtime: DbosRuntime,
+    model: str,
+    capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
 ) -> AgentConfigurationRevisionHash:
     """One published agent configuration a project default or caller can name."""
     catalog = DbosAgentConfigurationCatalog(
@@ -263,7 +276,7 @@ def publish_configuration(
         model,
         auth.revision_hash,
         AgentExecutorRevision("exact/v1"),
-        AgentExecutionCapability.HEADLESS,
+        capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
     assert isinstance(
@@ -277,7 +290,13 @@ def configure_defaults(
     runtime: DbosRuntime,
     models: tuple[tuple[int, str, AgentConfigurationRevisionHash], ...],
     revision_number: int = 1,
+    also_registered: tuple[tuple[str, AgentConfigurationRevisionHash], ...] = (),
 ) -> None:
+    """Register these configurations and make the named ones the project's rows.
+
+    `also_registered` is what an operator's registry holds beside the default
+    rows -- a second configuration of a default's own model, for instance.
+    """
     channel = DbosHostConfigurationChannel(runtime.engine)
     registry = ModelRegistryRevision(
         ProviderId("exact"),
@@ -289,7 +308,10 @@ def configure_defaults(
                 ModelRegistryEntrySource.OPERATOR,
                 ProviderModelCheck.CHECKED,
             )
-            for _difficulty, model, configuration in models
+            for model, configuration in (
+                [(model, configuration) for _difficulty, model, configuration in models]
+                + list(also_registered)
+            )
         ),
     )
     published_registry = channel.publish_model_registry_revision(registry)
@@ -582,6 +604,122 @@ def test_an_explicit_binding_wins_over_the_projects_default(
     assert stored_bindings(runtime.engine, "conductor/explicit") == [
         ("builder", named.value)
     ]
+
+
+def resolve(client: TestClient, revision: WorkflowRevision) -> Response:
+    """POST the start sheet's own question: who would fill each role now?"""
+    return client.post(
+        PROJECT_MODEL_RESOLUTION_PATH.replace(
+            "{public_project_reference}",
+            encode_public_project_reference(SERVED_PROJECT),
+        ),
+        json={"workflow_revision_hash": revision.revision_hash.value, "overrides": []},
+    )
+
+
+def test_a_headless_node_binds_the_headless_configuration_of_its_step_model(
+    runtime: DbosRuntime,
+) -> None:
+    revision, _lineage_id = publish_workflow(runtime)
+    tool_bearing = publish_configuration(
+        runtime, "opus", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    headless = publish_configuration(runtime, "opus")
+    configure_defaults(
+        runtime, ((2, "opus", tool_bearing),), also_registered=(("opus", headless),)
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    started = conductor_start(client, "conductor/headless-node", revision)
+
+    assert started.status_code == 201, started.text
+    assert stored_bindings(runtime.engine, "conductor/headless-node") == [
+        ("builder", headless.value)
+    ]
+
+
+def test_a_tool_bearing_node_takes_the_tool_bearing_configuration_of_its_step_model(
+    runtime: DbosRuntime,
+) -> None:
+    revision, _lineage_id = publish_workflow(runtime, TOOL_BEARING_ROLE_DOCUMENT)
+    headless = publish_configuration(runtime, "opus")
+    tool_bearing = publish_configuration(
+        runtime, "opus", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    configure_defaults(
+        runtime, ((2, "opus", headless),), also_registered=(("opus", tool_bearing),)
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    resolution = resolve(client, revision)
+
+    assert resolution.status_code == 200, resolution.text
+    assert resolution.json()["resolutions"][0]["agent_configuration_revision_hash"] == (
+        tool_bearing.value
+    )
+
+
+def test_a_step_model_without_the_nodes_mode_leaves_the_role_uncast(
+    runtime: DbosRuntime,
+) -> None:
+    revision, _lineage_id = publish_workflow(runtime)
+    tool_bearing = publish_configuration(
+        runtime, "opus", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    configure_defaults(runtime, ((2, "opus", tool_bearing),))
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    refused = conductor_start(client, "conductor/mode-unfilled", revision)
+
+    assert refused.json() == {
+        "type": "urn:atelier2:problem:v1:uncast-agent-roles",
+        "title": "Agent roles need models",
+        "status": 422,
+        "detail": "Choose a registered model for every workflow role without one.",
+        "uncast_roles": [{"role": "builder", "reason": "model-not-in-node-mode"}],
+    }
+    assert run_ids(runtime.engine) == []
+
+
+def test_an_exact_binding_override_is_cast_as_it_was_written(
+    runtime: DbosRuntime,
+) -> None:
+    """A start that names one exact configuration is never read for a mode.
+
+    The mismatch such a binding may carry is the start's own refusal to make,
+    by name; leaving the role uncast here would say far less.
+    """
+    revision, _lineage_id = publish_workflow(runtime)
+    headless = publish_configuration(runtime, "opus")
+    tool_bearing = publish_configuration(
+        runtime, "opus", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    configure_defaults(
+        runtime, ((2, "opus", headless),), also_registered=(("opus", tool_bearing),)
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    resolution = client.post(
+        PROJECT_MODEL_RESOLUTION_PATH.replace(
+            "{public_project_reference}",
+            encode_public_project_reference(SERVED_PROJECT),
+        ),
+        json={
+            "workflow_revision_hash": revision.revision_hash.value,
+            "overrides": [
+                {
+                    "role": "builder",
+                    "agent_configuration_revision_hash": tool_bearing.value,
+                }
+            ],
+        },
+    )
+
+    assert resolution.status_code == 200, resolution.text
+    assert resolution.json()["resolutions"][0]["agent_configuration_revision_hash"] == (
+        tool_bearing.value
+    )
+    assert resolution.json()["resolutions"][0]["source"] == "chosen-now"
 
 
 def test_a_role_with_no_default_or_higher_default_is_uncast_and_refused(

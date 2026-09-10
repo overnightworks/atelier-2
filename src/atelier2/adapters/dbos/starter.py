@@ -52,6 +52,7 @@ from atelier2.application.resolve_start_bindings import (
     resolve_start_bindings,
     undeclared_agent_role_refusal,
 )
+from atelier2.application.role_candidates import registered_configurations
 from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -798,24 +799,16 @@ class DbosDurableRunStarter:
             return role_refusal
         snapshot = model_configuration_snapshot(connection, self._settings.project_id)
         assert isinstance(snapshot, HostModelConfigurationSnapshot)
-        binding_reads = _TransactionAgentConfigurationReads(connection)
-        override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]] = {}
-        for binding in requested.bindings:
-            found = binding_reads.agent_configuration_revision(
-                binding.agent_configuration_revision_hash
-            )
-            if found is not None:
-                configuration, auth_profile = found
-                override_models[binding.agent_configuration_revision_hash] = (
-                    auth_profile.provider_id.value,
-                    configuration.model,
-                )
         resolved = cast_unbound_roles(
             graph,
             requested,
             snapshot.project_defaults,
             snapshot.registries,
-            override_models,
+            registered_configurations(
+                snapshot.registries,
+                requested,
+                _TransactionAgentConfigurationReads(connection),
+            ),
         )
         if resolved.uncast_roles:
             return DurableUncastAgentRoles(resolved.uncast_roles)
