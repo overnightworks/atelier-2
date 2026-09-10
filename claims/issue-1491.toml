@@ -1,8 +1,0 @@
-claim_id = "14cd1675adfd4cd38e7161ce2bd46cc4"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "31774fec09a8ede09af598eb881e41e32480244b"
-branch = "claude/issue-1491-transcript-union"
-scope = ["frontend/orval.config.ts", "frontend/src/api/generated", "frontend/src/api/client.ts", "frontend/tests/api/client.test.ts", "frontend/tests/api/servedVocabulary.test.ts"]
-opened_commit = "f42b412bb9312e5fd8e3f508c4267ac1b661f218"
-whole_reason = "Orval-Filter, Generat und Fassade aendern sich nur gemeinsam; getrennt waere der Regenerierungs-Diff rot."
