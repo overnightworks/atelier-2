@@ -11,12 +11,8 @@ import os
 
 from atelier2.api.problems import problem_resource
 from atelier2.api.wire.resources import StreamFailureResource
-from atelier2.host.instance_reader import (
-    FRAME_HEADER,
-    FeedFrame,
-    framed,
-    reader_invocation,
-)
+from atelier2.host.instance_reader import FRAME_HEADER, FeedFrame, framed
+from atelier2.host.instance_reader_main import reader_invocation
 
 _FAILED_STREAM_FRAME = StreamFailureResource(
     problem=problem_resource("durable-state-corrupt")

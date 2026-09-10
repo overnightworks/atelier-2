@@ -16,6 +16,7 @@ from pathlib import Path
 
 from atelier2.host import instance_reader
 from atelier2.host.instance_reader import FeedFrame, ReadingRecord
+from atelier2.host.instance_reader_main import reader_invocation
 
 FIRST_FRAME_CHANNEL = "ATELIER2_TEST_FIRST_FRAME_SIGNAL"
 """Where the test tells this process to leave word that a frame has arrived."""
@@ -39,4 +40,4 @@ def _sink_that_says_when_a_frame_arrived(
 
 if __name__ == "__main__":
     instance_reader.record_sink = _sink_that_says_when_a_frame_arrived
-    raise SystemExit(instance_reader.read_as_a_child())
+    raise SystemExit(instance_reader.read_as_a_child(reader_invocation()))

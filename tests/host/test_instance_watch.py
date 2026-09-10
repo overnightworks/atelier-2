@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
 import gzip
 import json
 import os
@@ -30,7 +31,7 @@ import ssl
 import struct
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from threading import Event, Thread
 from typing import Self
@@ -1826,6 +1827,73 @@ def test_an_interrupted_wait_still_kills_the_reading_process(
         )
 
     assert waited_on[0].returncode == -signal.SIGKILL
+
+
+def test_an_interrupt_at_the_moment_the_reading_starts_still_ends_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt arriving between the reading process existing and this
+    process holding its handle would leave a reader nobody stops. It waits
+    until the handle is bound: the interrupt still comes out of the call, and
+    the process it landed on is stopped and reaped first.
+    """
+
+    started: list[subprocess.Popen[bytes]] = []
+    open_a_process = subprocess.Popen
+
+    def start_and_interrupt(
+        command: Sequence[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        pass_fds: Sequence[int],
+    ) -> subprocess.Popen[bytes]:
+        """The reading process, started exactly as production starts it, with
+        an interrupt sent the instant it exists."""
+
+        reader = open_a_process(
+            command, stdin=stdin, stdout=stdout, stderr=stderr, pass_fds=pass_fds
+        )
+        started.append(reader)
+        os.kill(os.getpid(), signal.SIGINT)
+        return reader
+
+    monkeypatch.setattr(subprocess, "Popen", start_and_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        supervised_reading(
+            ignores_being_stopped.__name__, SERVICE_URL, _REAL_READ_BUDGET
+        )
+
+    assert started[0].returncode == -signal.SIGKILL
+
+
+def test_a_pipe_this_process_can_no_longer_read_ends_the_gathering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing the descriptor is an end to what can still arrive, never a crash
+    of the process that reports: the reading is stopped and reaped, and the
+    report says what a reading that delivered nothing says."""
+
+    def set_blocking_on_a_descriptor_that_is_gone(
+        descriptor: int, blocking: bool
+    ) -> None:
+        del descriptor, blocking
+        raise OSError(errno.EBADF, "this descriptor is gone")
+
+    monkeypatch.setattr(os, "set_blocking", set_blocking_on_a_descriptor_that_is_gone)
+
+    reading = supervised_reading(
+        ignores_being_stopped.__name__, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    assert reading.doors == []
+    assert reading.reader_reaped
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.READER_DIED
+    }
 
 
 def test_a_reader_that_will_not_be_stopped_is_killed_and_reported() -> None:

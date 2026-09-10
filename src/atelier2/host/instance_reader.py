@@ -11,7 +11,7 @@ child still reading when the deadline falls is terminated, killed if it must
 be, and reclaimed by the operating system with everything it held.
 
 The child is an ordinary interpreter this module starts and owns
-(`subprocess.Popen` on this module's own `__main__`), never a
+(`subprocess.Popen` on `instance_reader_main`), never a
 `multiprocessing.Process`: that one registers every child it starts and joins
 the survivors without a timeout as the process exits, so a reader that
 outlived its kill would hang the very command that had already reported it.
@@ -33,7 +33,6 @@ could carry ends the gathering with a named failure.
 
 from __future__ import annotations
 
-import argparse
 import ctypes
 import logging
 import os
@@ -44,7 +43,7 @@ import struct
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, assert_never
@@ -110,9 +109,15 @@ MAXIMUM_RESPONSE_BYTES: Final = 65_536
 EVENT_SAMPLE_MAXIMUM_BYTES: Final = 65_536
 EVENT_SAMPLE_MAXIMUM_FRAMES: Final = 20
 
-READER_MODULE: Final = "atelier2.host.instance_reader"
-"""What a reading process runs: this module's own `__main__`. A caller that
-runs another module in its place gets the same protocol on the same pipe."""
+READER_MODULE: Final = "atelier2.host.instance_reader_main"
+"""What a reading process runs: the entry that reads this reading's arguments
+and hands them here. A caller that runs another module in its place gets the
+same protocol on the same pipe."""
+
+_INTERRUPT_SIGNALS: Final = frozenset({signal.SIGINT})
+"""What is held off while a reading process is started: an interrupt delivered
+between the process existing and this one holding its handle would leave a
+reading nobody could stop."""
 
 TRANSPORT_LOGGER_NAMES: Final = ("httpx", "httpcore")
 """The libraries the reading process silences in itself: httpx logs every
@@ -345,15 +350,22 @@ def supervised_reading(
     reading_end, sending_end = os.pipe()
     reader: subprocess.Popen[bytes] | None = None
     try:
-        reader = subprocess.Popen(
-            _reader_command(reader_module, service_url, budget, sending_end),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            pass_fds=(sending_end,),
-        )
-        os.close(sending_end)
-        sending_end = _NO_DESCRIPTOR
+        # An interrupt landing between the process existing and this name
+        # holding it would leave a reading nobody could stop, so it is held
+        # off until the handle is bound and delivered the moment it is.
+        held = signal.pthread_sigmask(signal.SIG_BLOCK, _INTERRUPT_SIGNALS)
+        try:
+            reader = subprocess.Popen(
+                _reader_command(reader_module, service_url, budget, sending_end),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(sending_end,),
+            )
+            os.close(sending_end)
+            sending_end = _NO_DESCRIPTOR
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, held)
         _gather(reading_end, reading, deadline)
     finally:
         try:
@@ -364,16 +376,32 @@ def supervised_reading(
                 reading.reader_exit_code = reader.returncode
         finally:
             for descriptor in (sending_end, reading_end):
-                if descriptor != _NO_DESCRIPTOR:
-                    os.close(descriptor)
+                _given_back(descriptor)
     return reading
+
+
+def _given_back(descriptor: int) -> None:
+    """Close a descriptor this reading still holds, and count one that is
+    already gone as closed: the closing runs to its end, so trouble over the
+    first descriptor cannot leave the second one behind."""
+
+    if descriptor == _NO_DESCRIPTOR:
+        return
+    try:
+        os.close(descriptor)
+    except OSError:
+        return
 
 
 def _reader_command(
     reader_module: str, service_url: str, budget: ReadingBudget, descriptor: int
 ) -> list[str]:
     """How a reading process is asked for: this interpreter, that module, and
-    everything it needs as arguments -- nothing inherited, nothing implied."""
+    everything it needs as arguments -- nothing inherited, nothing implied.
+
+    The other half of this protocol is `instance_reader_main`, which reads
+    these arguments back in the process that was started with them.
+    """
 
     return [
         sys.executable,
@@ -394,34 +422,7 @@ def _reader_command(
     ]
 
 
-def reader_invocation(arguments: Sequence[str] | None = None) -> ReaderInvocation:
-    """What this reading process was told, read back from its own arguments."""
-
-    parser = argparse.ArgumentParser(prog=READER_MODULE, description=__doc__)
-    parser.add_argument("--service", required=True)
-    parser.add_argument("--descriptor", type=int, required=True)
-    parser.add_argument("--parent", type=int, required=True)
-    parser.add_argument("--deadline-seconds", type=float, required=True)
-    parser.add_argument("--door-read-timeout-seconds", type=float, required=True)
-    parser.add_argument(
-        "--event-sample-read-timeout-seconds", type=float, required=True
-    )
-    parsed = parser.parse_args(arguments)
-    return ReaderInvocation(
-        service_url=parsed.service,
-        budget=ReadingBudget(
-            deadline_seconds=parsed.deadline_seconds,
-            door_read_timeout_seconds=parsed.door_read_timeout_seconds,
-            event_sample_read_timeout_seconds=(
-                parsed.event_sample_read_timeout_seconds
-            ),
-        ),
-        descriptor=parsed.descriptor,
-        parent_process_id=parsed.parent,
-    )
-
-
-def read_as_a_child(arguments: Sequence[str] | None = None) -> int:
+def read_as_a_child(invocation: ReaderInvocation) -> int:
     """The reading process's whole life: go quiet, read, say what happened.
 
     Nothing here is allowed to end in a traceback nobody reads. Trouble it did
@@ -432,7 +433,6 @@ def read_as_a_child(arguments: Sequence[str] | None = None) -> int:
     it.
     """
 
-    invocation = reader_invocation(arguments)
     try:
         send = record_sink(invocation.descriptor)
     except OSError:
@@ -568,10 +568,15 @@ def _gather(descriptor: int, reading: InstanceReading, deadline: float) -> None:
     Read without blocking, against the time the reading has left: what is
     readable is whatever the child has written so far, not necessarily a whole
     record, and waiting for the rest of a half-written one is exactly what a
-    deadline must never do.
+    deadline must never do. A descriptor that is no longer one ends the
+    gathering where it stands, here as everywhere else: losing the pipe is an
+    end to what can still arrive, never a crash of the process that reports.
     """
 
-    os.set_blocking(descriptor, False)
+    try:
+        os.set_blocking(descriptor, False)
+    except OSError:
+        return
     buffer = bytearray()
     while not reading.reader_ended:
         arrived = _arrived(descriptor, _left_of(deadline), reading)
@@ -787,13 +792,3 @@ def _die_with_the_parent(parent_process_id: int) -> None:
         raise OSError(errno, os.strerror(errno))
     if os.getppid() != parent_process_id:
         os._exit(_ORPHANED_EXIT_CODE)
-
-
-if __name__ == "__main__":
-    # Through the module under its own name, never through this `__main__`
-    # copy of it: a record pickled here carries the module its class was
-    # defined in, and the process that reports knows no `__main__` of this
-    # one's. Importing it here is what gives the reading that module.
-    from atelier2.host.instance_reader import read_as_a_child as read_the_instance
-
-    raise SystemExit(read_the_instance())

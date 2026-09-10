@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import os
 
-from atelier2.host.instance_reader import FRAME_HEADER, reader_invocation
+from atelier2.host.instance_reader import FRAME_HEADER
+from atelier2.host.instance_reader_main import reader_invocation
 
 FRAME_LENGTH_CHANNEL = "ATELIER2_TEST_FRAME_LENGTH"
 """Where the test tells this process which length to promise."""

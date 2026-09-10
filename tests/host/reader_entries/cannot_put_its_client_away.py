@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 
 from atelier2.host import instance_reader
+from atelier2.host.instance_reader_main import reader_invocation
 
 
 class ClientThatCannotBePutAway(instance_reader.AtelierApi):
@@ -20,4 +21,4 @@ class ClientThatCannotBePutAway(instance_reader.AtelierApi):
 
 if __name__ == "__main__":
     instance_reader.AtelierApi = ClientThatCannotBePutAway
-    raise SystemExit(instance_reader.read_as_a_child())
+    raise SystemExit(instance_reader.read_as_a_child(reader_invocation()))

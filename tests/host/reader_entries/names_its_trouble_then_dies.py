@@ -10,12 +10,8 @@ from __future__ import annotations
 import os
 
 from atelier2.host.atelier_api_client import TransportFailureCategory
-from atelier2.host.instance_reader import (
-    ReaderFailure,
-    ReaderPhase,
-    framed,
-    reader_invocation,
-)
+from atelier2.host.instance_reader import ReaderFailure, ReaderPhase, framed
+from atelier2.host.instance_reader_main import reader_invocation
 
 DEATH_CODE = 4
 TROUBLE = ReaderFailure(ReaderPhase.READING, TransportFailureCategory.RESET)

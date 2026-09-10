@@ -642,15 +642,18 @@ reads its report is gone, and it leaves without a word if that process was
 already gone by the time it asked.
 
 That child is a fresh interpreter started as an ordinary subprocess
-(`subprocess.Popen` on `atelier2.host.instance_reader`, its standard streams
-at the null device, its records on a pipe of their own), never a
-`multiprocessing.Process`: that one registers every child it starts and joins
-the survivors without a timeout as the process exits, so a reader that
-outlived its kill would hang the very command that had already reported it.
-Nothing of the reporting process is inherited -- no lock, logger, socket, or
-open file -- which costs that interpreter's start, measured at about 1.4 s
-with the bulk of it importing `atelier2.host`, counted inside the deadline
-rather than added to it. The report names the budget it ran on (`budget`:
+(`subprocess.Popen` on `atelier2.host.instance_reader_main`, the entry that
+reads the reading's arguments; its standard streams at the null device, its
+records on a pipe of their own), never a `multiprocessing.Process`: that one
+registers every child it starts and joins the survivors without a timeout as
+the process exits, so a reader that outlived its kill would hang the very
+command that had already reported it. An interrupt arriving between that
+process existing and this one holding its handle is held off until the handle
+is bound, because it would otherwise leave a reading nobody stops. Nothing of
+the reporting process is inherited -- no lock, logger, socket, or open file --
+which costs that interpreter's start, measured at about 1.4 s with the bulk of
+it importing `atelier2.host`, counted inside the deadline rather than added to
+it. The report names the budget it ran on (`budget`:
 `deadline_seconds`, `door_read_timeout_seconds`,
 `event_sample_read_timeout_seconds`); the per-read timeouts bound one read
 within the deadline, which is what tells a feed that went quiet from one that

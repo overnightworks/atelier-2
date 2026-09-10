@@ -11,7 +11,7 @@ import os
 import signal
 import time
 
-from atelier2.host.instance_reader import reader_invocation
+from atelier2.host.instance_reader_main import reader_invocation
 
 UNENDING_SLEEP_SECONDS = 60.0
 

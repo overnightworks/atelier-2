@@ -214,8 +214,7 @@ def _reading_findings(
             WatchFinding(
                 WatchFindingKind.READING_CUT_SHORT,
                 _unread_endpoint(reading),
-                f"this read's whole deadline of {budget.deadline_seconds} "
-                f"seconds passed while the instance was still answering",
+                f"{_CUT_SHORT_SENTENCE} of {budget.deadline_seconds} seconds",
             )
         )
     elif not _left_cleanly(reading):
@@ -278,6 +277,13 @@ _UNKILLABLE_SENTENCE: Final = (
     "it ignored being stopped and being killed and was still running when "
     "this report was built"
 )
+
+_CUT_SHORT_SENTENCE: Final = "the reading did not complete within its whole budget"
+"""What a deadline that fell says, and all it says: which side ran out the
+clock is not something this end knows -- an instance still answering, a
+sample that could not be finished, and a reading whose own last records were
+still on their way all look the same from here. What was read stands beside
+it in `endpoints_read` and the sample's counters."""
 
 
 def _door_findings(door: DoorRead | DoorRefused) -> tuple[WatchFinding, ...]:
