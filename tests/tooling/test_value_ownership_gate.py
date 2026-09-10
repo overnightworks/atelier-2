@@ -121,11 +121,11 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "attention-feed sample -- what tells a silent feed from a hung one; "
         "not an operator's patience to dial (#1502)",
     ),
-    "host/instance_watch.py::EVENT_SAMPLE_DEADLINE_SECONDS": SpelledValue(
+    "host/instance_watch.py::WATCH_DEADLINE_SECONDS": SpelledValue(
         1,
-        "stable slice invariant: the attention-feed sample's whole wall-clock "
-        "budget, bounding a stream documented to never end on its own; an "
-        "operator's turnaround is the report's, never this call's (#1502)",
+        "stable slice invariant: the whole reading phase's enforced wall "
+        "clock, the one alarm over every call a watch makes together; an "
+        "operator's turnaround is the report's, never this read's (#1502)",
     ),
     "host/provider_canary.py::PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE": SpelledValue(
         1,

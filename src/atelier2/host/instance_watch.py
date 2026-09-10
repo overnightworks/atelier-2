@@ -8,9 +8,16 @@ publishes anything, and nothing it reads ever reaches the report unredacted:
 the seat's terminal address carries the terminal's own access token
 (`served_seat.py`), so only the seat's state is ever named.
 
-Every call this command makes is one GET, on one path from `WATCH_ENDPOINTS`,
-answered or refused within a fixed budget -- the attention feed is sampled,
-never followed, because it is documented to never end on its own.
+One call is two phases. The reading phase makes every network call this
+command makes, all of them under one deadline (`reading_client`); when that
+deadline falls, the phase ends where it stands and its client is never
+touched again. The reporting phase is pure: it classifies what the reading
+phase collected, and it opens no socket, reads nothing, and closes nothing.
+A watch is one process; a deadline ends its reading, never its report.
+
+Every call this command makes is one GET, on one path from `WATCH_ENDPOINTS`.
+The attention feed is sampled, never followed, because it is documented to
+never end on its own.
 """
 
 from __future__ import annotations
@@ -20,18 +27,15 @@ import json
 import logging
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
+import httpx
 from pydantic import ValidationError
 
 from atelier2.api.problem_vocabulary import PROBLEM_DEFINITIONS
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
-from atelier2.api.references import (
-    InvalidPublicRunReference,
-    decode_public_run_reference,
-)
 from atelier2.api.seat import SeatState
 from atelier2.api.wire.resources import (
     DurableStateCorruptProblemResource,
@@ -44,19 +48,17 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.host.address import DEFAULT_SERVICE_URL
 from atelier2.host.atelier_api_client import (
+    EVENT_STREAM_MEDIA_TYPE,
     AtelierApi,
     AtelierApiAddressUnusable,
     AtelierApiTransportFailure,
-    BoundedEventSample,
-    BoundedResponse,
-    EventSampleLimit,
-    opened_api,
+    BoundedRead,
+    EventFrameCollection,
+    EventSampleOutcome,
+    WallClockDeadlineExceeded,
+    reading_client,
 )
-from atelier2.host.run_command import (
-    EVENT_STREAM_MEDIA_TYPE,
-    RUN_PATH,
-    STREAM_FAILURE_NAME,
-)
+from atelier2.host.run_command import RUN_PATH, STREAM_FAILURE_NAME
 
 WATCH_DESCRIPTION = """\
 Read a served Atelier instance's fixed doors and report typed findings.
@@ -67,29 +69,31 @@ of the attention feed, then prints one JSON report to stdout -- empty and
 exit 0 when nothing was found, non-empty and a non-zero exit otherwise.
 """
 
+WATCH_DEADLINE_SECONDS: Final = 25.0
+"""The whole reading phase's enforced wall clock -- one alarm over every
+network call together, wide enough that each door's own read timeout is what
+normally ends it, and narrow enough that an instance which only trickles
+bytes cannot hold the observer for longer than an operator would wait."""
+
 REQUEST_TIMEOUT_SECONDS: Final = 5.0
-"""How long one plain GET among the fixed endpoints may take -- its read
-timeout and its whole enforced wall clock alike, since it is one bounded
-read, never a stream this call keeps sampling."""
+"""How long one plain GET among the fixed doors may wait for its next chunk
+before it counts as unreachable."""
 
 MAXIMUM_RESPONSE_BYTES: Final = 65_536
-"""How much of any one fixed endpoint's answer this call ever buffers."""
+"""How much of any one fixed door's answer this call ever buffers."""
 
 EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS: Final = 2.0
 """The read timeout on every chunk of the attention-feed sample; a silent
 feed stops the sample rather than the whole command."""
 
-EVENT_SAMPLE_DEADLINE_SECONDS: Final = 3.0
-"""The whole attention-feed sample's enforced wall clock."""
-
-_TRANSPORT_LOGGER_NAMES: Final = ("httpx", "httpcore")
-"""The libraries whose own request logging this command turns down at its
-entry point: httpx logs every request's status line -- the far side's own
-reason phrase included -- at `INFO`, and this command's whole contract is
-that no text an answer wrote leaves it, through any channel."""
-
 EVENT_SAMPLE_MAXIMUM_BYTES: Final = 65_536
 EVENT_SAMPLE_MAXIMUM_FRAMES: Final = 20
+
+TRANSPORT_LOGGER_NAMES: Final = ("httpx", "httpcore")
+"""The libraries whose own sub-warning records this command drops on the
+handlers it prints through: httpx logs every request's status line -- the far
+side's own reason phrase included -- at `INFO`, and httpcore logs a reply's
+headers at `DEBUG`."""
 
 HEALTH_PATH = "/health"
 SEAT_PATH = "/seat"
@@ -103,17 +107,28 @@ WATCH_ENDPOINTS: Final[tuple[str, ...]] = (
     WORKFLOW_REVISIONS_PATH,
     EVENTS_PATH,
 )
-"""The fixed, complete list of paths one `watch` call reads -- one GET each,
-no retry, no pagination; a page beyond the first is each list endpoint's
-own paging defect class, watched for elsewhere (#1313, #1501), not here."""
+"""The fixed, complete list of paths one `watch` call reads, in reading order
+-- one GET each, no retry, no pagination; a page beyond the first is each list
+endpoint's own paging defect class, watched for elsewhere (#1313, #1501), not
+here. The feed comes last because it is the one read that can spend the whole
+deadline, and it must not starve the cheap doors before it."""
+
+DOOR_ENDPOINTS: Final[tuple[str, ...]] = tuple(
+    endpoint for endpoint in WATCH_ENDPOINTS if endpoint != EVENTS_PATH
+)
+"""The plain GETs among them: every path but the feed, which is sampled."""
 
 RUN_PROJECTION_CORRUPT_NAME: Final[str] = RunProjectionCorruptResource.model_fields[
     "event"
 ].default
 
-WITHHELD_RUN_REFERENCE: Final = "<run reference withheld>"
-"""What a finding names instead of a run reference the API's own contract
-does not recognize."""
+_WORKBENCH_SENTENCE: Final = (
+    "open the Workbench: the run this frame names is marked there"
+)
+"""How a finding points at one run without printing its reference. The
+reference is a free string the API's own field pattern would let an answer
+dress up as one, and a watcher that prints it would carry that answer's text
+out; the class of defect plus where to look is the whole diagnosis."""
 
 
 class WatchFindingKind(StrEnum):
@@ -127,6 +142,7 @@ class WatchFindingKind(StrEnum):
     STREAM_NEVER_ANSWERED = "STREAM_NEVER_ANSWERED"
     SEAT_NOT_ALIVE = "SEAT_NOT_ALIVE"
     REDEPLOY_BLOCKED = "REDEPLOY_BLOCKED"
+    READING_CUT_SHORT = "READING_CUT_SHORT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,40 +152,67 @@ class WatchFinding:
     kind: WatchFindingKind
     endpoint: str
     detail: str
-    public_run_reference: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class WatchBudget:
-    """The wall-clock guarantee one endpoint's read gives, enforced.
+    """The wall-clock guarantee one `watch` call gives, enforced.
 
-    `deadline_seconds` is the whole read's absolute limit, held by the
-    client's own alarm (`wall_clock_deadline`) rather than by a cooperative
-    check a blocked read never reaches -- so it is the worst case, not a
-    hope. `read_timeout_seconds` bounds one read within it, which is what
-    tells a feed that went quiet from one that hung.
+    `deadline_seconds` is the whole reading phase's absolute limit, held by
+    the process's own alarm (`wall_clock_deadline`) rather than by a
+    cooperative check a blocked read never reaches -- so it is the worst
+    case, not a hope. The two read timeouts bound one read within it, which
+    is what tells a feed that went quiet from one that hangs.
     """
 
     deadline_seconds: float
-    read_timeout_seconds: float
+    door_read_timeout_seconds: float
+    event_sample_read_timeout_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
 class AttentionFeedSample:
     """What one bounded look at the attention feed came back with.
 
-    `stopped` is why the sample ended -- `frame-limit`, `byte-limit`,
-    `overall-deadline`, `silent`, `closed-early`, `refused`, or
-    `unreachable` -- named even on a clean report, since "this call saw
-    nothing" and "this call saw a healthy feed" are not the same claim.
+    `outcome` is named even on a clean report, since "this call saw nothing"
+    and "this call saw a healthy feed" are not the same claim.
     `frames_read` and `bytes_read` say how much this call had actually seen
-    by then: a sample the deadline cut short still reports the frames it
-    read, findings included.
+    by then: a sample the deadline cut short still reports the frames it read,
+    findings included.
     """
 
-    stopped: str
+    outcome: EventSampleOutcome
     frames_read: int
     bytes_read: int
+
+
+@dataclass(slots=True)
+class DoorReading:
+    """What one fixed door answered, as far as the reading phase got.
+
+    Registered before its own read starts, so a door the deadline interrupted
+    is in the report as a door that was being read, not as one never asked.
+    """
+
+    endpoint: str
+    answer: BoundedRead = field(default_factory=BoundedRead)
+    refusal: AtelierApiTransportFailure | None = None
+    answered: bool = False
+
+
+@dataclass(slots=True)
+class InstanceReading:
+    """Everything the reading phase gathered, whatever ended it.
+
+    Every field is written while the phase runs and never afterwards: the
+    deadline can end the phase inside any read, and the report is built from
+    exactly what this holds at that moment.
+    """
+
+    doors: list[DoorReading] = field(default_factory=list)
+    feed: EventFrameCollection = field(default_factory=EventFrameCollection)
+    feed_refusal: AtelierApiTransportFailure | None = None
+    deadline_passed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,91 +221,167 @@ class WatchReport:
     endpoints_read: tuple[str, ...]
     findings: tuple[WatchFinding, ...]
     attention_feed_sample: AttentionFeedSample
-    endpoint_budget: WatchBudget
-    event_sample_budget: WatchBudget
+    budget: WatchBudget
 
 
-def watch_instance(service_url: str, *, api: AtelierApi | None = None) -> WatchReport:
-    """Read every fixed endpoint once and report what each answered.
+def read_instance(
+    service_url: str, *, transport: httpx.BaseTransport | None = None
+) -> InstanceReading:
+    """The reading phase: every network call this command makes, under one
+    deadline, into one collection.
 
-    `api` is a test seam: a caller already holding one client -- an injected
-    `httpx.MockTransport` double, most often -- hands it in and keeps owning
-    its lifetime. Production composition leaves it unset, opening and closing
-    its own client for this one call.
+    `transport` is a test seam only, handed straight to the one client this
+    phase owns; production composition leaves it unset, so it reaches the real
+    network. When the deadline falls, this returns what it has -- the client
+    stays where it was interrupted and is never used again.
     """
 
-    if api is not None:
-        return _watched(service_url, api)
-    with opened_api(service_url) as opened:
-        return _watched(service_url, opened)
-
-
-def _watched(service_url: str, api: AtelierApi) -> WatchReport:
-    event_findings, attention_feed_sample = _event_sample(api)
-    findings: list[WatchFinding] = [
-        *_health_findings(api),
-        *_seat_findings(api),
-        *_listing_findings(api, RUN_PATH),
-        *_listing_findings(api, WORKFLOW_REVISIONS_PATH),
-        *event_findings,
-    ]
-    return WatchReport(
-        service_url=service_url,
-        endpoints_read=WATCH_ENDPOINTS,
-        findings=tuple(findings),
-        attention_feed_sample=attention_feed_sample,
-        endpoint_budget=WatchBudget(
-            deadline_seconds=REQUEST_TIMEOUT_SECONDS,
-            read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-        ),
-        event_sample_budget=WatchBudget(
-            deadline_seconds=EVENT_SAMPLE_DEADLINE_SECONDS,
-            read_timeout_seconds=EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS,
-        ),
-    )
-
-
-def _endpoint_findings(
-    api: AtelierApi,
-    endpoint: str,
-    decode: Callable[[bytes], tuple[WatchFinding, ...]],
-) -> tuple[WatchFinding, ...]:
-    """Read one fixed endpoint on a budget and classify what it answered.
-
-    A problem document is a finding wherever it appears, independent of the
-    status that carried it: a 2xx body that is secretly one of this API's own
-    problem documents is exactly as real as a non-2xx one, so both are
-    recognized before `decode` -- the endpoint's own published shape -- ever
-    sees a body at all.
-    """
-
+    reading = InstanceReading()
     try:
-        answered = api.bounded_get(
+        with reading_client(
+            service_url, WATCH_DEADLINE_SECONDS, transport=transport
+        ) as api:
+            for endpoint in DOOR_ENDPOINTS:
+                _read_door(api, endpoint, reading)
+            _read_feed(api, reading)
+    except WallClockDeadlineExceeded:
+        reading.deadline_passed = True
+    return reading
+
+
+def _read_door(api: AtelierApi, endpoint: str, reading: InstanceReading) -> None:
+    door = DoorReading(endpoint)
+    reading.doors.append(door)
+    try:
+        api.bounded_get(
             endpoint,
             read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
-            deadline_seconds=REQUEST_TIMEOUT_SECONDS,
             maximum_bytes=MAXIMUM_RESPONSE_BYTES,
+            into=door.answer,
         )
     except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(endpoint, failure),)
-    problem = _problem_finding(endpoint, answered.body)
-    if problem is not None:
-        return (problem,)
-    if not 200 <= answered.status < 300:
-        return (_status_finding(endpoint, answered),)
-    return decode(answered.body)
+        door.refusal = failure
+    door.answered = True
 
 
-def _status_finding(endpoint: str, answered: BoundedResponse) -> WatchFinding:
-    return WatchFinding(
-        WatchFindingKind.RESPONSE_REFUSED,
-        endpoint,
-        f"answered {answered.status} without one of this API's own problem documents",
+def _read_feed(api: AtelierApi, reading: InstanceReading) -> None:
+    try:
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS,
+            maximum_bytes=EVENT_SAMPLE_MAXIMUM_BYTES,
+            maximum_frames=EVENT_SAMPLE_MAXIMUM_FRAMES,
+            into=reading.feed,
+        )
+    except AtelierApiTransportFailure as failure:
+        reading.feed_refusal = failure
+        reading.feed.outcome = _feed_outcome_of(failure, reading.feed)
+
+
+def _feed_outcome_of(
+    failure: AtelierApiTransportFailure, feed: EventFrameCollection
+) -> EventSampleOutcome:
+    """A service that answered nothing at all is unreachable; one that sent
+    bytes or a status and was then refused by this client is not."""
+
+    if failure.status is not None or feed.bytes_read > 0:
+        return EventSampleOutcome.REFUSED
+    return EventSampleOutcome.UNREACHABLE
+
+
+def watch_report(service_url: str, reading: InstanceReading) -> WatchReport:
+    """The reporting phase: classify what the reading phase collected.
+
+    Pure by contract -- no request, no close, nothing that could touch a
+    client the deadline abandoned. Classifying the feed's frames here rather
+    than as they arrive is what makes a `STREAM_FAILED` frame survive a
+    deadline that ended the read right after it.
+    """
+
+    findings = [finding for door in reading.doors for finding in _door_findings(door)]
+    findings.extend(_feed_findings(reading))
+    if reading.deadline_passed:
+        findings.append(_deadline_finding(reading))
+    return WatchReport(
+        service_url=service_url,
+        endpoints_read=_endpoints_read(reading),
+        findings=tuple(findings),
+        attention_feed_sample=AttentionFeedSample(
+            outcome=reading.feed.outcome,
+            frames_read=len(reading.feed.frames),
+            bytes_read=reading.feed.bytes_read,
+        ),
+        budget=WatchBudget(
+            deadline_seconds=WATCH_DEADLINE_SECONDS,
+            door_read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+            event_sample_read_timeout_seconds=EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS,
+        ),
     )
 
 
-def _health_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
-    return _endpoint_findings(api, HEALTH_PATH, _health_decoded)
+def watch_instance(
+    service_url: str, *, transport: httpx.BaseTransport | None = None
+) -> WatchReport:
+    """Read a served instance once, then report what the reading saw."""
+
+    return watch_report(service_url, read_instance(service_url, transport=transport))
+
+
+def _endpoints_read(reading: InstanceReading) -> tuple[str, ...]:
+    reached = [door.endpoint for door in reading.doors]
+    if reading.feed.outcome is not EventSampleOutcome.UNREAD:
+        reached.append(EVENTS_PATH)
+    return tuple(reached)
+
+
+def _deadline_finding(reading: InstanceReading) -> WatchFinding:
+    """Where the reading phase stood when its deadline fell.
+
+    A report that ended early is never a clean report: what this command did
+    not get to read, it cannot call healthy.
+    """
+
+    unanswered = [door.endpoint for door in reading.doors if not door.answered]
+    endpoint = unanswered[0] if unanswered else EVENTS_PATH
+    return WatchFinding(
+        WatchFindingKind.READING_CUT_SHORT,
+        endpoint,
+        f"this read's whole deadline of {WATCH_DEADLINE_SECONDS} seconds "
+        f"passed while the instance was still answering",
+    )
+
+
+def _door_findings(door: DoorReading) -> tuple[WatchFinding, ...]:
+    """What one door's answer says, whichever status carried it.
+
+    A problem document is a finding wherever it appears: a 2xx body that is
+    secretly one of this API's own problem documents is exactly as real as a
+    non-2xx one, so both are recognized before the door's own published shape
+    ever sees a body at all. A door still answering when the reading phase
+    ended has nothing to say yet -- the deadline finding is what names it.
+    """
+
+    if not door.answered:
+        return ()
+    if door.refusal is not None:
+        return (_refusal_finding(door.endpoint, door.refusal),)
+    body = bytes(door.answer.body)
+    problem = _problem_finding(door.endpoint, body)
+    if problem is not None:
+        return (problem,)
+    if door.answer.status is None or not 200 <= door.answer.status < 300:
+        return (_status_finding(door),)
+    return _DOOR_SHAPES[door.endpoint](body)
+
+
+def _status_finding(door: DoorReading) -> WatchFinding:
+    return WatchFinding(
+        WatchFindingKind.RESPONSE_REFUSED,
+        door.endpoint,
+        f"answered {door.answer.status} without one of this API's own "
+        f"problem documents",
+    )
 
 
 def _health_decoded(body: bytes) -> tuple[WatchFinding, ...]:
@@ -284,10 +403,6 @@ def _health_decoded(body: bytes) -> tuple[WatchFinding, ...]:
     )
 
 
-def _seat_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
-    return _endpoint_findings(api, SEAT_PATH, _seat_decoded)
-
-
 def _seat_decoded(body: bytes) -> tuple[WatchFinding, ...]:
     try:
         seat = SeatResource.model_validate_json(body)
@@ -300,75 +415,69 @@ def _seat_decoded(body: bytes) -> tuple[WatchFinding, ...]:
     return (WatchFinding(WatchFindingKind.SEAT_NOT_ALIVE, SEAT_PATH, seat.state.value),)
 
 
-def _listing_findings(api: AtelierApi, endpoint: str) -> tuple[WatchFinding, ...]:
-    return _endpoint_findings(api, endpoint, lambda _body: ())
+def _listing_decoded(body: bytes) -> tuple[WatchFinding, ...]:
+    """A listing that answered 2xx and carries no problem document says all
+    this observer asks of it; whether its pages are complete is the paging
+    defect class watched for elsewhere."""
+
+    del body
+    return ()
 
 
-def _event_sample(
-    api: AtelierApi,
-) -> tuple[tuple[WatchFinding, ...], AttentionFeedSample]:
-    """The attention-feed sample's own findings, and what the sample saw.
+_DOOR_SHAPES: Final[dict[str, Callable[[bytes], tuple[WatchFinding, ...]]]] = {
+    HEALTH_PATH: _health_decoded,
+    SEAT_PATH: _seat_decoded,
+    RUN_PATH: _listing_decoded,
+    WORKFLOW_REVISIONS_PATH: _listing_decoded,
+}
+"""Each door's own published shape, read only after a body proved to be no
+problem document."""
+
+
+def _feed_findings(reading: InstanceReading) -> tuple[WatchFinding, ...]:
+    """The attention-feed sample's findings, from whatever it collected.
 
     Hitting one of this call's own limits with something in hand -- a frame
-    cap, a byte cap, a deadline that cut a live read short -- is a fact
-    about the sample, not the feed: named in the report, never a finding.
-    So is `silent`, a read that waited out its timeout, which is what an
-    idle feed looks like. What is a finding is a feed that told this call
-    nothing at all and cannot be explained by this call's own choices --
-    see `_unanswered_feed_finding`.
-
-    Whichever way it stopped, the frames already read are classified: a
-    `STREAM_FAILED` frame this call did read stays in the report even when
-    the deadline is what ended the read that followed it.
+    cap, a byte cap -- is a fact about the sample, not the feed: named in the
+    report, never a finding. So is `silent` with nothing read, which is what
+    an idle feed looks like. How the sample ended is one finding at most: a
+    refusal when this client refused the reply, otherwise whether the feed
+    told this call anything usable -- see `_unanswered_feed_finding`.
     """
 
-    try:
-        sample = api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS,
-            deadline_seconds=EVENT_SAMPLE_DEADLINE_SECONDS,
-            maximum_bytes=EVENT_SAMPLE_MAXIMUM_BYTES,
-            maximum_frames=EVENT_SAMPLE_MAXIMUM_FRAMES,
-        )
-    except AtelierApiTransportFailure as failure:
-        stopped = "unreachable" if failure.status is None else "refused"
-        return (
-            (_refusal_finding(EVENTS_PATH, failure),),
-            AttentionFeedSample(stopped, frames_read=0, bytes_read=0),
-        )
     findings = [
-        finding for frame in sample.frames for finding in _frame_findings(frame)
+        finding for frame in reading.feed.frames for finding in _frame_findings(frame)
     ]
-    unanswered = _unanswered_feed_finding(sample)
-    if unanswered is not None:
-        findings.append(unanswered)
-    stopped = "closed-early" if sample.stopped is None else sample.stopped.value
-    return tuple(findings), AttentionFeedSample(
-        stopped, frames_read=len(sample.frames), bytes_read=sample.bytes_read
+    ending = (
+        _refusal_finding(EVENTS_PATH, reading.feed_refusal)
+        if reading.feed_refusal is not None
+        else _unanswered_feed_finding(reading.feed)
     )
+    if ending is not None:
+        findings.append(ending)
+    return tuple(findings)
 
 
-def _unanswered_feed_finding(sample: BoundedEventSample) -> WatchFinding | None:
+def _unanswered_feed_finding(feed: EventFrameCollection) -> WatchFinding | None:
     """Whether a sample that came back without a single frame is the feed's
     own doing rather than this call's budget.
 
-    Two shapes are: the connection ended, though this feed is documented to
-    never end on its own; and the whole deadline passing without one byte of
-    body arriving, which is a feed that never spoke -- a reply whose headers
-    trickle in forever looks exactly like this, and reporting it clean would
-    be the watcher lying about an instance it could not read.
+    Bytes without a frame is one: whatever those bytes were -- a heartbeat
+    comment, half a frame, an error page this client already refused -- the
+    feed did not answer as a feed within the whole sample, and reporting that
+    clean would be the watcher lying about an instance it could not read. So
+    is a connection that ended, though this feed is documented never to end on
+    its own, and so is a whole reading phase passing without one byte of body.
+    A sample that never ran is not: the deadline finding already names it.
     """
 
-    if sample.frames:
+    if feed.frames or feed.outcome is EventSampleOutcome.UNREAD:
         return None
-    if sample.stopped is None:
-        silence = (
-            "this read's connection closed before it ever sent a byte"
-            if sample.bytes_read == 0
-            else "this read's connection closed without ever completing a data frame"
-        )
-    elif sample.stopped is EventSampleLimit.OVERALL_DEADLINE and sample.bytes_read == 0:
+    if feed.bytes_read > 0:
+        silence = "it sent bytes that never completed one data frame"
+    elif feed.outcome is EventSampleOutcome.CLOSED_EARLY:
+        silence = "this read's connection closed before it ever sent a byte"
+    elif feed.outcome is EventSampleOutcome.INTERRUPTED:
         silence = "it sent no byte at all within this read's whole deadline"
     else:
         return None
@@ -437,27 +546,9 @@ def _run_projection_corrupt_finding(data: str) -> tuple[WatchFinding, ...]:
         WatchFinding(
             WatchFindingKind.RUN_PROJECTION_CORRUPT,
             EVENTS_PATH,
-            _problem_sentence(corrupt.problem),
-            public_run_reference=_named_run(corrupt.public_run_reference),
+            f"{_problem_sentence(corrupt.problem)}; {_WORKBENCH_SENTENCE}",
         ),
     )
-
-
-def _named_run(reference: str) -> str:
-    """The run reference as this API's own contract encodes one, or a
-    withheld marker.
-
-    `decode_public_run_reference` is the contract's own parser: it accepts
-    only a canonical `run1.` reference that re-encodes to exactly itself, so
-    a value shaped like one but carrying an answer's own text -- which the
-    field's pattern alone would still admit -- never reaches the report.
-    """
-
-    try:
-        decode_public_run_reference(reference)
-    except InvalidPublicRunReference:
-        return WITHHELD_RUN_REFERENCE
-    return reference
 
 
 def _problem_sentence(
@@ -589,13 +680,19 @@ def watch_exit_code(report: WatchReport) -> int:
     return 1 if report.findings else 0
 
 
-def execute_watch(parsed: argparse.Namespace, *, api: AtelierApi | None = None) -> int:
-    """Run one `watch` and print its report; `api` is the same test seam
-    `watch_instance` takes, so a test drives this whole entry point."""
+def execute_watch(
+    parsed: argparse.Namespace, *, transport: httpx.BaseTransport | None = None
+) -> int:
+    """Run one `watch` and print its report.
 
-    _quiet_transport_logging()
+    Reading first, reporting after: the report is printed from what the
+    reading phase collected, whether that phase finished or its deadline
+    ended it. `transport` is the same test seam `read_instance` takes.
+    """
+
+    silence_transport_chatter()
     try:
-        report = watch_instance(parsed.service, api=api)
+        report = watch_instance(parsed.service, transport=transport)
     except AtelierApiAddressUnusable as refusal:
         print(str(refusal), file=sys.stderr)
         return 2
@@ -603,20 +700,41 @@ def execute_watch(parsed: argparse.Namespace, *, api: AtelierApi | None = None) 
     return watch_exit_code(report)
 
 
-def _quiet_transport_logging() -> None:
-    """Turn down the transport libraries' own request logging for this
-    command's process -- see `_TRANSPORT_LOGGER_NAMES` for why this command
-    owns that decision at all."""
+class TransportChatterFilter(logging.Filter):
+    """Drops a transport library's own sub-warning records, whichever logger
+    of its family made them."""
 
-    for name in _TRANSPORT_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(logging.WARNING)
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        return not any(
+            record.name == family or record.name.startswith(f"{family}.")
+            for family in TRANSPORT_LOGGER_NAMES
+        )
 
 
-def _budget_document(budget: WatchBudget) -> dict[str, object]:
-    return {
-        "deadline_seconds": budget.deadline_seconds,
-        "read_timeout_seconds": budget.read_timeout_seconds,
-    }
+def silence_transport_chatter() -> None:
+    """Drop the transport libraries' chatter on the handlers this process
+    prints through.
+
+    A level set on the `httpx` or `httpcore` logger does not hold: a record
+    made on `httpcore.http11` is filtered by that child's own level alone and
+    then walks straight past its ancestors' levels to their handlers. The
+    handler is therefore the only place that can decide for a whole family,
+    and `watch` owns the process it runs in: its own report goes to stdout,
+    and the handlers below carry whatever else this process says.
+    """
+
+    chatter = TransportChatterFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(chatter)
+    for name in TRANSPORT_LOGGER_NAMES:
+        # Delivery for the whole family goes through the handlers just
+        # filtered: a handler these loggers carry themselves would be reached
+        # before those and would never see the filter.
+        family = logging.getLogger(name)
+        family.handlers.clear()
+        family.propagate = True
 
 
 def _report_document(report: WatchReport) -> dict[str, object]:
@@ -625,18 +743,22 @@ def _report_document(report: WatchReport) -> dict[str, object]:
         "service_url": report.service_url,
         "endpoints_read": list(report.endpoints_read),
         "attention_feed_sample": {
-            "stopped": sample.stopped,
+            "outcome": sample.outcome.value,
             "frames_read": sample.frames_read,
             "bytes_read": sample.bytes_read,
         },
-        "endpoint_budget": _budget_document(report.endpoint_budget),
-        "event_sample_budget": _budget_document(report.event_sample_budget),
+        "budget": {
+            "deadline_seconds": report.budget.deadline_seconds,
+            "door_read_timeout_seconds": report.budget.door_read_timeout_seconds,
+            "event_sample_read_timeout_seconds": (
+                report.budget.event_sample_read_timeout_seconds
+            ),
+        },
         "findings": [
             {
-                "kind": finding.kind,
+                "kind": finding.kind.value,
                 "endpoint": finding.endpoint,
                 "detail": finding.detail,
-                "public_run_reference": finding.public_run_reference,
             }
             for finding in report.findings
         ],

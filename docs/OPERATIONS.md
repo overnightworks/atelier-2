@@ -587,76 +587,102 @@ blocks the restart, whatever that intent's own recorded state.
 
 `atelier2 watch --service URL` is a read-only observer, not a client of any
 one feature: it GETs a fixed list of paths -- `/health`, `/seat`, `/runs`,
-`/workflow-revisions`, and a bounded sample of `/events` -- and prints one
-JSON report of typed findings to stdout. A problem document is a finding
-wherever it appears, independent of the status that carried it and of
-whether it arrived as SSE framing or raw JSON (a route caught before it ever
-starts streaming answers its own content type and a bare body; `/events`
-recognizes that from `Content-Type`, trusting `sse_starlette`'s own
-`text/event-stream` default): a 200 that is secretly one of this API's own
-problem documents is exactly as real as a non-2xx one carrying no problem
-document at all. Its wording never repeats what the answer wrote, only this
-repository's own problem vocabulary: `type` is matched against the known
-problem types, the title comes from that vocabulary, and an unrecognized
-type says only "unknown problem type" -- never the free text a served
-document does not have to keep honest. Every finding is one of: that; a
-`STREAM_FAILED` frame on the attention feed; a `RUN_PROJECTION_CORRUPT`
-frame, with its run reference; a seat that is not `ALIVE`; `health.redeploy`
-present (its absence is clean); the service unreachable; or an attention
-feed that told the read nothing at all -- a connection that closed, though
-the feed is documented to never end on its own, or a whole deadline passing
-without one byte of body arriving. A close or a limit reached after a real
-frame is named in the report without being raised as a finding.
+`/workflow-revisions`, and a bounded sample of `/events`, in that order --
+and prints one JSON report of typed findings to stdout. A problem document is
+a finding wherever it appears, independent of the status that carried it and
+of whether it arrived as SSE framing or as a bare problem body: a 200 that is
+secretly one of this API's own problem documents is exactly as real as a
+non-2xx one carrying no problem document at all. Its wording never repeats
+what the answer wrote, only this repository's own problem vocabulary: `type`
+is matched against the known problem types, the title comes from that
+vocabulary, and an unrecognized type says only "unknown problem type" --
+never the free text a served document does not have to keep honest. Every
+finding is one of: that; a `STREAM_FAILED` frame on the attention feed; a
+`RUN_PROJECTION_CORRUPT` frame; a seat that is not `ALIVE`;
+`health.redeploy` present (its absence is clean); the service unreachable;
+an attention feed that told the read nothing usable; or the reading having
+been cut short. A limit reached after a real frame is named in the report
+without being raised as a finding. Exit is 0 with an empty report, non-zero
+otherwise. This slice reads only what a test double serves it; reading the
+live instance itself waits on the operator's ruling on the observer contract
+that #1046 opens.
+
+A watch is one process, and one call is two phases. The reading phase makes
+every network call, all of them under one deadline held by the process's own
+alarm (`wall_clock_deadline`), and collects what each answered as it arrives.
+The reporting phase is pure: it classifies that collection and opens no
+socket, reads nothing, and closes nothing. A deadline ends a watch's reading,
+never its report -- whatever the reading had gathered is reported, and the
+reading having been cut short is itself a finding naming where it stood, so
+an instance the observer could not finish reading is never called clean. The
+client lives only inside the reading phase (`reading_client`): a deadline
+fires inside whichever blocking call httpx was in, leaving it at an unknown
+point -- possibly holding a connection pool's lock -- so nothing touches it
+again, `close()` included, and the process ends. The report names the budget
+it ran on (`budget`: `deadline_seconds`, `door_read_timeout_seconds`,
+`event_sample_read_timeout_seconds`); the per-read timeouts bound one read
+within the deadline, which is what tells a feed that went quiet from one that
+hangs. Because only the main thread receives that alarm, a deadline asked for
+off the main thread is refused rather than run unbounded, and a second
+deadline is refused while one is already running.
+
 The attention feed never ends on its own, so it is sampled, not followed, and
-the report always names how the sample ended (`attention_feed_sample`):
-`stopped` is one of `frame-limit`, `byte-limit`, `overall-deadline`,
-`silent`, `closed-early`, `refused`, or `unreachable`, alongside
-`frames_read` and `bytes_read`. Frames the sample already read are
+it is sampled last, because it is the one read that can spend the whole
+deadline. The report always names how the sample ended
+(`attention_feed_sample.outcome`): `unread`, `interrupted`, `silent`,
+`frame-limit`, `byte-limit`, `closed-early`, `refused`, or `unreachable`,
+alongside `frames_read` and `bytes_read`. Frames the sample already read are
 classified whichever way it ended, so a `STREAM_FAILED` frame reaches the
-report even when the deadline cut the read that followed it. Every bounded
-read -- the plain GETs and the event sample alike -- asks for
+report even when the deadline, a transport failure, or a byte the sample
+could not read as UTF-8 ended the read that followed it. Whether the reply is
+a stream at all is decided from `Content-Type` before one body byte is read:
+anything but `text/event-stream` is refused there and then, and only this
+API's own `application/problem+json` still has its body read (capped), because
+that body is what says which problem it is. Draining an unknown body to find
+out what it was is what let an error page trickling under every read timeout
+pass for a stream that merely sent no frame. For the same reason, a sample
+that ends with bytes read but no frame completed is a finding, never a clean
+report.
+
+Every bounded read -- the plain GETs and the event sample alike -- asks for
 `Accept-Encoding: identity` and refuses a reply that answers
 `Content-Encoding` anyway before reading a single byte of its body (a
 compressed reply decoded transparently could otherwise outgrow the byte cap
-before the cap ever saw it). A validation diagnosis in the report never
-carries a response's own values,
-only the field path and the error kind: pydantic's own `ValidationError`
-embeds the offending input (and, for a missing field, every sibling value)
-in its message, which a naive `str(error)` would otherwise hand back out.
-The report never carries the seat's own terminal address (it holds the
-terminal's access token, `served_seat.py`), only its state. Exit is 0 with
-an empty report, non-zero otherwise. This slice reads only what a test
-double serves it; reading the live instance itself waits on the operator's
-ruling on the observer contract that #1046 opens.
+before the cap ever saw it).
 
-The standing rule is the principle, not a per-field patch: no character
-from an answer reaches the report, an exception, or a log -- only values
-from a fixed vocabulary (an enum, a known problem type, a known seat or
-redeploy state) or a number (a status, a count, a byte, a second). A run
-reference is printed only when the API's own parser
-(`decode_public_run_reference`) accepts it as canonical, since the field's
-pattern alone would admit any `run1.` word; otherwise the finding reads
-`<run reference withheld>`. A field path in a validation diagnosis is
+The standing rule is the principle, not a per-field patch: no character from
+an answer reaches the report, an exception, or a log -- only values from a
+fixed vocabulary (an enum, a known problem type, a known seat or redeploy
+state) or a number (a status, a count, a byte, a second). No finding names a
+run: the reference is a free string the API's own field pattern would let an
+answer dress up as one, so a `RUN_PROJECTION_CORRUPT` finding names the class
+of defect and where to look ("open the Workbench: the run this frame names is
+marked there") instead. A validation diagnosis carries only the field path and
+the error kind, never a value: pydantic's own `ValidationError` embeds the
+offending input (and, for a missing field, every sibling value) in its
+message, which a naive `str(error)` would hand back out. That field path is
 checked against an allowlist built from this module's own decoded models
 (`_KNOWN_FIELD_NAMES`); an unrecognized one -- the document's own key, once
-`extra="forbid"` names it in a `ValidationError`'s `loc` -- reads
-`<unknown field>`. A refused `Content-Encoding`, `Content-Type`, or HTTP
-reason phrase is never echoed, only a fixed sentence naming that it was
-refused, and a library's own transport exception is translated without
-chaining it, so no traceback carries its text either. httpx logs every
-request's status line -- the far side's reason phrase included -- at
-`INFO`, so `atelier2 watch`'s entry point sets the `httpx` and `httpcore`
-loggers to `WARNING` once for the process it owns.
+`extra="forbid"` names it in a `ValidationError`'s `loc` -- reads `<unknown
+field>`. The report never carries the seat's own terminal address (it holds
+the terminal's access token, `served_seat.py`), only its state. A refused
+`Content-Encoding`, `Content-Type`, or HTTP reason phrase is never echoed,
+only a fixed sentence naming that it was refused. A library's own transport
+exception is translated without chaining it, so no traceback carries its text
+either, and what the failure says instead is one word from a fixed category
+table -- `dns`, `tls`, `refused`, `reset`, `timeout`, `protocol`, or
+`unclassified` -- read from the exception's class and its `__cause__` chain,
+because one `ConnectError` covers a name that does not resolve, a certificate
+that does not verify, and a port that says no.
 
-Each endpoint's wall-clock deadline is enforced, not merely checked: a
-per-read timeout bounds one read, never a reply whose headers trickle in
-forever or a read that never returns at all. The client sets a process
-alarm (`wall_clock_deadline`) for the whole call, so the deadline
-interrupts the blocking read itself and the connection closes on the way
-out; because only the main thread receives that alarm, a bounded read asked
-for off the main thread is refused rather than run unbounded. The deadline
-is therefore the worst case, and the report names it per endpoint as
-`endpoint_budget` and `event_sample_budget`.
+httpx logs every request's status line -- the far side's reason phrase
+included -- at `INFO`, and httpcore logs a reply's headers at `DEBUG`. A level
+set on the `httpx` or `httpcore` logger does not hold: a record made on
+`httpcore.http11` is filtered by that child's own level and then walks
+straight past its ancestors' levels to their handlers. `atelier2 watch`
+therefore installs a filter on the handlers the process it owns prints
+through, dropping every sub-warning record of either family whichever logger
+made it.
 
 ### Publish the issue-to-pr catalog
 

@@ -81,6 +81,7 @@ from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.host.atelier_api_client import (
+    EVENT_STREAM_MEDIA_TYPE,
     AtelierApi,
     AtelierApiAddressUnusable,
     AtelierApiTransportFailure,
@@ -103,7 +104,6 @@ PROBLEM_TYPE_PREFIX: Final = "urn:atelier2:problem:v1:"
 
 JSON_MEDIA_TYPE = "application/json"
 YAML_MEDIA_TYPE = "application/yaml"
-EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 
 RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
