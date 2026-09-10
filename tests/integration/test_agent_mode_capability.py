@@ -11,11 +11,18 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, run_forks, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    run_agent_bindings,
+    run_events,
+    run_forks,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.transactions import keeping_nothing
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.agents import (
@@ -283,3 +290,23 @@ def test_a_fork_refuses_an_origin_whose_node_is_bound_outside_its_mode(
     )
     assert rows_of(runtime, run_forks) == 0
     assert rows_of(runtime, runs) == 1
+
+
+def test_a_start_judged_over_a_store_that_keeps_nothing_answers_and_keeps_nothing(
+    runtime: DbosRuntime,
+) -> None:
+    """The queue's judge is the real start, and none of what it wrote survives."""
+    workflow, bindings = publish(runtime, "headless", AgentExecutionCapability.HEADLESS)
+    request = StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    judge = DbosDurableRunStarter(
+        keeping_nothing(runtime.engine),
+        runtime.settings,
+        runtime.agent_executor_registry,
+    )
+
+    judged = judge.start_published(request)
+
+    assert isinstance(judged, DurableRunCreated)
+    assert rows_of(runtime, runs) == 0
+    assert rows_of(runtime, run_agent_bindings) == 0
+    assert isinstance(starter_of(runtime).start_published(request), DurableRunCreated)
