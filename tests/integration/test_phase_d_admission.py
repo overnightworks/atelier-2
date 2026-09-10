@@ -1530,7 +1530,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 55
+    assert report.target_version == SCHEMA_VERSION == 56
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
