@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -20,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters import agent_processes as process_module
+from atelier2.adapters import process_containment as containment
 from atelier2.adapters.bwrap_sandbox import (
     entered_fence,
     resolved_sandbox_executable,
@@ -157,6 +159,8 @@ _ECHOES_ITS_LAST_ARGUMENT = """
 import os, sys
 os.write(1, sys.argv[-1].encode())
 """
+
+_WAITS_UNTIL_ASKED = (str(INTERPRETER), "-c", "import time; time.sleep(300)")
 
 
 def _wait_for(evidence: Path, seconds: float = 20.0) -> None:
@@ -488,3 +492,49 @@ def test_the_kill_cgroup_ends_the_enforcer_and_the_child_inside_it(
             process.kill()
             process.wait(timeout=10)
         cgroup.rmdir()
+
+
+def test_a_listed_number_that_names_an_outsider_is_not_asked_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ending a launch reaches what it holds, never a stranger's process.
+
+    A member that exits and is reaped frees its number for any process of this
+    user on this host, so a listing is a snapshot of numbers, not of processes.
+    Staged with a listing that names one real member and one process which
+    never entered the cgroup: the member ends, the stranger keeps running.
+    """
+
+    cgroup = process_module.delegated_cgroup_root() / f"atelier2-reuse-{os.getpid()}"
+    cgroup.mkdir()
+    joining = ("/bin/sh", "-c", f'echo $$ > "{cgroup}/cgroup.procs"; exec "$@"', "sh")
+    enforcer = subprocess.Popen((*joining, *_WAITS_UNTIL_ASKED))
+    member = subprocess.Popen((*joining, *_WAITS_UNTIL_ASKED))
+    outsider = subprocess.Popen(_WAITS_UNTIL_ASKED)
+    try:
+        _wait_for_members(cgroup, (enforcer.pid, member.pid))
+        monkeypatch.setattr(
+            containment, "cgroup_members", lambda _cgroup: (member.pid, outsider.pid)
+        )
+
+        containment.ask_provider_to_end(member, cgroup, enforcer.pid, signal.SIGTERM)
+
+        assert member.wait(timeout=10) == -signal.SIGTERM
+        assert outsider.poll() is None
+    finally:
+        for started in (enforcer, member, outsider):
+            if started.poll() is None:
+                started.kill()
+            started.wait(timeout=10)
+        process_module._kill_cgroup_and_wait_empty(cgroup, 10.0)
+        cgroup.rmdir()
+
+
+def _wait_for_members(cgroup: Path, expected: tuple[int, ...]) -> None:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        held = (cgroup / "cgroup.procs").read_text(encoding="ascii").split()
+        if sorted(held) == sorted(str(pid) for pid in expected):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"{expected} never stood in {cgroup}")
