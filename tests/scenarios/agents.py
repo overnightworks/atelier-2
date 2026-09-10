@@ -86,6 +86,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
@@ -266,6 +267,7 @@ def process_invocation(
     *,
     standard_output_frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
     conversation: ProviderConversationBinding | None = None,
+    sandbox: SandboxedLaunch | None = None,
 ) -> AgentProcessInvocation:
     """One invocation for a test that supervises a process it houses itself.
 
@@ -280,6 +282,7 @@ def process_invocation(
             environment,
             standard_input,
             standard_output_frame_bytes=standard_output_frame_bytes,
+            sandbox=sandbox,
         ),
         leased_directory_identity(attempt_id, working_directory),
         conversation,

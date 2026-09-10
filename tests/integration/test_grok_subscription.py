@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,8 +31,11 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.grok_subscription import (
+from atelier2.adapters.grok_capability import (
     CONFORMANT_GROK_VERSIONS,
+    verify_grok_capability,
+)
+from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_SUBSCRIPTION_FRAME_BYTES,
     GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
@@ -50,7 +54,6 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
     attest_grok_workspace_tool_invocation,
-    verify_grok_capability,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
@@ -277,7 +280,10 @@ INLINE_PROMPT_GROK = INTROSPECTING_GROK.replace(
 
 
 def _write_executable(path: Path, source: str) -> Path:
-    path.write_text(f"#!{sys.executable}\n" + source)
+    # The resolved interpreter, because a fenced child follows this shebang
+    # inside its own namespace, where a symlink chain out of the granted
+    # interpreter tree leads nowhere.
+    path.write_text(f"#!{Path(sys.executable).resolve()}\n" + source)
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
 
@@ -288,6 +294,19 @@ def grok_named_deployment(
     directory = root / name
     directory.mkdir()
     return grok_subscription_deployment(directory, source)
+
+
+def _deployment_search_path() -> str:
+    """The search path a deployment of these fake toolchains has to name.
+
+    A fenced child reads and runs what its deployment's search path offers and
+    nothing else, and these fakes are scripts rather than the real toolchain's
+    one static executable: the interpreter tree they run on is part of what
+    this deployment offers them, so it stands on the path beside this account's
+    own.
+    """
+
+    return os.pathsep.join((os.environ.get("PATH", "/usr/bin"), sys.base_prefix))
 
 
 def grok_subscription_deployment(
@@ -302,7 +321,7 @@ def grok_subscription_deployment(
     authentication.write_bytes(b"{}")
     authentication.chmod(0o600)
     return GrokSubscriptionSettings(
-        executable, workspace, credentials, os.environ.get("PATH", "/usr/bin")
+        executable, workspace, credentials, _deployment_search_path()
     )
 
 
@@ -2878,6 +2897,24 @@ def test_an_executable_that_starts_this_exact_grok_invocation_is_attested(
     assert attest_grok_workspace_tool_invocation(settings) is None
 
 
+def test_a_deployment_whose_host_cannot_fence_this_vector_is_refused_at_composition(
+    tmp_path: Path,
+) -> None:
+    """No quiet degradation: the tool-bearing vector is armed because its child
+    is held inside a grant, so a host that cannot draw one serves it not at all
+    rather than serving it open."""
+
+    fenceless = tmp_path / "fenceless"
+    fenceless.mkdir()
+    settings = replace(
+        grok_named_deployment(tmp_path, "deployment", INTROSPECTING_GROK),
+        search_path=str(fenceless),
+    )
+
+    with pytest.raises(GrokExecutableUnsupported, match="bwrap"):
+        attest_grok_workspace_tool_invocation(settings)
+
+
 def test_an_executable_missing_any_flag_of_this_grok_invocation_is_refused_by_that_flag(
     tmp_path: Path,
 ) -> None:
@@ -2928,7 +2965,12 @@ def test_an_executable_that_answers_a_jobless_grok_invocation_successfully_is_re
 def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
     tmp_path: Path,
 ) -> None:
-    """The gap this attestation exists for: a version answer is not startability."""
+    """The gap this attestation exists for: a version answer is not startability.
+
+    The refusal quotes whatever the failed start said, and inside the fence
+    that sentence is the enforcer's: it is the process that got as far as
+    trying to run this executable.
+    """
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     assert verify_grok_capability(settings.executable) in CONFORMANT_GROK_VERSIONS
@@ -2937,5 +2979,5 @@ def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
     )
     settings.executable.chmod(0o755)
 
-    with pytest.raises(GrokExecutableUnsupported, match="could not start"):
+    with pytest.raises(GrokExecutableUnsupported, match="No such file or directory"):
         attest_grok_workspace_tool_invocation(settings)

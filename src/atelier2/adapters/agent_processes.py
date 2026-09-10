@@ -23,6 +23,7 @@ from atelier2.adapters.agent_process_watchdog import (
     encode_control_frame,
     maximum_agent_wait_response_bytes,
 )
+from atelier2.adapters.bwrap_sandbox import launch_arguments
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
@@ -902,7 +903,7 @@ def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
 def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
     command = invocation.command
     request: dict[str, object] = {
-        "arguments": command.arguments,
+        "arguments": launch_arguments(invocation),
         "environment": command.environment,
         "operation": "LAUNCH",
         "standard_input": base64.b64encode(command.standard_input).decode("ascii"),

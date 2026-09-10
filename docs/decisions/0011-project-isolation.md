@@ -52,7 +52,7 @@
   [ADR 0010](0010-github-platform-adapter.md) (the tracker connection a project
   configures) — on `main` since PR #81 merged as `87cd5700`
 - Hard predecessor of a second project:
-  [#60](https://github.com/FlexOr2/atelier-2/issues/60) — the sandbox mechanism and
+  [#632](https://github.com/overnightworks/atelier-2/issues/632) — the sandbox mechanism and
   its functional probe, the only thing that can confine a running attempt to its
   project (decision 2). This record decides that a second project waits for it and
   decides no sandbox mechanism.
@@ -66,7 +66,7 @@
   (login, roles, tenancy), [#9](https://github.com/FlexOr2/atelier-2/issues/9)
   part 3 (remote runners), [#16](https://github.com/FlexOr2/atelier-2/issues/16)
   (columns, versions, migration mechanics),
-  [#60](https://github.com/FlexOr2/atelier-2/issues/60) (the sandbox mechanism
+  [#632](https://github.com/overnightworks/atelier-2/issues/632) (the sandbox mechanism
   itself, named above as a predecessor and designed there)
 - Evidence: documentary and read-only, at `main` `78a3487`.
   `src/atelier2/adapters/dbos/schema.py` (`SCHEMA_VERSION = 8`, fourteen product
@@ -101,13 +101,17 @@ file away — which, with one file, means throwing every project away.
 runner reading "another project's" credential and hands the mechanism here. A
 column is not that mechanism: it is a filter every future query must remember.
 
-**Nothing confines a running attempt.** #60 measured this host read-only: `bwrap`
-exists and fails, `kernel.apparmor_restrict_unprivileged_userns = 1`, and the
-components a confined Claude attempt needs are missing — the host is `UNAVAILABLE`
-for a confined attempt, and an executable check is not a sandbox proof. A provider
-process the service starts therefore runs as the service's own OS user with the
-whole filesystem in reach. This fact decides how much a directory can honestly be
-asked to carry, and decision 2 carries it rather than papering over it.
+**One vector's attempt is confined; the rest are not.** #632 owns that work and
+its first slice landed the file boundary around the one shell-bearing vector
+this repository builds with: its child runs under bubblewrap, reaching its
+toolchain, its private home and its own leased workspace and nothing else of
+the account. Every other armed vector — and every attempt's network, under
+which a credential still reaches whatever it can address — runs as the
+service's own OS user with the whole filesystem in reach. So this record's
+predecessor stands: confinement of *a project* needs the remaining slices, and
+an attested file grant for one vector is not that proof. This fact decides how
+much a directory can honestly be asked to carry, and decision 2 carries it
+rather than papering over it.
 
 The first two are one question. A store per project makes deletion the removal of a
 directory; a store with a project column must answer deletion against `no_delete`,
@@ -228,17 +232,18 @@ actually carry it, because one of them exists and the other does not:
   carries the same scope on the runner side: `allowed-projects` is an attested
   enrolment fact (requirement 0004 REQ-REMOTE-06 and REQ-REMOTE-07), so an attempt of A is never
   placed on a runner that is not allowed for A.
-- **Confinement belongs to the sandbox, and it does not exist yet.** Stopping the
-  *placed process* from reading B's root or a credential directory is the OS
-  mechanism #60 owns — its filesystem `denyRead`/`allowRead` policy, its network
-  allowlist, and its functional probe. ADR 0009 already wrote the bound this record
+- **Confinement belongs to the sandbox, which covers one vector so far.**
+  Stopping the *placed process* from reading B's root or a credential directory
+  is the OS mechanism #632 owns — its file grant, which one vector now runs
+  behind, its network allowlist, which nothing enforces yet, and its functional
+  probe. ADR 0009 already wrote the bound this record
   consumes: the same-UID acceptance holds only while the whole boundary is one
   machine under one OS user, and it **ends** at "a second OS user or a second
   project sharing the host (#23)". A second project is precisely the event that
   revokes it.
 
 **That consequence is a hard predecessor, not a caveat.** A second project is not
-connected before #60's probe attests confinement on the host that will run it and
+connected before #632's probe attests confinement on the host that will run it and
 the live A→B denial in the proof list below is observed. Opening a second project
 root on a deployment whose sandbox probe does not attest confinement is refused
 (`project-confinement-unattested`) rather than served with a directory and a
@@ -445,7 +450,7 @@ must not be read as an authorization model. Remote runners and per-project runne
 placement (ADR 0009's successor, #9 part 3). Every column, version number and
 migration mechanic (#16). The queue's own rules, priority and ready model (#79). The
 platform adapter (#24) and the catalog's internals (ADR 0007). The sandbox mechanism
-(#60) — named above as a hard predecessor and designed there, never here. The
+(#632) — named above as a hard predecessor and designed there, never here. The
 project-runtime supervision contract named in decision 2, which owns failure
 isolation and is the other hard predecessor of a second project.
 
@@ -473,7 +478,7 @@ Durable failure tokens, where any of these must become one, are minted by #16.
   home, and a credential resolves only out of the store of the project asking, rather
   than out of a query that remembers a filter.
 - Confinement is not structural, and this record buys a predecessor instead of a
-  claim. Until #60's probe attests it, a second project would share a filesystem with
+  claim. Until #632's probe attests it, a second project would share a filesystem with
   the first under one OS user — precisely the point at which ADR 0009 ends its
   same-UID acceptance. Waiting is the honest cost of decision 2.
 - Failure isolation is bought but not proved here. That an active project costs a

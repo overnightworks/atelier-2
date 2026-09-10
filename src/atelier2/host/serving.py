@@ -25,6 +25,7 @@ from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
     bounded_process_streams,
 )
+from atelier2.adapters.bwrap_sandbox import sandboxed_arguments
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.claude_subscription import (
     ClaudeAtelierDoorsExecutorFactory,
@@ -726,7 +727,7 @@ class HostProviderModelValidator:
                     status.st_ino,
                 )
                 process = subprocess.Popen(
-                    command.arguments,
+                    sandboxed_arguments(command.arguments, path, command.sandbox),
                     cwd=path,
                     env=dict(command.environment),
                     stdin=subprocess.PIPE,

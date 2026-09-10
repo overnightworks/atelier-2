@@ -40,6 +40,7 @@ from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeResult,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
+from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.contracts.when import RecordedAt
 from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
@@ -144,12 +145,19 @@ class AgentProcessCommand:
     environment rather than an overlay on the controller's environment.
     Credential material is handed off through a provider-owned path or OS
     credential channel, never as a value in this record.
+
+    `sandbox` is the executor's own sentence about what its child may reach in
+    this host's filesystem, and every seam that starts the command owes it: a
+    command that named a grant may not be started outside it. A command that
+    names none runs wherever its account runs, so only a vector that opens
+    doors declares one (ADR 0009 §1).
     """
 
     arguments: tuple[str, ...]
     environment: tuple[tuple[str, str], ...] = ()
     standard_input: bytes = b""
     standard_output_frame_bytes: int = field(kw_only=True)
+    sandbox: SandboxedLaunch | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if not self.arguments or any(not value for value in self.arguments):
