@@ -1,0 +1,8 @@
+claim_id = "6e93dcbf7e1c4c189a11537d5700a489"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1502-instance-watch"
+scope = ["src/atelier2/host/instance_watch.py", "src/atelier2/host/atelier_api_client.py", "src/atelier2/host/__init__.py", "src/atelier2/host/run_command.py", "docs/OPERATIONS.md"]
+opened_commit = "de24e4c9ec98969101924cb0966ab9951098baf2"
+whole_reason = "Der Beobachter braucht den begrenzten Leser im Client, die Wiederverwendung des SSE-Lesers aus run_command.py, die Einbindung in die CLI und seinen Runbook-Absatz in derselben Landung."
