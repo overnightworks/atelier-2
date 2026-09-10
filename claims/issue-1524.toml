@@ -1,0 +1,8 @@
+claim_id = "3742bb1ec9db4cbea6c46d4a57512b16"
+agent = "claude-head"
+role = "builder"
+base = "4317166deecc5b95fc8a3f339e53df3b3eeb4451"
+branch = "claude/issue-1524-head-loop-catalog"
+scope = ["workflows/head-loop.yaml", "workflows/schemas/requestion_result.json", "workflows/schemas/head_loop_pull_decision.json", "tests/acceptance/test_head_loop_workflow.py", "docs/product/workflow.md", "docs/OPERATIONS.md"]
+opened_commit = "bec72f132130e5ab65583750dd57b4b24eaf2dbd"
+whole_reason = "Ein Workflow, seine zwei Schemata, sein Szenario-Test und die zwei Dokumente, die ihn nennen — ein Katalog-Eintrag, kein Code"
