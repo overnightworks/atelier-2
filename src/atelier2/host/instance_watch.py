@@ -61,6 +61,7 @@ from atelier2.host.instance_reader import (
     DoorRefused,
     FeedReading,
     InstanceReading,
+    ReaderFailure,
     ReadingBudget,
     ReadRefusal,
     read_instance,
@@ -102,6 +103,7 @@ class WatchFindingKind(StrEnum):
     REDEPLOY_BLOCKED = "REDEPLOY_BLOCKED"
     READING_CUT_SHORT = "READING_CUT_SHORT"
     READER_DIED = "READER_DIED"
+    READER_FAILED = "READER_FAILED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,9 +153,7 @@ def watch_report(
 
     findings = [finding for door in reading.doors for finding in _door_findings(door)]
     findings.extend(_feed_findings(reading.feed))
-    ending = _ending_finding(reading, budget)
-    if ending is not None:
-        findings.append(ending)
+    findings.extend(_reading_findings(reading, budget))
     return WatchReport(
         service_url=service_url,
         endpoints_read=_endpoints_read(reading),
@@ -191,38 +191,80 @@ def _unread_endpoint(reading: InstanceReading) -> str:
     )
 
 
-def _ending_finding(
+def _reading_findings(
     reading: InstanceReading, budget: ReadingBudget
-) -> WatchFinding | None:
-    """Whether the reading itself is a finding.
+) -> tuple[WatchFinding, ...]:
+    """What the reading itself has to answer for.
 
     A report built from a reading that ended early is never a clean report:
     what this command did not get to read, it cannot call healthy. That is
-    true of a deadline, and just as true of a reading process that died --
-    silence from a dead reader must never pass for an instance with nothing
-    to report.
+    true of a deadline, of a reading that broke, and of a reading process that
+    died -- silence from a dead reader must never pass for an instance with
+    nothing to report. The reading's own account of what went wrong comes
+    first, because it is the one that explains the rest: a reader that named
+    its trouble and then left cleanly is not a reader that died.
     """
 
-    if reading.deadline_passed:
-        return WatchFinding(
-            WatchFindingKind.READING_CUT_SHORT,
-            _unread_endpoint(reading),
-            f"this read's whole deadline of {budget.deadline_seconds} seconds "
-            f"passed while the instance was still answering",
+    findings: list[WatchFinding] = []
+    if reading.failure is not None:
+        findings.append(_reader_failed_finding(reading, reading.failure))
+    if not reading.reader_reaped:
+        findings.append(_reader_died_finding(reading, _UNKILLABLE_SENTENCE))
+    elif reading.deadline_passed:
+        findings.append(
+            WatchFinding(
+                WatchFindingKind.READING_CUT_SHORT,
+                _unread_endpoint(reading),
+                f"this read's whole deadline of {budget.deadline_seconds} "
+                f"seconds passed while the instance was still answering",
+            )
         )
-    if reading.reader_ended and reading.reader_exit_code == _CLEAN_EXIT_CODE:
-        return None
+    elif reading.failure is None and not _ended_cleanly(reading):
+        findings.append(
+            _reader_died_finding(
+                reading,
+                f"it ended with code {reading.reader_exit_code} before it had "
+                f"read every door",
+            )
+        )
+    return tuple(findings)
+
+
+def _ended_cleanly(reading: InstanceReading) -> bool:
+    return reading.reader_ended and reading.reader_exit_code == _CLEAN_EXIT_CODE
+
+
+def _reader_died_finding(reading: InstanceReading, why: str) -> WatchFinding:
     return WatchFinding(
         WatchFindingKind.READER_DIED,
         _unread_endpoint(reading),
-        f"the process reading this instance ended with code "
-        f"{reading.reader_exit_code} before it had read every door",
+        f"the process reading this instance: {why}",
+    )
+
+
+def _reader_failed_finding(
+    reading: InstanceReading, failure: ReaderFailure
+) -> WatchFinding:
+    """What the reading said went wrong in itself -- a phase and a category,
+    never a message: an unexpected exception's text is the one place a library
+    or the far side could still write into this report."""
+
+    return WatchFinding(
+        WatchFindingKind.READER_FAILED,
+        _unread_endpoint(reading),
+        f"the process reading this instance ran into trouble it did not "
+        f"expect while {failure.phase.value}: {failure.category.value}",
     )
 
 
 _CLEAN_EXIT_CODE: Final = 0
 """What the reading process comes back with when it read everything it was
 asked to; anything else, including a signal's negative code, is a death."""
+
+_UNKILLABLE_SENTENCE: Final = (
+    "it ignored being stopped and being killed and was still running when "
+    "this report was built"
+)
 
 
 def _door_findings(door: DoorRead | DoorRefused) -> tuple[WatchFinding, ...]:

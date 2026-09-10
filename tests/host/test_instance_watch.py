@@ -21,14 +21,17 @@ import argparse
 import dataclasses
 import gzip
 import json
+import logging
 import multiprocessing
 import os
+import signal
 import socket
 import ssl
 import struct
 import time
 from collections.abc import Callable, Iterator
 from multiprocessing.connection import Connection
+from pathlib import Path
 from threading import Event, Thread
 from typing import Self
 
@@ -55,19 +58,26 @@ from atelier2.host.atelier_api_client import (
     AtelierApiTransportFailure,
     EventSampleOutcome,
     EventSampleTally,
+    TransportFailureCategory,
 )
 from atelier2.host.instance_reader import (
     EVENTS_PATH,
     HEALTH_PATH,
+    MAXIMUM_RESPONSE_BYTES,
     READER_PROCESS_NAME,
+    READER_STOP_GRACE_SECONDS,
     RUN_PATH,
     SEAT_PATH,
     WATCH_ENDPOINTS,
     WORKFLOW_REVISIONS_PATH,
+    DoorRead,
     InstanceReading,
+    ReaderFailure,
+    ReaderPhase,
     ReadingBudget,
     absorb_record,
     read_instance,
+    read_into,
     send_reading,
     supervised_reading,
 )
@@ -1164,9 +1174,15 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
 _DRIBBLE_INTERVAL_SECONDS = 0.02
 _ACCEPT_POLL_SECONDS = 0.05
 _SERVER_JOIN_SECONDS = 5.0
-_FRAME_SETTLE_SECONDS = 0.25
+_FRAME_SETTLE_SECONDS = 1.0
 """Long enough for a reader to have taken a frame off the wire before this
 server tears the connection down under it."""
+
+_HEAD_END = b"\r\n\r\n"
+
+_BODY_THAT_FILLS_THE_CAP = b'{"filler":"' + b"x" * (MAXIMUM_RESPONSE_BYTES - 20) + b'"}'
+"""As much as one bounded read may keep, and more than one read of the pipe
+between the two processes carries."""
 _DEADLINE_TOLERANCE_SECONDS = 10.0
 """How much later than its deadline a reading may return and still count as
 bounded -- generous, because what is proven is that it returns at all, not how
@@ -1175,10 +1191,12 @@ promptly a shared machine schedules a fresh interpreter."""
 _REAL_READ_BUDGET = ReadingBudget(
     deadline_seconds=25.0,
     door_read_timeout_seconds=0.5,
-    event_sample_read_timeout_seconds=0.5,
+    event_sample_read_timeout_seconds=2.0,
 )
 """For a real reading whose own read timeouts are what end it: the deadline is
-wide, because the reading process's start is inside it."""
+wide, because the reading process's start is inside it, and the sample's
+timeout outlasts `_FRAME_SETTLE_SECONDS`, so a server that pauses before
+tearing its connection down is read as a reset rather than as silence."""
 
 _REAL_DEADLINE_BUDGET = ReadingBudget(
     deadline_seconds=5.0,
@@ -1187,6 +1205,20 @@ _REAL_DEADLINE_BUDGET = ReadingBudget(
 )
 """For a real reading only the deadline can end: every read timeout is far
 past it, and the deadline itself is far past the reading process's start."""
+
+_STUBBORN_READER_BUDGET = ReadingBudget(
+    deadline_seconds=4.0,
+    door_read_timeout_seconds=30.0,
+    event_sample_read_timeout_seconds=30.0,
+)
+"""Long enough that the reading process is certainly up and has taken the
+signal it means to ignore before the deadline reaches it."""
+
+_STOP_BUDGET_SECONDS = 3 * READER_STOP_GRACE_SECONDS
+"""The whole stopping: one wait for a clean exit, one after a stop, one after
+a kill."""
+
+_UNUSABLE_ADDRESS = "nowhere-a-client-could-reach"
 
 _CHATTER_REASON_PHRASE = "SENTINEL-REASON-PHRASE"
 _CHATTER_HEADER_VALUE = "SENTINEL-HEADER-VALUE"
@@ -1307,15 +1339,71 @@ def _frame_then_a_reset(connection: socket.socket, stop: Event) -> None:
     """A frame, then the peer vanishes: `SO_LINGER` with a zero timeout makes
     the close a reset rather than a graceful goodbye.
 
-    The wait is what makes the proof about the reset rather than about a race:
-    a reset discards whatever the reader had not taken yet, so the frame is
-    given its moment to be read before the connection is torn down.
+    A reset discards whatever the reader had not taken off the wire yet, so the
+    frame needs its moment first. This waits rather than handshakes because the
+    peer here is the production reading process, which has nothing to say to a
+    test server about what it has read -- a second of loopback traffic is
+    thousands of times what one frame needs.
     """
 
     _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
     stop.wait(_FRAME_SETTLE_SECONDS)
     connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
     connection.close()
+
+
+def _request_path(connection: socket.socket) -> str:
+    """What this connection asked for, so one speaker can answer the doors and
+    the feed differently."""
+
+    head = b""
+    try:
+        connection.settimeout(_SERVER_JOIN_SECONDS)
+        while _HEAD_END not in head:
+            arrived = connection.recv(4_096)
+            if not arrived:
+                break
+            head += arrived
+    except OSError:
+        return ""
+    target = head.split(b"\r\n", 1)[0].split(b" ")
+    return target[1].decode() if len(target) > 1 else ""
+
+
+def _short_json_answer() -> bytes:
+    body = b"{}"
+    return (
+        f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+    ).encode() + body
+
+
+def _half_a_frame_after_a_whole_one(connection: socket.socket, stop: Event) -> None:
+    """The doors answer at once; the feed sends one whole frame and then half
+    of the next, and stops there -- so only the deadline can end the reading,
+    and it ends it while a frame is incomplete."""
+
+    if not _request_path(connection).endswith(EVENTS_PATH):
+        _sent(connection, _short_json_answer())
+        return
+    _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME) + b"data: {half")
+    stop.wait(_SERVER_JOIN_SECONDS)
+
+
+def _answer_a_body_that_fills_the_cap(connection: socket.socket, stop: Event) -> None:
+    """Every door answers as much as a bounded read may keep, which is more
+    than one read of the pipe carries and more than the pipe itself holds --
+    so each record has to be written and reassembled in pieces."""
+
+    del stop
+    body = _BODY_THAT_FILLS_THE_CAP
+    _sent(
+        connection,
+        (
+            f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+        ).encode()
+        + body,
+    )
 
 
 def _frame_then_more_bytes_than_the_cap(connection: socket.socket, stop: Event) -> None:
@@ -1362,6 +1450,8 @@ def _answer_with_a_talkative_status_line(
 
 
 _DELIBERATE_DEATH_CODE = 3
+_UNENDING_SLEEP_SECONDS = 60.0
+_CHATTER_LOG_CHANNEL = "ATELIER2_TEST_CHATTER_LOG"
 
 
 def _exit_before_saying_anything(
@@ -1373,6 +1463,31 @@ def _exit_before_saying_anything(
 
     del connection, service_url, budget
     os._exit(_DELIBERATE_DEATH_CODE)
+
+
+def _ignore_being_stopped(
+    connection: Connection, service_url: str, budget: ReadingBudget
+) -> None:
+    """A reading process that will not go when it is asked: only a kill ends
+    this one, and the stopping must not wait for it to change its mind."""
+
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    del connection, service_url, budget
+    time.sleep(_UNENDING_SLEEP_SECONDS)
+
+
+def _read_with_a_file_handler_on_httpcore(
+    connection: Connection, service_url: str, budget: ReadingBudget
+) -> None:
+    """A reading process that carries the worst case for silence: a handler
+    hung on `httpcore.http11` itself, at `DEBUG`, with that logger's own level
+    set -- so neither a level on its parents nor a filter on the root's
+    handlers could keep a reply's headers out of that file."""
+
+    logger = logging.getLogger("httpcore.http11")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.FileHandler(os.environ[_CHATTER_LOG_CHANNEL]))
+    read_into(connection, service_url, budget)
 
 
 def _reader_processes_alive() -> list[str]:
@@ -1525,6 +1640,107 @@ def test_every_way_a_real_feed_can_end_reaches_the_report(
     assert {
         finding.kind for finding in report.findings if finding.endpoint == EVENTS_PATH
     } == kinds
+
+
+def test_a_reader_that_breaks_names_the_phase_and_leaves_cleanly() -> None:
+    """Trouble the reading did not expect is a record, not a traceback nobody
+    reads: the phase it happened in and a category from this repository's own
+    table, and then a clean exit -- a reader that broke is not a reader that
+    died."""
+
+    reading = supervised_reading(read_into, _UNUSABLE_ADDRESS, _REAL_READ_BUDGET)
+
+    assert reading.failure == ReaderFailure(
+        ReaderPhase.SETUP, TransportFailureCategory.UNCLASSIFIED
+    )
+    assert reading.reader_exit_code == 0
+    assert not reading.reader_ended
+    report = watch_report(_UNUSABLE_ADDRESS, reading, _REAL_READ_BUDGET)
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.READER_FAILED
+    assert ReaderPhase.SETUP.value in finding.detail
+    assert watch_exit_code(report) != 0
+
+
+def test_a_reader_that_will_not_be_stopped_is_killed_and_reported() -> None:
+    """The stopping is bounded whatever the reader does: a process that
+    ignores being told to stop is killed, and the report says the reading did
+    not finish rather than waiting for it."""
+
+    started = time.monotonic()
+    reading = supervised_reading(
+        _ignore_being_stopped, SERVICE_URL, _STUBBORN_READER_BUDGET
+    )
+    elapsed = time.monotonic() - started
+
+    assert reading.deadline_passed
+    assert reading.reader_reaped
+    assert reading.reader_exit_code == -signal.SIGKILL
+    assert _reader_processes_alive() == []
+    assert elapsed < (
+        _STUBBORN_READER_BUDGET.deadline_seconds
+        + _STOP_BUDGET_SECONDS
+        + _DEADLINE_TOLERANCE_SECONDS
+    )
+    report = watch_report(SERVICE_URL, reading, _STUBBORN_READER_BUDGET)
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.READING_CUT_SHORT
+    }
+
+
+def test_nothing_the_reading_process_touches_can_log_a_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reading process is private: nothing in it may log at all, whoever
+    asks. Proven against a real reply, with a file handler hung on the very
+    logger that carries a reply's headers."""
+
+    chatter = tmp_path / "chatter.log"
+    monkeypatch.setenv(_CHATTER_LOG_CHANNEL, str(chatter))
+
+    with _LoopbackServer(_answer_with_a_talkative_status_line) as server:
+        reading = supervised_reading(
+            _read_with_a_file_handler_on_httpcore, server.url, _REAL_READ_BUDGET
+        )
+
+    assert reading.reader_ended
+    assert len(reading.doors) == len(WATCH_ENDPOINTS) - 1
+    assert chatter.read_bytes() == b""
+
+
+def test_a_deadline_during_half_a_frame_keeps_every_whole_record() -> None:
+    """A frame the feed only half sent is no record at all, and waiting for
+    the rest of it is exactly what a deadline must not do: the frame before it
+    is in the report, the reading is named as cut short, and nothing raised."""
+
+    with _LoopbackServer(_half_a_frame_after_a_whole_one) as server:
+        served_url = server.url
+        reading = read_instance(served_url, _REAL_DEADLINE_BUDGET)
+
+    report = watch_report(served_url, reading, _REAL_DEADLINE_BUDGET)
+    assert reading.deadline_passed
+    assert report.attention_feed_sample.frames_read == 1
+    assert report.attention_feed_sample.outcome is EventSampleOutcome.INTERRUPTED
+    assert EVENTS_PATH in report.endpoints_read
+    assert {WatchFindingKind.STREAM_FAILED, WatchFindingKind.READING_CUT_SHORT} <= {
+        finding.kind for finding in report.findings
+    }
+    assert _reader_processes_alive() == []
+
+
+def test_an_answer_larger_than_one_read_of_the_pipe_arrives_whole() -> None:
+    """Every door answering as much as a bounded read may keep: each record is
+    larger than one read of the pipe and larger than the pipe's own buffer, so
+    the reporting process only ever sees pieces -- and must hand back exactly
+    what the reading read."""
+
+    with _LoopbackServer(_answer_a_body_that_fills_the_cap) as server:
+        reading = read_instance(server.url, _REAL_READ_BUDGET)
+
+    assert reading.reader_ended
+    assert [
+        len(door.answer.body) for door in reading.doors if isinstance(door, DoorRead)
+    ] == [len(_BODY_THAT_FILLS_THE_CAP)] * (len(WATCH_ENDPOINTS) - 1)
 
 
 def test_no_transport_chatter_reaches_the_output_of_this_command(

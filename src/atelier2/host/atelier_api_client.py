@@ -414,14 +414,17 @@ _HTTPX_CLASSES: Final[
 """What httpx's own class says when nothing underneath it did."""
 
 
-def _failure_category(error: httpx.HTTPError) -> TransportFailureCategory:
+def failure_category(error: BaseException) -> TransportFailureCategory:
     """Which category `error` belongs to: what it was raised from first,
     because the operating system is more specific than the wrappers above it.
 
     Both links are followed. httpx chains its own wrapper explicitly
     (`__cause__`), while httpcore re-raises inside the original's handler and
     leaves only `__context__`, so a refused port would otherwise be
-    indistinguishable from a name that does not resolve.
+    indistinguishable from a name that does not resolve. Any exception may be
+    asked, not only httpx's own: a caller that has to name something it did
+    not expect at all needs the same fixed vocabulary, and what this table
+    does not recognize is `unclassified`.
     """
 
     pending: deque[BaseException] = deque([error])
@@ -454,7 +457,7 @@ def _transport_unavailable(
     """
 
     return AtelierApiTransportFailure(
-        url, f"transport failure: {_failure_category(error)}"
+        url, f"transport failure: {failure_category(error)}"
     )
 
 

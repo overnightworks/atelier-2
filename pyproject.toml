@@ -249,6 +249,16 @@ unmatched_ignore_imports_alerting = "error"
 # sweep must end its own turn rather than the tick that runs it.
 "src/atelier2/adapters/dbos/runtime.py" = ["BLE001"]
 
+# The watched instance is read in a child process whose only reader is a pipe:
+# an exception it does not catch is a traceback nobody sees and a report that
+# never arrives, so every failure of its own -- setup, reading, cleanup --
+# becomes a record naming the phase and a category from the transport table.
+# Narrowing the classes would decide in advance what a reader may break on,
+# which is the opposite of what this boundary is for. Proven by
+# tests/host/test_instance_watch.py: a reader that breaks is reported as
+# READER_FAILED, never as a clean instance.
+"src/atelier2/host/instance_reader.py" = ["BLE001"]
+
 # The provider layer is a sibling repository pinned by commit, not a PyPI
 # release, and a direct reference is the only form that states one exact tree.
 [tool.hatch.metadata]

@@ -601,10 +601,10 @@ finding is one of: that; a `STREAM_FAILED` frame on the attention feed; a
 `RUN_PROJECTION_CORRUPT` frame; a seat that is not `ALIVE`;
 `health.redeploy` present (its absence is clean); the service unreachable;
 an attention feed that told the read nothing usable; the reading having been
-cut short; or the process that read having died. A limit reached after a real
-frame is named in the report without being raised as a finding. Exit is 0
-with an empty report, non-zero otherwise. This slice reads only what a test
-double or a test server serves it; reading the live instance itself waits on
+cut short; or the process that read having died or broken. A limit reached
+after a real frame is named in the report without being raised as a finding.
+Exit is 0 with an empty report, non-zero otherwise. This slice reads only what
+a test double or a test server serves it; reading the live instance waits on
 the operator's ruling on the observer contract that #1046 opens.
 
 One call is two halves in two processes. The reading runs in a child process
@@ -618,7 +618,11 @@ a finding naming where it stood, so an instance the observer could not finish
 reading is never called clean. The same is true of a reader that died: a
 process that ended without its last word is a finding of its own, named with
 the code it died with, because silence from a dead reader must never pass for
-an instance with nothing to say.
+an instance with nothing to say. Trouble the reading did not expect is its own
+finding as well -- the phase it happened in (`setup`, `reading`, or `cleanup`)
+and a category, never a message -- and a cleanup that failed after every door
+was already reported says exactly that instead of reading as a reading that
+never finished.
 
 A process rather than a timer, because a deadline that has to interrupt a
 blocking read from inside can only do it by throwing into somebody else's
@@ -626,14 +630,30 @@ code: an exception landing in httpx's connection pool leaves that lock held
 and deadlocks the observer before it can report. A child cannot do that. Past
 the deadline it is terminated, killed if it does not go, and reaped, and the
 operating system reclaims every socket and lock it held; nothing but records
-ever crosses into the process that reports. It is started with `spawn`, so no
-lock, logger, socket, or open file of the reporting process is inherited --
-which costs a fresh interpreter's start (measured at about 1.2 s, the bulk of
-it importing `atelier2.host`), counted inside the deadline rather than added
-to it. The report names the budget it ran on (`budget`: `deadline_seconds`,
+ever crosses into the process that reports. Every wait in that stopping is
+short and bounded, and a process that survives even a kill is reported as
+still running rather than waited for. It cannot outlive the watch either: it
+is daemonic, and it asks the kernel to kill it if the process that reads its
+report is gone. It is started with `spawn`, so no lock, logger, socket, or
+open file of the reporting process is inherited -- which costs a fresh
+interpreter's start (measured at about 1.2 s, the bulk of it importing
+`atelier2.host`), counted inside the deadline rather than added to it. Because
+that start re-imports whichever module began the process, a library caller of
+`read_instance` needs an importable main module that does not run its work on
+import; `atelier2/__main__.py` guards its own entry for exactly this reason.
+The report names the budget it ran on (`budget`: `deadline_seconds`,
 `door_read_timeout_seconds`, `event_sample_read_timeout_seconds`); the
 per-read timeouts bound one read within the deadline, which is what tells a
 feed that went quiet from one that hangs.
+
+Both ends frame that pipe themselves, a length and then the record. What is
+readable at the reporting end is whatever the reading has written so far, not
+necessarily a whole record: reading it as one would block past the deadline
+waiting for the rest, and a reader dying mid-record would raise instead of
+reporting. So the reporting process reads without blocking against the time
+the reading has left, keeps what arrives, and decodes only complete frames --
+a half-written record is simply never a record, and everything before it
+stands.
 
 The attention feed never ends on its own, so it is sampled, not followed, and
 it is sampled last, because it is the one read that can spend the whole
