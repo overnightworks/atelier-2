@@ -1,0 +1,7 @@
+claim_id = "e22f74c7f87d4a528dad2e8793595ee9"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1501-unknown-query-params"
+scope = ["src/atelier2/api/app.py", "src/atelier2/api/problem_vocabulary.py"]
+opened_commit = "af31a8f0308d9c1497e44113b2b9f697b10af7fa"
