@@ -515,6 +515,8 @@ class RoleModelResolutionResource(ApiModel):
             "workflow-model-ambiguous",
             "model-not-in-node-mode",
             "no-project-default",
+            "project-default-model-ambiguous",
+            "role-modes-conflict",
             "family-difference-unavailable",
         ]
         | None
@@ -1604,6 +1606,8 @@ class UncastRoleResource(ApiModel):
         "workflow-model-ambiguous",
         "model-not-in-node-mode",
         "no-project-default",
+        "project-default-model-ambiguous",
+        "role-modes-conflict",
         "family-difference-unavailable",
     ]
     family_differs_from: str | None = Field(

@@ -124,6 +124,53 @@ nodes:
     difficulty: 2
 """ + declared_output()
 
+ONE_ROLE_IN_TWO_MODES_DOCUMENT = (
+    b"""format_version: 3
+name: One role asked for two modes
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the candidate.
+    difficulty: 2
+"""
+    + declared_output()
+    + b"""  - id: polish
+    type: agent
+    role: builder
+    mode: headless_with_tools
+    instruction: Polish the candidate.
+    difficulty: 2
+    depends_on: [implement]
+"""
+    + declared_output()
+)
+
+EASY_FAMILY_DOCUMENT = (
+    b"""format_version: 3
+name: Two related roles, both easy
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Build the candidate.
+    difficulty: 1
+    family_differs_from: reviewer
+"""
+    + declared_output()
+    + b"""  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Review the candidate.
+    difficulty: 1
+    depends_on: [implement]
+"""
+    + declared_output()
+)
+
 TWO_ROLE_DOCUMENT = (
     b"""format_version: 3
 name: Two configured roles
@@ -208,8 +255,10 @@ nodes:
 )
 
 
-@pytest.fixture
-def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
+def started_runtime(
+    tmp_path: Path, providers: tuple[str, ...]
+) -> Iterator[DbosRuntime]:
+    """One runtime whose atelier can run an executor of each named provider."""
     project_root = tmp_path / "project"
     git_project(project_root, declaring_verification(["true"]))
     started = DbosRuntime(
@@ -225,10 +274,14 @@ def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntim
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
-        (
+        tuple(
             RecordingAgentExecutorFactoryV2(
-                "exact", "exact/v1", "exact-operation", b'"the exact bytes"'
-            ),
+                provider,
+                f"{provider}/v1",
+                f"{provider}-operation",
+                b'"the exact bytes"',
+            )
+            for provider in providers
         ),
     )
     started.initialize_storage()
@@ -236,6 +289,18 @@ def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntim
         yield started
     finally:
         started.close()
+
+
+@pytest.fixture
+def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
+    yield from started_runtime(tmp_path, ("exact",))
+
+
+@pytest.fixture
+def three_provider_runtime(
+    tmp_path: Path, dbos_logging_isolation: None
+) -> Iterator[DbosRuntime]:
+    yield from started_runtime(tmp_path, ("exact", "openai", "anthropic"))
 
 
 def publish_workflow(
@@ -262,12 +327,19 @@ def publish_configuration(
     runtime: DbosRuntime,
     model: str,
     capability: AgentExecutionCapability = AgentExecutionCapability.HEADLESS,
+    provider: str = "exact",
+    profile_id: str | None = None,
 ) -> AgentConfigurationRevisionHash:
     """One published agent configuration a project default or caller can name."""
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )
-    auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
+    auth = AuthProfileRevision(
+        provider if profile_id is None else profile_id,
+        1,
+        ProviderId(provider),
+        AuthMode.SUBSCRIPTION,
+    )
     assert isinstance(
         catalog.publish_auth_profile_revision(auth),
         (AuthProfileRevisionCreated, AuthProfileRevisionExisting),
@@ -275,7 +347,7 @@ def publish_configuration(
     configuration = AgentConfigurationRevision(
         model,
         auth.revision_hash,
-        AgentExecutorRevision("exact/v1"),
+        AgentExecutorRevision(f"{provider}/v1"),
         capability,
         AgentConfigurationRevisionFormatVersion.V2,
     )
@@ -333,6 +405,56 @@ def configure_defaults(
         )
     )
     assert isinstance(published_defaults, ProjectModelDefaultsRevisionCreated)
+
+
+def configure_defaults_across_providers(
+    runtime: DbosRuntime,
+    steps: tuple[tuple[int, str, str, AgentConfigurationRevisionHash], ...],
+) -> None:
+    """One registry per provider, and one default row per difficulty over them.
+
+    Difficulty steps that reach for different providers are what a family rule
+    needs to have anything to choose between.
+    """
+    channel = DbosHostConfigurationChannel(runtime.engine)
+    registries: dict[str, ModelRegistryRevision] = {}
+    for _difficulty, provider, model, configuration in steps:
+        held = registries[provider].entries if provider in registries else ()
+        registries[provider] = ModelRegistryRevision(
+            ProviderId(provider),
+            1,
+            held
+            + (
+                ModelRegistryEntry(
+                    model,
+                    configuration,
+                    ModelRegistryEntrySource.OPERATOR,
+                    ProviderModelCheck.CHECKED,
+                ),
+            ),
+        )
+    for registry in registries.values():
+        assert isinstance(
+            channel.publish_model_registry_revision(registry),
+            ModelRegistryRevisionCreated,
+        )
+    published = channel.publish_project_model_defaults_revision(
+        ProjectModelDefaultsRevision(
+            SERVED_PROJECT,
+            1,
+            tuple(
+                ProjectModelDefault(
+                    cast(RoleDifficulty, difficulty),
+                    registries[provider].revision_hash,
+                    ProviderId(provider),
+                    model,
+                    configuration,
+                )
+                for difficulty, provider, model, configuration in steps
+            ),
+        )
+    )
+    assert isinstance(published, ProjectModelDefaultsRevisionCreated)
 
 
 def admit_queue_item(runtime: DbosRuntime, lineage_id: CatalogLineageId) -> None:
@@ -720,6 +842,84 @@ def test_an_exact_binding_override_is_cast_as_it_was_written(
         tool_bearing.value
     )
     assert resolution.json()["resolutions"][0]["source"] == "chosen-now"
+
+
+def test_a_role_its_nodes_ask_for_in_two_modes_is_uncast_by_that_contradiction(
+    runtime: DbosRuntime,
+) -> None:
+    revision, _lineage_id = publish_workflow(runtime, ONE_ROLE_IN_TWO_MODES_DOCUMENT)
+    headless = publish_configuration(runtime, "opus")
+    tool_bearing = publish_configuration(
+        runtime, "opus", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    configure_defaults(
+        runtime, ((2, "opus", headless),), also_registered=(("opus", tool_bearing),)
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    refused = conductor_start(client, "conductor/two-modes", revision)
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["uncast_roles"] == [
+        {"role": "builder", "reason": "role-modes-conflict"}
+    ]
+    assert run_ids(runtime.engine) == []
+
+
+def test_a_mode_gap_ends_the_difficulty_walk_instead_of_being_stepped_over(
+    three_provider_runtime: DbosRuntime,
+) -> None:
+    """No step is reached over a step whose model cannot fill the node's mode."""
+    runtime = three_provider_runtime
+    revision, _lineage_id = publish_workflow(runtime, EASY_FAMILY_DOCUMENT)
+    small = publish_configuration(runtime, "small")
+    middle = publish_configuration(
+        runtime,
+        "middle",
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+        provider="openai",
+    )
+    large = publish_configuration(runtime, "large", provider="anthropic")
+    configure_defaults_across_providers(
+        runtime,
+        (
+            (1, "exact", "small", small),
+            (2, "openai", "middle", middle),
+            (3, "anthropic", "large", large),
+        ),
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    resolution = resolve(client, revision)
+
+    assert resolution.status_code == 200, resolution.text
+    assert {
+        item["role"]: (item["agent_configuration_revision_hash"], item["uncast_reason"])
+        for item in resolution.json()["resolutions"]
+    } == {
+        "builder": (None, "family-difference-unavailable"),
+        "reviewer": (small.value, None),
+    }
+
+
+def test_two_configurations_of_a_step_model_in_one_mode_are_named_ambiguous(
+    runtime: DbosRuntime,
+) -> None:
+    revision, _lineage_id = publish_workflow(runtime)
+    chosen = publish_configuration(runtime, "opus")
+    twin = publish_configuration(runtime, "opus", profile_id="second-account")
+    configure_defaults(
+        runtime, ((2, "opus", chosen),), also_registered=(("opus", twin),)
+    )
+    client = durable_api_client(runtime, served_project_id=SERVED_PROJECT)
+
+    refused = conductor_start(client, "conductor/ambiguous-mode", revision)
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["uncast_roles"] == [
+        {"role": "builder", "reason": "project-default-model-ambiguous"}
+    ]
+    assert run_ids(runtime.engine) == []
 
 
 def test_a_role_with_no_default_or_higher_default_is_uncast_and_refused(

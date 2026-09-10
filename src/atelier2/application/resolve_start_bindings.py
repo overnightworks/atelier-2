@@ -394,17 +394,18 @@ class _ComponentSearch:
         }
 
 
-def _declared_modes(graph: WorkflowGraphV3) -> dict[str, AgentMode]:
-    """The mode each role is asked to be filled in.
+def _declared_modes(graph: WorkflowGraphV3) -> dict[str, frozenset[AgentMode]]:
+    """Every mode each role is asked to be filled in.
 
-    A role is the casting unit and a mode belongs to a node, so a document
-    whose nodes ask one role for two modes has no single occupation to cast at
-    all; the last of them is read here, and the mismatch each node carries is
-    answered against the node itself, where it can be named.
+    A role is the casting unit and a mode belongs to a node, so the answer is
+    what all of a role's nodes ask for together: a document asking one role for
+    two modes is answered as the contradiction it is, never by one of them.
     """
-    return {
-        node.role: node.mode for node in graph.nodes if isinstance(node, AgentNodeV3)
-    }
+    asked: dict[str, set[AgentMode]] = {}
+    for node in graph.nodes:
+        if isinstance(node, AgentNodeV3):
+            asked.setdefault(node.role, set()).add(node.mode)
+    return {role: frozenset(modes) for role, modes in asked.items()}
 
 
 def _choices_by_role(

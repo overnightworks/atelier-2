@@ -139,7 +139,7 @@ export const RoleModelResolutionResource = zod.strictObject({
   "model_id": zod.union([zod.string().min(1).max(roleModelResolutionResourceModelIdOneMax).regex(roleModelResolutionResourceModelIdOneRegExp),zod.null()]),
   "role": zod.string().min(1).max(roleModelResolutionResourceRoleMax),
   "source": zod.enum(['chosen-now', 'pinned-in-workflow', 'from-project', 'uncast']),
-  "uncast_reason": zod.union([zod.enum(['override-not-registered', 'workflow-model-not-registered', 'workflow-model-ambiguous', 'model-not-in-node-mode', 'no-project-default', 'family-difference-unavailable']),zod.null()])
+  "uncast_reason": zod.union([zod.enum(['override-not-registered', 'workflow-model-not-registered', 'workflow-model-ambiguous', 'model-not-in-node-mode', 'no-project-default', 'project-default-model-ambiguous', 'role-modes-conflict', 'family-difference-unavailable']),zod.null()])
 });
 
 export type RoleModelResolutionResource = zod.input<typeof RoleModelResolutionResource>;

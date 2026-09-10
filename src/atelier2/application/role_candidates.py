@@ -240,10 +240,10 @@ def _project_default_choices(
 ) -> _RoleChoices:
     """Project defaults from this difficulty upward, each read in the node's mode.
 
-    The role's own step names its model, so a model answering no single
-    configuration in this mode leaves the role uncast rather than reaching for
-    another capability or another step; a higher step only ever widens what a
-    family rule may choose between.
+    A step whose model answers no single configuration in this mode ends the
+    walk: no higher step is reached over that gap, so nothing is filled in
+    another capability and no step is skipped for one. Steps already gathered
+    below the gap stand, because a family rule still chooses between them.
     """
     if defaults is None:
         return _RoleChoices((), ModelResolutionUncastReason.NO_PROJECT_DEFAULT)
@@ -251,6 +251,7 @@ def _project_default_choices(
         default.difficulty: default for default in defaults.defaults
     }
     choices: list[_ModelCandidate] = []
+    gap: ModelResolutionUncastReason | None = None
     for typed_difficulty in (1, 2, 3):
         if typed_difficulty < declared_difficulty:
             continue
@@ -261,34 +262,49 @@ def _project_default_choices(
         if not of_model:
             continue
         in_mode = _in_node_mode(of_model, mode, configurations)
-        if len(in_mode) == 1:
-            choices.append(
-                replace(
-                    in_mode[0],
-                    source=ModelResolutionSource.FROM_PROJECT,
-                    difficulty=typed_difficulty,
-                )
+        if len(in_mode) != 1:
+            gap = (
+                ModelResolutionUncastReason.PROJECT_DEFAULT_MODEL_AMBIGUOUS
+                if in_mode
+                else ModelResolutionUncastReason.MODEL_NOT_IN_NODE_MODE
             )
-        elif not choices:
-            return _RoleChoices((), ModelResolutionUncastReason.MODEL_NOT_IN_NODE_MODE)
-    if not choices:
-        return _RoleChoices((), ModelResolutionUncastReason.NO_PROJECT_DEFAULT)
-    return _RoleChoices(tuple(choices), None)
+            break
+        choices.append(
+            replace(
+                in_mode[0],
+                source=ModelResolutionSource.FROM_PROJECT,
+                difficulty=typed_difficulty,
+            )
+        )
+    if choices:
+        return _RoleChoices(tuple(choices), None)
+    return _RoleChoices(
+        (), ModelResolutionUncastReason.NO_PROJECT_DEFAULT if gap is None else gap
+    )
 
 
 def _candidate_choices(
     declaration: DeclaredRole,
-    mode: AgentMode,
+    modes: frozenset[AgentMode],
     requested_by_role: dict[str, AgentBinding],
     configurations: Mapping[AgentConfigurationRevisionHash, RegisteredConfiguration],
     defaults: ProjectModelDefaultsRevision | None,
     registries: tuple[ModelRegistryRevision, ...],
 ) -> _RoleChoices:
-    """Who may occupy this role: override, then pin, then project defaults."""
+    """Who may occupy this role: override, then pin, then project defaults.
+
+    A pin and a default are chosen in the mode the role's nodes ask for, so a
+    role whose nodes ask for two has nothing to choose in: one configuration
+    cannot run in both, and saying so is the only honest answer. An override
+    names an exact configuration and needs no mode at all.
+    """
     registered = _eligible_registry_candidates(registries)
     requested = requested_by_role.get(declaration.role)
     if requested is not None:
         return _override_choices(requested, registered, configurations)
+    if len(modes) > 1:
+        return _RoleChoices((), ModelResolutionUncastReason.ROLE_MODES_CONFLICT)
+    mode = next(iter(modes))
     if declaration.model is not None:
         return _pinned_model_choices(
             declaration.model, mode, registered, configurations
