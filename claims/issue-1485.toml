@@ -1,8 +1,0 @@
-claim_id = "3eecaffd019f4daa9d39ed05c4160bf4"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "1dcda12fcbef99532941314a8461b04ca0742647"
-branch = "claude/issue-1485-catalog-paging"
-scope = ["frontend/src/api/client.ts", "frontend/tests/api"]
-opened_commit = "4c3d568f5b8c436189dd78225760903598038c7f"
-whole_reason = "Eine Zeile und der Test, der sie haelt."
