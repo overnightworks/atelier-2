@@ -18,12 +18,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
 from pydantic import ValidationError
 
+from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.seat import SeatState
 from atelier2.api.wire.resources import (
     DurableStateCorruptProblemResource,
@@ -38,6 +40,7 @@ from atelier2.host.atelier_api_client import (
     AtelierApi,
     AtelierApiAddressUnusable,
     AtelierApiTransportFailure,
+    BoundedResponse,
     opened_api,
 )
 from atelier2.host.run_command import (
@@ -56,7 +59,12 @@ exit 0 when nothing was found, non-empty and a non-zero exit otherwise.
 """
 
 REQUEST_TIMEOUT_SECONDS: Final = 5.0
-"""How long one plain GET among the fixed endpoints may take."""
+"""How long one plain GET among the fixed endpoints may take -- its read
+timeout and its whole wall-clock budget alike, since it is one bounded read,
+never a stream this call keeps sampling."""
+
+MAXIMUM_RESPONSE_BYTES: Final = 65_536
+"""How much of any one fixed endpoint's answer this call ever buffers."""
 
 EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS: Final = 2.0
 """The read timeout on every chunk of the attention-feed sample; a silent
@@ -97,6 +105,7 @@ class WatchFindingKind(StrEnum):
     STREAM_FAILED = STREAM_FAILURE_NAME
     RUN_PROJECTION_CORRUPT = RUN_PROJECTION_CORRUPT_NAME
     STREAM_SAMPLE_UNREADABLE = "STREAM_SAMPLE_UNREADABLE"
+    STREAM_CLOSED_EARLY = "STREAM_CLOSED_EARLY"
     SEAT_NOT_ALIVE = "SEAT_NOT_ALIVE"
     REDEPLOY_BLOCKED = "REDEPLOY_BLOCKED"
 
@@ -116,6 +125,11 @@ class WatchReport:
     service_url: str
     endpoints_read: tuple[str, ...]
     findings: tuple[WatchFinding, ...]
+    attention_feed_sample: str
+    """Why the attention-feed sample itself stopped -- `frame-limit`,
+    `byte-limit`, `overall-deadline`, `silent`, or `closed-early` -- named
+    here even on a clean report, since "this call saw nothing" and "this
+    call saw a healthy feed" are not the same claim."""
 
 
 def watch_instance(service_url: str, *, api: AtelierApi | None = None) -> WatchReport:
@@ -134,27 +148,68 @@ def watch_instance(service_url: str, *, api: AtelierApi | None = None) -> WatchR
 
 
 def _watched(service_url: str, api: AtelierApi) -> WatchReport:
+    event_findings, attention_feed_sample = _event_sample(api)
     findings: list[WatchFinding] = [
         *_health_findings(api),
         *_seat_findings(api),
         *_listing_findings(api, RUN_PATH),
         *_listing_findings(api, WORKFLOW_REVISIONS_PATH),
-        *_event_sample_findings(api),
+        *event_findings,
     ]
     return WatchReport(
         service_url=service_url,
         endpoints_read=WATCH_ENDPOINTS,
         findings=tuple(findings),
+        attention_feed_sample=attention_feed_sample,
+    )
+
+
+def _endpoint_findings(
+    api: AtelierApi,
+    endpoint: str,
+    decode: Callable[[bytes], tuple[WatchFinding, ...]],
+) -> tuple[WatchFinding, ...]:
+    """Read one fixed endpoint on a budget and classify what it answered.
+
+    A problem document is a finding wherever it appears, independent of the
+    status that carried it: a 2xx body that is secretly one of this API's own
+    problem documents is exactly as real as a non-2xx one, so both are
+    recognized before `decode` -- the endpoint's own published shape -- ever
+    sees a body at all.
+    """
+
+    try:
+        answered = api.bounded_get(
+            endpoint,
+            request_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+            overall_deadline_seconds=REQUEST_TIMEOUT_SECONDS,
+            maximum_bytes=MAXIMUM_RESPONSE_BYTES,
+        )
+    except AtelierApiTransportFailure as failure:
+        return (_refusal_finding(endpoint, failure),)
+    problem = _problem_finding(endpoint, answered.body)
+    if problem is not None:
+        return (problem,)
+    if not 200 <= answered.status < 300:
+        return (_status_finding(endpoint, answered),)
+    return decode(answered.body)
+
+
+def _status_finding(endpoint: str, answered: BoundedResponse) -> WatchFinding:
+    return WatchFinding(
+        WatchFindingKind.RESPONSE_REFUSED,
+        endpoint,
+        f"answered {answered.status} without one of this API's own problem documents",
     )
 
 
 def _health_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
+    return _endpoint_findings(api, HEALTH_PATH, _health_decoded)
+
+
+def _health_decoded(body: bytes) -> tuple[WatchFinding, ...]:
     try:
-        answered = api.get(HEALTH_PATH, timeout=REQUEST_TIMEOUT_SECONDS)
-    except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(HEALTH_PATH, failure),)
-    try:
-        health = HealthResource.model_validate_json(answered)
+        health = HealthResource.model_validate_json(body)
     except ValidationError as error:
         return (_unreadable_finding(HEALTH_PATH, error),)
     if health.redeploy is None:
@@ -169,12 +224,12 @@ def _health_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
 
 
 def _seat_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
+    return _endpoint_findings(api, SEAT_PATH, _seat_decoded)
+
+
+def _seat_decoded(body: bytes) -> tuple[WatchFinding, ...]:
     try:
-        answered = api.get(SEAT_PATH, timeout=REQUEST_TIMEOUT_SECONDS)
-    except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(SEAT_PATH, failure),)
-    try:
-        seat = SeatResource.model_validate_json(answered)
+        seat = SeatResource.model_validate_json(body)
     except ValidationError as error:
         return (_unreadable_finding(SEAT_PATH, error),)
     if seat.state is SeatState.ALIVE:
@@ -185,14 +240,26 @@ def _seat_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
 
 
 def _listing_findings(api: AtelierApi, endpoint: str) -> tuple[WatchFinding, ...]:
-    try:
-        api.get(endpoint, timeout=REQUEST_TIMEOUT_SECONDS)
-    except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(endpoint, failure),)
-    return ()
+    return _endpoint_findings(api, endpoint, lambda _body: ())
 
 
-def _event_sample_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
+def _event_sample(api: AtelierApi) -> tuple[tuple[WatchFinding, ...], str]:
+    """The attention-feed sample's own findings, and why the sample stopped.
+
+    A feed the cockpit already trusts to never end on its own can stop this
+    call three honest ways: it hit one of this call's own limits (frame,
+    byte, or deadline) -- a fact about the sample, not the feed, so it is
+    named in the report but is never itself a finding; it went quiet within
+    a read's own timeout, `silent` -- also expected of an idle feed, so it
+    too is named but not raised; or the connection itself ended before any
+    of those did. That last one is the one case this call cannot explain as
+    its own choice: a feed that closes having sent nothing at all is the
+    strongest honest signal something is wrong, so that combination alone is
+    a finding. A close after real frames already arrived is still named as
+    `closed-early` in the report -- an operator reading it is not left
+    guessing -- without being raised as a finding on its own.
+    """
+
     try:
         sample = api.sampled_event_frames(
             EVENTS_PATH,
@@ -203,10 +270,22 @@ def _event_sample_findings(api: AtelierApi) -> tuple[WatchFinding, ...]:
             maximum_frames=EVENT_SAMPLE_MAXIMUM_FRAMES,
         )
     except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(EVENTS_PATH, failure),)
-    return tuple(
+        return (_refusal_finding(EVENTS_PATH, failure),), "unreachable"
+    findings = [
         finding for frame in sample.frames for finding in _frame_findings(frame)
-    )
+    ]
+    if sample.stopped is not None:
+        return tuple(findings), sample.stopped.value
+    if not sample.frames:
+        findings.append(
+            WatchFinding(
+                WatchFindingKind.STREAM_CLOSED_EARLY,
+                EVENTS_PATH,
+                "the attention feed is documented to never end on its own; "
+                "this read's connection closed before it ever sent a byte",
+            )
+        )
+    return tuple(findings), "closed-early"
 
 
 def _frame_findings(data: str) -> tuple[WatchFinding, ...]:
@@ -240,7 +319,8 @@ def _frame_findings(data: str) -> tuple[WatchFinding, ...]:
         return _stream_failed_finding(data)
     if kind == RUN_PROJECTION_CORRUPT_NAME:
         return _run_projection_corrupt_finding(data)
-    return ()
+    problem = _problem_finding(EVENTS_PATH, data.encode())
+    return () if problem is None else (problem,)
 
 
 def _stream_failed_finding(data: str) -> tuple[WatchFinding, ...]:
@@ -275,7 +355,27 @@ def _run_projection_corrupt_finding(data: str) -> tuple[WatchFinding, ...]:
 def _problem_sentence(
     problem: ProblemResource | DurableStateCorruptProblemResource,
 ) -> str:
-    return f"{problem.status} {problem.title}: {problem.detail}"
+    """Type and title only -- never `.detail`, which is free text this API's
+    own routes write from the answer they are building, not a value pinned
+    to a published, checked vocabulary the way `type`, `title`, and `status`
+    are."""
+
+    return f"{problem.status} {problem.title} [{problem.type}]"
+
+
+def _problem_finding(endpoint: str, body: bytes) -> WatchFinding | None:
+    """Whether `body` is one of this API's own problem documents -- checked
+    on every body this reads, independent of whatever status carried it."""
+
+    try:
+        problem = ProblemResource.model_validate_json(body)
+    except ValidationError:
+        return None
+    if not problem.type.startswith(PROBLEM_TYPE_PREFIX):
+        return None
+    return WatchFinding(
+        WatchFindingKind.RESPONSE_REFUSED, endpoint, _problem_sentence(problem)
+    )
 
 
 def _refusal_finding(
@@ -285,25 +385,38 @@ def _refusal_finding(
         return WatchFinding(
             WatchFindingKind.SERVICE_UNREACHABLE, endpoint, failure.reason
         )
-    try:
-        problem = ProblemResource.model_validate_json(failure.body)
-    except ValidationError:
-        return WatchFinding(
-            WatchFindingKind.RESPONSE_REFUSED,
-            endpoint,
-            f"{failure.status} {failure.reason}",
-        )
+    problem = _problem_finding(endpoint, failure.body)
+    if problem is not None:
+        return problem
     return WatchFinding(
-        WatchFindingKind.RESPONSE_REFUSED, endpoint, _problem_sentence(problem)
+        WatchFindingKind.RESPONSE_REFUSED,
+        endpoint,
+        f"{failure.status} {failure.reason}",
     )
 
 
 def _unreadable_finding(endpoint: str, error: ValidationError) -> WatchFinding:
+    """A diagnosis of *why* a body did not read as its published contract --
+    the field path and the error kind, never a value: pydantic's own
+    `ValidationError` embeds the offending input (and, for a `missing` field,
+    every sibling value the document carried) in both its message and its
+    `errors()` entries, which would hand a document's own secret back out
+    through this report.
+    """
+
+    issues = error.errors()
+    fields = ", ".join(_field_path(issue["loc"]) for issue in issues)
+    kinds = ", ".join(sorted({str(issue["type"]) for issue in issues}))
     return WatchFinding(
         WatchFindingKind.RESPONSE_REFUSED,
         endpoint,
-        f"the service answered something this cannot read: {error}",
+        f"the service answered something that does not read as its "
+        f"published contract: field(s) {fields} ({kinds})",
     )
+
+
+def _field_path(location: tuple[object, ...]) -> str:
+    return ".".join(str(part) for part in location) if location else "<root>"
 
 
 def add_watch_parser(
@@ -344,6 +457,7 @@ def _report_document(report: WatchReport) -> dict[str, object]:
     return {
         "service_url": report.service_url,
         "endpoints_read": list(report.endpoints_read),
+        "attention_feed_sample": report.attention_feed_sample,
         "findings": [
             {
                 "kind": finding.kind,

@@ -588,18 +588,32 @@ blocks the restart, whatever that intent's own recorded state.
 `atelier2 watch --service URL` is a read-only observer, not a client of any
 one feature: it GETs a fixed list of paths -- `/health`, `/seat`, `/runs`,
 `/workflow-revisions`, and a bounded sample of `/events` -- and prints one
-JSON report of typed findings to stdout. Every finding is one of: a non-2xx
-or problem-document answer on a listed path; a `STREAM_FAILED` frame on the
-attention feed; a `RUN_PROJECTION_CORRUPT` frame, with its run reference; a
-seat that is not `ALIVE`; `health.redeploy` present (its absence is clean);
-or the service unreachable. The attention feed never ends on its own, so it
-is sampled, not followed: a request timeout per chunk, an overall deadline, a
-byte cap, and a frame cap each stop the read on their own and are never a
-hang. The report never carries the seat's own terminal address (it holds the
-terminal's access token, `served_seat.py`), only its state. Exit is 0 with an
-empty report, non-zero otherwise. This slice reads only what a test double
-serves it; reading the live instance itself waits on the operator's ruling
-on the observer contract that #1046 opens.
+JSON report of typed findings to stdout. A problem document is a finding
+wherever it appears, independent of the status that carried it: a 200 that is
+secretly one of this API's own problem documents is exactly as real as a
+non-2xx one carrying no problem document at all. Every finding is one of:
+that; a `STREAM_FAILED` frame on the attention feed; a `RUN_PROJECTION_CORRUPT`
+frame, with its run reference; a seat that is not `ALIVE`; `health.redeploy`
+present (its absence is clean); the service unreachable; or the attention
+feed's connection closing without ever sending a byte (it is documented to
+never end on its own, so that combination alone is a finding -- a close after
+real frames already arrived is named in the report but not raised as one).
+The attention feed never ends on its own, so it is sampled, not followed, and
+the report always names why the sample stopped (`attention_feed_sample`):
+`frame-limit`, `byte-limit`, `overall-deadline`, `silent`, or `closed-early`.
+Every bounded read -- the plain GETs and the event sample alike -- asks for
+`Accept-Encoding: identity` (so a compressed reply cannot outgrow its byte cap
+between the wire and the buffer) and checks its wall-clock deadline before
+every read it makes, including the request itself and an error body, not only
+between whole frames. A validation diagnosis in the report never carries a
+response's own values, only the field path and the error kind: pydantic's own
+`ValidationError` embeds the offending input (and, for a missing field, every
+sibling value) in its message, which a naive `str(error)` would otherwise hand
+back out. The report never carries the seat's own terminal address (it holds
+the terminal's access token, `served_seat.py`), only its state. Exit is 0 with
+an empty report, non-zero otherwise. This slice reads only what a test double
+serves it; reading the live instance itself waits on the operator's ruling on
+the observer contract that #1046 opens.
 
 ### Publish the issue-to-pr catalog
 
