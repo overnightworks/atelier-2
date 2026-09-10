@@ -331,6 +331,69 @@ async function expectWorkbenchCopyFits(page: Page, desktop: boolean): Promise<vo
 // light is only half a promise: both themes are scanned.
 const themes = ["light", "dark"] as const;
 
+// The phone width from the picture, and a laptop width wide enough that a
+// fixed-width table or graph would otherwise hide its own overflow (#435).
+const overflowViewports = [
+  { width: 390, height: 844 },
+  { width: 1440, height: 900 }
+] as const;
+
+/**
+ * The document and the room's own scroll area are the two places a stray
+ * fixed width, an unshrinkable flex child, or a wide table sitting outside
+ * its own `overflow-x: auto` container would show up as a horizontal
+ * scrollbar. A table, graph, or code block that scrolls inside its own
+ * container is unaffected: only the two outer measurements below are wider
+ * than their viewport when something has actually broken layout.
+ */
+async function overflowsItsViewport(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const overflows = (element: Element) => element.scrollWidth > element.clientWidth;
+    const stage = document.querySelector(".workshop-stage");
+    return overflows(document.documentElement) || (stage !== null && overflows(stage));
+  });
+}
+
+/**
+ * Every keyframe animation and transition in the skin is forced to a
+ * near-zero duration under `prefers-reduced-motion: reduce` (styles.css).
+ * Once that has had time to run its course, a CSS animation or transition
+ * without a retained fill leaves `document.getAnimations()`; anything still
+ * there with a resolved, non-zero duration is a real animation the skin
+ * forgot to gate.
+ */
+async function stillAnimatesUnderReducedMotion(page: Page): Promise<boolean> {
+  await page.waitForTimeout(100);
+  return page.evaluate(() =>
+    document.getAnimations().some((animation) => {
+      const duration = animation.effect?.getComputedTiming().duration;
+      return typeof duration !== "number" || duration > 0;
+    })
+  );
+}
+
+test("proves(core-surfaces-stay-inside-their-viewport-and-settle-without-motion): core surfaces have no page overflow and settle without animation under reduced motion", async ({
+  page
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const viewport of overflowViewports) {
+    await page.setViewportSize(viewport);
+    for (const { surface, path, ready, prepare } of surfaces) {
+      await prepare?.(page);
+      await page.goto(path);
+      await ready(page);
+      expect(
+        await overflowsItsViewport(page),
+        `${surface} at ${viewport.width}px overflows the page or the workshop stage`
+      ).toBe(false);
+      expect(
+        await stillAnimatesUnderReducedMotion(page),
+        `${surface} at ${viewport.width}px keeps animating under reduced motion`
+      ).toBe(false);
+    }
+  }
+});
+
 test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have no unnamed axe-core violations", async ({ page }) => {
   for (const theme of themes) {
     await page.emulateMedia({ colorScheme: theme });
