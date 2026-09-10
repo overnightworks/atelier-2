@@ -1,0 +1,8 @@
+claim_id = "078f13c3148140b5a7ee77881fc4c7c6"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1488-sonar-mechanical"
+scope = ["src/atelier2/adapters/dbos/table_vocabulary.py", "src/atelier2/contracts/host_configuration.py", "src/atelier2/adapters/dbos/workflow.py", "src/atelier2/application/resolve_references.py", "src/atelier2/application/evaluate_executability.py", "frontend/src/lib/project.ts", "tests/acceptance/test_p3_token_canary.py", "sonar-project.properties", "tests/domain/test_adapter_operations_v3.py", "tests/domain/test_budgets_v3.py", "tests/domain/test_evaluate_executability.py", "tests/domain/test_read_use_cases.py", "tests/domain/test_run_configuration_v3.py", "tests/domain/test_schemas_v3.py", "tests/domain/test_tool_grants_v3.py", "tests/integration/test_budget_publication_route.py", "tests/integration/test_schema_publication_route.py", "tests/scenarios/catalog_lineages.py", "tests/tooling/test_architecture_gate.py"]
+opened_commit = "2f2454fe7077f6b11a9943a67a442af1996c6e75"
+whole_reason = "Sieben unabhaengige Einzelstellen einer Aufraeum-Gruppe mit zusammen etwa dreissig Zeilen; getrennt waeren es sieben Landungen fuer einen Diff."
