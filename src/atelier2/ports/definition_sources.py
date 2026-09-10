@@ -45,7 +45,11 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
     SourceIntake,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -134,17 +138,28 @@ type ReadSourceIntakesResult = (
 
 
 @dataclass(frozen=True)
-class SelectedIntake:
-    """One selected path, its exact bytes, and the name they are admitted under.
-
-    A workflow revision rather than any published revision, because the workflow
-    door is the only reader this build has; a second kind widens this contract
-    rather than hiding behind a kind token nothing can honour.
-    """
+class SelectedWorkflow:
+    """One selected workflow path, its exact bytes, and the name they are admitted under."""
 
     path: RepositoryPath
     revision: WorkflowRevision
     display_name: CatalogLineageDisplayName
+
+
+@dataclass(frozen=True)
+class SelectedDocument:
+    """One selected path whose document is named by its hash alone.
+
+    A schema or a budget policy joins no lineage and authors no name, so there
+    is nothing to admit it under and nobody else's name it could collide with:
+    it is published, and where it came from is recorded.
+    """
+
+    path: RepositoryPath
+    revision: PublishedRevision
+
+
+type SelectedIntake = SelectedWorkflow | SelectedDocument
 
 
 @dataclass(frozen=True)
@@ -158,9 +173,9 @@ class PathIntaken:
 class PathAlreadyInCatalog:
     """One path whose exact bytes the catalog already held.
 
-    No intake is recorded for it: the revision the catalog holds is the one the
-    source carries, so a second provenance row would record a delivery that
-    never happened.
+    Its provenance is recorded when this path had not delivered these bytes
+    before, and left alone when its latest intake already names them: a
+    second row for the same delivery would record one that never happened.
     """
 
     path: RepositoryPath

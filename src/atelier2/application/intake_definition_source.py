@@ -50,11 +50,14 @@ from atelier2.contracts.definition_sources import (
     RepositoryPath,
     SourceCommit,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevision
 from atelier2.ports.definition_sources import (
     DefinitionSourceReader,
     DefinitionSourceRegistrar,
     RecordedPath,
+    SelectedDocument,
     SelectedIntake,
+    SelectedWorkflow,
     SourceIntakeRecorded,
     SourceIntakeRefused,
 )
@@ -167,15 +170,19 @@ def _selected(
 
     Built whole before the door is opened, because what the door is handed is
     the whole commit: passing it the paths up to the first unusable name would
-    take part of a commit in and record that part as the commit.
+    take part of a commit in and record that part as the commit. A schema or a
+    budget policy is named by its hash, so only a workflow can stop it here.
     """
 
     selected: list[SelectedIntake] = []
-    for path, publishable in scanned.carried.items():
-        display_name = _display_name(publishable)
+    for path, carried in scanned.carried.items():
+        if isinstance(carried, PublishedRevision):
+            selected.append(SelectedDocument(path, carried))
+            continue
+        display_name = _display_name(carried)
         if display_name is None:
-            return IntakeNameUnusable(path, publishable.graph.name)
-        selected.append(SelectedIntake(path, publishable.revision, display_name))
+            return IntakeNameUnusable(path, carried.graph.name)
+        selected.append(SelectedWorkflow(path, carried.revision, display_name))
     return tuple(selected)
 
 

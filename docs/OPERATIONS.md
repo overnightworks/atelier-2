@@ -165,8 +165,8 @@ installation above. The host-process installation runs as the systemd user unit
 `atelier2-serve.service`. From its clean `main` deploy checkout, one hand
 command fast-forwards, installs the locked Python and frontend dependencies,
 builds the frontend, stops the unit, backs up the live store, migrates it,
-takes the checkout's own workflows into the live catalog, starts the unit, and
-verifies that health serves the new commit:
+takes the checkout's own workflows, schemas and budgets into the live catalog,
+starts the unit, and verifies that health serves the new commit:
 
 ```bash
 bash scripts/serve_live_update.sh
@@ -185,9 +185,12 @@ atelier2-serve.service -e` before acting.
 
 After migration and before the unit restarts -- the Serve is still stopped, so
 nothing else writes the store at the same time -- the command connects the
-deploy checkout itself as a definition source (`workflows/*.yaml`, ref
-`refs/heads/main`; connecting the same checkout and ref again is the same
-source, so this step is idempotent across runs) and takes its workflows in.
+deploy checkout itself as a definition source (`workflows/*.yaml` as
+`workflow`, `workflows/schemas/*.json` as `schema`, `workflows/budgets/*.json`
+as `budget_policy`, ref `refs/heads/main`; connecting the same checkout and ref
+again is the same source, so this step is idempotent across runs) and takes all
+three in, in one transaction: a workflow that pins a new schema or budget is
+executable once the deploy that carries both has run, with no hand publication.
 Each path gets its own word in the log: `published` for bytes the catalog
 gained, `present` for bytes it already held, or `refused` for the one path
 that stopped that intake. A name already held by a manually imported lineage
@@ -209,6 +212,26 @@ serving its previous catalog state until the next successful deploy or a hand
 connect (an unreadable checkout or an unresolved ref, not a per-file refusal)
 is treated like a migration failure instead: it rolls back to the previously
 served commit and restarts that, and does count as an ordinary failure tick.
+
+**Before reverting the schema and budget intake.** A rollback restores code,
+not the store. A build from before schemas and budgets joined the intake cannot
+read the stored `schema` and `budget_policy` selections, so its connect refuses
+with `the store holds a definition source it cannot read back`; the deploy then
+restarts the commit it served before, and every later tick repeats that, so the
+revert never serves. Reconnect the source with the workflow selection alone
+first, from the deploy checkout, naming the same location the deploy connects
+-- the journal's `connected git source '…'` or `… is already connected to '…'`
+line prints it, and a different spelling is a different source:
+
+```bash
+uv run --locked atelier2 definition-source connect \
+    --database "${XDG_DATA_HOME:-$HOME/.local/share}/atelier2/live-store/atelier.sqlite" \
+    --location /path/to/deploy-checkout --ref refs/heads/main \
+    --select 'workflows/*.yaml=workflow' --actor atelier2-deploy
+```
+
+That appends a revision of the same source; the schemas and budgets already
+taken in stay published, and the older build reads the source again.
 
 Install the clean-stop classification once beside the unit, as the same user:
 
@@ -512,16 +535,11 @@ systemctl --user start atelier2-provider-canary.service
 journalctl --user -u atelier2-provider-canary.service -e
 ```
 
-The canary workflows are admitted only after their budget revision exists on
-the live instance. This is a landing operation, in this order:
+The canary workflows pin `workflows/budgets/provider-canary.json`, which the
+deploy's Git-source intake publishes together with them. The rest is a landing
+operation, in this order:
 
-1. Publish `workflows/budgets/provider-canary.json` with
-   `POST /atelier/api/v1/budget-revisions` and retain the returned
-   `budget_revision_hash`.
-2. Replace the TODO head in each `workflows/provider-canary-*.yaml` with a node
-   budget reference named `provider-canary` and that exact returned hash. The
-   budget file's local SHA-256 is not a publication receipt.
-3. Publish each resulting YAML document through
+1. Publish each `workflows/provider-canary-*.yaml` document through
    `POST /atelier/api/v1/workflow-revisions`. Admit each returned workflow hash
    through `POST /atelier/api/v1/catalog-lineages` with
    `{"kind": "workflow", "catalog_revision_hash": "<hash>", …}`; when its
@@ -529,13 +547,13 @@ the live instance. This is a landing operation, in this order:
    `GET /atelier/api/v1/catalog-revisions/by-name/workflow/<name>` and append
    through `POST /atelier/api/v1/catalog-lineages/<lineage-id>/members`
    instead.
-4. Only after all three admissions answer with their exact workflow hashes,
+2. Only after all three admissions answer with their exact workflow hashes,
    activate the deployed revision and start the canary oneshot. A partial
    publication is not activation authority.
 
 Every publication and admission above targets the same loopback base URL the
 installed `atelier2-serve.service` serves (normally
-`http://127.0.0.1:8422`). The landing records the four returned revision hashes
+`http://127.0.0.1:8422`). The landing records the three returned workflow hashes
 in its own evidence; this runbook does not copy live hashes that change with
 the published documents.
 
@@ -585,42 +603,34 @@ blocks the restart, whatever that intent's own recorded state.
 
 ### Publish the issue-to-pr catalog
 
-`serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
-schema, budget, grant, or adapter operation a shipped workflow pins is never
-picked up by that intake and must be published by hand before the workflow
-that pins it can start. For `workflows/issue-to-pr.yaml`, this is a landing
-operation, in this order:
+`serve_live_update.sh`'s Git-source intake takes in `workflows/*.yaml`,
+`workflows/schemas/*.json` and `workflows/budgets/*.json`; a grant or adapter
+operation a shipped workflow pins is never picked up by that intake and must be
+published by hand before the workflow that pins it can start. For
+`workflows/issue-to-pr.yaml`, this is a landing operation, in this order:
 
-1. Publish its three schemas --
-   `workflows/schemas/issue_to_pr_candidate_report.json`,
-   `workflows/schemas/code_review_result.json`, and
-   `workflows/schemas/issue_to_pr_release_decision.json` -- through
-   `POST /atelier/api/v1/schema-revisions`, one call per document.
-2. Publish `workflows/budgets/push-implement.json` through
-   `POST /atelier/api/v1/budget-revisions` if the live catalog does not
-   already carry it (`push-before-open-pr` publishes the same budget).
-3. Publish the two adapter operations through
+1. Publish the two adapter operations through
    `POST /atelier/api/v1/adapter-operation-revisions`: `open-pr` is exactly
    the bytes `{"operation":"open-pr"}`; `push-atelier-commit` carries this
    deployment's own author and committer identity, so it has no canonical
    bytes here.
-4. Publish the two tool grants through
-   `POST /atelier/api/v1/tool-grant-revisions`, after step 3: the
+2. Publish the two tool grants through
+   `POST /atelier/api/v1/tool-grant-revisions`, after step 1: the
    `run-project-verification` grant is exactly the bytes
    `{"capability":"run-project-verification"}`; the `push-atelier-commit`
-   grant names step 3's operation by its own returned hash, so it cannot be
+   grant names step 1's operation by its own returned hash, so it cannot be
    published first.
 
 The Git-source intake admits `workflows/issue-to-pr.yaml` regardless of this
 order; it does not refuse the document for an unresolved pin. The admitted
 revision reads `executable: false`, with `not_executable_reason` naming the
-first pin still missing, until every schema, budget, grant, and operation
+first pin still missing, until every grant and operation
 above is published -- publishing the missing ones then turns the same
 revision `executable: true` in place, with no new intake. The order above
-still matters: the `push-atelier-commit` grant names step 3's operation by
+still matters: the `push-atelier-commit` grant names step 1's operation by
 its own returned hash, so it cannot be published first. The live hashes are
 the landing's own evidence; this runbook does not copy them, for the same
-reason the canary's four hashes above are not copied either.
+reason the canary's three hashes above are not copied either.
 
 ### Publish a queue policy with its cap and its automation label
 
@@ -851,7 +861,8 @@ and the selections,
 and prints the source id every later command names. A selection is
 `PATTERN=KIND`; the kind is configured, never guessed from the repository's
 layout
-([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)). The one
+([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)), and is one of
+`workflow`, `schema` and `budget_policy`. The one
 wildcard is `*`, matching inside a single path segment. Connecting the same
 repository at the same ref again is the same source, not a second one.
 
@@ -872,8 +883,11 @@ reading it would read a repository the operator never named. All three
 commands refuse before writing anything, in one closed vocabulary:
 `definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
 `_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
-`_symlink_selected`, `_gitlink_selected`. A selected file the publication door
-would refuse is reported in that door's own words, and stops the scan.
+`_symlink_selected`, `_gitlink_selected`, `_kind_changed`. The last names a path
+a selection now claims as another kind than it was taken in as: a path keeps
+its first kind, so move the file to a new path or restore the selection. A
+selected file the publication door would refuse is reported in that door's own
+words, and stops the scan.
 
 ```bash
 atelier2 definition-source intake --database /path/to/atelier.sqlite \
@@ -883,8 +897,11 @@ atelier2 definition-source intake --database /path/to/atelier.sqlite \
 `intake` takes one commit of the source into the catalog. It reads the same
 files `scan` reads, then publishes every one of them, admits it under the name
 its document authored, and records where it came from -- source, commit and
-path -- in one transaction. A refusal anywhere in the batch writes nothing at
-all, so a failed intake leaves the catalog exactly as it was.
+path -- in one transaction. A schema or a budget policy is named by its hash
+alone: it is published and its origin recorded, with no name to admit, so two
+paths carrying the same bytes are one publication with two origins. A refusal
+anywhere in the batch writes nothing at all, so a failed intake leaves the
+catalog exactly as it was.
 
 It prints the commit followed by one word per path: `published` when the bytes
 entered the catalog, and `present` when the catalog already held them under the

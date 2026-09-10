@@ -34,6 +34,7 @@ from sqlalchemy.engine import Connection
 from atelier2.adapters.dbos import schema as schema_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.host_configuration import (
+    DbosHostConfigurationChannel,
     project_source_connection_revision_from_record,
 )
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
@@ -176,6 +177,7 @@ from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -213,8 +215,14 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
+    ModelRegistryEntry,
+    ModelRegistryEntrySource,
+    ModelRegistryRevision,
     ProjectId,
+    ProjectModelDefault,
+    ProjectModelDefaultsRevision,
     ProjectRootRevision,
+    ProviderModelCheck,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -246,8 +254,13 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolRedemptionReceipt,
 )
 from atelier2.host import main
+from atelier2.ports.host_configuration import (
+    ModelRegistryRevisionCreated,
+    ProjectModelDefaultsRevisionCreated,
+)
 from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
+from tests.integration.test_host_configuration import _store_configuration
 from tests.integration.test_v3_wait_in_loop import public_client
 from tests.integration.test_v3_wait_run import (
     ANSWER,
@@ -557,6 +570,24 @@ def _restore_v50_permission_ledger_predecessor(
     connection.execute(f"DROP TABLE IF EXISTS {schema_module.permission_receipts.name}")
 
 
+def _restore_v55_registry_entries_predecessor(connection: sqlite3.Connection) -> None:
+    """Take back the configuration V56 added to a registry entry's key.
+
+    Rebuilding the table in the shape V55 published is the hop run the other
+    way: every stored entry keeps every column, and only the key narrows back
+    to one entry per model.
+    """
+
+    schema_module._rebuild_product_table(
+        connection,
+        host_model_registry_entries,
+        "host_model_registry_entries_keyed_by_configuration",
+        schema_module._MODEL_REGISTRY_ENTRIES_TRIGGERS,
+        SCHEMA_VERSION,
+        55,
+    )
+
+
 def _restore_v54_launch_binding_predecessor(connection: sqlite3.Connection) -> None:
     """Take back the ending, the ordinal and the key V55 gave a launch binding.
 
@@ -564,9 +595,11 @@ def _restore_v54_launch_binding_predecessor(connection: sqlite3.Connection) -> N
     way: every stored binding keeps its remaining columns, and the two columns
     V55 introduced simply stop being. Its update guard and the item transition
     trigger travel back with it, because the release V55 admits is spelled in
-    both of them.
+    both of them. Past the entry key V56 widened, which a V54 store predates
+    just as a V55 one does.
     """
 
+    _restore_v55_registry_entries_predecessor(connection)
     connection.execute("DROP TRIGGER queue_launch_bindings_release_only")
     schema_module._rebuild_product_table(
         connection,
@@ -7602,3 +7635,126 @@ def test_an_admitted_item_advances_a_revision_only_after_the_v55_hop(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (SCHEMA_VERSION,)
         _require_product_shape(connection, SCHEMA_VERSION)
+
+
+_REGISTRY_AND_DEFAULT_ROWS = (
+    "SELECT * FROM host_model_registry_entries ORDER BY model_id",
+    "SELECT * FROM host_project_model_defaults ORDER BY difficulty",
+)
+
+
+def _registry_and_default_rows(
+    database_path: Path,
+) -> tuple[list[tuple[object, ...]], ...]:
+    with closing(sqlite3.connect(database_path)) as connection:
+        return tuple(
+            connection.execute(query).fetchall() for query in _REGISTRY_AND_DEFAULT_ROWS
+        )
+
+
+def _populated_v55_registry_store(
+    database_path: Path,
+) -> tuple[ModelRegistryRevision, ProjectModelDefaultsRevision]:
+    """A published V55 store whose two-model registry carries one project default."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    registry = ModelRegistryRevision(
+        ProviderId("openai"),
+        1,
+        tuple(
+            ModelRegistryEntry(
+                model_id,
+                AgentConfigurationRevisionHash(
+                    _store_configuration(engine, "openai", model_id)
+                ),
+                ModelRegistryEntrySource.DISCOVERED,
+                ProviderModelCheck.CHECKED,
+            )
+            for model_id in ("gpt-5.6", "gpt-5.6-mini")
+        ),
+    )
+    chosen = registry.entries[0]
+    defaults = ProjectModelDefaultsRevision(
+        ProjectId("studio"),
+        1,
+        (
+            ProjectModelDefault(
+                2,
+                registry.revision_hash,
+                registry.provider_id,
+                chosen.model_id,
+                chosen.agent_configuration_revision_hash,
+            ),
+        ),
+    )
+    channel = DbosHostConfigurationChannel(engine)
+    assert channel.publish_model_registry_revision(registry) == (
+        ModelRegistryRevisionCreated(registry)
+    )
+    assert channel.publish_project_model_defaults_revision(defaults) == (
+        ProjectModelDefaultsRevisionCreated(defaults)
+    )
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v55_registry_entries_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 55")
+        connection.commit()
+        _require_product_shape(connection, 55)
+    return registry, defaults
+
+
+def test_every_registry_entry_crosses_the_v56_hop_with_its_defaults_aimed_at_it(
+    tmp_path: Path,
+) -> None:
+    """V56 widens the entry key to the configuration and rewrites no row.
+
+    The project defaults name an entry by a four-column key that stands in both
+    shapes, so the rebuild must leave that reference aimed at the table it
+    republishes, not at the predecessor it parks and drops.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    registry, defaults = _populated_v55_registry_store(database_path)
+    standing = _registry_and_default_rows(database_path)
+
+    report = migrate_store(database_path)
+
+    assert (report.source_version, report.target_version) == (55, SCHEMA_VERSION)
+    assert _registry_and_default_rows(database_path) == standing
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(
+                "INSERT INTO host_project_model_defaults "
+                "SELECT revision_hash, 3, model_registry_revision_hash, provider_id, "
+                "'gpt-unregistered', agent_configuration_revision_hash "
+                "FROM host_project_model_defaults"
+            )
+        for guarded in (
+            "UPDATE host_model_registry_entries SET source = 'operator'",
+            "DELETE FROM host_model_registry_entries",
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                connection.execute(guarded)
+        # The wider key is under test here, not which model a configuration runs.
+        connection.execute(
+            "INSERT INTO host_model_registry_entries SELECT revision_hash, "
+            "provider_id, 'gpt-5.6', agent_configuration_revision_hash, source, "
+            "provider_check FROM host_model_registry_entries "
+            "WHERE model_id = 'gpt-5.6-mini'"
+        )
+    engine = create_canonical_engine(database_path)
+    try:
+        initialize_schema(engine)
+        channel = DbosHostConfigurationChannel(engine)
+        assert channel.latest_model_registry_revision(registry.provider_id) == registry
+        assert (
+            channel.latest_project_model_defaults_revision(defaults.project_id)
+            == defaults
+        )
+    finally:
+        engine.dispose()
+    migrated = _logical_dump(database_path)
+    assert migrate_store(database_path).already_current
+    assert _logical_dump(database_path) == migrated

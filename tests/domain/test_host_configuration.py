@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -168,12 +169,108 @@ def test_a_registry_refuses_a_non_exact_model_id(model_id: str) -> None:
         _registry_entry(model_id, "cd" * 32)
 
 
-def test_duplicate_model_ids_in_one_provider_revision_are_refused() -> None:
+def test_one_model_stands_under_several_configurations_ordered_by_configuration() -> (
+    None
+):
+    tooled = _registry_entry("claude-opus-5", "ef" * 32)
+    headless = _registry_entry("claude-opus-5", "cd" * 32)
+    fable = _registry_entry("claude-fable-5", "ff" * 32)
+
+    first = _registry(tooled, fable, headless)
+    second = _registry(headless, tooled, fable)
+
+    assert first.entries == (fable, headless, tooled)
+    assert first.revision_hash == second.revision_hash
+
+
+def test_a_model_repeated_under_the_same_configuration_is_refused() -> None:
     with pytest.raises(ValueError, match="unique"):
         _registry(
             _registry_entry("claude-opus-5", "cd" * 32),
-            _registry_entry("claude-opus-5", "ef" * 32),
+            _registry_entry(
+                "claude-opus-5",
+                "cd" * 32,
+                ModelRegistryEntrySource.DISCOVERED,
+                ProviderModelCheck.NOT_CHECKED,
+            ),
         )
+
+
+# Computed by the production contract at 65091ce1, when a revision still held
+# each model once; a revision published then must keep its identity now.
+@pytest.mark.parametrize(
+    ("provider", "revision_number", "entries", "published_hash"),
+    [
+        pytest.param(
+            "anthropic",
+            1,
+            (("claude-opus-5", "cd" * 32, "operator", "checked"),),
+            "9d09ff8a87b69e72de67097f9b291c0dfebf92f29f44fc6ba2d75b1867b450e5",
+            id="one model",
+        ),
+        pytest.param(
+            "anthropic",
+            2,
+            (
+                ("claude-sonnet-4-6", "ab" * 32, "discovered", "unknown-at-provider"),
+                ("claude-opus-5", "cd" * 32, "discovered", "checked"),
+                ("claude-fable-5", "ef" * 32, "operator", "not-checked"),
+            ),
+            "b65a6f7f2484c1aae5de655ea3cac239faad94d79f50ebf3ef79cf9ee160786b",
+            id="three models",
+        ),
+        pytest.param(
+            "xai",
+            3,
+            (
+                ("grok-4.6", "12" * 32, "operator", "checked"),
+                ("Grok-4.6", "34" * 32, "operator", "checked"),
+                ("grök-4.6", "56" * 32, "operator", "checked"),
+                ("grok-4.6-mini", "78" * 32, "operator", "checked"),
+            ),
+            "c54d696b7608425ab028edca8220c31a6166c1786d6954e29cee39d994f5a114",
+            id="utf-8 byte order",
+        ),
+        pytest.param(
+            "openai",
+            2,
+            (),
+            "f9956595960a9ce589a8835b5f1402d7fe780c46cb694a6626dd446aa0307daf",
+            id="no model",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "given_order",
+    [
+        pytest.param(tuple, id="as written"),
+        pytest.param(lambda entries: entries[::-1], id="reversed"),
+    ],
+)
+def test_a_revision_published_with_one_configuration_per_model_keeps_its_hash(
+    provider: str,
+    revision_number: int,
+    entries: tuple[tuple[str, str, str, str], ...],
+    published_hash: str,
+    given_order: Callable[
+        [tuple[ModelRegistryEntry, ...]], tuple[ModelRegistryEntry, ...]
+    ],
+) -> None:
+    typed = tuple(
+        _registry_entry(
+            model_id,
+            configuration_hash,
+            ModelRegistryEntrySource(source),
+            ProviderModelCheck(provider_check),
+        )
+        for model_id, configuration_hash, source, provider_check in entries
+    )
+
+    revision = _registry(
+        *given_order(typed), provider=provider, revision_number=revision_number
+    )
+
+    assert revision.revision_hash.value == published_hash
 
 
 def test_registry_entries_are_bounded_before_they_are_hashed() -> None:

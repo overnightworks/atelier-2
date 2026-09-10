@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { runPageCopy } from "../../src/lib/runPageCopy";
 import { humanMove, standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
@@ -525,5 +526,225 @@ test("proves(every-rendered-workbench-control-is-inventoried): every rendered Wo
     await expectWorkbenchControlsAreInventoried(page, [
       workbenchQuestions.emptyStart.id
     ]);
+  }
+});
+
+// The phone width from the picture, and a laptop width wide enough that a
+// fixed-width table or graph would otherwise hide its own overflow (#435).
+const overflowViewports = [
+  { width: 390, height: 844 },
+  { width: 1440, height: 900 }
+] as const;
+
+/**
+ * `.workshop-stage { overflow: auto }` (styles.css) can round its own
+ * scrollbar gutter into `clientWidth` by a device pixel, which would flake a
+ * strict compare between runs; one CSS pixel of slack absorbs that without
+ * hiding a real overflow, which is always many pixels wide.
+ */
+const OVERFLOW_TOLERANCE_PX = 1;
+
+/**
+ * The document and the room's own scroll area are the two places a stray
+ * fixed width, an unshrinkable flex child, or a wide table sitting outside
+ * its own `overflow-x: auto` container would show up as a horizontal
+ * scrollbar. A table, graph, or code block that scrolls inside its own
+ * container is unaffected: only the two outer measurements below are wider
+ * than their viewport when something has actually broken layout.
+ */
+async function overflowsItsViewport(page: Page): Promise<boolean> {
+  return page.evaluate((tolerance) => {
+    const overflows = (element: Element) => element.scrollWidth > element.clientWidth + tolerance;
+    const stage = document.querySelector(".workshop-stage");
+    return overflows(document.documentElement) || (stage !== null && overflows(stage));
+  }, OVERFLOW_TOLERANCE_PX);
+}
+
+/**
+ * Every keyframe animation and transition in the skin is forced to a
+ * near-zero, single-iteration duration under `prefers-reduced-motion: reduce`
+ * (styles.css). Waiting on the `finished` promise of every animation that
+ * will actually finish -- never an arbitrary sleep -- lets that settle
+ * deterministically: an infinite one (`iterations: Infinity`) never finishes
+ * by definition, so only the bounded ones are awaited. Whatever is still
+ * `running` afterwards, with an effective duration over a millisecond or
+ * unbounded iterations, is a real animation the skin forgot to gate --
+ * including one driven by `Element.animate()`, which this CSS rule never
+ * reaches at all.
+ */
+async function stillAnimatesUnderReducedMotion(page: Page): Promise<boolean> {
+  return page.evaluate(async () => {
+    const hasBoundedIterations = (animation: Animation) => {
+      const iterations = animation.effect?.getComputedTiming().iterations;
+      return iterations !== undefined && Number.isFinite(iterations);
+    };
+    await Promise.allSettled(
+      document
+        .getAnimations()
+        .filter(hasBoundedIterations)
+        .map((animation) => animation.finished)
+    );
+    const SETTLED_DURATION_MS = 1;
+    return document.getAnimations().some((animation) => {
+      if (animation.playState !== "running") return false;
+      const timing = animation.effect?.getComputedTiming();
+      const duration = typeof timing?.duration === "number" ? timing.duration : Infinity;
+      return timing?.iterations === Infinity || duration > SETTLED_DURATION_MS;
+    });
+  });
+}
+
+/**
+ * `foundReference` -- the run every other test in this file opens -- sits in
+ * WAITING_RECONCILIATION, so its graph never mounts the CSS pulse
+ * (`pipe-pulse`, WorkflowGraphDrawing.svelte) a reduced-motion assertion is
+ * meant to prove stays off: a room where nothing moves cannot prove that
+ * motion is suppressed. This starts one node's pulse for real, through the
+ * same public run API `uiq-budget.spec.ts` and `vision-shots.spec.ts`
+ * already stage a working run through -- not a new seed door.
+ */
+async function stageWorkingRun(page: Page, runId: string): Promise<string> {
+  const schema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: "true"
+  });
+  expect([200, 201]).toContain(schema.status());
+  const schemaHash = (await schema.json()).schema_revision_hash as string;
+
+  const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      "name: ui-quality-working",
+      "nodes:",
+      "  - id: work",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Stay working so a reduced-motion check has a real pulse to prove off.",
+      "    outputs:",
+      "      - name: result",
+      "        schema:",
+      "          ref: result-schema",
+      `          revision: ${schemaHash}`,
+      ""
+    ].join("\n")
+  });
+  // Content-addressed: the second viewport's run publishes the identical
+  // document, which the API answers 200 (already stored) rather than 201.
+  expect([200, 201]).toContain(workflow.status());
+  const revisionHash = (await workflow.json()).workflow_revision_hash as string;
+
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: `ui-quality-working-${runId}`,
+      revision_number: 1,
+      provider_id: "e2e-v3-held",
+      auth_mode: "subscription"
+    }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: "ui-quality-working-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "held/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  const agentHash = (await configuration.json()).agent_configuration_revision_hash as string;
+
+  const currentRegistry = await page.request.get("/atelier/api/v1/model-registries/e2e-v3-held");
+  const revisionNumber = currentRegistry.status() === 200
+    ? ((await currentRegistry.json()) as { revision_number: number }).revision_number + 1
+    : 1;
+  const registry = await page.request.put("/atelier/api/v1/model-registries/e2e-v3-held", {
+    data: {
+      revision_number: revisionNumber,
+      entries: [{ model_id: "ui-quality-working-model", agent_configuration_revision_hash: agentHash }]
+    }
+  });
+  expect([200, 201]).toContain(registry.status());
+  const validation = await page.request.post(
+    "/atelier/api/v1/model-registries/e2e-v3-held/validations",
+    { data: { agent_configuration_revision_hash: agentHash } }
+  );
+  expect([200, 201]).toContain(validation.status());
+
+  const started = await page.request.post("/atelier/api/v1/runs", {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [{ role: "builder", agent_configuration_revision_hash: agentHash }],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+  await expect(async () => {
+    const read = await page.request.get(`/atelier/api/v1/runs/${reference}`);
+    expect((await read.json()).state).toBe("STARTED");
+  }).toPass({ timeout: 20_000 });
+  return reference;
+}
+
+type OverflowMotionCase = {
+  name: string;
+  /** Navigates to the surface and waits for its own ready signal. */
+  open: (page: Page) => Promise<void>;
+};
+
+const overflowMotionCases: readonly OverflowMotionCase[] = [
+  ...surfaces.map(
+    ({ surface, path, ready, prepare }): OverflowMotionCase => ({
+      name: surface,
+      open: async (page) => {
+        await prepare?.(page);
+        await page.goto(path);
+        await ready(page);
+      }
+    })
+  ),
+  {
+    name: "run-working",
+    open: async (page) => {
+      const reference = await stageWorkingRun(page, `ui-quality/working-${test.info().workerIndex}-${Date.now()}`);
+      await page.goto(`/atelier/runs/${reference}`);
+      await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toBeVisible();
+      await expect(page.locator('[data-live="true"]')).toBeVisible();
+    }
+  }
+];
+
+// No `proves(...)` marker: #1495's own acceptance line is "none, Prüfscheibe
+// ohne geregelten Operator-Satz" -- no acceptance/*.toml sentence names
+// overflow or reduced motion, and a test may not invent one the gate would
+// then have to treat as ruled.
+test.describe("core surfaces have no page overflow and settle without animation under reduced motion", () => {
+  for (const overflowMotionCase of overflowMotionCases) {
+    for (const viewport of overflowViewports) {
+      test(`${overflowMotionCase.name} at ${viewport.width}px`, async ({ page }) => {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await page.setViewportSize(viewport);
+        await overflowMotionCase.open(page);
+        // Waits for the one shared loading skeleton (LoadingState.svelte,
+        // behind ReadState on every read-driven surface) to clear, so the
+        // measurements below see the loaded list, card, or confirmed empty
+        // state -- never the skeleton that renders before it.
+        await expect(page.locator(".loading-state")).toHaveCount(0);
+
+        expect(
+          await overflowsItsViewport(page),
+          `${overflowMotionCase.name} at ${viewport.width}px overflows the page or the workshop stage`
+        ).toBe(false);
+
+        expect(
+          await stillAnimatesUnderReducedMotion(page),
+          `${overflowMotionCase.name} at ${viewport.width}px keeps animating under reduced motion`
+        ).toBe(false);
+      });
+    }
   }
 });

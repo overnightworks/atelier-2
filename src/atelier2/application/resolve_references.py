@@ -43,7 +43,6 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolGrantRefused,
     read_tool_grant_document,
 )
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     DurableStateCorrupt as PortDurableStateCorrupt,
@@ -120,9 +119,7 @@ def cached_schema_document(
     return verdict
 
 
-def declared_through(
-    document: WorkflowGraphV3, binding: SubworkflowBinding
-) -> Iterator[DeclaredReference]:
+def declared_through(document: WorkflowGraphV3) -> Iterator[DeclaredReference]:
     for declared in declared_references(document):
         if declared.kind is not RevisionKind.WORKFLOW:
             yield declared

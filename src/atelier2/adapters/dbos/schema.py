@@ -95,10 +95,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Hop 54 gives a launch binding the ending of its run, the restart ordinal it
-# was written at, and a key that admits its successor, so an item whose run
-# failed or was cancelled is given back to the sweep rather than bound forever.
-_HOP_PREDECESSOR_VERSION = 54
+# Hop 55 keys a model registry entry by its configuration as well as its model,
+# so one model may stand in a registry under several configurations -- one for
+# each capability a node may ask of it.
+_HOP_PREDECESSOR_VERSION = 55
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -147,6 +147,7 @@ _VERSION_FIFTY_TWO = 52
 _VERSION_FIFTY_THREE = 53
 _VERSION_FIFTY_FOUR = 54
 _VERSION_FIFTY_FIVE = 55
+_VERSION_FIFTY_SIX = 56
 # docs/PRODUCT.md "Stage: prototype": no store compatibility is owed.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -379,6 +380,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     53: "038b3e7f5ca011d78e6a1013d7b3fde96b8056165106a2c71898e3353e9da881",
     54: "13edd2cba8b5bca12e4c6c679aa7a5974d36693cd6b0e0e8da132736afe56aa4",
     55: "a015ba3b7fd7d3fc654eb5cfad1cd672748ccc65f7c0229480a74390eff56759",
+    56: "45b5beecdb84a5689e42d2b8d9f819cf848405db6c171c293f24c5ef0abec426",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -2143,7 +2145,9 @@ host_model_registry_entries = sa.Table(
     sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
     sa.Column("source", sa.Text, nullable=False),
     sa.Column("provider_check", sa.Text, nullable=False),
-    sa.PrimaryKeyConstraint("revision_hash", "model_id"),
+    sa.PrimaryKeyConstraint(
+        "revision_hash", "model_id", "agent_configuration_revision_hash"
+    ),
     sa.UniqueConstraint(
         "revision_hash",
         "provider_id",
@@ -3961,12 +3965,7 @@ def _added_table_step(
             (table.name,),
         ).fetchone()
         if existing is None:
-            connection.execute(
-                PUBLISHED_TABLE_SHAPES.get(
-                    (target, table.name),
-                    str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
-                )
-            )
+            connection.execute(_introduced_table_shape(target, table))
             for trigger in triggers:
                 connection.execute(_PRODUCT_TRIGGERS[trigger])
         elif allow_empty_prepared_table and _table_is_empty(connection, table.name):
@@ -4035,6 +4034,18 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     raise StoreMigrationRefused(
         f"no published shape of {table.name} at schema version {version} is "
         "recorded, so this hop cannot rebuild it"
+    )
+
+
+def _introduced_table_shape(version: int, table: sa.Table) -> str:
+    """The `CREATE TABLE` text a hop introducing this table at `version` runs.
+
+    That is the declaration only while no later hop has moved the table; once
+    one has, the shape `version` published is read from its record.
+    """
+    return PUBLISHED_TABLE_SHAPES.get(
+        (version, table.name),
+        str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
     )
 
 
@@ -5031,9 +5042,7 @@ def _apply_v21_to_v22(connection: sqlite3.Connection) -> None:
                 f"schema version {_VERSION_TWENTY_ONE} already has {table.name}; "
                 "this command will not alter it"
             )
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_introduced_table_shape(_VERSION_TWENTY_TWO, table))
     for trigger in _INSTANT_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_TWENTY_ONE, _VERSION_TWENTY_TWO)
@@ -5549,11 +5558,14 @@ _MODEL_CONFIGURATION_TABLES = (
     host_project_model_defaults_revisions,
     host_project_model_defaults,
 )
+_MODEL_REGISTRY_ENTRIES_TRIGGERS = (
+    "host_model_registry_entries_no_update",
+    "host_model_registry_entries_no_delete",
+)
 _MODEL_CONFIGURATION_TRIGGERS = (
     "host_model_registry_revisions_no_update",
     "host_model_registry_revisions_no_delete",
-    "host_model_registry_entries_no_update",
-    "host_model_registry_entries_no_delete",
+    *_MODEL_REGISTRY_ENTRIES_TRIGGERS,
     "host_project_model_defaults_revisions_no_update",
     "host_project_model_defaults_revisions_no_delete",
     "host_project_model_defaults_no_update",
@@ -5588,9 +5600,7 @@ def _apply_v39_to_v40(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE host_occupancy_bindings")
     connection.execute("DROP TABLE host_occupancy_revisions")
     for table in _MODEL_CONFIGURATION_TABLES:
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_introduced_table_shape(_VERSION_FORTY, table))
     for trigger_name in _MODEL_CONFIGURATION_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger_name])
     _raise_declared_version(connection, _VERSION_THIRTY_NINE, _VERSION_FORTY)
@@ -5639,9 +5649,7 @@ def _apply_v40_to_v41(connection: sqlite3.Connection) -> None:
         _VERSION_FORTY_ONE,
     )
     for table in _RUN_FORK_TABLES:
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_introduced_table_shape(_VERSION_FORTY_ONE, table))
     for trigger_name in _RUN_FORK_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger_name])
     _raise_declared_version(connection, _VERSION_FORTY, _VERSION_FORTY_ONE)
@@ -6116,9 +6124,7 @@ def _apply_v48_to_v49(connection: sqlite3.Connection) -> None:
                 "this command will not alter it"
             )
     for table in _DEFINITION_SOURCE_TABLES:
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
+        connection.execute(_introduced_table_shape(_VERSION_FORTY_NINE, table))
     for trigger_name in _DEFINITION_SOURCE_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger_name])
     _raise_declared_version(connection, _VERSION_FORTY_EIGHT, _VERSION_FORTY_NINE)
@@ -6312,6 +6318,20 @@ def _apply_v54_to_v55(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FIFTY_FOUR, _VERSION_FIFTY_FIVE)
 
 
+def _apply_v55_to_v56(connection: sqlite3.Connection) -> None:
+    """Key a registry entry by its configuration too; every stored entry crosses."""
+
+    _rebuild_product_table(
+        connection,
+        host_model_registry_entries,
+        "host_model_registry_entries_one_per_model",
+        _MODEL_REGISTRY_ENTRIES_TRIGGERS,
+        _VERSION_FIFTY_FIVE,
+        _VERSION_FIFTY_SIX,
+    )
+    _raise_declared_version(connection, _VERSION_FIFTY_FIVE, _VERSION_FIFTY_SIX)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -6494,6 +6514,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_FIFTY_TWO, _VERSION_FIFTY_THREE, _apply_v52_to_v53),
     _SchemaMigrationStep(_VERSION_FIFTY_THREE, _VERSION_FIFTY_FOUR, _apply_v53_to_v54),
     _SchemaMigrationStep(_VERSION_FIFTY_FOUR, _VERSION_FIFTY_FIVE, _apply_v54_to_v55),
+    _SchemaMigrationStep(_VERSION_FIFTY_FIVE, _VERSION_FIFTY_SIX, _apply_v55_to_v56),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
