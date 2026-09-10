@@ -9,19 +9,21 @@ operator-gated step this suite does not perform.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import logging
 import sys
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import githubkit.exception
 import httpx
 import pytest
+from dbos._serialization import DefaultSerializer, serialize_exception
 
 from atelier2.adapters.github.composition import (
     GitHubConnectionUncomposable,
@@ -33,6 +35,7 @@ from atelier2.adapters.github.live_effects import (
     GitHubCredentialUnresolvable,
     GitHubEffectRefused,
     GitHubRepository,
+    GitHubRequestFailed,
     GitHubTokenCredential,
     LiveGitHubEffectAdapterFactory,
     LiveGitHubHeadBranchPullRequests,
@@ -130,7 +133,11 @@ class _FakeGitHubServer:
     pull_request_searches: int = 0
 
     pull_request_search_answer: httpx.Response | None = None
-    pull_request_create_answer: httpx.Response | None = None
+    refused_requests: dict[tuple[str, str], httpx.Response | None] = field(
+        default_factory=dict
+    )
+    """Requests answered with a refusal instead, by method and path; `None` drops the connection."""
+
     fail_pull_request_search_on_page: int | None = None
     """Which page (1-indexed) of a pull-request listing answers a failure."""
 
@@ -143,6 +150,11 @@ class _FakeGitHubServer:
         self.http_calls += 1
         self.authorizations.append(request.headers.get("authorization", ""))
         path = request.url.path
+        if (request.method, path) in self.refused_requests:
+            refusal = self.refused_requests[(request.method, path)]
+            if refusal is None:
+                raise httpx.ConnectError("the connection dropped", request=request)
+            return refusal
         prefix = f"/repos/{self.owner}/{self.repo}"
         if request.method == "GET" and path == f"{prefix}/branches/{self.base_branch}":
             return httpx.Response(
@@ -187,8 +199,6 @@ class _FakeGitHubServer:
                 },
             )
         if request.method == "POST" and path == f"{prefix}/pulls":
-            if self.pull_request_create_answer is not None:
-                return self.pull_request_create_answer
             payload = json.loads(request.content)
             head_label = f"{self.owner}:{payload['head']}"
             if any(
@@ -894,19 +904,52 @@ def _everything_an_exception_says(error: BaseException) -> str:
     return "\n".join(said)
 
 
-@pytest.mark.parametrize("operation", ["readback", "execute", "reviewed-execute"])
+def _as_dbos_keeps_it(error: Exception) -> bytes:
+    """The bytes DBOS writes for an exception that escapes a workflow step."""
+
+    serialized, _serialization = serialize_exception(error, None, DefaultSerializer())
+    return base64.b64decode(serialized)
+
+
+def _assert_no_token_in(error: Exception, log: str) -> None:
+    assert CANARY_TOKEN not in _everything_an_exception_says(error)
+    assert CANARY_TOKEN.encode() not in _as_dbos_keeps_it(error)
+    assert CANARY_TOKEN not in log
+
+
 @pytest.mark.parametrize(
-    "token", [None, "", "  \n"], ids=["missing", "empty", "whitespace"]
+    ("operation", "token_file"),
+    [
+        pytest.param("readback", None, id="missing-readback"),
+        pytest.param("execute", None, id="missing-execute"),
+        pytest.param("reviewed-execute", None, id="missing-reviewed-execute"),
+        pytest.param("execute", b"", id="empty"),
+        pytest.param("execute", b"  \n", id="whitespace"),
+        pytest.param("execute", CANARY_TOKEN.encode() + b"\xff", id="invalid-utf8"),
+        pytest.param(
+            "execute",
+            CANARY_TOKEN.encode() + b"\n" + CANARY_TOKEN.encode(),
+            id="embedded-newline",
+        ),
+        pytest.param(
+            "execute", b"\xc2\xa0" + CANARY_TOKEN.encode(), id="unicode-space"
+        ),
+    ],
 )
-def test_an_open_pr_without_a_token_is_refused_before_anything_is_sent(
+def test_an_open_pr_without_one_well_formed_token_is_refused_before_anything_is_sent(
     factory: LiveGitHubEffectAdapterFactory,
     credential_directory: Path,
     server: _FakeGitHubServer,
+    caplog: pytest.LogCaptureFixture,
     operation: str,
-    token: str | None,
+    token_file: bytes | None,
 ) -> None:
     publisher = _RecordingDocumentationPublisher()
-    _set_token(credential_directory, token)
+    token_path = credential_directory / "token"
+    token_path.unlink()
+    if token_file is not None:
+        token_path.write_bytes(token_file)
+    caplog.set_level(logging.DEBUG)
     adapter = replace(
         factory,
         documentation_publisher_factory=_DocumentationPublisherFactory(publisher),
@@ -919,13 +962,14 @@ def test_an_open_pr_without_a_token_is_refused_before_anything_is_sent(
         "reviewed-execute": lambda: adapter.execute(reviewed_documentation_intent()),
     }
     try:
-        with pytest.raises(GitHubCredentialUnresolvable):
+        with pytest.raises(GitHubCredentialUnresolvable) as refused:
             sending[operation]()
     finally:
         adapter.close()
 
     assert server.http_calls == 0
     assert publisher.requests == []
+    _assert_no_token_in(refused.value, caplog.text)
 
 
 def test_a_token_set_or_replaced_after_opening_is_the_one_the_next_pull_request_carries(
@@ -957,25 +1001,54 @@ def test_a_token_set_or_replaced_after_opening_is_the_one_the_next_pull_request_
     assert after_the_swap and all(replaced_token in sent for sent in after_the_swap)
 
 
-def test_no_token_reaches_an_exception_or_a_log_line_when_the_sdk_raises(
+@pytest.mark.parametrize(
+    ("refused_request", "refusal", "intent_for"),
+    [
+        pytest.param(
+            ("POST", f"/repos/{OWNER}/{REPO}/pulls"),
+            httpx.Response(403, json={"message": "Resource not accessible"}),
+            effect_intent,
+            id="create-refused",
+        ),
+        pytest.param(
+            ("POST", f"/repos/{OWNER}/{REPO}/pulls"),
+            None,
+            effect_intent,
+            id="create-unreachable",
+        ),
+        pytest.param(
+            ("GET", f"/repos/{OWNER}/{REPO}/branches/{BASE_BRANCH}"),
+            httpx.Response(403, json={"message": "Resource not accessible"}),
+            reviewed_documentation_intent,
+            id="base-read-refused",
+        ),
+    ],
+)
+def test_an_sdk_failure_leaves_the_adapter_typed_and_without_the_token(
     factory: LiveGitHubEffectAdapterFactory,
     server: _FakeGitHubServer,
     caplog: pytest.LogCaptureFixture,
+    refused_request: tuple[str, str],
+    refusal: httpx.Response | None,
+    intent_for: Callable[[], EffectIntent],
 ) -> None:
-    server.pull_request_create_answer = httpx.Response(
-        403, json={"message": "Resource not accessible by personal access token"}
-    )
+    server.refused_requests[refused_request] = refusal
     caplog.set_level(logging.DEBUG)
-    adapter = factory.open()
+    adapter = replace(
+        factory,
+        documentation_publisher_factory=_DocumentationPublisherFactory(
+            _RecordingDocumentationPublisher()
+        ),
+    ).open()
     try:
-        with pytest.raises(githubkit.exception.RequestFailed) as raised:
-            adapter.execute(effect_intent())
+        with pytest.raises(GitHubRequestFailed) as failed:
+            adapter.execute(intent_for())
     finally:
         adapter.close()
 
-    assert server.http_calls > 0
-    assert CANARY_TOKEN not in _everything_an_exception_says(raised.value)
-    assert CANARY_TOKEN not in caplog.text
+    assert failed.value.__cause__ is None
+    assert failed.value.__context__ is None
+    _assert_no_token_in(failed.value, caplog.text)
 
 
 def load_acceptance_gate() -> ModuleType:

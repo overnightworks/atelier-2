@@ -603,17 +603,26 @@ def test_a_credential_git_printed_never_reaches_the_kept_reason(
     assert REDACTION_MARKER in result.reason.detail
 
 
-@pytest.mark.parametrize("operation", ["readback", "execute", "reviewed-publish"])
 @pytest.mark.parametrize(
-    "token", [None, b"", b" \n"], ids=["missing", "empty", "whitespace"]
+    ("operation", "token_file"),
+    [
+        pytest.param("readback", None, id="missing-readback"),
+        pytest.param("execute", None, id="missing-execute"),
+        pytest.param("reviewed-publish", None, id="missing-reviewed-publish"),
+        pytest.param("execute", b"", id="empty"),
+        pytest.param("execute", b" \n", id="whitespace"),
+        pytest.param("execute", b"\xc2\xa0\n", id="unicode-space-only"),
+        pytest.param("execute", b"ghp_token\xff", id="invalid-utf8"),
+        pytest.param("execute", b"ghp_one\nghp_two", id="embedded-newline"),
+    ],
 )
-def test_without_a_readable_token_no_git_process_reaches_the_remote(
-    tmp_path: Path, operation: str, token: bytes | None
+def test_without_one_well_formed_token_no_git_process_reaches_the_remote(
+    tmp_path: Path, operation: str, token_file: bytes | None
 ) -> None:
     store, remote, base, tree = _repositories(tmp_path)
     credential_file = tmp_path / "token"
-    if token is not None:
-        credential_file.write_bytes(token)
+    if token_file is not None:
+        credential_file.write_bytes(token_file)
     runner = _ScriptedRemoteReadRunner([])
     factory = _factory(store, remote, runner, credential_file=credential_file)
     intent, _request = _intent(factory, base, tree)

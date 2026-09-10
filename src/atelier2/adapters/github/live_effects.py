@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ import githubkit.exception
 import httpx
 from githubkit_schemas.latest.types import ReposOwnerRepoPullsPostBodyType
 
+from atelier2.adapters.git_transport.effects import TokenFileProblem, read_token_file
 from atelier2.adapters.github.effects import (
     GitHubEffectRefused,
     OpenPullRequestRequest,
@@ -130,6 +132,16 @@ class GitHubUnexpectedResponse(RuntimeError):
     """A platform response did not carry the shape this operation reads."""
 
 
+class GitHubRequestFailed(RuntimeError):
+    """GitHub did not answer a request this operation cannot continue without.
+
+    It names what was asked and the status GitHub answered, and nothing of the
+    SDK's own exception: that one carries the request it failed on,
+    `Authorization` header included, and an exception escaping an effect step
+    is kept durably.
+    """
+
+
 @dataclass(frozen=True)
 class GitHubTokenCredential:
     """Where the adapter resolves the personal-access-token credential.
@@ -144,16 +156,10 @@ class GitHubTokenCredential:
 
     def resolve(self) -> str:
         token_path = self.credential_directory / GITHUB_TOKEN_CREDENTIAL_ENTRY
-        try:
-            token = token_path.read_text(encoding="utf-8").strip()
-        except OSError as error:
+        token = read_token_file(token_path)
+        if isinstance(token, TokenFileProblem):
             raise GitHubCredentialUnresolvable(
-                f"platform-credential-unresolvable: {token_path} did not "
-                f"resolve a GitHub token: {error}"
-            ) from error
-        if not token:
-            raise GitHubCredentialUnresolvable(
-                f"platform-credential-unresolvable: {token_path} is empty"
+                f"platform-credential-unresolvable: {token_path} {token.value}"
             )
         return token
 
@@ -219,14 +225,15 @@ def _elapsed_milliseconds(started: float) -> int:
     return round((time.monotonic() - started) * 1_000)
 
 
-def _refused_search(
-    error: githubkit.exception.RequestError[Any], elapsed_milliseconds: int
+def _unanswered_reason(
+    error: githubkit.exception.GitHubException, elapsed_milliseconds: int
 ) -> UnknownOutcomeReason:
-    """Why a pull request listing did not resolve, in GitHub's own words.
+    """Why a GitHub request did not resolve, in GitHub's own words.
 
     A refused request carries the status GitHub answered and the body it
     explained itself in; a timeout or a transport failure never reached a
     status at all, and then the client's own account of it is what there is.
+    Any other SDK failure is named by its kind alone.
     """
 
     if isinstance(error, githubkit.exception.RequestFailed):
@@ -235,7 +242,32 @@ def _refused_search(
             elapsed_milliseconds,
             error.response.raw_response.text,
         )
-    return UnknownOutcomeReason(None, elapsed_milliseconds, str(error.exc))
+    if isinstance(error, githubkit.exception.RequestError):
+        return UnknownOutcomeReason(None, elapsed_milliseconds, str(error.exc))
+    return UnknownOutcomeReason(None, elapsed_milliseconds, type(error).__name__)
+
+
+def _answer_or_reason[Answer](
+    ask: Callable[[], Answer], started: float
+) -> Answer | UnknownOutcomeReason:
+    """What one SDK call answered, or why it did not, as plain values.
+
+    The SDK's exception never leaves this function (`GitHubRequestFailed` says
+    why); the reason keeps only GitHub's status and its credential-scrubbed
+    words.
+    """
+
+    try:
+        return ask()
+    except githubkit.exception.GitHubException as error:
+        return _unanswered_reason(error, _elapsed_milliseconds(started))
+
+
+def _request_failed(asked: str, reason: UnknownOutcomeReason) -> GitHubRequestFailed:
+    answered = (
+        "no status" if reason.failure_code is None else f"status {reason.failure_code}"
+    )
+    return GitHubRequestFailed(f"{asked} ended with {answered}")
 
 
 def _listed_page(response: httpx.Response) -> list[dict[str, Any]] | None:
@@ -291,19 +323,19 @@ def _list_head_branch_page(
     page took.
     """
 
-    try:
-        response = client.rest.pulls.list(
+    response = _answer_or_reason(
+        lambda: client.rest.pulls.list(
             repository.owner,
             repository.name,
             head=f"{repository.owner}:{branch}",
             state="all",
             per_page=PULL_REQUESTS_PER_LISTING_PAGE,
             page=page,
-        )
-    except githubkit.exception.RequestError as error:
-        return _PullRequestSearchFailed(
-            _refused_search(error, _elapsed_milliseconds(started))
-        )
+        ),
+        started,
+    )
+    if isinstance(response, UnknownOutcomeReason):
+        return _PullRequestSearchFailed(response)
     raw_response = response.raw_response
     elapsed = _elapsed_milliseconds(started)
     answered = _listed_page(raw_response)
@@ -541,11 +573,16 @@ class LiveGitHubEffectAdapter:
         client: githubkit.GitHub[githubkit.TokenAuthStrategy],
         request: ReviewedDocumentationPullRequest,
     ) -> None:
-        response = client.rest.repos.get_branch(
-            self._repository.owner,
-            self._repository.name,
-            self._repository.base_branch,
+        response = _answer_or_reason(
+            lambda: client.rest.repos.get_branch(
+                self._repository.owner,
+                self._repository.name,
+                self._repository.base_branch,
+            ),
+            time.monotonic(),
         )
+        if isinstance(response, UnknownOutcomeReason):
+            raise _request_failed("the base branch read", response)
         branch = response.raw_response.json()
         if not isinstance(branch, dict):
             raise GitHubUnexpectedResponse(
@@ -626,16 +663,17 @@ class LiveGitHubEffectAdapter:
         }
         if isinstance(request, ReviewedDocumentationPullRequest):
             create_body["draft"] = request.draft
-        started = time.monotonic()
-        try:
-            response = client.rest.pulls.create(
+        response = _answer_or_reason(
+            lambda: client.rest.pulls.create(
                 self._repository.owner,
                 self._repository.name,
                 data=create_body,
-            )
-        except githubkit.exception.RequestFailed as error:
-            if error.response.status_code != _PULL_REQUEST_ALREADY_EXISTS_STATUS:
-                raise
+            ),
+            time.monotonic(),
+        )
+        if isinstance(response, UnknownOutcomeReason):
+            if response.failure_code != _PULL_REQUEST_ALREADY_EXISTS_STATUS:
+                raise _request_failed("the pull request creation", response)
             # A concurrent execute created the pull request between this
             # attempt's search and this create; the same marker search
             # converges on its result rather than this attempt creating a twin
@@ -646,7 +684,7 @@ class LiveGitHubEffectAdapter:
             found = self._find_recorded_pull_request(client, intent, request)
             if isinstance(found, _RecordedPullRequest):
                 return found
-            return _refused_search(error, _elapsed_milliseconds(started))
+            return response
         created = response.raw_response.json()
         if not isinstance(created, dict):
             raise GitHubUnexpectedResponse(

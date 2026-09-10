@@ -13,6 +13,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, assert_never
 
@@ -63,31 +64,57 @@ class GitTransportRefused(RuntimeError):
 
 
 class GitCredentialUnresolvable(GitTransportRefused):
-    """The remote's credential file holds no readable token (`platform-credential-unresolvable`)."""
+    """The remote's credential file holds no well-formed token (`platform-credential-unresolvable`)."""
+
+
+class TokenFileProblem(StrEnum):
+    """Why a credential file holds no token a request may carry, never quoting it."""
+
+    MISSING = "does not exist"
+    UNREADABLE = "is not readable"
+    EMPTY = "is empty"
+    MALFORMED = "does not hold exactly one token of visible ASCII characters"
+
+
+_VISIBLE_ASCII = range(0x21, 0x7F)
+
+
+def read_token_file(path: Path) -> str | TokenFileProblem:
+    """The one token a credential file holds, or why it holds none.
+
+    The owner of what a token file may hold, for every adapter that sends one:
+    visible ASCII once the edges are trimmed, since anything else can reach an
+    HTTP header or a git prompt where a protocol error or a log prints it.
+    """
+
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
+        return TokenFileProblem.MISSING
+    except OSError:
+        return TokenFileProblem.UNREADABLE
+    token = contents.strip()
+    if not token:
+        return TokenFileProblem.EMPTY
+    if any(byte not in _VISIBLE_ASCII for byte in token):
+        return TokenFileProblem.MALFORMED
+    return token.decode("ascii")
 
 
 def _require_a_readable_token(credential_file: Path | None) -> None:
-    """Refuse a remote call whose credential helper would answer git with nothing.
+    """Refuse a remote call whose credential helper would not answer git with one token.
 
-    Checked at each remote call rather than when the adapter opens, so the
-    operator can set or replace the token while the host serves. The bytes read
-    here only prove the file holds a token and are dropped at once: the helper
-    git invokes reads the file itself.
+    Checked per remote call, so a token set while the host serves counts; what
+    is read here is dropped at once, since the helper git invokes reads the file.
     """
 
     if credential_file is None:
         return
-    try:
-        holds_a_token = bool(credential_file.read_bytes().strip())
-    except OSError as error:
+    token = read_token_file(credential_file)
+    if isinstance(token, TokenFileProblem):
         raise GitCredentialUnresolvable(
             f"platform-credential-unresolvable: git credential file "
-            f"{credential_file} is not readable: {error.strerror}"
-        ) from error
-    if not holds_a_token:
-        raise GitCredentialUnresolvable(
-            f"platform-credential-unresolvable: git credential file "
-            f"{credential_file} is empty"
+            f"{credential_file} {token.value}"
         )
 
 
@@ -276,8 +303,7 @@ class GitTransportEffectAdapterFactory:
 
     def open(self) -> GitTransportEffectAdapter:
         credential_file = self.remote.credential_file
-        # Absolute rather than resolved: a symlink the operator repoints is
-        # followed by the next remote call instead of pinned at the host's start.
+        # Absolute, not resolved: a repointed symlink is followed, not pinned.
         absolute_credential_file = (
             None if credential_file is None else credential_file.absolute()
         )
