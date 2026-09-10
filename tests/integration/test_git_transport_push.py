@@ -832,7 +832,7 @@ def private_temporary_directory(
     return directory
 
 
-def test_git_s_credential_prompt_is_answered_from_memory_and_nothing_lands_on_disk(
+def test_git_s_credential_prompt_is_answered_exactly_with_no_file_in_tmpdir(
     tmp_path: Path, private_temporary_directory: Path
 ) -> None:
     token = "sentinel+token/1504"
@@ -862,7 +862,7 @@ def test_git_s_credential_prompt_is_answered_from_memory_and_nothing_lands_on_di
     assert all(token not in exposed for exposed in witness.exposed)
 
 
-def test_a_process_killed_while_git_runs_leaves_no_copy_of_the_token_behind(
+def test_no_copy_of_the_token_is_left_in_tmpdir_when_the_process_is_killed(
     private_temporary_directory: Path,
 ) -> None:
     dies_holding_the_token = (

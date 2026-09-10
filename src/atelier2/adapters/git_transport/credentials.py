@@ -54,11 +54,12 @@ def credential_helper_arguments(token: str | None) -> Iterator[tuple[str, ...]]:
     """`git -c` arguments whose credential helper answers git with exactly `token`.
 
     The token waits in an anonymous pipe of this process for the length of one
-    git call: on no disk, in no argument vector or environment variable, and
-    gone with this process however that process ends. No child inherits the
-    pipe; the helper opens it through this process's descriptor table, a path
-    that names this pipe only while it is open, and reads it once -- all one
-    git process asks for. No token, no helper.
+    git call: no file is created, and it is in no argument vector or
+    environment variable. No child inherits the pipe; the helper opens it
+    through this process's descriptor table, a path that names this pipe only
+    while it is open. The pipe can be read once: a git process asking a second
+    time gets an empty password, which ends as a failed login, not a hang or a
+    leak. No token, no helper.
     """
 
     if token is None:

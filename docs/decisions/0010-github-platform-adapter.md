@@ -336,7 +336,8 @@ only names what the references are.
 - **A long-lived token is the PAT method's accepted cost**, and it is bounded where
   Atelier can bound it: the credential channel holds it, rotation and expiry stay
   the operator's, and revoking it is one operator act on the platform. Atelier
-  neither copies it nor extends its life.
+  writes no copy of it to a file and does not extend its life; it lives only in
+  the memory of the processes that send it.
 - **The App method's long-lived secret is the private key, and its blast radius is
   the App, not the installation.** Disconnecting or suspending one installation
   stops that connection; it does nothing about a leaked key, which can still mint
@@ -594,9 +595,12 @@ own bytes. For each git call the pushing process instead reads and checks the
 token from the credential file decision 3 names, writes that checked value into
 an anonymous pipe no child inherits, and the credential helper git itself
 invokes reads it once through the pushing process's descriptor table
-(`/proc/<pid>/fd/<n>`) to answer git's credential prompt. The token is on no
-disk and in no environment, git never reads the credential file itself, and the
-pipe vanishes with the pushing process however that process ends.
+(`/proc/<pid>/fd/<n>`) to answer git's credential prompt. The handoff creates
+no file and puts the token in no environment, and git never reads the credential
+file itself; the token lives in the memory of the serve process and the git
+process. Whether a crash writes it to disk through a core dump is decided by the
+system's core-dump policy, not by this adapter; the operator should run the
+serve service with `LimitCORE=0`.
 **Stated exactly: the git subprocess's argument vector may legitimately carry
 that descriptor path — a reference into the pushing process, not the secret —
 and must never carry the credential's own bytes; the two are not the same
