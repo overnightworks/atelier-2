@@ -9,11 +9,11 @@ import pytest
 
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
-    ModelResolutionSource,
     agent_role_completeness_refusal,
     cast_unbound_roles,
     resolve_start_bindings,
 )
+from atelier2.application.role_candidates import ModelResolutionSource
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,

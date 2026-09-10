@@ -110,8 +110,8 @@ if command == "uv":
     if arguments[:5] == ["run", "--locked", "atelier2", "definition-source", "connect"]:
         if not state.get("migrated"):
             raise SystemExit("definition source connect reached before migration")
-        if state.get("fail_connect"):
-            raise SystemExit("definition source connect refused for testing")
+        if state.get("connect_refusal"):
+            raise SystemExit(state["connect_refusal"])
         location = arguments[arguments.index("--location") + 1]
         ref = arguments[arguments.index("--ref") + 1]
         if state.get("connect_already_registered"):
@@ -378,6 +378,10 @@ def test_clean_main_updates_in_the_declared_order_and_backs_up_the_store(
             "refs/heads/main",
             "--select",
             "workflows/*.yaml=workflow",
+            "--select",
+            "workflows/schemas/*.json=schema",
+            "--select",
+            "workflows/budgets/*.json=budget_policy",
             "--actor",
             "atelier2-deploy",
         ],
@@ -444,16 +448,25 @@ def test_intake_refusal_does_not_prevent_the_start_and_exits_its_own_code(
     assert str(harness.store / "atelier.sqlite") in intake_calls[0]
 
 
-def test_connect_failure_rolls_back_without_ever_reaching_intake(
+def test_a_refused_connect_says_why_restarts_the_previous_serve_and_never_intakes(
     tmp_path: Path,
 ) -> None:
+    """The revert of the schema and budget selections, taken without reconnecting first.
+
+    The older build cannot read the stored selections, so its connect refuses:
+    the deploy must say so loudly and bring the serve it replaced back up, with
+    a catalog no intake touched.
+    """
+
     harness = UpdateHarness.create(tmp_path)
     previous_commit = str(harness.state()["head"])
-    harness.configure(fail_connect=True)
+    refusal = "the store holds a definition source it cannot read back"
+    harness.configure(connect_refusal=refusal)
 
     completed = harness.run()
 
-    assert completed.returncode != 0
+    assert completed.returncode == 1
+    assert refusal in completed.stderr
     assert (
         "connecting the workflow definition source failed; restored the previous "
         "commit and restarted the live serve" in completed.stderr

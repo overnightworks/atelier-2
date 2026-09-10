@@ -64,6 +64,7 @@ from atelier2.ports.definition_sources import (
     ScannedSource,
     SelectedFile,
     SelectedIntake,
+    SelectedWorkflow,
     SourceIntakeRecorded,
     SourceIntakeRefused,
 )
@@ -225,12 +226,12 @@ def test_every_selected_file_is_handed_over_once_under_its_authored_name() -> No
         (
             COMMIT,
             (
-                SelectedIntake(
+                SelectedWorkflow(
                     BUILD,
                     WorkflowRevision(files[BUILD]),
                     CatalogLineageDisplayName("build"),
                 ),
-                SelectedIntake(
+                SelectedWorkflow(
                     SHIP,
                     WorkflowRevision(files[SHIP]),
                     CatalogLineageDisplayName("ship"),

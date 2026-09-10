@@ -6,7 +6,11 @@ readonly deploy_branch="main"
 readonly serve_unit="atelier2-serve.service"
 readonly health_url="http://127.0.0.1:8422/atelier/api/v1/health"
 readonly definition_source_ref="refs/heads/${deploy_branch}"
-readonly definition_source_selection="workflows/*.yaml=workflow"
+readonly -a definition_source_selections=(
+  "workflows/*.yaml=workflow"
+  "workflows/schemas/*.json=schema"
+  "workflows/budgets/*.json=budget_policy"
+)
 readonly definition_source_actor="atelier2-deploy"
 # A refused intake still lets the new commit serve (the catalog keeps its
 # previous workflow state), so this is not the generic fail() exit 1: it is
@@ -158,12 +162,16 @@ wait_for_served_health() {
 }
 
 connect_and_intake_definitions() {
-  local connect_output source_id intake_output
+  local connect_output source_id intake_output selection
+  local -a selection_arguments=()
+  for selection in "${definition_source_selections[@]}"; do
+    selection_arguments+=(--select "${selection}")
+  done
 
   log "connecting the workflow definition source"
   if ! connect_output="$(cd "${repository}" && uv run --locked atelier2 definition-source connect \
       --database "${database}" --location "${repository}" --ref "${definition_source_ref}" \
-      --select "${definition_source_selection}" --actor "${definition_source_actor}" 2>&1)"; then
+      "${selection_arguments[@]}" --actor "${definition_source_actor}" 2>&1)"; then
     printf '%s\n' "${connect_output}" >&2
     return 1
   fi
