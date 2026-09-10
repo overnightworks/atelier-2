@@ -918,9 +918,11 @@ def _effect_adapters(
     record (`atelier2 connect`, ADR 0010 decision 2): the connected platform's
     own adapter package decodes the record's opaque source address and yields
     the factory, so no platform identifier surfaces here. An unconnected
-    project keeps the loopback adapter exactly as before. The token, when the
-    live adapter opens it, is read from the record's credential directory by
-    reference and never returns here (ADR 0009 §6).
+    project keeps the loopback adapter exactly as before. The token is read
+    from the record's credential directory by reference at each operation that
+    sends and never returns here (ADR 0009 §6), so this composition serves
+    without a token file and a token set or replaced later is the one the next
+    operation sends.
 
     A live adapter's non-authoritative not-found readback enters the durable
     reconciliation path. Only the pre-reconciliation completion shape remains

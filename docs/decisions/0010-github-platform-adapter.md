@@ -320,11 +320,13 @@ ADR 0009 §6 holds here unchanged and **identically for both methods**; this rec
 only names what the references are.
 
 - The durable secret is the connection's credential — the **token** in the PAT
-  method, the App **private key** in the App method. The adapter's host resolves it
-  from a credential reference at composition, exactly as
-  `ClaudeSubscriptionSettings.credential_directory` already does for the Claude
-  adapter. Neither ever appears in a workflow document, prompt, context package,
-  event, receipt, log, database row, API resource, crash evidence or test fixture.
+  method, the App **private key** in the App method. The adapter resolves it from
+  the credential reference its connection names at each operation that sends —
+  the reference pattern `ClaudeSubscriptionSettings.credential_directory` already
+  uses for the Claude adapter — so a credential the operator sets or replaces is
+  the one the next operation sends. Neither ever appears in a workflow document,
+  prompt, context package, event, receipt, log, database row, API resource, crash
+  evidence or test fixture.
   The operator pastes a token into the credential channel, never into a project
   record, an issue, or a workflow.
 - **Installation tokens are derived, never stored.** In the App method they are
@@ -334,7 +336,8 @@ only names what the references are.
 - **A long-lived token is the PAT method's accepted cost**, and it is bounded where
   Atelier can bound it: the credential channel holds it, rotation and expiry stay
   the operator's, and revoking it is one operator act on the platform. Atelier
-  neither copies it nor extends its life.
+  writes no copy of it to a file and does not extend its life; it lives only in
+  the memory of the processes that send it.
 - **The App method's long-lived secret is the private key, and its blast radius is
   the App, not the installation.** Disconnecting or suspending one installation
   stops that connection; it does nothing about a leaked key, which can still mint
@@ -350,8 +353,11 @@ only names what the references are.
   Atelier was told to use — and an incident must assume the key reached every
   installation trusting the App, including ones no connection record names. Anything
   else inventories the attacker's target from the victim's notes.
-- A bound credential reference that does not resolve refuses at run start
-  (`platform-credential-unresolvable`), with no fallback to another auth mode.
+- A bound credential reference that does not resolve refuses the operation that
+  needed it, before that operation sends anything
+  (`platform-credential-unresolvable`), with no fallback to another auth mode. It
+  never refuses the host's start: the operator sets the credential while the host
+  serves.
 - **Raw platform responses do not land durably.** ADR 0006 already has the rule:
   the operation revision declares its typed readback projection and the core
   carries that projection as an opaque hashed payload. The adapter never writes a
@@ -585,15 +591,20 @@ the git subprocess as a literal value in its argument vector, per decision 3's
 `/proc/<pid>/cmdline` rule, **and never as a literal value in that subprocess's
 environment either**: `/proc/<pid>/environ` is exactly as readable a leak
 surface as `argv` to a process sharing the host, so neither carries the token's
-own bytes. The subprocess instead receives a **reference** in its constructed
-environment — the same credential-file path decision 3 already resolves the
-token from — and a git credential helper or `GIT_ASKPASS` script git itself
-invokes reads that file and answers git's credential prompt; the pushing
-process's own environment never holds the secret, only the path to it.
-**Stated exactly: the git subprocess's environment may legitimately carry the
-credential-file path — that path is a reference, not the secret — and must
-never carry the credential's own bytes; the two are not the same claim, and
-this amendment makes only the second one.** This amendment adds no second
+own bytes. For each git call the pushing process instead reads and checks the
+token from the credential file decision 3 names, writes that checked value into
+an anonymous pipe no child inherits, and the credential helper git itself
+invokes reads it once through the pushing process's descriptor table
+(`/proc/<pid>/fd/<n>`) to answer git's credential prompt. The handoff creates
+no file and puts the token in no environment, and git never reads the credential
+file itself; the token lives in the memory of the serve process and the git
+process. Whether a crash writes it to disk through a core dump is decided by the
+system's core-dump policy, not by this adapter; the operator should run the
+serve service with `LimitCORE=0`.
+**Stated exactly: the git subprocess's argument vector may legitimately carry
+that descriptor path — a reference into the pushing process, not the secret —
+and must never carry the credential's own bytes; the two are not the same
+claim, and this amendment makes only the second one.** This amendment adds no second
 credential rule: it states decision 3's existing
 by-reference discipline precisely for the one transport in this record that
 shells out to a subprocess instead of calling an HTTP client library directly.
@@ -815,8 +826,8 @@ names, with this adapter's `marker.py` as that contract's GitHub
 implementation, never a second copy of the decision. So are branch naming,
 deriving a title from the predecessor agent's output, and the
 credential-by-reference boundary (decision 3) — the adapter hands `githubkit`
-a token resolved from a credential directory at `open()`, never a value from
-anywhere else. `githubkit` bundles `hishel` for HTTP-level response caching by
+a token resolved from a credential directory at each operation, never a value
+from anywhere else. `githubkit` bundles `hishel` for HTTP-level response caching by
 default (`http_cache=True`); this operation turns it off, because a cached
 "not found" answering a retry's search is exactly the twin the
 readback-then-create rule exists to prevent — the library's caching applies
@@ -856,7 +867,7 @@ DBOS and SQLAlchemy.
 | Name | Raised when | Boundary |
 | --- | --- | --- |
 | `project-source-not-connected` | an operation or observation names a project with no connection record, or whose latest connection revision is disconnected | adapter composition |
-| `platform-credential-unresolvable` | the bound credential reference does not resolve on the adapter's host | run start |
+| `platform-credential-unresolvable` | the bound credential reference does not resolve on the adapter's host | each operation that sends, before it sends |
 | `platform-object-out-of-scope` | an operation addresses an object outside the connected repository scope | operation binding |
 | `platform-marker-slot-unavailable` | an operation revision declares a marker slot the object kind it writes does not have | operation binding |
 | `platform-absence-unprovable` | an operation declares an authoritative negative its read cannot support — a create, a reversible change with no declared non-performance evidence, or an absence derived from an eventually consistent search | operation binding, and again at readback |
