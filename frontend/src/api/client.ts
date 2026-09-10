@@ -791,6 +791,7 @@ const runEventSchema = z
         event: z.literal("AGENT_FAILED"),
         reason: z.enum([
           "agent-executor-binding-unavailable",
+          "agent-mode-mismatch",
           "work-item-claim-unconfigured",
           "work-item-names-no-scope",
           "work-item-claim-refused-by-priority",

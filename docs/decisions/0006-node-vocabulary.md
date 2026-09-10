@@ -381,7 +381,9 @@ requirement and the bound agent configuration declares the capability, and the t
 must be equal: a run start, and a fork of a finished run, is refused before any
 durable write when an agent node's declared mode is not exactly the capability its
 bound agent-configuration revision declares, naming the node, its mode and that
-capability. An `interactive` node either declares no
+capability. Every attempt asks the same question again before it is written,
+because an attempt replays the binding its run recorded; a disagreeing binding
+ends the node with the same refusal. An `interactive` node either declares no
 outputs, or declares every output `confirmed_by: operator`; an interactive output
 mapped downstream without that confirmation is refused.
 

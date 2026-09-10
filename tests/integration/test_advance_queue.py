@@ -102,6 +102,7 @@ from atelier2.ports.queue_projection import (
     ReadQueueProjectPolicyResult,
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.runs import AdmittingStartJudge
 from tests.scenarios.workflows import (
     ANY_JSON_SCHEMA,
     V3_WAIT_LINE_DOCUMENT,
@@ -381,7 +382,13 @@ def test_advance_queue_starts_admitted_items_in_the_shared_order_key() -> None:
     catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
     starter = _ScriptedStarter([_created, _created, _created])
 
-    outcomes = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+    outcomes = advance_queue(
+        queue,
+        catalog,
+        starter,
+        start_judge=AdmittingStartJudge(),
+        workflow_document_parser=None,
+    )
 
     assert [outcome.item_id for outcome in outcomes] == [
         low_rank.item_reference.item_id,
@@ -409,6 +416,7 @@ def test_a_document_with_no_graph_inputs_starts_exactly_as_before() -> None:
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
         served_project=PROJECT,
     )
@@ -418,22 +426,27 @@ def test_a_document_with_no_graph_inputs_starts_exactly_as_before() -> None:
     assert isinstance(asked, StartPublishedRunRequest)
 
 
-def test_a_start_refused_for_a_node_bound_outside_its_mode_blocks_the_item() -> None:
+def test_a_start_the_judge_refuses_blocks_its_item_without_a_reservation() -> None:
     item = _admitted("gh:302", rank=1)
     queue = _QueueRecording(QueueItemsPage((item,), None))
     catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
-    starter = _ScriptedStarter(
-        [
-            AgentModeMismatch(
-                "review", "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
-            )
-        ]
+    refused = AgentModeMismatch(
+        "review", "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
     )
+    starter = _ScriptedStarter([])
 
-    (outcome,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+    (outcome,) = advance_queue(
+        queue,
+        catalog,
+        starter,
+        start_judge=_ScriptedStarter([refused]),
+        workflow_document_parser=None,
+    )
 
     assert isinstance(outcome, QueueItemBlocked)
     assert outcome.blockers == (QueueBlockerKind.START_REFUSED,)
+    assert queue.reserved == []
+    assert starter.asks == []
 
 
 @pytest.mark.proves("a-manually-approved-queue-item-starts-once")
@@ -471,6 +484,7 @@ def test_a_bound_graph_input_workflow_starts_carrying_the_items_tracker_referenc
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
         served_project=PROJECT,
         tracker=tracker,
@@ -499,6 +513,7 @@ def test_a_document_declaring_more_than_the_sweep_can_fill_is_blocked_not_guesse
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
         served_project=PROJECT,
     )
@@ -526,6 +541,7 @@ def test_a_disconnected_tracker_blocks_only_the_item_that_needs_it() -> None:
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
         served_project=PROJECT,
     )
@@ -571,6 +587,7 @@ def test_a_foreign_project_item_is_skipped_while_a_served_item_still_starts() ->
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
     )
@@ -607,6 +624,7 @@ def test_an_item_whose_run_ended_badly_is_released_and_started_again(
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=tracker,
@@ -615,6 +633,7 @@ def test_an_item_whose_run_ended_badly_is_released_and_started_again(
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=tracker,
@@ -663,6 +682,7 @@ def test_a_completed_run_keeps_its_item_bound_and_releases_nothing() -> None:
         queue,
         catalog,
         starter,
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=FakeTrackerItemSource(),
@@ -694,6 +714,7 @@ def test_an_item_is_restarted_up_to_the_cap_and_then_stays_bound(
         queue,
         catalog,
         _ScriptedStarter([]),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=_tracker_listing(("gh:630", True)),
@@ -734,6 +755,7 @@ def _withheld_restart(
             queue,
             _CatalogResolverStub({LINEAGE: REVISION_HASH}),
             starter,
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=None,
             served_project=PROJECT,
             tracker=tracker,
@@ -835,6 +857,7 @@ def test_an_instance_with_no_label_to_restart_under_restarts_nothing(
         queue,
         _CatalogResolverStub({LINEAGE: REVISION_HASH}),
         _ScriptedStarter([]),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=tracker,
@@ -888,6 +911,7 @@ def test_one_sweep_reads_the_tracker_once_for_every_ended_launch() -> None:
         queue,
         _CatalogResolverStub({LINEAGE: REVISION_HASH}),
         _ScriptedStarter([]),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=None,
         served_project=PROJECT,
         tracker=tracker,

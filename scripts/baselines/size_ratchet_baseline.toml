@@ -194,7 +194,7 @@ qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptSto
 lines = 71
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
+qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unstartable_node"
 lines = 61
 
 [[function]]

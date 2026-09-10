@@ -1286,6 +1286,7 @@ class NodeDetailResource(ApiModel):
 # `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift`.
 AgentNodeRefusalName = Literal[
     "agent-executor-binding-unavailable",
+    "agent-mode-mismatch",
     "work-item-claim-unconfigured",
     "work-item-names-no-scope",
     "work-item-claim-refused-by-priority",

@@ -49,6 +49,7 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
+from atelier2.adapters.dbos.transactions import keeping_nothing
 from atelier2.adapters.dbos.uncontinuable_runs import (
     DbosUncontinuableRunStore,
     retag_stranded_continuations,
@@ -1456,6 +1457,11 @@ class _DbosProcessOwner:
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(
                 bound.engine,
+                bound.settings,
+                bound.agent_executor_registry,
+            ),
+            start_judge=DbosDurableRunStarter(
+                keeping_nothing(bound.engine),
                 bound.settings,
                 bound.agent_executor_registry,
             ),

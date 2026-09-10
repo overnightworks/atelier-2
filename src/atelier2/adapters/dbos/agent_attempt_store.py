@@ -1444,14 +1444,14 @@ def _cancel_resting_wait(
     return RunCancellationEndedRun(load_run(connection, run.run_id))
 
 
-def _unavailable_executor_cleanup_command_id(attempt_id: AgentAttemptId) -> str:
-    return (
-        f"{AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value}:{attempt_id.value}"
-    )
+def _unstartable_node_cleanup_command_id(
+    attempt_id: AgentAttemptId, refusal: AgentExecutionRefusal
+) -> str:
+    return f"{refusal.value}:{attempt_id.value}"
 
 
-def _unavailable_executor_cleanup_request(
-    attempt: AgentAttempt,
+def _unstartable_node_cleanup_request(
+    attempt: AgentAttempt, refusal: AgentExecutionRefusal
 ) -> CancelAgentAttemptRequest:
     cancellation = attempt.cancellation
     if cancellation is not None:
@@ -1465,28 +1465,36 @@ def _unavailable_executor_cleanup_request(
     return CancelAgentAttemptRequest(
         attempt.run_id,
         attempt.attempt_id,
-        _unavailable_executor_cleanup_command_id(attempt.attempt_id),
+        _unstartable_node_cleanup_command_id(attempt.attempt_id, refusal),
         attempt.state_version,
         AgentAttemptReplacement.NONE,
     )
 
 
-def _is_unavailable_executor_cleanup(attempt: AgentAttempt) -> bool:
+def _is_unstartable_node_cleanup(
+    attempt: AgentAttempt, refusal: AgentExecutionRefusal
+) -> bool:
+    """Whether this attempt's cancellation is the cleanup this refusal minted.
+
+    The command id names the attempt, and so its ordinal: a replacement that
+    cannot start is cleaned under its own id, never under its predecessor's.
+    """
     cancellation = attempt.cancellation
     return (
-        attempt.attempt_ordinal == 1
-        and attempt.runner_manifest_id is None
+        attempt.runner_manifest_id is None
         and cancellation is not None
         and cancellation.command_id
-        == _unavailable_executor_cleanup_command_id(attempt.attempt_id)
+        == _unstartable_node_cleanup_command_id(attempt.attempt_id, refusal)
         and cancellation.replacement is AgentAttemptReplacement.NONE
     )
 
 
-def _is_unavailable_executor_cleanup_complete(attempt: AgentAttempt) -> bool:
+def _is_unstartable_node_cleanup_complete(
+    attempt: AgentAttempt, refusal: AgentExecutionRefusal
+) -> bool:
     cancellation = attempt.cancellation
     return (
-        _is_unavailable_executor_cleanup(attempt)
+        _is_unstartable_node_cleanup(attempt, refusal)
         and attempt.state is AgentAttemptState.CANCELLED
         and attempt.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED
         and cancellation is not None
@@ -1495,8 +1503,8 @@ def _is_unavailable_executor_cleanup_complete(attempt: AgentAttempt) -> bool:
     )
 
 
-def _commit_unavailable_executor_refusal(
-    connection: Any, request: AgentExecutionRequestV2
+def _commit_unstartable_node_refusal(
+    connection: Any, request: AgentExecutionRequestV2, refusal: AgentExecutionRefusal
 ) -> None:
     _commit_event(
         connection,
@@ -1504,7 +1512,7 @@ def _commit_unavailable_executor_refusal(
         request.workflow_revision_hash,
         request.node_id,
         RunEventKind.AGENT_FAILED,
-        AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
+        refusal.value.encode("ascii"),
         RunState.STARTED,
         RunState.FAILED,
         request.node_id,
@@ -1514,10 +1522,11 @@ def _commit_unavailable_executor_refusal(
     )
 
 
-def _unavailable_executor_refusal_is_already_terminal(
+def _unstartable_node_refusal_is_already_terminal(
     connection: Any,
     request: AgentExecutionRequestV2,
     run: RunV2 | RunV3,
+    refusal: AgentExecutionRefusal,
 ) -> bool:
     """Whether this exact pre-attempt terminal transition already committed."""
 
@@ -1535,10 +1544,7 @@ def _unavailable_executor_refusal_is_already_terminal(
                 run_events.c.node_id == request.node_id,
                 run_events.c.node_execution_id == request.node_execution_id.value,
                 run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
-                run_events.c.payload
-                == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode(
-                    "ascii"
-                ),
+                run_events.c.payload == refusal.value.encode("ascii"),
                 run_events.c.agent_attempt_id.is_(None),
                 run_events.c.attempt_ordinal.is_(None),
                 run_events.c.round_ordinal == request.round_ordinal,
@@ -1579,12 +1585,12 @@ class DbosAgentAttemptStore:
             _require_attempt_binding(durable, execution)
             return durable
 
-    def refuse_unavailable_executor(
-        self, request: AgentExecutionRequestV2
+    def refuse_unstartable_node(
+        self, execution: AgentAttemptExecution, refusal: AgentExecutionRefusal
     ) -> AgentExecutorBindingRefusalResult:
-        """Close an unclaimed Agent node without inventing an attempt failure.
+        """Close an unclaimed Agent node under its refusal, inventing no attempt failure.
 
-        The only mutable predecessor is ordinal one in PREPARED, which has not
+        The only mutable predecessor is its own attempt in PREPARED, which has not
         crossed the launch boundary. It first returns its existing cancellation
         cleanup request; callers carry that through the normal supervisor and
         workspace path, then retry this method. The same command, once accepted,
@@ -1593,26 +1599,26 @@ class DbosAgentAttemptStore:
         #15.
         """
 
-        attempt_id = AgentAttemptId.for_execution(
-            request.node_execution_id, request.request_hash, 1
-        )
+        request = execution.request
         with canonical_write_transaction(self._engine) as connection:
-            run, _graph = _validate_request(connection, request, attempt_id, 1)
-            if _unavailable_executor_refusal_is_already_terminal(
-                connection, request, run
+            run, _graph = _validate_request(
+                connection, request, execution.attempt_id, execution.ordinal
+            )
+            if _unstartable_node_refusal_is_already_terminal(
+                connection, request, run, refusal
             ):
                 return AgentExecutorBindingRefusalWritten()
             record = (
                 connection.execute(
                     sa.select(agent_attempts).where(
-                        agent_attempts.c.attempt_id == attempt_id.value
+                        agent_attempts.c.attempt_id == execution.attempt_id.value
                     )
                 )
                 .mappings()
                 .one_or_none()
             )
             if record is None:
-                _commit_unavailable_executor_refusal(connection, request)
+                _commit_unstartable_node_refusal(connection, request, refusal)
                 return AgentExecutorBindingRefusalWritten()
             attempt = attempt_from_record(record)
             if (
@@ -1621,23 +1627,23 @@ class DbosAgentAttemptStore:
                 or attempt.run_id != request.run_id
                 or attempt.workflow_revision_hash != request.workflow_revision_hash
                 or attempt.node_id != request.node_id
-                or attempt.attempt_ordinal != 1
+                or attempt.attempt_ordinal != execution.ordinal
             ):
                 raise RunTransitionConflict(
-                    "unavailable executor differs from durable attempt binding"
+                    "unstartable node differs from durable attempt binding"
                 )
             if (
                 attempt.state is AgentAttemptState.PREPARED
                 and attempt.runner_manifest_id is None
             ) or (
-                _is_unavailable_executor_cleanup(attempt)
-                and not _is_unavailable_executor_cleanup_complete(attempt)
+                _is_unstartable_node_cleanup(attempt, refusal)
+                and not _is_unstartable_node_cleanup_complete(attempt, refusal)
             ):
                 return AgentExecutorBindingRefusalNeedsPreparedCleanup(
-                    attempt, _unavailable_executor_cleanup_request(attempt)
+                    attempt, _unstartable_node_cleanup_request(attempt, refusal)
                 )
-            if _is_unavailable_executor_cleanup_complete(attempt):
-                _commit_unavailable_executor_refusal(connection, request)
+            if _is_unstartable_node_cleanup_complete(attempt, refusal):
+                _commit_unstartable_node_refusal(connection, request, refusal)
                 return AgentExecutorBindingRefusalWritten()
             return AgentExecutorBindingRefusalFenced(attempt)
 

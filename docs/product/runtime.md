@@ -38,8 +38,11 @@ exact provider/executor entry is refused before any provider process starts,
 whichever direction the mismatch runs. A start is refused before its first
 durable row, and a fork before its successor, when an agent node's declared
 `mode` is not exactly the capability its bound configuration requests; the
-`agent-mode-mismatch` problem names the node, its mode and that capability. A
-nonterminal run is refused on restart before its factory opens when that
+`agent-mode-mismatch` problem names the node, its mode and that capability.
+Every attempt -- fresh, replacement or recovered after a restart -- asks again
+before it is written, and one whose recorded binding disagrees ends its node
+`AGENT_FAILED` with the refusal `agent-mode-mismatch`, before any provider
+process. A nonterminal run is refused on restart before its factory opens when that
 attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
 ordinal-1 attempt and binds an in-memory invocation to a separately supervised

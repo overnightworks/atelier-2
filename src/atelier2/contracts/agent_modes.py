@@ -25,6 +25,15 @@ class AgentModeMismatch:
     capability: AgentExecutionCapability
 
 
+def node_mode_mismatch(
+    node: AgentNodeV3, capability: AgentExecutionCapability
+) -> AgentModeMismatch | None:
+    """This node's mismatch with the capability bound to it, or none."""
+    if capability is AgentExecutionCapability(node.mode):
+        return None
+    return AgentModeMismatch(node.id, node.mode, capability)
+
+
 def agent_mode_mismatch(
     graph: WorkflowGraphV3, bindings: Iterable[ResolvedAgentBinding]
 ) -> AgentModeMismatch | None:
@@ -36,7 +45,7 @@ def agent_mode_mismatch(
     for node in graph.nodes:
         if not isinstance(node, AgentNodeV3):
             continue
-        capability = capability_by_role[node.role]
-        if capability is not AgentExecutionCapability(node.mode):
-            return AgentModeMismatch(node.id, node.mode, capability)
+        mismatch = node_mode_mismatch(node, capability_by_role[node.role])
+        if mismatch is not None:
+            return mismatch
     return None

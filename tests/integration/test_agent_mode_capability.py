@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
-from atelier2.adapters.dbos.schema import run_forks, runs
+from atelier2.adapters.dbos.schema import agent_attempts, run_events, run_forks, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -31,6 +31,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.workflows_v3 import AgentMode
 from atelier2.ports.durable_run_forks import ForkRunRequest
@@ -151,6 +152,26 @@ def start(
     )
 
 
+def start_unchecked(
+    runtime: DbosRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: AgentMode,
+    capability: AgentExecutionCapability,
+) -> None:
+    """Record a run the way one written before the start's check stands.
+
+    Such a run is durable truth the start can no longer refuse, so its start is
+    let through here and what comes after it is asked instead.
+    """
+    workflow, bindings = publish(runtime, mode, capability)
+    with monkeypatch.context() as unchecked:
+        unchecked.setattr(
+            "atelier2.adapters.dbos.starter.agent_mode_mismatch",
+            lambda _graph, _bindings: None,
+        )
+        assert isinstance(start(runtime, workflow, bindings), DurableRunCreated)
+
+
 def rows_of(runtime: DbosRuntime, table: sa.Table) -> int:
     with runtime.engine.connect() as connection:
         return connection.execute(
@@ -220,25 +241,40 @@ def test_the_public_start_names_node_mode_and_capability_when_they_disagree(
     assert rows_of(runtime, runs) == 0
 
 
+def test_a_stored_run_bound_outside_its_mode_starts_no_process_on_its_next_attempt(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start_unchecked(
+        runtime, monkeypatch, "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+
+    runtime.launch()
+    wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
+
+    assert rows_of(runtime, agent_attempts) == 0
+    with runtime.engine.connect() as connection:
+        refusals = (
+            connection.execute(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert refusals == [AgentExecutionRefusal.AGENT_MODE_MISMATCH.value.encode("ascii")]
+
+
 def test_a_fork_refuses_an_origin_whose_node_is_bound_outside_its_mode(
     runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A successor inherits its origin's bindings, and answers to the same check.
-
-    The origin stands for a run written before the check existed, so its own
-    start is let through; the fork is then asked of the finished run.
-    """
-    workflow, bindings = publish(
-        runtime, "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    """A successor inherits its origin's bindings, and answers to the same check."""
+    start_unchecked(
+        runtime, monkeypatch, "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
     )
-    with monkeypatch.context() as unchecked:
-        unchecked.setattr(
-            "atelier2.adapters.dbos.starter.agent_mode_mismatch",
-            lambda _graph, _bindings: None,
-        )
-        assert isinstance(start(runtime, workflow, bindings), DurableRunCreated)
     runtime.launch()
-    wait_for_run_state(runtime.engine, RUN, RunState.COMPLETED)
+    wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
 
     refused = starter_of(runtime).fork_run(ForkRunRequest(RUN, "refork", "review"))
 

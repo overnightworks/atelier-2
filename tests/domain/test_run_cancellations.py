@@ -5,7 +5,7 @@ import pytest
 from atelier2.adapters.dbos import agent_attempt_store
 from atelier2.contracts.agent_attempts import STOP_AFTER_DRIVER_LOSS, AgentAttemptId
 from atelier2.contracts.agents import AgentExecutionRequestHash
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import AgentExecutionRefusal, NodeExecutionId
 from atelier2.contracts.run_cancellations import (
     CancelRunRequest,
     RunCancelCommandId,
@@ -43,22 +43,23 @@ def test_a_minted_command_id_is_disjoint_from_the_driver_lost_family() -> None:
     )
 
 
-def test_a_minted_command_id_is_disjoint_from_the_unavailable_executor_cleanup_family() -> (
-    None
-):
+@pytest.mark.parametrize("refusal", AgentExecutionRefusal)
+def test_a_minted_command_id_is_disjoint_from_the_unstartable_node_cleanup_family(
+    refusal: AgentExecutionRefusal,
+) -> None:
     """Compares against the real adapter mint, not a hand-copied format.
 
-    Reconstructing `agent-executor-binding-unavailable:<attempt id>` by hand
-    here would duplicate the family's own construction logic and could drift
-    silently from it; calling the adapter's own minting function is what keeps
-    this a true disjointness proof against the family that actually exists.
+    Reconstructing `<refusal word>:<attempt id>` by hand here would duplicate
+    the family's own construction logic and could drift silently from it;
+    calling the adapter's own minting function is what keeps this a true
+    disjointness proof against the family that actually exists.
     """
 
     attempt_id = AgentAttemptId.for_execution(
         NodeExecutionId("0" * 64), AgentExecutionRequestHash("1" * 64)
     )
-    cleanup_command_id = agent_attempt_store._unavailable_executor_cleanup_command_id(
-        attempt_id
+    cleanup_command_id = agent_attempt_store._unstartable_node_cleanup_command_id(
+        attempt_id, refusal
     )
 
     assert not is_operator_run_cancel(cleanup_command_id)

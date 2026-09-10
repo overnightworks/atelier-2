@@ -809,19 +809,21 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
     supported = RecordingAgentExecutorFactoryV2(
         "anthropic",
         "claude-cli/v1",
-        "interactive-seed",
+        "tools-seed",
         b"unused",
         capability_set=frozenset(
             {
                 AgentExecutionCapability.HEADLESS,
-                AgentExecutionCapability.INTERACTIVE,
+                AgentExecutionCapability.HEADLESS_WITH_TOOLS,
             }
         ),
     )
     seeded = _runtime(tmp_path, (supported,))
     seeded.initialize_storage()
     workflow, bindings = _publish_single_capability(
-        seeded, AgentExecutionCapability.INTERACTIVE
+        seeded,
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+        document=_V3_DOCUMENT.replace(b"mode: headless", b"mode: headless_with_tools"),
     )
     started = DbosDurableRunStarter(
         seeded.engine,
@@ -1469,13 +1471,17 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
         store = DbosAgentAttemptStore(
             seeded.engine, seeded.settings.application_version
         )
-        requested_cleanup = store.refuse_unavailable_executor(request)
+        requested_cleanup = store.refuse_unstartable_node(
+            execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+        )
         assert isinstance(
             requested_cleanup, AgentExecutorBindingRefusalNeedsPreparedCleanup
         )
         accepted = store.request_cancellation(requested_cleanup.cleanup_request)
         assert isinstance(accepted, AgentAttemptCancellationAccepted)
-        in_progress = store.refuse_unavailable_executor(request)
+        in_progress = store.refuse_unstartable_node(
+            execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+        )
         assert isinstance(in_progress, AgentExecutorBindingRefusalNeedsPreparedCleanup)
         assert in_progress.cleanup_request == requested_cleanup.cleanup_request
         workspace_owner = seeded.agent_workspace_owner
@@ -1488,11 +1494,15 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
         )
         assert terminal is not None
         assert isinstance(
-            store.refuse_unavailable_executor(request),
+            store.refuse_unstartable_node(
+                execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+            ),
             AgentExecutorBindingRefusalWritten,
         )
         assert isinstance(
-            store.refuse_unavailable_executor(request),
+            store.refuse_unstartable_node(
+                execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+            ),
             AgentExecutorBindingRefusalWritten,
         )
         failed = durable_queries(seeded.engine).get_run(run_id)
@@ -1698,7 +1708,9 @@ def test_unavailable_executor_refusal_leaves_launch_fences_unchanged(
                 )
             )
 
-        fenced = store.refuse_unavailable_executor(execution.request)
+        fenced = store.refuse_unstartable_node(
+            execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+        )
 
         assert isinstance(fenced, AgentExecutorBindingRefusalFenced)
         assert fenced.attempt == before
