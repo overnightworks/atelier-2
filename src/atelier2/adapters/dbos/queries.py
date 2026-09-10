@@ -31,6 +31,10 @@ from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
 )
+from atelier2.adapters.dbos.read_failures import (
+    DURABLE_PROJECTION_FAILURES,
+    READ_EDGE_FAILURES,
+)
 from atelier2.adapters.dbos.run_fork_store import (
     _stored_fork_for_command,
     validate_stored_fork,
@@ -2558,9 +2562,9 @@ class DbosQueries:
             return ()
         try:
             return self._run_projections(connection, records)
-        except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
+        except READ_EDGE_FAILURES:
             raise
-        except (UnicodeEncodeError, ValueError, RuntimeError, DatabaseError) as error:
+        except DURABLE_PROJECTION_FAILURES as error:
             _LOG.error(
                 "run list projection failed for the page; retrying its rows"
                 " individually",
@@ -2572,14 +2576,9 @@ class DbosQueries:
             run_id = RunId(str(record["run_id"]))
             try:
                 rows.append(self._run_projections(connection, (record,))[0])
-            except (ProjectionLimitExceeded, OperationalError, PoolTimeoutError):
+            except READ_EDGE_FAILURES:
                 raise
-            except (
-                UnicodeEncodeError,
-                ValueError,
-                RuntimeError,
-                DatabaseError,
-            ) as error:
+            except DURABLE_PROJECTION_FAILURES as error:
                 _LOG.error(
                     "run list projection failed for run_id=%s: %s",
                     run_id.value,
@@ -2849,14 +2848,17 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (
-            RevisionHashCollision,
-            RunTransitionConflict,
-            TypeError,
-            ValueError,
-            RuntimeError,
-            DatabaseError,
-        ):
+        except DURABLE_PROJECTION_FAILURES as error:
+            _LOG.error(
+                "run event page projection failed for run_id=%s: %s",
+                run_id.value,
+                error,
+                exc_info=error,
+                extra={
+                    "event": "run_event_page_projection_corrupt",
+                    "run_id": run_id.value,
+                },
+            )
             return QueryDurableStateCorrupt()
 
     def read_attention_event_page(
@@ -2882,14 +2884,13 @@ class DbosQueries:
             return ProjectionTooLarge()
         except (OperationalError, PoolTimeoutError):
             return ReadUnavailable()
-        except (
-            RevisionHashCollision,
-            RunTransitionConflict,
-            TypeError,
-            ValueError,
-            RuntimeError,
-            DatabaseError,
-        ):
+        except DURABLE_PROJECTION_FAILURES as error:
+            _LOG.error(
+                "attention event page read failed for every run on the page: %s",
+                error,
+                exc_info=error,
+                extra={"event": "attention_event_page_corrupt"},
+            )
             return QueryDurableStateCorrupt()
 
     @staticmethod

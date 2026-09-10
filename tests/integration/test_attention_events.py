@@ -8,14 +8,19 @@ identity already emitted at T excluded.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import DatabaseError
 
-from atelier2.adapters.dbos.attention_events import load_attention_event_page
+from atelier2.adapters.dbos.attention_events import (
+    ProjectEvent,
+    load_attention_event_page,
+)
 from atelier2.adapters.dbos.instants import record_event_instant
 from atelier2.adapters.dbos.queries import DbosQueries, WaitAnswerProjectionCorrupt
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
@@ -26,6 +31,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.adapters.yaml_workflows import WorkflowFormatNotExecutable
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
@@ -41,12 +47,16 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
+from atelier2.host.logging import PROCESS_LOGGER_NAME
 from atelier2.ports.run_events import (
     AttentionEvent,
     AttentionEventCorrupt,
     AttentionEventPage,
 )
-from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from atelier2.ports.workflow_revisions import (
+    DurableProjectionLimit,
+    ProjectionLimitExceeded,
+)
 from tests.scenarios.api import durable_queries, permissive_projection_limit
 
 INSTANT = RecordedAt("2026-08-19T12:00:00Z")
@@ -182,54 +192,7 @@ def test_page_after_a_later_sorting_same_instant_wait_still_returns_the_earlier_
 
 
 CORRUPT_RUN = RunId("corrupt-wait")
-
-
-def _project_corrupt_run(
-    connection: Connection,
-    record: Mapping[Any, Any],
-    version: WorkflowFormatVersion,
-    projection_limit: DurableProjectionLimit,
-) -> PersistedRunEvent:
-    if str(record["run_id"]) == CORRUPT_RUN.value:
-        raise RunTransitionConflict(
-            "current agent attempt binding disagrees "
-            f"run_id durable={CORRUPT_RUN.value!r} expected={CORRUPT_RUN.value!r}"
-        )
-    return DbosQueries._event_projection(connection, record, version, projection_limit)
-
-
-def test_a_run_whose_event_projection_raises_does_not_hide_the_other_run(
-    engine: Engine,
-) -> None:
-    revision = WorkflowRevision(WAIT_DOCUMENT)
-    with engine.begin() as connection:
-        connection.execute(
-            workflow_revisions.insert().values(
-                revision_hash=revision.revision_hash.value,
-                document=revision.document,
-            )
-        )
-        _insert_run(connection, LATER_SORTING_RUN, revision)
-        _insert_run(connection, CORRUPT_RUN, revision)
-
-    with engine.connect() as connection:
-        page = load_attention_event_page(
-            connection,
-            None,
-            None,
-            10,
-            permissive_projection_limit(),
-            _project_corrupt_run,
-            (),
-        )
-
-    assert isinstance(page, AttentionEventPage)
-    assert _run_ids(page) == (CORRUPT_RUN, LATER_SORTING_RUN)
-    assert isinstance(page.events[0], AttentionEventCorrupt)
-    assert page.events[0].run_id == CORRUPT_RUN
-    assert page.events[0].event_sequence == 1
-    assert page.events[0].recorded_at == INSTANT
-    assert isinstance(page.events[1], AttentionEvent)
+BINDING_DISAGREES = RunTransitionConflict("current agent attempt binding disagrees")
 
 
 def test_limit_one_delivers_the_corrupt_row_then_the_healthy_row(
@@ -255,7 +218,7 @@ def test_limit_one_delivers_the_corrupt_row_then_the_healthy_row(
             None,
             1,
             permissive_projection_limit(),
-            _project_corrupt_run,
+            _failing_projection(BINDING_DISAGREES),
             (),
         )
         assert isinstance(first, AttentionEventPage)
@@ -271,7 +234,7 @@ def test_limit_one_delivers_the_corrupt_row_then_the_healthy_row(
             1,
             1,
             permissive_projection_limit(),
-            _project_corrupt_run,
+            _failing_projection(BINDING_DISAGREES),
             (),
         )
 
@@ -281,7 +244,52 @@ def test_limit_one_delivers_the_corrupt_row_then_the_healthy_row(
     assert second.events[0].event.event.run_id == LATER_SORTING_RUN
 
 
-def test_an_untyped_event_projection_error_is_not_a_skipped_row(engine: Engine) -> None:
+UNREADABLE_ROW_FAILURES = (
+    pytest.param(BINDING_DISAGREES, id="binding-disagrees"),
+    pytest.param(
+        WorkflowFormatNotExecutable(
+            "workflow format version 3 parses, but no runtime executes these node "
+            "kinds: action node 'open-pull-request' declares no bound input form"
+        ),
+        id="stored-revision-no-runtime-executes",
+    ),
+    pytest.param(
+        TypeError("durable column is not the type this read holds"), id="type"
+    ),
+    pytest.param(
+        DatabaseError("select", (), Exception("the store answered nothing readable")),
+        id="store",
+    ),
+)
+"""What one stored attention row can raise, whichever family it belongs to.
+
+The feed once isolated only the typed binding conflict, so a stored revision
+today's parser refuses -- a plain `ValueError` -- ended the whole feed instead
+of its own row. Each family is pinned by the same behaviour rather than by its
+own copy of this test.
+"""
+
+
+def _failing_projection(failure: Exception) -> ProjectEvent:
+    def project_event(
+        connection: Connection,
+        record: Mapping[Any, Any],
+        version: WorkflowFormatVersion,
+        projection_limit: DurableProjectionLimit,
+    ) -> PersistedRunEvent:
+        if str(record["run_id"]) == CORRUPT_RUN.value:
+            raise failure
+        return DbosQueries._event_projection(
+            connection, record, version, projection_limit
+        )
+
+    return project_event
+
+
+@pytest.mark.parametrize("failure", UNREADABLE_ROW_FAILURES)
+def test_any_unreadable_row_is_named_and_the_page_keeps_its_other_rows(
+    engine: Engine, failure: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
     revision = WorkflowRevision(WAIT_DOCUMENT)
     with engine.begin() as connection:
         connection.execute(
@@ -293,29 +301,59 @@ def test_an_untyped_event_projection_error_is_not_a_skipped_row(engine: Engine) 
         _insert_run(connection, CORRUPT_RUN, revision)
         _insert_run(connection, LATER_SORTING_RUN, revision)
 
-    def project_event(
-        connection: Connection,
-        record: Mapping[Any, Any],
-        version: WorkflowFormatVersion,
-        projection_limit: DurableProjectionLimit,
-    ) -> PersistedRunEvent:
-        if str(record["run_id"]) == CORRUPT_RUN.value:
-            raise ValueError("serialization exploded")
-        return DbosQueries._event_projection(
-            connection, record, version, projection_limit
-        )
-
     with (
         engine.connect() as connection,
-        pytest.raises(ValueError, match="serialization exploded"),
+        caplog.at_level(logging.ERROR, logger=PROCESS_LOGGER_NAME),
     ):
+        page = load_attention_event_page(
+            connection,
+            None,
+            None,
+            10,
+            permissive_projection_limit(),
+            _failing_projection(failure),
+            (),
+        )
+
+    assert isinstance(page, AttentionEventPage)
+    assert _run_ids(page) == (CORRUPT_RUN, LATER_SORTING_RUN)
+    assert isinstance(page.events[0], AttentionEventCorrupt)
+    assert page.events[0].event_sequence == 1
+    assert page.events[0].recorded_at == INSTANT
+    assert isinstance(page.events[1], AttentionEvent)
+    assert [
+        record
+        for record in caplog.records
+        if getattr(record, "run_id", None) == CORRUPT_RUN.value
+    ]
+
+
+def test_an_oversized_projection_refuses_the_page_rather_than_naming_a_row(
+    engine: Engine,
+) -> None:
+    """The admitted-size bound is the read edge's answer, not one run's defect."""
+
+    revision = WorkflowRevision(WAIT_DOCUMENT)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+        _insert_run(connection, CORRUPT_RUN, revision)
+        _insert_run(connection, LATER_SORTING_RUN, revision)
+
+    with engine.connect() as connection, pytest.raises(ProjectionLimitExceeded):
         load_attention_event_page(
             connection,
             None,
             None,
-            1,
+            10,
             permissive_projection_limit(),
-            project_event,
+            _failing_projection(
+                ProjectionLimitExceeded("event payload over the bound")
+            ),
             (),
         )
 

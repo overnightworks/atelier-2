@@ -10,13 +10,13 @@ those rows stay off it rather than inventing a time.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.schema import event_instants, run_events, runs
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
@@ -41,7 +41,9 @@ _ATTENTION_KIND_VALUES: Final[tuple[str, ...]] = tuple(
     kind.value for kind in ATTENTION_EVENT_KINDS
 )
 
-_ProjectEvent = Callable[
+_LOG = logging.getLogger("atelier2")
+
+ProjectEvent = Callable[
     [Connection, Mapping[Any, Any], WorkflowFormatVersion, DurableProjectionLimit],
     PersistedRunEvent,
 ]
@@ -53,12 +55,14 @@ def load_attention_event_page(
     after_sequence: int | None,
     limit: int,
     projection_limit: DurableProjectionLimit,
-    project_event: _ProjectEvent,
+    project_event: ProjectEvent,
     excluded_identities: tuple[tuple[RunId, int], ...],
 ) -> ReadAttentionEventPageResult:
     from atelier2.adapters.dbos.queries import (
         _EVENT_FIELD_COLUMNS,
         _EVENT_PAYLOAD_COLUMNS,
+        DURABLE_PROJECTION_FAILURES,
+        READ_EDGE_FAILURES,
         _bounded_projection_select,
         _validate_bounded_record,
     )
@@ -120,15 +124,38 @@ def load_attention_event_page(
                     RecordedAt(str(record["recorded_at"])),
                 )
             )
-        except RunTransitionConflict:
-            events.append(
-                AttentionEventCorrupt(
-                    RunId(str(record["run_id"])),
-                    int(record["event_sequence"]),
-                    RecordedAt(str(record["recorded_at"])),
-                )
-            )
+        except READ_EDGE_FAILURES:
+            raise
+        except DURABLE_PROJECTION_FAILURES as error:
+            events.append(_corrupt_row(record, error))
     return AttentionEventPage(tuple(events))
+
+
+def _corrupt_row(record: Mapping[Any, Any], error: Exception) -> AttentionEventCorrupt:
+    """The one row a feed across runs cannot project, told as itself.
+
+    A feed is a window over many runs, so a refusal that named none of them left
+    a reader with a red box and nothing to look at. The subscriber receives the
+    row carrying its run, and the process journal keeps the same run beside the
+    failure that stopped it.
+    """
+
+    run_id = RunId(str(record["run_id"]))
+    event_sequence = int(record["event_sequence"])
+    _LOG.error(
+        "attention event projection failed for run_id=%s event_sequence=%s: %s",
+        run_id.value,
+        event_sequence,
+        error,
+        exc_info=error,
+        extra={
+            "event": "attention_event_projection_corrupt",
+            "run_id": run_id.value,
+        },
+    )
+    return AttentionEventCorrupt(
+        run_id, event_sequence, RecordedAt(str(record["recorded_at"]))
+    )
 
 
 def _same_instant_identity_exclusion(
