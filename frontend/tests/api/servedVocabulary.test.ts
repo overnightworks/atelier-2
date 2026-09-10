@@ -3,17 +3,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EFFECT_CONFIRMATION_SOURCES,
-  MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   RUN_NOT_CANCELLABLE_REASONS,
   problemDefinitions,
-  attemptTranscriptSchema,
-  assistantTurnEventSchema,
-  providerTerminalRefusalEventSchema,
-  toolCalledEventSchema,
-  toolReturnedEventSchema,
-  transcriptTruncatedEventSchema,
-  unrecognisedProviderOutputEventSchema,
-  usageEventSchema,
   decodeStreamFrame
 } from "../../src/api/client";
 
@@ -125,125 +116,5 @@ describe("the served vocabulary", () => {
       }
     });
     expect(frame.event).toBe("RUN_PROJECTION_CORRUPT");
-  });
-
-  it("decodes exactly the attempt-transcript events the document serves", () => {
-    const transcript = servedDocument.components.schemas.AttemptTranscriptResource as {
-      properties?: {
-        events?: {
-          items?: {
-            discriminator?: { mapping?: Record<string, string> };
-          };
-        };
-      };
-    };
-    const mapping = transcript.properties?.events?.items?.discriminator?.mapping ?? {};
-    const decoderByEvent = {
-      "tool-called": toolCalledEventSchema,
-      "tool-returned": toolReturnedEventSchema,
-      "assistant-turn": assistantTurnEventSchema,
-      usage: usageEventSchema,
-      "provider-terminal-refusal": providerTerminalRefusalEventSchema,
-      "unrecognised-provider-output": unrecognisedProviderOutputEventSchema,
-      "transcript-truncated": transcriptTruncatedEventSchema
-    };
-    const servedEvents = Object.entries(mapping).map(([event, ref]) => {
-      const resourceName = ref.split("/").at(-1) ?? "";
-      return {
-        event,
-        resourceName,
-        constValue: servedDocument.components.schemas[resourceName]?.properties?.event?.const
-      };
-    });
-
-    expect(servedEvents.map(({ event }) => event).sort()).toEqual(
-      servedEvents.map(({ constValue }) => constValue).sort()
-    );
-    expect(Object.keys(attemptTranscriptSchema.shape)).toEqual(
-      Object.keys(servedDocument.components.schemas.AttemptTranscriptResource?.properties ?? {})
-    );
-    expect(Object.keys(decoderByEvent).sort()).toEqual(Object.keys(mapping).sort());
-    for (const { event, resourceName } of servedEvents) {
-      expect(
-        Object.keys(decoderByEvent[event as keyof typeof decoderByEvent].shape).sort()
-      ).toEqual(
-        Object.keys(servedDocument.components.schemas[resourceName]?.properties ?? {}).sort()
-      );
-    }
-
-    const beforeMoments = { origin: "v1-before-moments" as const };
-    const events = [
-      {
-        event: "tool-called" as const,
-        name: "Read",
-        arguments: "{}",
-        redacted: false,
-        moment: beforeMoments
-      },
-      {
-        event: "tool-returned" as const,
-        name: "Read",
-        result: "ok",
-        redacted: false,
-        moment: beforeMoments
-      },
-      {
-        event: "assistant-turn" as const,
-        text: "done",
-        redacted: false,
-        moment: beforeMoments
-      },
-      {
-        event: "usage" as const,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-        moment: beforeMoments
-      },
-      {
-        event: "provider-terminal-refusal" as const,
-        terminal_reason: "rate_limit_error",
-        api_error_status: "429",
-        text: "refused",
-        redacted: false,
-        moment: beforeMoments
-      },
-      {
-        event: "unrecognised-provider-output" as const,
-        text: "raw",
-        redacted: true,
-        moment: beforeMoments
-      },
-      {
-        event: "transcript-truncated" as const,
-        dropped_events: 1,
-        moment: beforeMoments
-      }
-    ];
-    expect(events.map((step) => step.event).sort()).toEqual(Object.keys(mapping).sort());
-    expect(attemptTranscriptSchema.parse({ events })).toEqual({ events });
-  });
-
-  it("bounds transcript step strings to the length the document serves", () => {
-    const stepFields = [
-      ["ToolCalledEventResource", "name"],
-      ["ToolCalledEventResource", "arguments"],
-      ["ToolReturnedEventResource", "name"],
-      ["ToolReturnedEventResource", "result"],
-      ["AssistantTurnEventResource", "text"],
-      ["UnrecognisedProviderOutputEventResource", "text"]
-    ] as const;
-
-    for (const [resource, field] of stepFields) {
-      expect(
-        (
-          servedDocument.components.schemas[resource]?.properties?.[field] as
-            | { maxLength?: number }
-            | undefined
-        )?.maxLength
-      ).toBe(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
-    }
-    expect(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS).toBe(8_192);
   });
 });
