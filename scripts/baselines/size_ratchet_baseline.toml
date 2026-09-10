@@ -546,10 +546,6 @@ qualified_name = "atelier2.api.routes.runs.start_run_route"
 complexity = 19
 
 [[complexity]]
-qualified_name = "atelier2.application.advance_queue._advance_one"
-complexity = 21
-
-[[complexity]]
 qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
 complexity = 18
 
