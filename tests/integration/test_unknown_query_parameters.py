@@ -1,27 +1,42 @@
 """The unknown-query-parameter guard (#1501), proven against a real store.
 
 `tests/api/test_unknown_query_parameters.py` proves the guard itself, fast and
-portless. This module proves the two things only a real durable store can show:
-an accepted request behind this guard is actually healthy (not merely "not
-422"), and a request this guard rejects reaches no write at all.
+portless. This module proves what only a real durable store can show: an
+accepted request behind this guard is actually healthy (not merely "not
+422"); a request this guard rejects reaches no write at all, across every
+write operation the frozen document declares; and, for a representative
+selection of those, that a row an otherwise-valid write would have changed
+keeps its exact prior content, not merely its prior count.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.queue_tables import queue_project_policy_revisions
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical_engine
-from atelier2.adapters.dbos.schema import initialize_schema
+from atelier2.adapters.dbos.schema import (
+    host_model_registry_revisions,
+    initialize_schema,
+)
 from atelier2.adapters.dbos.table_vocabulary import metadata
 from atelier2.api.app import create_app
-from atelier2.api.openapi import API_PREFIX, LIBRARY_ADDITION_PATH
+from atelier2.api.openapi import (
+    API_PREFIX,
+    LIBRARY_ADDITION_PATH,
+    MODEL_REGISTRY_PATH,
+    PROJECT_QUEUE_POLICY_PATH,
+)
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
+from atelier2.api.references import encode_public_project_reference
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from tests.scenarios.api import (
     OPENAPI_DOCUMENT_PATH,
@@ -154,3 +169,76 @@ def test_an_unknown_query_parameter_on_a_write_route_writes_nothing(
     assert response.status_code == 422
     assert response.json()["type"] == PROBLEM_TYPE_PREFIX + "invalid-request"
     assert _durable_row_counts(engine) == before
+
+
+def _table_rows(engine: Engine, table: sa.Table) -> tuple[tuple[Any, ...], ...]:
+    """Every row of one named table, as plain tuples: row count alone cannot
+    tell an insert-shaped write from an update-shaped one that happens to
+    leave the count unchanged, so the two tests below compare content.
+    """
+
+    with engine.connect() as connection:
+        return tuple(sorted(tuple(row) for row in connection.execute(sa.select(table))))
+
+
+def test_an_unknown_query_parameter_on_a_seeded_queue_policy_update_leaves_its_row_content_unchanged(
+    engine: Engine,
+) -> None:
+    """A seeded, non-empty queue policy; an otherwise-valid update (correct
+    body, correct CAS revision) that would change its stored row, carrying
+    the unknown parameter, changes nothing -- proven by the row's exact
+    content, not by `test_an_unknown_query_parameter_on_a_write_route_writes_nothing`'s
+    whole-store row count.
+    """
+
+    client = _client(engine)
+    path = PROJECT_QUEUE_POLICY_PATH.replace(
+        "{public_project_reference}",
+        encode_public_project_reference(ProjectId("studio")),
+    )
+    seeded = client.put(
+        path,
+        json={"revision_number": 1, "expected_revision": 0, "maximum_active_runs": 3},
+    )
+    assert seeded.status_code == 201, seeded.text
+    before = _table_rows(engine, queue_project_policy_revisions)
+
+    response = client.put(
+        path,
+        params={"__unexpected_probe__": "1"},
+        json={"revision_number": 2, "expected_revision": 1, "maximum_active_runs": 9},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"] == PROBLEM_TYPE_PREFIX + "invalid-request"
+    assert _table_rows(engine, queue_project_policy_revisions) == before
+    assert client.get(path).json()["maximum_active_runs"] == 3
+
+
+def test_an_unknown_query_parameter_on_a_seeded_model_registry_update_leaves_its_row_content_unchanged(
+    engine: Engine,
+) -> None:
+    """A seeded, non-empty model registry; an otherwise-valid update (correct
+    body, correct CAS revision) that would change its stored row, carrying
+    the unknown parameter, changes nothing -- proven by the row's exact
+    content, not by `test_an_unknown_query_parameter_on_a_write_route_writes_nothing`'s
+    whole-store row count. Empty `entries` needs no agent-configuration
+    revision seeded first, so this stays about the guard, not the registry.
+    """
+
+    client = _client(engine)
+    path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
+    seeded = client.put(path, json={"revision_number": 1, "entries": []})
+    assert seeded.status_code == 201, seeded.text
+    before = _table_rows(engine, host_model_registry_revisions)
+
+    response = client.put(
+        path,
+        params={"__unexpected_probe__": "1"},
+        json={"revision_number": 2, "entries": []},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"] == PROBLEM_TYPE_PREFIX + "invalid-request"
+    assert _table_rows(engine, host_model_registry_revisions) == before
+    assert client.get(path).json()["revision_number"] == 1

@@ -4,7 +4,7 @@ from http import HTTPStatus
 from typing import Annotated
 
 import pytest
-from fastapi import FastAPI, Query
+from fastapi import APIRouter, Depends, FastAPI, Query
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -32,6 +32,23 @@ class _ModelQueryProbe(BaseModel):
     """
 
     after: str | None = None
+
+
+async def _model_query_probe_dependency(
+    filters: Annotated[_ModelQueryProbe, Query()],
+) -> _ModelQueryProbe:
+    """A nested sub-dependency, not the route's own signature (see the test
+    below): the production shape every real route's `context` and `_media`
+    parameters already use.
+    """
+
+    return filters
+
+
+async def _validation_alias_probe_dependency(
+    after: Annotated[str | None, Query(validation_alias="cursor")] = None,
+) -> str | None:
+    return after
 
 
 # SSE routes hold the connection open once their dependencies resolve
@@ -144,42 +161,66 @@ def test_no_extra_query_parameter_stays_a_valid_request_on_every_get_route(
     assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
 
 
-def test_a_pydantic_model_query_parameter_fails_app_construction() -> None:
-    """`reject_unsupported_query_contract` catches the shape it cannot expand.
+def test_a_pydantic_model_query_parameter_nested_in_an_included_router_fails_app_construction() -> (
+    None
+):
+    """`reject_unsupported_query_contract` catches the shape it cannot expand,
+    registered the way every production route actually is.
 
     FastAPI lets a whole Pydantic model stand in for one `Query()` parameter,
     expanding its fields at the wire -- but records only the model's own
     parameter name in the route's dependant, which is not a name any caller
-    ever sends. No route declares this today; this is the construction-time
-    refusal the first one would meet instead of a silently wrong guard.
+    ever sends. This declares it on a *nested* sub-dependency of a route
+    installed through `APIRouter` + `include_router`, exactly how
+    `_install_routers` installs every real route: FastAPI 0.141 wraps an
+    included router in `_IncludedRouter`, so a walk over `app.routes` that
+    does not resolve through it would see no production route at all, nested
+    dependency or not. No route declares this today; this is the
+    construction-time refusal the first one would meet instead of a silently
+    wrong guard.
     """
 
-    probe = FastAPI()
+    router = APIRouter()
 
-    @probe.get("/probe")
-    async def _route(filters: Annotated[_ModelQueryProbe, Query()]) -> dict[str, str]:
+    @router.get("/probe")
+    async def _route(
+        filters: Annotated[_ModelQueryProbe, Depends(_model_query_probe_dependency)],
+    ) -> dict[str, str]:
         del filters
         return {}
+
+    probe = FastAPI()
+    probe.include_router(router)
 
     with pytest.raises(TypeError, match="Pydantic model"):
         reject_unsupported_query_contract(probe)
 
 
-def test_a_validation_alias_query_parameter_fails_app_construction() -> None:
+def test_a_validation_alias_query_parameter_nested_in_an_included_router_fails_app_construction() -> (
+    None
+):
     """A `validation_alias` that differs from `alias` reads under a name
-    `reject_unknown_query_params` does not know to look for. No route
-    declares this today; this is the construction-time refusal the first one
-    would meet instead of a silently wrong guard.
+    `reject_unknown_query_params` does not know to look for, declared on a
+    nested sub-dependency of a route installed through `APIRouter` +
+    `include_router` (see the model-query-parameter case above for why that
+    registration shape is the one this must catch). No route declares this
+    today; this is the construction-time refusal the first one would meet
+    instead of a silently wrong guard.
     """
 
-    probe = FastAPI()
+    router = APIRouter()
 
-    @probe.get("/probe")
+    @router.get("/probe")
     async def _route(
-        after: Annotated[str | None, Query(validation_alias="cursor")] = None,
+        after: Annotated[
+            str | None, Depends(_validation_alias_probe_dependency)
+        ] = None,
     ) -> dict[str, str]:
         del after
         return {}
+
+    probe = FastAPI()
+    probe.include_router(router)
 
     with pytest.raises(RuntimeError, match="validation_alias"):
         reject_unsupported_query_contract(probe)

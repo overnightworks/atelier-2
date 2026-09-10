@@ -8,7 +8,7 @@ from typing import assert_never
 from fastapi import FastAPI, Request
 from fastapi.dependencies.models import Dependant
 from fastapi.responses import JSONResponse
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
@@ -270,10 +270,27 @@ def reject_unsupported_query_contract(app: FastAPI) -> None:
     the latter). Call this once, after every route is installed, so the
     first route to declare either shape breaks loudly here rather than
     silently rejecting or admitting the wrong names in production.
+
+    Walks `iter_route_contexts`, not `app.routes` directly: FastAPI wraps
+    every router `include_router` installs in an `_IncludedRouter` (0.141),
+    so a plain `isinstance(route, APIRoute)` over `app.routes` matches no
+    production route at all, and the bare `APIRoute.dependant` predates the
+    router-level `dependencies=` this file itself wires in -- the effective,
+    router-merged dependant `iter_route_contexts` resolves is the same one
+    `tests/api/test_openapi.py` already reads FastAPI's own schema from.
     """
-    for route in app.routes:
-        if isinstance(route, APIRoute):
-            _reject_unsupported_query_contract(route.dependant, route.path)
+    for route in iter_route_contexts(app.routes):
+        if not isinstance(route.original_route, APIRoute):
+            continue
+        dependant = route.dependant
+        if dependant is None:
+            raise RuntimeError(
+                f"{route.path!r} resolved no dependant to judge its query "
+                "contract against"
+            )
+        _reject_unsupported_query_contract(
+            dependant, route.path or route.original_route.path
+        )
 
 
 def _reject_unsupported_query_contract(dependant: Dependant, route_path: str) -> None:
