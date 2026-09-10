@@ -738,9 +738,9 @@ class GitTransportEffectAdapter:
         environment = isolated_git_environment()
         if in_store:
             environment["GIT_DIR"] = str(self._candidate_store)
-        with credential_helper_arguments(token) as credential:
+        with credential_helper_arguments(token) as helper_arguments:
             return self._command_runner.run(
-                (*_HOOK_FREE_ARGUMENTS, *credential, *arguments),
+                (*_HOOK_FREE_ARGUMENTS, *helper_arguments, *arguments),
                 working_directory=self._candidate_store.parent,
                 environment=environment,
             )
