@@ -1,0 +1,7 @@
+claim_id = "6b74360ba0dd4b2f9ed3c7db99d0184a"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-972-mode-capability"
+scope = ["src/atelier2/contracts/workflows_v3.py", "src/atelier2/adapters/dbos/starter.py", "docs/decisions/0006-node-vocabulary.md"]
+opened_commit = "bb48e838350f6e9cbcc893d11d013ab46739499b"
