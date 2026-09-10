@@ -194,10 +194,6 @@ qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptSto
 lines = 71
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
-lines = 61
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_run_cancellation"
 lines = 157
 
@@ -548,10 +544,6 @@ lines = 68
 [[complexity]]
 qualified_name = "atelier2.api.routes.runs.start_run_route"
 complexity = 19
-
-[[complexity]]
-qualified_name = "atelier2.application.advance_queue._advance_one"
-complexity = 21
 
 [[complexity]]
 qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"

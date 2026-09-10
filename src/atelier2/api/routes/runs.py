@@ -151,6 +151,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.effects import (
     EffectId,
@@ -174,6 +175,31 @@ from atelier2.contracts.run_projections import RunProjection
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
+
+
+def _refuse_node_binding(
+    refused: BindingConstraintRefused | AgentModeMismatch,
+) -> NoReturn:
+    """Answer which node its document says the bound configuration cannot fill."""
+    match refused:
+        case BindingConstraintRefused(node, distinct_from):
+            raise ApiProblem(
+                "binding-constraint-refused",
+                detail=(
+                    f"node {node!r} declares distinct_from {distinct_from!r} "
+                    "and both resolved to the same binding"
+                ),
+            )
+        case AgentModeMismatch(node, mode, capability):
+            raise ApiProblem(
+                "agent-mode-mismatch",
+                detail=(
+                    f"node {node!r} declares mode {mode} and its role is bound "
+                    f"to a configuration declaring {capability.value}"
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _refuse_work_item_order(
@@ -306,14 +332,8 @@ async def start_run_route(
                     for role in roles
                 ),
             )
-        case BindingConstraintRefused(node, distinct_from):
-            raise ApiProblem(
-                "binding-constraint-refused",
-                detail=(
-                    f"node {node!r} declares distinct_from {distinct_from!r} "
-                    "and both resolved to the same binding"
-                ),
-            )
+        case BindingConstraintRefused() | AgentModeMismatch() as refused:
+            _refuse_node_binding(refused)
         case AgentConfigurationRevisionMissing():
             raise ApiProblem("agent-configuration-revision-not-found")
         case StartAgentExecutorBindingUnavailable():
@@ -428,6 +448,8 @@ async def fork_run_route(
             raise ApiProblem("agent-executor-binding-unavailable")
         case RunForkCapabilityUnavailable():
             raise ApiProblem("agent-executor-binding-unavailable")
+        case AgentModeMismatch() as refused:
+            _refuse_node_binding(refused)
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():

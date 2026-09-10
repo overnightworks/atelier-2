@@ -35,9 +35,17 @@ registry entry must attest at least one capability an unattended attempt can ask
 for — `headless` or `headless_with_tools` — because the runtime drives every
 attempt and stands at no terminal; a run requesting a capability absent from its
 exact provider/executor entry is refused before any provider process starts,
-whichever direction the mismatch runs. A
-nonterminal run is refused on restart before its factory opens when that
-attestation has disappeared.
+whichever direction the mismatch runs. A start is refused before its first
+durable row, and a fork before its successor, when an agent node's declared
+`mode` is not exactly the capability its bound configuration requests; the
+`agent-mode-mismatch` problem names the node, its mode and that capability.
+Every attempt asks again before any row of it is written: a node driving its
+first attempt, or driving it again after a restart, before that attempt is
+prepared, and a cancellation before it submits the replacement it would hand the
+node back. A recorded binding that disagrees ends its node `AGENT_FAILED` with
+the refusal `agent-mode-mismatch`, before any provider process and with no
+attempt of its own to fail. A nonterminal run is refused on restart before its
+factory opens when that attestation has disappeared.
 Before invoking the exact configured provider/executor, the runtime persists one
 ordinal-1 attempt and binds an in-memory invocation to a separately supervised
 process generation. Only the live caller whose compare-and-set reaches

@@ -80,7 +80,13 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision
 from atelier2.contracts.run_bindings import AnyRun, RunV3
-from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    Run,
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionExisting,
@@ -88,6 +94,11 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionExisting,
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.durable_runs import (
+    AnyStartPublishedRunRequest,
+    DurablePublishedRunResult,
+    DurableRunCreated,
+)
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
@@ -108,6 +119,21 @@ V3_EXECUTOR_REVISION = AgentExecutorRevision("exact/v1")
 V3_OPERATIONAL_IDENTITY = "exact-operation"
 V3_MODEL = "opus"
 V3_PROFILE_ID = "max"
+
+
+class AdmittingStartJudge:
+    """A queue start judge that would let every start through.
+
+    The scripted or patched starter a sweep scenario hands in then decides
+    alone, exactly as it would with no judge asked first.
+    """
+
+    def start_published(
+        self, request: AnyStartPublishedRunRequest
+    ) -> DurablePublishedRunResult:
+        return DurableRunCreated(
+            Run(request.run_id, request.revision_hash, RunState.STARTED, "final", 0, 0)
+        )
 
 
 def publish_pinned_revisions(engine: Engine, *revisions: PublishedRevision) -> None:
