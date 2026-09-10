@@ -632,6 +632,11 @@ its own returned hash, so it cannot be published first. The live hashes are
 the landing's own evidence; this runbook does not copy them, for the same
 reason the canary's three hashes above are not copied either.
 
+`workflows/head-loop.yaml` pins exactly these two grants and two operations,
+so once they are published it needs nothing of its own: the Git-source intake
+carries the document and its two schemas into the catalog with the next
+deploy.
+
 ### Publish a queue policy with its cap and its automation label
 
 Read the current policy first, so publishing one field never means guessing
