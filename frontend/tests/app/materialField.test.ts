@@ -1049,7 +1049,7 @@ describe("the catalog start sheet's project model resolution", () => {
       "cook's last connection check failed — the next canary run will retry it."
     ]
   ] as const)(
-    "proves(#1500): %s reads a sentence true of every case that reason covers, not just Unavailable",
+    "%s reads a sentence true of every case that reason covers, not just Unavailable",
     async (reason, expectedSentence) => {
       const resolveProjectModels = vi.fn(async (
         _project: string,

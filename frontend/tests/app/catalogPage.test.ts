@@ -827,7 +827,7 @@ describe("the catalog room", () => {
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 
-  it("proves(#1500): a locked Add to catalog says why, not just grey", async () => {
+  it("a locked Add to catalog says why, not just grey", async () => {
     openCatalog({
       recognizeLibraryDocument: vi.fn(async () => ({
         outcome: "unrecognized" as const,
@@ -848,7 +848,7 @@ describe("the catalog room", () => {
     expect((add as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("proves(#1500): focus alone is not a choice, so the sentence and the button never disagree", async () => {
+  it("focus alone is not a choice, so the sentence and the button never disagree", async () => {
     openCatalog({
       recognizeLibraryDocument: vi.fn(async () => ({
         outcome: "unrecognized" as const,
