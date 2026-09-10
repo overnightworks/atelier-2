@@ -26,10 +26,6 @@ path = "src/atelier2/adapters/claude_subscription.py"
 lines = 2166
 
 [[file]]
-path = "src/atelier2/adapters/dbos/advancer.py"
-lines = 812
-
-[[file]]
 path = "src/atelier2/adapters/dbos/agent_attempt_store.py"
 lines = 3527
 

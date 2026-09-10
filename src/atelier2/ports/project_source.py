@@ -5,9 +5,10 @@ one commit names, resolved once when the node's durable binding is composed and
 never resolved again -- so an operator may commit, rebase or check out anything
 while a run is in flight without that run changing under it.
 
-This port is how an attempt reaches that tree: pin the source, refuse a pin the
-source can no longer answer for, read one declaration out of the pinned tree
-without unpacking it, and unpack the tree into the directory the attempt leased.
+This port is how an attempt reaches that tree: pin the source where it stands or
+at a commit named to it, refuse a pin the source can no longer answer for, read
+one declaration out of the pinned tree without unpacking it, and unpack the tree
+into the directory the attempt leased.
 What is unpacked is material, not a repository: no history travels with it, so
 nothing in the lease can commit or fetch. That is a stated limit and not
 isolation -- the lease's own sentence about that still stands.
@@ -31,6 +32,15 @@ class ProjectSourceRepository(Protocol):
 
     def head(self) -> ProjectSourcePin:
         """Pin the source as it stands now, so a later attempt runs on this tree."""
+        ...
+
+    def pin_at(self, commit: str) -> ProjectSourcePin:
+        """Pin the tree one named commit carries, wherever the source stands now.
+
+        An attempt that continues what an earlier one already published stands
+        where that one stood rather than on the head: a commit taking the moved
+        head as its parent would carry a tree that never saw what moved it.
+        """
         ...
 
     def attest(self, pin: ProjectSourcePin) -> None:
