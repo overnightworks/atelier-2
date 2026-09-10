@@ -958,10 +958,11 @@ class _DurableRunWorkflows:
     ) -> AgentModeMismatch | None:
         """Whether this recorded binding would run its node outside its mode.
 
-        Read from the immutable revision at every attempt, outside a durable
-        step: a recovered or replacement attempt replays the binding its run
-        recorded, which may predate the start's own check, and a step added
-        here would shift the recorded steps of a run already in flight.
+        Read from the immutable revision before the node's attempt is prepared,
+        outside a durable step: a node recovered after a restart replays the
+        binding its run recorded, which may predate the start's own check, and a
+        step added here would shift the recorded steps of a run already in
+        flight.
         """
         with self.engine.connect() as connection:
             node = load_graph(connection, revision_hash).node(node_id)
@@ -976,18 +977,6 @@ class _DurableRunWorkflows:
         )
         if reconstructed.executor is None:
             return RunState.STARTED.value
-        if (
-            self.mode_mismatch_of(
-                reconstructed.binding,
-                replacement.workflow_revision_hash,
-                replacement.node_id,
-            )
-            is not None
-        ):
-            self.refuse_unstartable_node(
-                reconstructed.execution, AgentExecutionRefusal.AGENT_MODE_MISMATCH
-            )
-            return self.attempts.load(replacement.attempt_id).state.value
         outcome = self.execute_v2_attempt(
             reconstructed.execution,
             reconstructed.executor,

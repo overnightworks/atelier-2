@@ -99,6 +99,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch, node_mode_mismatch
 from atelier2.contracts.agent_permissions import (
     PermissionAuthority,
     PermissionCorrelationId,
@@ -1492,57 +1493,99 @@ def _is_unstartable_node_cleanup(
 def _is_unstartable_node_cleanup_complete(
     attempt: AgentAttempt, refusal: AgentExecutionRefusal
 ) -> bool:
-    """Whether the cleanup this refusal minted has reached its attested end.
-
-    Any attested ending counts, not only a never-launched one: a watchdog whose
-    serve died with a restart is attested `OWNER_LOST_AFTER_PARENT_DEATH` and
-    leaves the attempt `INTERRUPTED`, and cleaning it again would ask a finished
-    attempt for a cleanup it has already given, over and over.
-    """
-    return _is_unstartable_node_cleanup(attempt, refusal) and attempt.state in {
-        AgentAttemptState.CANCELLED,
-        AgentAttemptState.INTERRUPTED,
-    }
+    cancellation = attempt.cancellation
+    return (
+        _is_unstartable_node_cleanup(attempt, refusal)
+        and attempt.state is AgentAttemptState.CANCELLED
+        and attempt.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED
+        and cancellation is not None
+        and cancellation.disposition
+        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+    )
 
 
-def _may_clean_before_refusal(
+def _may_end_a_prepared_attempt(
     attempt: AgentAttempt, refusal: AgentExecutionRefusal
 ) -> bool:
-    """Whether this local attempt, under no command yet, is cleaned for the refusal.
+    """Whether this refusal ends the prepared attempt it met, rather than fencing it.
 
-    A prepared attempt never crossed the launch boundary. A claimed one may
-    have: an unavailable executor leaves it fenced, but a binding its node never
-    declared may not keep even a claimed attempt alive, so the mode refusal
-    stops it through the same cleanup, and the owner that died with a restart
-    is attested lost rather than relaunched.
+    An executor that disappeared between preparing an attempt and driving it can
+    only be met after that row exists, so its refusal owns the row's ending. A
+    binding outside its node's declared mode is known before anything is
+    written and is refused there, so a row such a refusal meets was written by
+    an older serve; ending it here would put a second writer on a run the
+    driver-lost recovery already ends.
     """
-    stoppable = {AgentAttemptState.PREPARED}
-    if refusal is AgentExecutionRefusal.AGENT_MODE_MISMATCH:
-        stoppable.add(AgentAttemptState.LAUNCH_ARMED)
     return (
-        attempt.runner_manifest_id is None
-        and attempt.cancellation is None
-        and attempt.state in stoppable
+        refusal is AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+        and attempt.state is AgentAttemptState.PREPARED
+        and attempt.runner_manifest_id is None
+    )
+
+
+def _fail_node_under_refusal(
+    connection: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    refusal: AgentExecutionRefusal,
+) -> None:
+    """End this run at this node under its refusal, naming no attempt of it."""
+    _commit_event(
+        connection,
+        run_id,
+        revision_hash,
+        node_id,
+        RunEventKind.AGENT_FAILED,
+        refusal.value.encode("ascii"),
+        RunState.STARTED,
+        RunState.FAILED,
+        node_id,
+        terminal=True,
+        round_ordinal=round_ordinal,
+        target_round_ordinal=round_ordinal,
     )
 
 
 def _commit_unstartable_node_refusal(
     connection: Any, request: AgentExecutionRequestV2, refusal: AgentExecutionRefusal
 ) -> None:
-    _commit_event(
+    _fail_node_under_refusal(
         connection,
         request.run_id,
         request.workflow_revision_hash,
         request.node_id,
-        RunEventKind.AGENT_FAILED,
-        refusal.value.encode("ascii"),
-        RunState.STARTED,
-        RunState.FAILED,
-        request.node_id,
-        terminal=True,
-        round_ordinal=request.round_ordinal,
-        target_round_ordinal=request.round_ordinal,
+        request.round_ordinal,
+        refusal,
     )
+
+
+def _bound_outside_its_mode(
+    connection: Any, attempt: AgentAttempt
+) -> AgentModeMismatch | None:
+    """Whether this attempt's node is bound to a capability its mode never declared.
+
+    Read from the run's own durable binding and its immutable revision, because
+    both outlive the serve that wrote the attempt: a run recorded before the
+    start compared the two carries the disagreement still.
+    """
+    run = load_run(connection, attempt.run_id)
+    graph = load_graph(connection, attempt.workflow_revision_hash)
+    if not isinstance(run, (RunV2, RunV3)) or not isinstance(graph, WorkflowGraphV3):
+        raise RunTransitionConflict("agent attempt requires a bound run")
+    node = _agent_node_for_attempt(graph, attempt.node_id)
+    capability = next(
+        (
+            binding.configuration.requested_capability
+            for binding in run.agent_bindings
+            if binding.role.value == node.role
+        ),
+        None,
+    )
+    if capability is None:
+        raise RunTransitionConflict("agent attempt names a role its run never bound")
+    return node_mode_mismatch(node, capability)
 
 
 def _unstartable_node_refusal_is_already_terminal(
@@ -1613,13 +1656,13 @@ class DbosAgentAttemptStore:
     ) -> AgentExecutorBindingRefusalResult:
         """Close an unclaimed Agent node under its refusal, inventing no attempt failure.
 
-        The only mutable predecessor is its own attempt the refusal may clean
-        (`_may_clean_before_refusal`). It first returns its existing cancellation
-        cleanup request; callers carry that through the normal supervisor and
-        workspace path, then retry this method. The same command, once accepted,
-        stays on that cleanup path until its ending is attested. Every other armed,
-        runner-bound, or foreign cancellation-in-progress record is fenced for
-        #15.
+        The only mutable predecessor is a prepared attempt the refusal may end
+        (`_may_end_a_prepared_attempt`). It first returns its existing
+        cancellation cleanup request; callers carry that through the normal
+        supervisor and workspace path, then retry this method. The same command,
+        once accepted, stays on that cleanup path until NEVER_LAUNCHED is
+        attested. Every armed, runner-bound, or foreign cancellation-in-progress
+        record is fenced instead, because none of them is this refusal's to end.
         """
 
         request = execution.request
@@ -1655,7 +1698,7 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict(
                     "unstartable node differs from durable attempt binding"
                 )
-            if _may_clean_before_refusal(attempt, refusal) or (
+            if _may_end_a_prepared_attempt(attempt, refusal) or (
                 _is_unstartable_node_cleanup(attempt, refusal)
                 and not _is_unstartable_node_cleanup_complete(attempt, refusal)
             ):
@@ -2851,23 +2894,53 @@ class DbosAgentAttemptStore:
             if updated.rowcount != 1:
                 raise RunTransitionConflict("cleanup attestation lost its attempt CAS")
             record_attempt_ended(connection, attempt.attempt_id.value)
-            terminal = _load_attempt(connection, attempt.attempt_id)
-            replacement_attempt_id = (
-                self._submit_replacement_attempt(connection, attempt)
-                if cancellation.replacement is AgentAttemptReplacement.ONE
-                else None
-            )
-            _insert_attempt_event(
+            return self._attested_ending(
                 connection,
-                terminal,
+                attempt,
                 _CANCELLATION_END_EVENT_BY_STATE[terminal_state],
-                command=terminal_cancellation,
-                replacement_attempt_id=replacement_attempt_id,
+                terminal_cancellation,
             )
-            _lift_run_under_operator_cancel(connection, terminal)
-            return AgentAttemptCancellationAccepted(
-                terminal, True, replacement_attempt_id
+
+    def _attested_ending(
+        self,
+        connection: Connection,
+        attempt: AgentAttempt,
+        kind: RunEventKind,
+        cancellation: AgentAttemptCancellation,
+    ) -> AgentAttemptCancellationAccepted:
+        """Write this cleanup's ending, and the heir it may hand the node back.
+
+        A node bound outside its declared mode is handed none: the row a
+        replacement writes is exactly what the mode refusal has to precede, so
+        the node's refusal is written instead -- after the ended attempt's own
+        event, because that event is only accepted while the run still stands.
+        """
+        terminal = _load_attempt(connection, attempt.attempt_id)
+        mismatch = None
+        heir = None
+        if cancellation.replacement is AgentAttemptReplacement.ONE:
+            mismatch = _bound_outside_its_mode(connection, attempt)
+            if mismatch is None:
+                heir = self._submit_replacement_attempt(connection, attempt)
+        _insert_attempt_event(
+            connection,
+            terminal,
+            kind,
+            command=cancellation,
+            replacement_attempt_id=heir,
+        )
+        _lift_run_under_operator_cancel(connection, terminal)
+        if mismatch is not None:
+            standing = load_run(connection, terminal.run_id)
+            _fail_node_under_refusal(
+                connection,
+                terminal.run_id,
+                terminal.workflow_revision_hash,
+                terminal.node_id,
+                standing.current_round_ordinal,
+                AgentExecutionRefusal.AGENT_MODE_MISMATCH,
             )
+        return AgentAttemptCancellationAccepted(terminal, True, heir)
 
     def mark_cancellation_owner_not_local(
         self, request: CancelAgentAttemptRequest

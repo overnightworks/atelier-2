@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -23,7 +25,14 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.transactions import keeping_nothing
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.api.openapi import API_PREFIX
+from atelier2.application.bind_node import agent_execution_request_v2
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptReplacement,
+    CancelAgentAttemptRequest,
+)
 from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.agents import (
     UNATTENDED_AGENT_EXECUTION_CAPABILITIES,
@@ -38,13 +47,20 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.executions import AgentExecutionRefusal, RunEventKind
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    AgentExecutionRefusal,
+    RunEventKind,
+)
+from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.workflows_v3 import AgentMode
+from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted
 from atelier2.ports.durable_run_forks import ForkRunRequest
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
     agent_scratch_root,
     publish_checked_model_registry,
 )
@@ -57,6 +73,7 @@ from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/mode-meets-capability")
+MODE_MISMATCH_REFUSAL = AgentExecutionRefusal.AGENT_MODE_MISMATCH.value.encode("ascii")
 
 MISMATCHED = (
     pytest.param(
@@ -81,20 +98,26 @@ MATCHED = (
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
-    serves_every_unattended_capability = RecordingAgentExecutorFactoryV2(
+def executor() -> RecordingAgentExecutorFactoryV2:
+    return RecordingAgentExecutorFactoryV2(
         "exact",
         "exact/v1",
         "exact-operation",
         b'"the judgement"',
         capability_set=UNATTENDED_AGENT_EXECUTION_CAPABILITIES,
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path, executor: RecordingAgentExecutorFactoryV2
+) -> Iterator[DbosRuntime]:
     started = DbosRuntime(
         canonical_runtime_settings(
             tmp_path, "mode-capability-test", agent_scratch_root(tmp_path)
         ),
         canonical_loopback_effects(tmp_path),
-        (serves_every_unattended_capability,),
+        (executor,),
     )
     started.initialize_storage()
     try:
@@ -164,7 +187,7 @@ def start_unchecked(
     monkeypatch: pytest.MonkeyPatch,
     mode: AgentMode,
     capability: AgentExecutionCapability,
-) -> None:
+) -> WorkflowRevision:
     """Record a run the way one written before the start's check stands.
 
     Such a run is durable truth the start can no longer refuse, so its start is
@@ -177,6 +200,39 @@ def start_unchecked(
             lambda _graph, _bindings: None,
         )
         assert isinstance(start(runtime, workflow, bindings), DurableRunCreated)
+    return workflow
+
+
+def attempts_of(runtime: DbosRuntime) -> DbosAgentAttemptStore:
+    return DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+
+def attempt_recorded_before_the_check(
+    runtime: DbosRuntime,
+    executor: RecordingAgentExecutorFactoryV2,
+    workflow: WorkflowRevision,
+) -> AgentAttemptExecution:
+    """The ordinal-one row a serve wrote for this node before modes were compared."""
+    binding = decode_node_binding(
+        dict(
+            _node_binding(
+                runtime.datasource, RUN, workflow.revision_hash, "review", None
+            )
+        )
+    )
+    assert isinstance(binding, AgentNodeBindingV2)
+    execution = agent_attempt_execution(
+        agent_execution_request_v2(
+            binding,
+            RUN,
+            workflow.revision_hash,
+            "review",
+            executor.operational_identity,
+            executor.declared_capabilities,
+        )
+    )
+    attempts_of(runtime).prepare(execution)
+    return execution
 
 
 def rows_of(runtime: DbosRuntime, table: sa.Table) -> int:
@@ -184,6 +240,31 @@ def rows_of(runtime: DbosRuntime, table: sa.Table) -> int:
         return connection.execute(
             sa.select(sa.func.count()).select_from(table)
         ).scalar_one()
+
+
+def refusals_of(runtime: DbosRuntime) -> list[bytes]:
+    """Every agent failure this run carries that names no attempt of its own."""
+    with runtime.engine.connect() as connection:
+        return list(
+            connection.execute(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+                    run_events.c.agent_attempt_id.is_(None),
+                )
+            ).scalars()
+        )
+
+
+def state_of(runtime: DbosRuntime) -> RunState:
+    with runtime.engine.connect() as connection:
+        return RunState(
+            str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+                )
+            )
+        )
 
 
 @pytest.mark.parametrize(("mode", "capability"), MISMATCHED)
@@ -207,11 +288,7 @@ def test_a_node_bound_to_its_own_mode_starts_unchanged(
     result = start(runtime, workflow, bindings)
 
     assert isinstance(result, DurableRunCreated)
-    with runtime.engine.connect() as connection:
-        state = connection.scalar(
-            sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
-        )
-    assert RunState(str(state)) is RunState.STARTED
+    assert state_of(runtime) is RunState.STARTED
 
 
 def test_the_public_start_names_node_mode_and_capability_when_they_disagree(
@@ -259,18 +336,39 @@ def test_a_stored_run_bound_outside_its_mode_starts_no_process_on_its_next_attem
     wait_for_run_state(runtime.engine, RUN, RunState.FAILED)
 
     assert rows_of(runtime, agent_attempts) == 0
-    with runtime.engine.connect() as connection:
-        refusals = (
-            connection.execute(
-                sa.select(run_events.c.payload).where(
-                    run_events.c.run_id == RUN.value,
-                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert refusals == [AgentExecutionRefusal.AGENT_MODE_MISMATCH.value.encode("ascii")]
+    assert refusals_of(runtime) == [MODE_MISMATCH_REFUSAL]
+
+
+def test_a_replacement_of_a_node_bound_outside_its_mode_is_refused_before_its_row(
+    runtime: DbosRuntime,
+    executor: RecordingAgentExecutorFactoryV2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attempt a cancellation would hand the node next is never written."""
+    workflow = start_unchecked(
+        runtime, monkeypatch, "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    attempts = attempts_of(runtime)
+    execution = attempt_recorded_before_the_check(runtime, executor, workflow)
+    replace = CancelAgentAttemptRequest(
+        RUN,
+        execution.attempt_id,
+        "the-operator-asks-for-another-try",
+        attempts.load(execution.attempt_id).state_version,
+        AgentAttemptReplacement.ONE,
+    )
+    assert isinstance(
+        attempts.request_cancellation(replace), AgentAttemptCancellationAccepted
+    )
+
+    attested = attempts.attest_cancellation_cleanup(
+        replace, AgentAttemptCancellationDisposition.NEVER_LAUNCHED, None, None
+    )
+
+    assert attested.replacement_attempt_id is None
+    assert rows_of(runtime, agent_attempts) == 1
+    assert refusals_of(runtime) == [MODE_MISMATCH_REFUSAL]
+    assert state_of(runtime) is RunState.FAILED
 
 
 def test_a_fork_refuses_an_origin_whose_node_is_bound_outside_its_mode(
