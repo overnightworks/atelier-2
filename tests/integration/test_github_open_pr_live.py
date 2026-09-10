@@ -997,8 +997,10 @@ def test_a_token_set_or_replaced_after_opening_is_the_one_the_next_pull_request_
     before_the_swap = server.authorizations[:sent_with_the_first_token]
     after_the_swap = server.authorizations[sent_with_the_first_token:]
     assert len(server.pull_requests) == 2
-    assert before_the_swap and all(first_token in sent for sent in before_the_swap)
-    assert after_the_swap and all(replaced_token in sent for sent in after_the_swap)
+    assert before_the_swap
+    assert all(first_token in sent for sent in before_the_swap)
+    assert after_the_swap
+    assert all(replaced_token in sent for sent in after_the_swap)
 
 
 @pytest.mark.parametrize(
