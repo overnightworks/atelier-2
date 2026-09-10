@@ -899,8 +899,13 @@ def _install_problem_responses(schema: dict[str, Any]) -> None:
     for (path, method), codes in OPERATION_PROBLEMS.items():
         operation = schema["paths"][path][method]
         operation["responses"].pop("422", None)
+        # Every route meets `reject_unknown_query_params` (#1501) before its own
+        # body, so every route can answer `invalid-request` even where its own
+        # table entry above never names it -- named once here rather than in
+        # every entry above.
+        all_codes = codes if "invalid-request" in codes else (*codes, "invalid-request")
         grouped: defaultdict[int, list[str]] = defaultdict(list)
-        for code in codes:
+        for code in all_codes:
             grouped[PROBLEM_DEFINITIONS[code].status].append(code)
         for status, status_codes in grouped.items():
             operation["responses"][str(status)] = {

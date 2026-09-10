@@ -6,12 +6,15 @@ from http import HTTPStatus
 from typing import assert_never
 
 from fastapi import Request
+from fastapi.dependencies.models import Dependant
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
 from atelier2.api.problems import (
     ApiProblem,
+    bounded_invalid_field,
     durable_projection_unrepresentable_detail,
 )
 from atelier2.api.projection.runs import run_resource
@@ -216,6 +219,43 @@ def require_media_type(request: Request, expected: str) -> None:
 
 async def require_json_media_dependency(request: Request) -> None:
     require_media_type(request, "application/json")
+
+
+async def reject_unknown_query_params(request: Request) -> None:
+    """Refuse a query string carrying a name no matched route reads (#1501).
+
+    FastAPI otherwise drops an unknown query parameter in silence, so a
+    caller that misspells one -- or a route that renamed one -- gets a
+    plausible wrong answer instead of a refusal. The matched route's own
+    dependant already knows every query name it declares, directly or
+    through a sub-dependency, so this reads that instead of asking each
+    route to name its own known set.
+    """
+    route = request.scope.get("route")
+    if not isinstance(route, APIRoute):
+        return
+    known = _declared_query_parameter_names(route.dependant)
+    unknown = sorted(name for name in request.query_params if name not in known)
+    if not unknown:
+        return
+    reason = (
+        "not a query parameter this route reads"
+        if not known
+        else f"not a query parameter this route reads (known: {', '.join(sorted(known))})"
+    )
+    raise ApiProblem(
+        "invalid-request",
+        invalid_fields=tuple(
+            bounded_invalid_field(f"query/{name}", reason) for name in unknown
+        ),
+    )
+
+
+def _declared_query_parameter_names(dependant: Dependant) -> frozenset[str]:
+    names = {field.alias for field in dependant.query_params}
+    for sub_dependant in dependant.dependencies:
+        names |= _declared_query_parameter_names(sub_dependant)
+    return frozenset(names)
 
 
 def require_sse_accept(request: Request) -> None:
