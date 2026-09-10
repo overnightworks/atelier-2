@@ -600,31 +600,40 @@ never the free text a served document does not have to keep honest. Every
 finding is one of: that; a `STREAM_FAILED` frame on the attention feed; a
 `RUN_PROJECTION_CORRUPT` frame; a seat that is not `ALIVE`;
 `health.redeploy` present (its absence is clean); the service unreachable;
-an attention feed that told the read nothing usable; or the reading having
-been cut short. A limit reached after a real frame is named in the report
-without being raised as a finding. Exit is 0 with an empty report, non-zero
-otherwise. This slice reads only what a test double serves it; reading the
-live instance itself waits on the operator's ruling on the observer contract
-that #1046 opens.
+an attention feed that told the read nothing usable; the reading having been
+cut short; or the process that read having died. A limit reached after a real
+frame is named in the report without being raised as a finding. Exit is 0
+with an empty report, non-zero otherwise. This slice reads only what a test
+double or a test server serves it; reading the live instance itself waits on
+the operator's ruling on the observer contract that #1046 opens.
 
-A watch is one process, and one call is two phases. The reading phase makes
-every network call, all of them under one deadline held by the process's own
-alarm (`wall_clock_deadline`), and collects what each answered as it arrives.
-The reporting phase is pure: it classifies that collection and opens no
-socket, reads nothing, and closes nothing. A deadline ends a watch's reading,
-never its report -- whatever the reading had gathered is reported, and the
-reading having been cut short is itself a finding naming where it stood, so
-an instance the observer could not finish reading is never called clean. The
-client lives only inside the reading phase (`reading_client`): a deadline
-fires inside whichever blocking call httpx was in, leaving it at an unknown
-point -- possibly holding a connection pool's lock -- so nothing touches it
-again, `close()` included, and the process ends. The report names the budget
-it ran on (`budget`: `deadline_seconds`, `door_read_timeout_seconds`,
-`event_sample_read_timeout_seconds`); the per-read timeouts bound one read
-within the deadline, which is what tells a feed that went quiet from one that
-hangs. Because only the main thread receives that alarm, a deadline asked for
-off the main thread is refused rather than run unbounded, and a second
-deadline is refused while one is already running.
+One call is two halves in two processes. The reading runs in a child process
+the deadline ends; the report is built from what arrived. The child
+(`instance_reader`) makes every network call and streams what it saw back over
+a pipe as it reads -- one record per door, one per frame, and a last word when
+it has read everything; the process that reports opens no socket and only
+classifies those records. A deadline ends the reading, never the report:
+whatever arrived is reported, and the reading having been cut short is itself
+a finding naming where it stood, so an instance the observer could not finish
+reading is never called clean. The same is true of a reader that died: a
+process that ended without its last word is a finding of its own, named with
+the code it died with, because silence from a dead reader must never pass for
+an instance with nothing to say.
+
+A process rather than a timer, because a deadline that has to interrupt a
+blocking read from inside can only do it by throwing into somebody else's
+code: an exception landing in httpx's connection pool leaves that lock held
+and deadlocks the observer before it can report. A child cannot do that. Past
+the deadline it is terminated, killed if it does not go, and reaped, and the
+operating system reclaims every socket and lock it held; nothing but records
+ever crosses into the process that reports. It is started with `spawn`, so no
+lock, logger, socket, or open file of the reporting process is inherited --
+which costs a fresh interpreter's start (measured at about 1.2 s, the bulk of
+it importing `atelier2.host`), counted inside the deadline rather than added
+to it. The report names the budget it ran on (`budget`: `deadline_seconds`,
+`door_read_timeout_seconds`, `event_sample_read_timeout_seconds`); the
+per-read timeouts bound one read within the deadline, which is what tells a
+feed that went quiet from one that hangs.
 
 The attention feed never ends on its own, so it is sampled, not followed, and
 it is sampled last, because it is the one read that can spend the whole
@@ -676,13 +685,13 @@ because one `ConnectError` covers a name that does not resolve, a certificate
 that does not verify, and a port that says no.
 
 httpx logs every request's status line -- the far side's reason phrase
-included -- at `INFO`, and httpcore logs a reply's headers at `DEBUG`. A level
-set on the `httpx` or `httpcore` logger does not hold: a record made on
-`httpcore.http11` is filtered by that child's own level and then walks
-straight past its ancestors' levels to their handlers. `atelier2 watch`
-therefore installs a filter on the handlers the process it owns prints
-through, dropping every sub-warning record of either family whichever logger
-made it.
+included -- at `INFO`, and httpcore logs a reply's headers at `DEBUG`. All of
+that happens in the reading process, and that process writes nowhere: before
+its first request it points its own standard output and error at the null
+device, silences both library families at their own loggers, and leaves its
+root logging with a handler that drops whatever else it might say. The process
+that reports never calls httpx at all, so what `atelier2 watch` prints is one
+JSON document and nothing besides.
 
 ### Publish the issue-to-pr catalog
 

@@ -1,11 +1,18 @@
 """What `atelier2 watch` reports against a served instance's fixed doors.
 
-Most tests speak through the `transport` seam `read_instance` is built to
-take -- never the live instance (#1502 forbids that; the operator's own ruling
-on the observer contract decides when a real read is added). Two things a mock
-cannot show run against `_LoopbackServer`, a real server on loopback that
-hangs on purpose: that an interrupted read leaves no socket behind, and that
-nothing the transport libraries log about a real reply reaches a handler.
+Two kinds of proof, because the command is two halves in two processes. What
+an answer *means* is proven through the `httpx.MockTransport` seam, driving
+the very halves the command runs -- `send_reading`, which is the whole life of
+the reading process, and `absorb_record`, which is what the reporting process
+does with every record it receives. A mock transport cannot cross a spawn, so
+the reading process itself is proven against `_LoopbackServer`, a real server
+on loopback that hangs, floods, resets, and lies on purpose: that a deadline
+ends the reading and leaves no process and no socket behind, that a reader
+which dies is never read as a clean instance, and that nothing the transport
+libraries say about a real reply reaches this command's output.
+
+Never the live instance: #1502 forbids that until the operator has ruled on
+the observer contract.
 """
 
 from __future__ import annotations
@@ -14,13 +21,15 @@ import argparse
 import dataclasses
 import gzip
 import json
-import logging
-import signal
+import multiprocessing
+import os
 import socket
 import ssl
-import threading
+import struct
 import time
 from collections.abc import Callable, Iterator
+from multiprocessing.connection import Connection
+from threading import Event, Thread
 from typing import Self
 
 import httpx
@@ -44,33 +53,31 @@ from atelier2.host.atelier_api_client import (
     PROBLEM_MEDIA_TYPE,
     AtelierApi,
     AtelierApiTransportFailure,
-    BoundedRead,
-    EventFrameCollection,
     EventSampleOutcome,
-    WallClockDeadlineAlreadyArmed,
-    WallClockDeadlineExceeded,
-    WallClockDeadlineUnavailable,
-    reading_client,
-    wall_clock_deadline,
+    EventSampleTally,
 )
-from atelier2.host.instance_watch import (
+from atelier2.host.instance_reader import (
     EVENTS_PATH,
     HEALTH_PATH,
+    READER_PROCESS_NAME,
     RUN_PATH,
     SEAT_PATH,
-    TRANSPORT_LOGGER_NAMES,
     WATCH_ENDPOINTS,
     WORKFLOW_REVISIONS_PATH,
-    AttentionFeedSample,
     InstanceReading,
-    WatchBudget,
+    ReadingBudget,
+    absorb_record,
+    read_instance,
+    send_reading,
+    supervised_reading,
+)
+from atelier2.host.instance_watch import (
+    AttentionFeedSample,
     WatchFinding,
     WatchFindingKind,
     WatchReport,
     execute_watch,
-    read_instance,
     watch_exit_code,
-    watch_instance,
     watch_report,
 )
 
@@ -78,7 +85,8 @@ SERVICE_URL = "http://127.0.0.1:8422"
 RECORDED_AT = "2026-09-10T00:00:00Z"
 SEAT_TOKEN = "seat-terminal-access-token-9c41"
 SEAT_ALIVE_URL = f"http://127.0.0.1:9999/terminal?token={SEAT_TOKEN}"
-_TEST_BUDGET = WatchBudget(
+
+_TEST_BUDGET = ReadingBudget(
     deadline_seconds=1.0,
     door_read_timeout_seconds=1.0,
     event_sample_read_timeout_seconds=1.0,
@@ -88,30 +96,7 @@ _TEST_SAMPLE = AttentionFeedSample(
 )
 _TEST_READ_TIMEOUT_SECONDS = 1.0
 _TEST_MAXIMUM_BYTES = 65_536
-
-
-@pytest.fixture(autouse=True)
-def _transport_logging_untouched() -> Iterator[None]:
-    """`execute_watch` filters the transport libraries on the handlers of the
-    process it owns; a test process is shared, so each test hands the levels,
-    handlers, and handler filters it found back."""
-
-    names = (*TRANSPORT_LOGGER_NAMES, "httpcore.http11")
-    loggers = [logging.getLogger(name) for name in names]
-    before = [
-        (logger.level, list(logger.handlers), logger.propagate) for logger in loggers
-    ]
-    root_filters = [
-        (handler, list(handler.filters)) for handler in logging.getLogger().handlers
-    ]
-    yield
-    for logger, (level, handlers, propagate) in zip(loggers, before, strict=True):
-        logger.setLevel(level)
-        logger.handlers[:] = handlers
-        logger.propagate = propagate
-    for handler, filters in root_filters:
-        handler.filters[:] = filters
-
+_CLEAN_EXIT_CODE = 0
 
 _DEFAULT_HEALTH = HealthResource(
     status="serving",
@@ -186,9 +171,25 @@ def _served(
     return httpx.MockTransport(handle), methods
 
 
+def _read_here(transport: httpx.BaseTransport) -> InstanceReading:
+    """One reading of a served instance, both halves in this process.
+
+    `send_reading` is exactly what the reading process runs and
+    `absorb_record` exactly what the reporting process does with each record
+    it receives; the pipe between them is the one thing a mock transport
+    cannot cross, and the real server proofs below cover it.
+    """
+
+    reading = InstanceReading()
+    with AtelierApi(SERVICE_URL, transport=transport) as api:
+        send_reading(api, _TEST_BUDGET, lambda record: absorb_record(record, reading))
+    reading.reader_exit_code = _CLEAN_EXIT_CODE
+    return reading
+
+
 def _watched(overrides: dict[str, bytes | httpx.Response] | None = None) -> WatchReport:
     transport, _ = _served(overrides)
-    return watch_instance(SERVICE_URL, transport=transport)
+    return watch_report(SERVICE_URL, _read_here(transport), _TEST_BUDGET)
 
 
 def test_a_healthy_instance_reports_nothing_and_exits_clean() -> None:
@@ -280,8 +281,10 @@ def test_unreachable_service_is_reported_per_attempted_endpoint() -> None:
     def refuse_to_connect(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
-    report = watch_instance(
-        SERVICE_URL, transport=httpx.MockTransport(refuse_to_connect)
+    report = watch_report(
+        SERVICE_URL,
+        _read_here(httpx.MockTransport(refuse_to_connect)),
+        _TEST_BUDGET,
     )
 
     assert report.findings
@@ -301,7 +304,7 @@ def test_a_frame_that_is_not_readable_json_is_reported_without_hanging() -> None
 
 def test_every_call_this_command_makes_is_a_get() -> None:
     transport, methods = _served()
-    watch_instance(SERVICE_URL, transport=transport)
+    _read_here(transport)
 
     assert methods
     assert all(method == "GET" for method in methods)
@@ -452,149 +455,6 @@ def test_a_quiet_feed_that_stays_open_is_not_itself_a_finding() -> None:
     assert report.findings == ()
 
 
-def test_bounded_get_never_exceeds_its_byte_cap_without_hanging() -> None:
-    content = b"x" * 10_000
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        del request
-        return httpx.Response(200, content=content)
-
-    with (
-        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
-        pytest.raises(AtelierApiTransportFailure),
-    ):
-        api.bounded_get(
-            HEALTH_PATH,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=100,
-            into=BoundedRead(),
-        )
-
-
-def test_bounded_reads_ask_for_identity_encoding() -> None:
-    seen: list[str | None] = []
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers.get("accept-encoding"))
-        if request.url.path.endswith(EVENTS_PATH):
-            return _feed(b"")
-        return httpx.Response(200, content=b"{}")
-
-    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
-        api.bounded_get(
-            HEALTH_PATH,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000,
-            into=BoundedRead(),
-        )
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000,
-            maximum_frames=10,
-            into=EventFrameCollection(),
-        )
-
-    assert seen == ["identity", "identity"]
-
-
-def test_a_compressed_reply_is_refused_before_its_body_is_ever_read() -> None:
-    """`Accept-Encoding: identity` is only a request; a reply that answers
-    compressed anyway must be refused by its header alone, before this call
-    ever asks `iter_bytes` to decode a single byte of it -- otherwise the
-    decoded result could already have outgrown the byte cap before the cap
-    ever saw it."""
-
-    real_gzip = gzip.compress(b"far more bytes once decompressed than compressed")
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        del request
-        return httpx.Response(
-            200, content=real_gzip, headers={"content-encoding": "gzip"}
-        )
-
-    with (
-        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
-        pytest.raises(AtelierApiTransportFailure) as failure,
-    ):
-        api.bounded_get(
-            HEALTH_PATH,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=4,
-            into=BoundedRead(),
-        )
-
-    assert "content-encoding" in failure.value.reason
-    assert failure.value.body == b""
-
-
-def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
-    real_gzip = gzip.compress(b"data: hello\n\n")
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        del request
-        return httpx.Response(
-            200,
-            content=real_gzip,
-            headers={
-                "content-encoding": "gzip",
-                "content-type": EVENT_STREAM_MEDIA_TYPE,
-            },
-        )
-
-    with (
-        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
-        pytest.raises(AtelierApiTransportFailure) as failure,
-    ):
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000,
-            maximum_frames=10,
-            into=EventFrameCollection(),
-        )
-
-    assert "content-encoding" in failure.value.reason
-
-
-def test_a_content_type_that_is_not_a_stream_is_refused_before_one_body_byte() -> None:
-    """The decision falls on the header. An error page whose body trickles
-    under every read timeout would otherwise run out the whole reading phase
-    and then look like a stream that merely sent no frame."""
-
-    opened: list[bool] = []
-
-    def never_ending_html() -> Iterator[bytes]:
-        opened.append(True)
-        while True:
-            yield b"<p>still here</p>"
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        del request
-        return httpx.Response(
-            200, content=never_ending_html(), headers={"content-type": "text/html"}
-        )
-
-    with (
-        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
-        pytest.raises(AtelierApiTransportFailure) as failure,
-    ):
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=_TEST_MAXIMUM_BYTES,
-            maximum_frames=10,
-            into=EventFrameCollection(),
-        )
-
-    assert opened == []
-    assert failure.value.body == b""
-    assert "not an event stream" in failure.value.reason
-
-
 def test_a_trickling_html_answer_on_the_feed_is_reported_rather_than_called_clean() -> (
     None
 ):
@@ -619,6 +479,27 @@ def test_a_trickling_html_answer_on_the_feed_is_reported_rather_than_called_clea
     assert finding.endpoint == EVENTS_PATH
     assert finding.kind == WatchFindingKind.RESPONSE_REFUSED
     assert watch_exit_code(report) != 0
+
+
+def test_a_reading_the_deadline_cut_short_reports_what_it_had() -> None:
+    """The report is built from whatever records arrived: a frame already read
+    becomes its finding, and the cut is named beside it."""
+
+    failure_frame = StreamFailureResource(
+        problem=problem_resource("durable-state-corrupt")
+    ).model_dump_json()
+    reading = InstanceReading(deadline_passed=True)
+    reading.feed.frames.append(failure_frame)
+    reading.feed.bytes_read = len(failure_frame)
+    reading.feed.outcome = EventSampleOutcome.INTERRUPTED
+
+    report = watch_report(SERVICE_URL, reading, _TEST_BUDGET)
+
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.STREAM_FAILED,
+        WatchFindingKind.READING_CUT_SHORT,
+    }
+    assert report.attention_feed_sample.frames_read == 1
 
 
 _LEAK_SENTINEL = "SENTINEL-LEAK-7d3fa1"
@@ -789,36 +670,22 @@ _POISONED_FIXTURES = _poisoned_fixtures()
     _POISONED_FIXTURES,
     ids=[label for label, _ in _POISONED_FIXTURES],
 )
-def test_no_sentinel_from_any_answer_ever_reaches_the_report_an_exception_or_a_log(
-    label: str,
-    overrides: dict[str, bytes | httpx.Response],
-    caplog: pytest.LogCaptureFixture,
-    capsys: pytest.CaptureFixture[str],
+def test_no_sentinel_from_any_answer_ever_reaches_the_report(
+    label: str, overrides: dict[str, bytes | httpx.Response]
 ) -> None:
-    """The whole command, not only the report it builds: this drives
-    `execute_watch`, the entry point that also owns dropping the transport
-    libraries' own chatter, and sweeps every channel a character of an answer
-    could leave through -- printed report, log records at `DEBUG`, and any
-    exception that escapes with its causes.
+    """The report this command prints, for every answer shape it reads: not
+    one character an answer wrote may appear in it.
+
+    The other channel a character could leave through -- what the transport
+    libraries log about a reply -- belongs to the reading process, and is
+    proven where that process is real, against a talkative server below.
     """
 
     del label
-    caplog.set_level(logging.DEBUG)
-
-    raised: Exception | None = None
     transport, _ = _served(overrides)
-    try:
-        execute_watch(argparse.Namespace(service=SERVICE_URL), transport=transport)
-    except Exception as error:  # noqa: BLE001 -- the sweep itself, not a caller
-        raised = error
+    report = watch_report(SERVICE_URL, _read_here(transport), _TEST_BUDGET)
 
-    haystack = caplog.text + capsys.readouterr().out
-    cause: BaseException | None = raised
-    while cause is not None:
-        haystack += str(cause)
-        cause = cause.__cause__
-
-    assert _LEAK_SENTINEL not in haystack
+    assert _LEAK_SENTINEL not in json.dumps(dataclasses.asdict(report))
 
 
 @pytest.mark.parametrize(
@@ -829,16 +696,16 @@ def test_no_sentinel_from_any_answer_ever_reaches_the_report_an_exception_or_a_l
 def test_no_sentinel_survives_in_a_failure_the_watcher_itself_consumes(
     label: str, overrides: dict[str, bytes | httpx.Response]
 ) -> None:
-    """The sweep above only sees exceptions that escape; the watcher swallows
-    most of them into findings. This reads the same answers at the client
-    boundary the watcher reads them through and inspects the failure it
-    hands over: its message, its reason, and its whole `__cause__` chain --
-    which must be empty, because a chained library exception carries the far
-    side's own text into every traceback that ever prints it.
+    """The report above only shows what was classified; the reading swallows
+    most failures into records. This reads the same answers at the client
+    boundary the reading reads them through and inspects the failure it hands
+    over: its message, its reason, and its whole `__cause__` chain -- which
+    must be empty, because a chained library exception carries the far side's
+    own text into every traceback that ever prints it.
 
     `failure.body` is deliberately not swept: those are the answer's own
-    bytes, handed over so the watcher can recognize a problem document in
-    them, and no channel ever prints them.
+    bytes, handed over so the reporting side can recognize a problem document
+    in them, and no channel ever prints them.
     """
 
     del label
@@ -850,7 +717,6 @@ def test_no_sentinel_survives_in_a_failure_the_watcher_itself_consumes(
                     endpoint,
                     read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
                     maximum_bytes=_SWEEP_MAXIMUM_BYTES,
-                    into=BoundedRead(),
                 )
             except AtelierApiTransportFailure as failure:
                 _assert_carries_no_sentinel(failure)
@@ -861,7 +727,8 @@ def test_no_sentinel_survives_in_a_failure_the_watcher_itself_consumes(
                 read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
                 maximum_bytes=_SWEEP_MAXIMUM_BYTES,
                 maximum_frames=10,
-                into=EventFrameCollection(),
+                on_frame=lambda data: None,
+                tally=EventSampleTally(),
             )
         except AtelierApiTransportFailure as failure:
             _assert_carries_no_sentinel(failure)
@@ -964,12 +831,154 @@ def test_a_transport_failure_is_named_by_its_category_and_nothing_else(
             HEALTH_PATH,
             read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
             maximum_bytes=1_000,
-            into=BoundedRead(),
         )
 
     assert raised.value.reason == f"transport failure: {category}"
     assert raised.value.__cause__ is None
     assert _LEAK_SENTINEL not in raised.value.reason
+
+
+def test_bounded_get_never_exceeds_its_byte_cap_without_hanging() -> None:
+    content = b"x" * 10_000
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=content)
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(AtelierApiTransportFailure),
+    ):
+        api.bounded_get(
+            HEALTH_PATH,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=100,
+        )
+
+
+def test_bounded_reads_ask_for_identity_encoding() -> None:
+    seen: list[str | None] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("accept-encoding"))
+        if request.url.path.endswith(EVENTS_PATH):
+            return _feed(b"")
+        return httpx.Response(200, content=b"{}")
+
+    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
+        api.bounded_get(
+            HEALTH_PATH,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=1_000,
+        )
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=1_000,
+            maximum_frames=10,
+            on_frame=lambda data: None,
+            tally=EventSampleTally(),
+        )
+
+    assert seen == ["identity", "identity"]
+
+
+def test_a_compressed_reply_is_refused_before_its_body_is_ever_read() -> None:
+    """`Accept-Encoding: identity` is only a request; a reply that answers
+    compressed anyway must be refused by its header alone, before this call
+    ever asks `iter_bytes` to decode a single byte of it -- otherwise the
+    decoded result could already have outgrown the byte cap before the cap
+    ever saw it."""
+
+    real_gzip = gzip.compress(b"far more bytes once decompressed than compressed")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200, content=real_gzip, headers={"content-encoding": "gzip"}
+        )
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(AtelierApiTransportFailure) as failure,
+    ):
+        api.bounded_get(
+            HEALTH_PATH,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=4,
+        )
+
+    assert "content-encoding" in failure.value.reason
+    assert failure.value.body == b""
+
+
+def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
+    real_gzip = gzip.compress(b"data: hello\n\n")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            content=real_gzip,
+            headers={
+                "content-encoding": "gzip",
+                "content-type": EVENT_STREAM_MEDIA_TYPE,
+            },
+        )
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(AtelierApiTransportFailure) as failure,
+    ):
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=1_000,
+            maximum_frames=10,
+            on_frame=lambda data: None,
+            tally=EventSampleTally(),
+        )
+
+    assert "content-encoding" in failure.value.reason
+
+
+def test_a_content_type_that_is_not_a_stream_is_refused_before_one_body_byte() -> None:
+    """The decision falls on the header. An error page whose body trickles
+    under every read timeout would otherwise run out the whole reading and
+    then look like a stream that merely sent no frame."""
+
+    opened: list[bool] = []
+
+    def never_ending_html() -> Iterator[bytes]:
+        opened.append(True)
+        while True:
+            yield b"<p>still here</p>"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200, content=never_ending_html(), headers={"content-type": "text/html"}
+        )
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(AtelierApiTransportFailure) as failure,
+    ):
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=_TEST_MAXIMUM_BYTES,
+            maximum_frames=10,
+            on_frame=lambda data: None,
+            tally=EventSampleTally(),
+        )
+
+    assert opened == []
+    assert failure.value.body == b""
+    assert "not an event stream" in failure.value.reason
 
 
 def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> None:
@@ -999,11 +1008,100 @@ def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> Non
             HEALTH_PATH,
             read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
             maximum_bytes=250,
-            into=BoundedRead(),
         )
 
     (response,) = responses
     assert response.is_closed
+
+
+def test_a_silent_event_feed_stops_the_sample_instead_of_hanging() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        def body() -> Iterator[bytes]:
+            yield b": lead-in\n\n"
+            raise httpx.ReadTimeout("no data arrived", request=request)
+
+        return _feed(body())
+
+    frames: list[str] = []
+    tally = EventSampleTally()
+    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=0.01,
+            maximum_bytes=1_000,
+            maximum_frames=5,
+            on_frame=frames.append,
+            tally=tally,
+        )
+
+    assert tally.outcome is EventSampleOutcome.SILENT
+    assert frames == []
+
+
+def test_a_stream_that_closes_before_any_budget_is_hit_is_named_closed_early() -> None:
+    frames: list[str] = []
+    tally = EventSampleTally()
+    with AtelierApi(
+        SERVICE_URL,
+        transport=httpx.MockTransport(
+            lambda request: _feed(_sse('{"event": "AGENT_COMPLETED"}'))
+        ),
+    ) as api:
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=1_000_000,
+            maximum_frames=100,
+            on_frame=frames.append,
+            tally=tally,
+        )
+
+    assert frames == ['{"event": "AGENT_COMPLETED"}']
+    assert tally.outcome is EventSampleOutcome.CLOSED_EARLY
+
+
+def test_reading_stops_at_the_frame_limit_without_hanging() -> None:
+    content = _sse(*(f'{{"n": {n}}}' for n in range(5)))
+    frames: list[str] = []
+    tally = EventSampleTally()
+    with AtelierApi(
+        SERVICE_URL, transport=httpx.MockTransport(lambda request: _feed(content))
+    ) as api:
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=1_000_000,
+            maximum_frames=2,
+            on_frame=frames.append,
+            tally=tally,
+        )
+
+    assert len(frames) == 2
+    assert tally.outcome is EventSampleOutcome.FRAME_LIMIT
+
+
+def test_reading_stops_at_the_byte_limit_without_hanging() -> None:
+    chunks = (b"data: a\n\n", b"data: b\n\n", b"data: c\n\n")
+    frames: list[str] = []
+    tally = EventSampleTally()
+    with AtelierApi(
+        SERVICE_URL, transport=httpx.MockTransport(lambda request: _feed(iter(chunks)))
+    ) as api:
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept=EVENT_STREAM_MEDIA_TYPE,
+            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
+            maximum_bytes=len(chunks[0]),
+            maximum_frames=100,
+            on_frame=frames.append,
+            tally=tally,
+        )
+
+    assert frames == ["a"]
+    assert tally.outcome is EventSampleOutcome.BYTE_LIMIT
 
 
 def test_execute_watch_prints_one_json_report_whose_exit_code_matches_its_findings(
@@ -1020,7 +1118,7 @@ def test_execute_watch_prints_one_json_report_whose_exit_code_matches_its_findin
         budget=_TEST_BUDGET,
     )
     monkeypatch.setattr(
-        instance_watch, "watch_instance", lambda service_url, *, transport: canned
+        instance_watch, "watch_instance", lambda service_url, budget: canned
     )
 
     exit_code = execute_watch(argparse.Namespace(service=SERVICE_URL))
@@ -1063,213 +1161,58 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
     assert watch_exit_code(dirty) != 0
 
 
-def test_a_silent_event_feed_stops_the_sample_instead_of_hanging() -> None:
-    def handle(request: httpx.Request) -> httpx.Response:
-        def body() -> Iterator[bytes]:
-            yield b": lead-in\n\n"
-            raise httpx.ReadTimeout("no data arrived", request=request)
-
-        return _feed(body())
-
-    collected = EventFrameCollection()
-    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=0.01,
-            maximum_bytes=1_000,
-            maximum_frames=5,
-            into=collected,
-        )
-
-    assert collected.outcome is EventSampleOutcome.SILENT
-    assert collected.frames == []
-
-
-def test_a_stream_that_closes_before_any_budget_is_hit_is_named_closed_early() -> None:
-    collected = EventFrameCollection()
-    with AtelierApi(
-        SERVICE_URL,
-        transport=httpx.MockTransport(
-            lambda request: _feed(_sse('{"event": "AGENT_COMPLETED"}'))
-        ),
-    ) as api:
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000_000,
-            maximum_frames=100,
-            into=collected,
-        )
-
-    assert collected.frames == ['{"event": "AGENT_COMPLETED"}']
-    assert collected.outcome is EventSampleOutcome.CLOSED_EARLY
-
-
-def test_reading_stops_at_the_frame_limit_without_hanging() -> None:
-    content = _sse(*(f'{{"n": {n}}}' for n in range(5)))
-    collected = EventFrameCollection()
-    with AtelierApi(
-        SERVICE_URL, transport=httpx.MockTransport(lambda request: _feed(content))
-    ) as api:
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000_000,
-            maximum_frames=2,
-            into=collected,
-        )
-
-    assert len(collected.frames) == 2
-    assert collected.outcome is EventSampleOutcome.FRAME_LIMIT
-
-
-def test_reading_stops_at_the_byte_limit_without_hanging() -> None:
-    chunks = (b"data: a\n\n", b"data: b\n\n", b"data: c\n\n")
-    collected = EventFrameCollection()
-    with AtelierApi(
-        SERVICE_URL, transport=httpx.MockTransport(lambda request: _feed(iter(chunks)))
-    ) as api:
-        api.sampled_event_frames(
-            EVENTS_PATH,
-            accept=EVENT_STREAM_MEDIA_TYPE,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=len(chunks[0]),
-            maximum_frames=100,
-            into=collected,
-        )
-
-    assert collected.frames == ["a"]
-    assert collected.outcome is EventSampleOutcome.BYTE_LIMIT
-
-
-def test_an_already_passed_deadline_reads_nothing_not_even_the_request() -> None:
-    asked: list[str] = []
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        asked.append(request.url.path)
-        return httpx.Response(200, content=b"{}")
-
-    with (
-        pytest.raises(WallClockDeadlineExceeded),
-        reading_client(SERVICE_URL, 0.0, transport=httpx.MockTransport(handle)) as api,
-    ):
-        api.bounded_get(
-            HEALTH_PATH,
-            read_timeout_seconds=_TEST_READ_TIMEOUT_SECONDS,
-            maximum_bytes=1_000,
-            into=BoundedRead(),
-        )
-
-    assert asked == []
-
-
-def test_a_deadline_this_thread_cannot_be_given_is_refused_rather_than_skipped() -> (
-    None
-):
-    """Only the main thread receives the process's alarm. Anywhere else the
-    deadline says so, instead of running an unbounded read that merely looks
-    bounded."""
-
-    refusals: list[BaseException] = []
-
-    def ask_off_the_main_thread() -> None:
-        try:
-            with wall_clock_deadline(_DEADLINE_SECONDS):
-                pass
-        except BaseException as refusal:  # noqa: BLE001 -- carried to the assert
-            refusals.append(refusal)
-
-    asking = threading.Thread(target=ask_off_the_main_thread)
-    asking.start()
-    asking.join(_SERVER_JOIN_SECONDS)
-
-    assert not asking.is_alive()
-    (refusal,) = refusals
-    assert isinstance(refusal, WallClockDeadlineUnavailable)
-
-
-def test_a_second_deadline_is_refused_while_one_is_already_running() -> None:
-    """One process has one interval timer: a nested deadline would replace the
-    outer one's expiry and hand its own handler back on the way out, leaving
-    the block that believed itself bounded running with no alarm at all."""
-
-    with (
-        wall_clock_deadline(_SERVER_JOIN_SECONDS),
-        pytest.raises(WallClockDeadlineAlreadyArmed),
-        wall_clock_deadline(_SERVER_JOIN_SECONDS),
-    ):
-        pytest.fail("a nested deadline must never arm")
-
-
-def test_an_alarm_landing_during_restoration_still_leaves_the_previous_handler(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A signal queued when the timer is disarmed is delivered at the next
-    bytecode boundary, which can fall inside the restoring call itself. That
-    throw must not escape, and it must not leave this module's own handler
-    installed for whatever the process does next."""
-
-    previous = signal.getsignal(signal.SIGALRM)
-    real_signal = signal.signal
-    landed: list[bool] = []
-
-    def signal_with_one_late_alarm(
-        number: int, handler: object
-    ) -> object:  # pragma: no cover - argument shapes come from signal itself
-        if handler is previous and not landed:
-            landed.append(True)
-            raise WallClockDeadlineExceeded
-        return real_signal(number, handler)  # pyright: ignore[reportArgumentType]
-
-    monkeypatch.setattr(signal, "signal", signal_with_one_late_alarm)
-
-    with wall_clock_deadline(_SERVER_JOIN_SECONDS):
-        pass
-
-    assert landed == [True]
-    assert signal.getsignal(signal.SIGALRM) is previous
-
-
-_DEADLINE_SECONDS = 0.5
-"""What every deadline proof below gives the client to finish in."""
-
-_DEADLINE_TOLERANCE_SECONDS = 1.5
-"""How much later than its deadline a call may still return and count as
-bounded -- generous, because what is proven is that it returns at all, not
-how promptly a shared machine schedules it."""
-
-_PATIENT_READ_TIMEOUT_SECONDS = 30.0
-"""Far past the deadline on purpose: whatever ends these calls, it is not
-httpx's own per-read timeout."""
-
 _DRIBBLE_INTERVAL_SECONDS = 0.02
 _ACCEPT_POLL_SECONDS = 0.05
 _SERVER_JOIN_SECONDS = 5.0
+_FRAME_SETTLE_SECONDS = 0.25
+"""Long enough for a reader to have taken a frame off the wire before this
+server tears the connection down under it."""
+_DEADLINE_TOLERANCE_SECONDS = 10.0
+"""How much later than its deadline a reading may return and still count as
+bounded -- generous, because what is proven is that it returns at all, not how
+promptly a shared machine schedules a fresh interpreter."""
+
+_REAL_READ_BUDGET = ReadingBudget(
+    deadline_seconds=25.0,
+    door_read_timeout_seconds=0.5,
+    event_sample_read_timeout_seconds=0.5,
+)
+"""For a real reading whose own read timeouts are what end it: the deadline is
+wide, because the reading process's start is inside it."""
+
+_REAL_DEADLINE_BUDGET = ReadingBudget(
+    deadline_seconds=5.0,
+    door_read_timeout_seconds=30.0,
+    event_sample_read_timeout_seconds=30.0,
+)
+"""For a real reading only the deadline can end: every read timeout is far
+past it, and the deadline itself is far past the reading process's start."""
 
 _CHATTER_REASON_PHRASE = "SENTINEL-REASON-PHRASE"
 _CHATTER_HEADER_VALUE = "SENTINEL-HEADER-VALUE"
 
+_STREAM_FAILED_FRAME = StreamFailureResource(
+    problem=problem_resource("durable-state-corrupt")
+).model_dump_json()
+
 
 class _LoopbackServer:
-    """A real TCP server on loopback that hangs on purpose.
+    """A real TCP server on loopback that hangs, floods, resets, and lies.
 
-    `httpx.MockTransport` cannot stand in for this: a mock never opens a
-    socket, so nothing it does can show that a deadline reaching a blocked
-    read leaves no connection behind, nor what the transport libraries log
-    about a real reply. `speak` is what this server does with an accepted
-    connection; afterwards it reads until the client closes, which is what
-    `connections_closed_by_client` counts -- a peer's own FIN, the
-    socket-level proof that the interrupted call cleaned up after itself.
+    `httpx.MockTransport` cannot stand in for this, and cannot even reach the
+    reading: it lives in another process, so every proof about that process --
+    that a deadline leaves no socket and no child behind, what its transport
+    libraries print -- needs a real address. `speak` is what this server does
+    with an accepted connection; afterwards it reads until the client closes,
+    which is what `connections_closed_by_client` counts -- a peer's own FIN,
+    the socket-level proof that the reading cleaned up after itself.
     """
 
-    def __init__(self, speak: Callable[[socket.socket, threading.Event], None]) -> None:
+    def __init__(self, speak: Callable[[socket.socket, Event], None]) -> None:
         self._listener = socket.create_server(("127.0.0.1", 0))
         self._speak = speak
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, name="loopback-server")
+        self._stop = Event()
+        self._thread = Thread(target=self._serve, name="loopback-server")
         self.connections_accepted = 0
         self.connections_closed_by_client = 0
 
@@ -1305,8 +1248,11 @@ class _LoopbackServer:
 
 
 def _read_until_the_client_closes(connection: socket.socket) -> bool:
-    connection.settimeout(_SERVER_JOIN_SECONDS)
+    """Whether this peer said goodbye rather than vanishing -- which a speaker
+    that tore its own connection down never did."""
+
     try:
+        connection.settimeout(_SERVER_JOIN_SECONDS)
         while connection.recv(4_096):
             pass
     except OSError:
@@ -1326,26 +1272,75 @@ def _waited_for(condition: Callable[[], bool]) -> bool:
     return condition()
 
 
-def _stay_silent(connection: socket.socket, stop: threading.Event) -> None:
+def _stay_silent(connection: socket.socket, stop: Event) -> None:
     """Accept the request and answer nothing at all -- not one header byte."""
 
     del connection, stop
 
 
-def _dribble_header_bytes(connection: socket.socket, stop: threading.Event) -> None:
-    """A reply whose headers never finish: one byte at a time, always sooner
-    than any read timeout, forever. Only an absolute deadline ends this."""
-
+def _sent(connection: socket.socket, payload: bytes) -> None:
     try:
-        connection.sendall(b"HTTP/1.1 200 OK\r\nX-Filler: ")
-        while not stop.wait(_DRIBBLE_INTERVAL_SECONDS):
-            connection.sendall(b"x")
+        connection.sendall(payload)
     except OSError:
         return
 
 
+def _stream_head() -> bytes:
+    """An answer that declares itself an attention feed and ends at EOF, so
+    one connection carries one request and this one-at-a-time server answers
+    every door."""
+
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: text/event-stream\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+
+
+def _frame_then_bytes_that_are_not_utf8(connection: socket.socket, stop: Event) -> None:
+    del stop
+    _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
+    _sent(connection, b"data: \xff\xfe\n\n")
+
+
+def _frame_then_a_reset(connection: socket.socket, stop: Event) -> None:
+    """A frame, then the peer vanishes: `SO_LINGER` with a zero timeout makes
+    the close a reset rather than a graceful goodbye.
+
+    The wait is what makes the proof about the reset rather than about a race:
+    a reset discards whatever the reader had not taken yet, so the frame is
+    given its moment to be read before the connection is torn down.
+    """
+
+    _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
+    stop.wait(_FRAME_SETTLE_SECONDS)
+    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    connection.close()
+
+
+def _frame_then_more_bytes_than_the_cap(connection: socket.socket, stop: Event) -> None:
+    del stop
+    _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
+    _sent(connection, b"data: " + b"x" * (_TEST_MAXIMUM_BYTES + 1) + b"\n\n")
+
+
+def _answer_a_problem_document(connection: socket.socket, stop: Event) -> None:
+    del stop
+    body = problem_resource("internal-error").model_dump_json().encode()
+    _sent(
+        connection,
+        (
+            f"HTTP/1.1 500 Internal Server Error\r\n"
+            f"Content-Type: {PROBLEM_MEDIA_TYPE}\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode()
+        + body,
+    )
+
+
 def _answer_with_a_talkative_status_line(
-    connection: socket.socket, stop: threading.Event
+    connection: socket.socket, stop: Event
 ) -> None:
     """A complete reply whose status line and headers carry text of the far
     side's own choosing -- exactly what httpx logs at `INFO` and httpcore at
@@ -1354,216 +1349,201 @@ def _answer_with_a_talkative_status_line(
 
     del stop
     body = b"{}"
-    head = (
-        f"HTTP/1.1 200 {_CHATTER_REASON_PHRASE}\r\n"
-        f"X-Sentinel: {_CHATTER_HEADER_VALUE}\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        f"Connection: close\r\n\r\n"
-    ).encode()
-    try:
-        connection.sendall(head + body)
-    except OSError:
-        return
+    _sent(
+        connection,
+        (
+            f"HTTP/1.1 200 {_CHATTER_REASON_PHRASE}\r\n"
+            f"X-Sentinel: {_CHATTER_HEADER_VALUE}\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode()
+        + body,
+    )
 
 
-def test_a_connection_that_never_answers_ends_at_its_deadline_and_closes() -> None:
-    """The whole point of the deadline: a real socket that accepts and then
-    says nothing. httpx's read timeout is set far beyond the deadline, so
-    only the deadline can end this -- and the server sees the client's own
-    close before the client is even out of scope, which is the proof that the
-    interrupted read cleaned up rather than a later `close()` doing it."""
+_DELIBERATE_DEATH_CODE = 3
 
-    threads_before = set(threading.enumerate())
+
+def _exit_before_saying_anything(
+    connection: Connection, service_url: str, budget: ReadingBudget
+) -> None:
+    """A reading process that dies where a real one would read. `os._exit`
+    skips every handler on the way out, which is what a crashed reader looks
+    like from the outside."""
+
+    del connection, service_url, budget
+    os._exit(_DELIBERATE_DEATH_CODE)
+
+
+def _reader_processes_alive() -> list[str]:
+    return [
+        child.name
+        for child in multiprocessing.active_children()
+        if child.name == READER_PROCESS_NAME
+    ]
+
+
+def test_a_deadline_ends_the_reading_and_leaves_no_process_and_no_socket_behind() -> (
+    None
+):
+    """A real server that accepts and then says nothing, with every read
+    timeout set far past the deadline, so only the deadline can end this. It
+    ends the reading process with it: the server sees that peer's own close,
+    no reader is left running, and the report says where the reading stood
+    instead of calling the instance clean."""
+
     with _LoopbackServer(_stay_silent) as server:
+        served_url = server.url
         started = time.monotonic()
-        with (
-            pytest.raises(WallClockDeadlineExceeded),
-            reading_client(server.url, _DEADLINE_SECONDS) as api,
-        ):
-            api.bounded_get(
-                HEALTH_PATH,
-                read_timeout_seconds=_PATIENT_READ_TIMEOUT_SECONDS,
-                maximum_bytes=1_000,
-                into=BoundedRead(),
-            )
+        reading = read_instance(served_url, _REAL_DEADLINE_BUDGET)
         elapsed = time.monotonic() - started
+        assert _waited_for(lambda: server.connections_accepted == 1)
         assert _waited_for(lambda: server.connections_closed_by_client == 1)
 
-    assert elapsed < _DEADLINE_SECONDS + _DEADLINE_TOLERANCE_SECONDS
-    assert set(threading.enumerate()) == threads_before
-
-
-def test_no_further_request_is_made_after_the_deadline_has_passed() -> None:
-    """A reply that keeps trickling header bytes never trips a read timeout at
-    all: every gap is shorter than one. Only the deadline ends it -- and the
-    reading phase ends with it, so the server is never asked again."""
-
-    threads_before = set(threading.enumerate())
-    with _LoopbackServer(_dribble_header_bytes) as server:
-        report = _read_with_budgets(
-            server.url,
-            deadline_seconds=_DEADLINE_SECONDS,
-            door_read_timeout_seconds=_PATIENT_READ_TIMEOUT_SECONDS,
-        )
-        assert _waited_for(lambda: server.connections_accepted == 1)
-
+    report = watch_report(served_url, reading, _REAL_DEADLINE_BUDGET)
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.READING_CUT_SHORT
     assert finding.endpoint == HEALTH_PATH
-    assert report.endpoints_read == (HEALTH_PATH,)
+    assert report.endpoints_read == ()
     assert watch_exit_code(report) != 0
-    assert set(threading.enumerate()) == threads_before
+    assert reading.deadline_passed
+    assert reading.reader_exit_code is not None
+    assert _reader_processes_alive() == []
+    assert (
+        elapsed < _REAL_DEADLINE_BUDGET.deadline_seconds + _DEADLINE_TOLERANCE_SECONDS
+    )
 
 
-def test_the_whole_report_survives_an_instance_that_answers_nothing() -> None:
-    """Every fixed door against a server that accepts and then says nothing:
-    each one's own read timeout ends it well inside the phase deadline, so all
-    five are reported unreachable, on one client, leaving no connection and no
-    thread behind."""
+def test_a_deadline_that_has_already_passed_asks_the_instance_nothing() -> None:
+    passed = dataclasses.replace(_REAL_DEADLINE_BUDGET, deadline_seconds=0.0)
 
-    threads_before = set(threading.enumerate())
     with _LoopbackServer(_stay_silent) as server:
-        report = _read_with_budgets(
-            server.url,
-            deadline_seconds=_SERVER_JOIN_SECONDS,
-            door_read_timeout_seconds=_DEADLINE_SECONDS / 2,
-        )
-        assert _waited_for(
-            lambda: server.connections_closed_by_client == len(WATCH_ENDPOINTS)
-        )
+        reading = read_instance(server.url, passed)
 
-    assert {finding.endpoint for finding in report.findings} == set(WATCH_ENDPOINTS)
-    assert all(
-        finding.kind == WatchFindingKind.SERVICE_UNREACHABLE
-        for finding in report.findings
-    )
-    assert set(threading.enumerate()) == threads_before
-
-
-def test_a_failure_frame_read_before_the_deadline_still_reaches_the_report(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A feed that publishes a `STREAM_FAILED` frame and then hangs: the
-    deadline ends the whole reading phase, and the report is still built from
-    what that phase had collected -- the finding, and that the read was cut
-    short."""
-
-    failure_frame = StreamFailureResource(
-        problem=problem_resource("durable-state-corrupt")
-    ).model_dump_json()
-
-    def frame_then_hang(request: httpx.Request) -> httpx.Response:
-        del request
-
-        def content() -> Iterator[bytes]:
-            yield _sse(failure_frame)
-            while True:
-                time.sleep(_DRIBBLE_INTERVAL_SECONDS)
-
-        return _feed(content())
-
-    healthy, _ = _served()
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.removeprefix(API_PREFIX) == EVENTS_PATH:
-            return frame_then_hang(request)
-        return healthy.handle_request(request)
-
-    monkeypatch.setattr(instance_watch, "WATCH_DEADLINE_SECONDS", _DEADLINE_SECONDS)
-    monkeypatch.setattr(
-        instance_watch,
-        "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS",
-        _PATIENT_READ_TIMEOUT_SECONDS,
-    )
-    report = watch_instance(SERVICE_URL, transport=httpx.MockTransport(handle))
-
-    kinds = {finding.kind for finding in report.findings}
-    assert WatchFindingKind.STREAM_FAILED in kinds
-    assert WatchFindingKind.READING_CUT_SHORT in kinds
-    assert report.attention_feed_sample.frames_read == 1
-    assert report.attention_feed_sample.outcome is EventSampleOutcome.INTERRUPTED
-    assert watch_exit_code(report) != 0
-
-
-def _read_with_budgets(
-    service_url: str, *, deadline_seconds: float, door_read_timeout_seconds: float
-) -> WatchReport:
-    """One real read of `service_url` on budgets a test can wait for."""
-
-    with pytest.MonkeyPatch.context() as budgets:
-        budgets.setattr(instance_watch, "WATCH_DEADLINE_SECONDS", deadline_seconds)
-        budgets.setattr(
-            instance_watch, "REQUEST_TIMEOUT_SECONDS", door_read_timeout_seconds
-        )
-        budgets.setattr(
-            instance_watch,
-            "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS",
-            door_read_timeout_seconds,
-        )
-        return watch_instance(service_url)
-
-
-def test_the_transport_libraries_chatter_never_reaches_a_handler(
-    caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A level on the `httpcore` logger does not hold: a record made on
-    `httpcore.http11` is filtered by that child's own level and then walks
-    straight past its ancestors' levels to their handlers. The command drops
-    the family on the handler instead -- proven against a real reply whose
-    status line and headers carry text of the far side's own choosing."""
-
-    caplog.set_level(logging.DEBUG)
-    logging.getLogger("httpcore.http11").setLevel(logging.DEBUG)
-
-    with _LoopbackServer(_answer_with_a_talkative_status_line) as server:
-        with AtelierApi(server.url) as unfiltered:
-            unfiltered.get(HEALTH_PATH, timeout=_SERVER_JOIN_SECONDS)
-        assert [record for record in caplog.records if record.name.startswith("httpc")]
-        caplog.clear()
-
-        execute_watch(argparse.Namespace(service=server.url))
-
-    haystack = caplog.text + capsys.readouterr().out
-    assert _CHATTER_REASON_PHRASE not in haystack
-    assert _CHATTER_HEADER_VALUE not in haystack
-    assert not [record for record in caplog.records if record.name.startswith("httpc")]
-
-
-def test_a_reading_the_deadline_cut_short_reports_what_it_had() -> None:
-    """The reporting phase is pure and runs on whatever the reading phase
-    collected: a frame already read becomes its finding, and the cut is named
-    beside it."""
-
-    failure_frame = StreamFailureResource(
-        problem=problem_resource("durable-state-corrupt")
-    ).model_dump_json()
-    reading = InstanceReading(deadline_passed=True)
-    reading.feed.frames.append(failure_frame)
-    reading.feed.bytes_read = len(failure_frame)
-    reading.feed.outcome = EventSampleOutcome.INTERRUPTED
-
-    report = watch_report(SERVICE_URL, reading)
-
-    assert {finding.kind for finding in report.findings} == {
-        WatchFindingKind.STREAM_FAILED,
-        WatchFindingKind.READING_CUT_SHORT,
-    }
-    assert report.attention_feed_sample.frames_read == 1
-
-
-def test_a_reading_phase_hands_back_what_it_collected_even_unfinished() -> None:
-    """`read_instance` returns rather than raising when its deadline falls, so
-    the reporting phase always has something to report."""
-
-    def hang(request: httpx.Request) -> httpx.Response:
-        del request
-        time.sleep(_SERVER_JOIN_SECONDS)
-        return httpx.Response(200, content=b"{}")
-
-    with pytest.MonkeyPatch.context() as budgets:
-        budgets.setattr(instance_watch, "WATCH_DEADLINE_SECONDS", _DEADLINE_SECONDS)
-        reading = read_instance(SERVICE_URL, transport=httpx.MockTransport(hang))
+        assert server.connections_accepted == 0
 
     assert reading.deadline_passed
-    assert [door.endpoint for door in reading.doors] == [HEALTH_PATH]
-    assert not reading.doors[0].answered
+    assert reading.doors == []
+    assert _reader_processes_alive() == []
+
+
+def test_a_reading_process_that_dies_is_reported_rather_than_read_as_clean() -> None:
+    """Silence from a dead reader must never pass for an instance with nothing
+    to say: a process that ended without its last word is a finding of its
+    own, named with the code it died with."""
+
+    reading = supervised_reading(
+        _exit_before_saying_anything, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    assert reading.reader_exit_code == _DELIBERATE_DEATH_CODE
+    assert not reading.reader_ended
+    assert not reading.deadline_passed
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.READER_DIED
+    assert str(_DELIBERATE_DEATH_CODE) in finding.detail
+    assert watch_exit_code(report) != 0
+    assert _reader_processes_alive() == []
+
+
+_REAL_ENDINGS: tuple[
+    tuple[
+        str,
+        Callable[[socket.socket, Event], None],
+        set[WatchFindingKind],
+        EventSampleOutcome,
+        int,
+    ],
+    ...,
+] = (
+    (
+        "a server that never answers a byte",
+        _stay_silent,
+        {WatchFindingKind.SERVICE_UNREACHABLE},
+        EventSampleOutcome.UNREACHABLE,
+        0,
+    ),
+    (
+        "a frame, then bytes that are not UTF-8 text",
+        _frame_then_bytes_that_are_not_utf8,
+        {WatchFindingKind.STREAM_FAILED, WatchFindingKind.SERVICE_UNREACHABLE},
+        EventSampleOutcome.REFUSED,
+        1,
+    ),
+    (
+        "a frame, then a connection reset",
+        _frame_then_a_reset,
+        {WatchFindingKind.STREAM_FAILED, WatchFindingKind.SERVICE_UNREACHABLE},
+        EventSampleOutcome.REFUSED,
+        1,
+    ),
+    (
+        "a frame, then more bytes than the sample's cap",
+        _frame_then_more_bytes_than_the_cap,
+        {WatchFindingKind.STREAM_FAILED},
+        EventSampleOutcome.BYTE_LIMIT,
+        1,
+    ),
+    (
+        "a problem document instead of a stream",
+        _answer_a_problem_document,
+        {WatchFindingKind.RESPONSE_REFUSED},
+        EventSampleOutcome.REFUSED,
+        0,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "speak", "kinds", "outcome", "frames_read"),
+    _REAL_ENDINGS,
+    ids=[label for label, *_ in _REAL_ENDINGS],
+)
+def test_every_way_a_real_feed_can_end_reaches_the_report(
+    label: str,
+    speak: Callable[[socket.socket, Event], None],
+    kinds: set[WatchFindingKind],
+    outcome: EventSampleOutcome,
+    frames_read: int,
+) -> None:
+    """Each ending path, driven through the reading process against a real
+    server: what the sample had read before it ended is reported together with
+    how it ended, and no ending is ever silently clean.
+    """
+
+    del label
+    with _LoopbackServer(speak) as server:
+        served_url = server.url
+        reading = read_instance(served_url, _REAL_READ_BUDGET)
+
+    report = watch_report(served_url, reading, _REAL_READ_BUDGET)
+    assert not reading.deadline_passed
+    assert reading.reader_ended
+    assert report.attention_feed_sample.outcome is outcome
+    assert report.attention_feed_sample.frames_read == frames_read
+    assert {
+        finding.kind for finding in report.findings if finding.endpoint == EVENTS_PATH
+    } == kinds
+
+
+def test_no_transport_chatter_reaches_the_output_of_this_command(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """httpx logs every request's status line -- the far side's own reason
+    phrase included -- and httpcore logs a reply's headers. All of that
+    happens in the reading process, which writes nowhere: its standard streams
+    go to the null device and both libraries are disabled in its own logging.
+    What this command prints is therefore one JSON document and nothing else,
+    proven against a real reply that carries text of the server's choosing.
+    """
+
+    with _LoopbackServer(_answer_with_a_talkative_status_line) as server:
+        served_url = server.url
+        exit_code = execute_watch(argparse.Namespace(service=served_url))
+
+    printed, errors = capfd.readouterr()
+    assert json.loads(printed)["service_url"] == served_url
+    assert _CHATTER_REASON_PHRASE not in printed + errors
+    assert _CHATTER_HEADER_VALUE not in printed + errors
+    assert exit_code != 0

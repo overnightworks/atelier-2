@@ -7,9 +7,11 @@ text -- into one typed `AtelierApiTransportFailure`. A caller closes the
 client when its invocation ends (a context manager, or `close()`), and
 translates that one failure into whatever vocabulary its own callers expect.
 
-A caller that does not trust the far side reads through `reading_client`
-instead: one client, one deadline for every call it makes together, and no
-touch of that client once the deadline has fired.
+A caller that does not trust the far side reads through `bounded_get` and
+`sampled_event_frames`: every read carries its own timeout and byte cap, and
+what a caller wants bounded in wall clock as well it runs where it can be
+ended from outside -- `instance_reader` reads a whole instance in a child
+process for exactly that reason.
 
 No text an answer wrote ever reaches a failure raised here: not a reason
 phrase, not a served header value, and not a library exception's own message
@@ -19,16 +21,13 @@ either, and what it says instead comes from `TransportFailureCategory`.
 
 from __future__ import annotations
 
-import signal
 import socket
 import ssl
-import threading
 from collections import deque
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from types import FrameType
 from typing import Final, Self
 from urllib.parse import urlsplit
 
@@ -72,115 +71,12 @@ class AtelierApiAddressUnusable(ValueError):
     """`service_url` names nothing this client could ever reach."""
 
 
-class WallClockDeadlineExceeded(Exception):
-    """One reading phase's absolute deadline ran out while it was still reading.
-
-    Raised on the calling thread by the deadline's own alarm, so it interrupts
-    whichever blocking read that thread sits in -- headers that never
-    complete, a socket that never speaks again. It ends the whole phase: see
-    `reading_client` for why the client it interrupted is then never touched
-    again.
-    """
-
-
-class WallClockDeadlineUnavailable(RuntimeError):
-    """A reading phase asked for a deadline this thread cannot be given.
-
-    Only the main thread receives the process's alarm, so anywhere else this
-    refuses rather than running an unbounded read that merely looks bounded.
-    """
-
-
-class WallClockDeadlineAlreadyArmed(RuntimeError):
-    """A deadline was asked for while this process's interval timer runs.
-
-    One process has one `ITIMER_REAL`: a second deadline would replace the
-    first one's expiry and hand its own handler back on the way out, leaving
-    the block that believed itself bounded running with no alarm at all.
-    """
-
-
-@contextmanager
-def wall_clock_deadline(seconds: float) -> Iterator[None]:
-    """Stop whatever the calling thread is doing once `seconds` have passed.
-
-    A read timeout bounds one read; this bounds the whole block, including a
-    reply whose headers never finish arriving and a read that never returns
-    at all. Arming happens inside the block's own `try`, and the timer is
-    disarmed before the previous handler goes back -- an alarm already queued
-    at that moment is delivered at the next bytecode boundary, which can fall
-    inside the disarming itself, so the disarming is repeated rather than
-    leaving this module's handler installed for whatever runs next.
-    """
-
-    if threading.current_thread() is not threading.main_thread():
-        raise WallClockDeadlineUnavailable(
-            "a bounded read's deadline is enforced by this process's alarm, "
-            "which only the main thread receives"
-        )
-    already_running, _ = signal.getitimer(signal.ITIMER_REAL)
-    if already_running:
-        raise WallClockDeadlineAlreadyArmed(
-            "this process's interval timer is already running; a second "
-            "deadline would silently replace it"
-        )
-    if seconds <= 0:
-        raise WallClockDeadlineExceeded
-
-    def expire(signal_number: int, frame: FrameType | None) -> None:
-        del signal_number, frame
-        raise WallClockDeadlineExceeded
-
-    previous_handler = signal.signal(signal.SIGALRM, expire)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, seconds)
-        yield
-    finally:
-        try:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous_handler)
-        except WallClockDeadlineExceeded:
-            # This block's own alarm was already queued when it was disarmed.
-            # Python delivers it at the next bytecode boundary, which can fall
-            # inside the disarming itself; one alarm can be pending, so one
-            # repetition finishes what the throw interrupted.
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous_handler)
-
-
-@contextmanager
-def reading_client(
-    service_url: str,
-    deadline_seconds: float,
-    *,
-    transport: httpx.BaseTransport | None = None,
-) -> Iterator[AtelierApi]:
-    """One client for one reading phase, under one deadline, and none after it.
-
-    The deadline fires on this thread, inside whichever blocking call httpx
-    was in, so the client is left at an unknown point: possibly between
-    marking a response closed and releasing its socket, possibly holding a
-    connection pool's lock. Nothing touches it again -- `close()` included,
-    which could block on that very lock -- and the phase ends with whatever
-    its caller had already collected. The client is created here and nowhere
-    else so that this is structural rather than remembered: no reference to a
-    client a deadline abandoned outlives this block. Any other exception
-    leaving the block skips the close for the same reason it ends the one-shot
-    command that opened it.
-    """
-
-    api = AtelierApi(service_url, transport=transport)
-    with wall_clock_deadline(deadline_seconds):
-        yield api
-    api.close()
-
-
 class EventSampleOutcome(StrEnum):
     """How one bounded look at an event stream ended.
 
-    The read writes `INTERRUPTED` before its first byte and replaces it on the
-    way out with whichever of the next four stopped it, so a read a deadline
-    ended never claims an ending it did not reach. `REFUSED` and
+    The sample writes `INTERRUPTED` before its first byte and replaces it on
+    the way out with whichever of the next four stopped it, so a sample cut
+    short from outside never claims an ending it did not reach. `REFUSED` and
     `UNREACHABLE` are written by the caller that catches this client's typed
     failure, and `UNREAD` means the sample never ran at all.
     """
@@ -196,33 +92,32 @@ class EventSampleOutcome(StrEnum):
 
 
 @dataclass(slots=True)
-class EventFrameCollection:
-    """Every frame one sampled event stream decoded, and how the sample ended.
+class EventSampleTally:
+    """How much one bounded sample has read and how it ended.
 
-    Mutable, and the caller keeps its own reference: the sample writes each
-    frame and each byte count as it reads them, so whatever stops the read --
-    its own caps, a typed failure, or the reading phase's deadline firing
-    inside it -- leaves the caller holding everything already seen.
+    Mutable, and the caller keeps its own reference: a sample refused
+    mid-stream -- bytes that are not UTF-8 text, a reply this client will not
+    read on -- raises instead of returning, and this is what still says how
+    far it had got. The frames themselves do not wait for the end at all: each
+    reaches the caller's own `on_frame` the moment it decodes.
     """
 
-    frames: list[str] = field(default_factory=list)
     bytes_read: int = 0
     outcome: EventSampleOutcome = EventSampleOutcome.UNREAD
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class BoundedRead:
-    """One bounded GET's answer, as far as the read got.
+    """One bounded GET's answer: the status its headers carried and the body
+    bytes this read kept.
 
-    Mutable for the same reason `EventFrameCollection` is: `status` lands as
-    soon as the headers do and `body` grows chunk by chunk, so a read the
-    deadline ended still says what it had. A non-2xx status is not raised
-    here -- a caller reading an instance it does not yet trust classifies the
-    body itself, whichever status carried it.
+    A non-2xx status is not raised here -- a caller reading an instance it
+    does not yet trust classifies the body itself, whichever status carried
+    it.
     """
 
-    status: int | None = None
-    body: bytearray = field(default_factory=bytearray)
+    status: int
+    body: bytes
 
 
 class _ByteCapExceeded(Exception):
@@ -339,18 +234,17 @@ class AtelierApi:
         accept: str = JSON_MEDIA_TYPE,
         read_timeout_seconds: float,
         maximum_bytes: int,
-        into: BoundedRead,
-    ) -> None:
-        """One GET, read on a budget into `into` for a caller that does not yet
-        trust the far side: identity-encoded (a compressed reply cannot outgrow
-        the byte cap before the cap sees it) and the cap checked before a chunk
-        is kept. The wall clock over this is the whole reading phase's one
-        deadline (`reading_client`), never a deadline of this call's own.
+    ) -> BoundedRead:
+        """One GET, read on a budget for a caller that does not yet trust the
+        far side: identity-encoded (a compressed reply cannot outgrow the byte
+        cap before the cap sees it) and the cap checked before a chunk is kept.
+        This call carries no wall clock of its own; a caller that needs one
+        runs the whole reading where it can be ended from outside.
         """
 
         url = self.base_url + path
         try:
-            self._read_bounded(url, accept, read_timeout_seconds, maximum_bytes, into)
+            return self._read_bounded(url, accept, read_timeout_seconds, maximum_bytes)
         except _ByteCapExceeded:
             raise AtelierApiTransportFailure(url, _BYTE_LIMIT_REASON) from None
         except httpx.HTTPError as unavailable:
@@ -364,9 +258,12 @@ class AtelierApi:
         read_timeout_seconds: float,
         maximum_bytes: int,
         maximum_frames: int,
-        into: EventFrameCollection,
+        on_frame: Callable[[str], None],
+        tally: EventSampleTally,
     ) -> None:
-        """Read at most `maximum_frames` frames of one event stream into `into`.
+        """Read at most `maximum_frames` frames of one event stream, handing
+        each to `on_frame` as it decodes and writing how far the sample got
+        into `tally`.
 
         `event_lines` trusts the service to end the stream; this is for a
         caller that only wants to know whether a stream that may never end
@@ -374,27 +271,29 @@ class AtelierApi:
         timeout on every chunk, and its byte cap checked before a chunk is
         kept. Each of those ends the sample rather than raising, because
         running into one is exactly what this call exists to survive; only a
-        reply refused outright raises, and even then `into` still holds every
-        frame already read.
+        reply refused outright raises, and even then `on_frame` has already
+        had every frame this sample read.
         """
 
         url = self.base_url + path
-        into.outcome = EventSampleOutcome.INTERRUPTED
+        tally.outcome = EventSampleOutcome.INTERRUPTED
         try:
             self._read_event_sample(
-                url, accept, read_timeout_seconds, maximum_bytes, maximum_frames, into
+                url,
+                accept,
+                read_timeout_seconds,
+                maximum_bytes,
+                maximum_frames,
+                on_frame,
+                tally,
             )
         except httpx.HTTPError as unavailable:
             raise _transport_unavailable(url, unavailable) from None
 
     def _read_bounded(
-        self,
-        url: str,
-        accept: str,
-        read_timeout_seconds: float,
-        maximum_bytes: int,
-        into: BoundedRead,
-    ) -> None:
+        self, url: str, accept: str, read_timeout_seconds: float, maximum_bytes: int
+    ) -> BoundedRead:
+        body = bytearray()
         with self._client.stream(
             "GET",
             url,
@@ -402,9 +301,9 @@ class AtelierApi:
             timeout=httpx.Timeout(read_timeout_seconds),
         ) as response:
             _refuse_unexpected_encoding(response, url)
-            into.status = response.status_code
             for chunk in _capped(response.iter_bytes(), maximum_bytes):
-                into.body.extend(chunk)
+                body.extend(chunk)
+            return BoundedRead(response.status_code, bytes(body))
 
     def _read_event_sample(
         self,
@@ -413,7 +312,8 @@ class AtelierApi:
         read_timeout_seconds: float,
         maximum_bytes: int,
         maximum_frames: int,
-        into: EventFrameCollection,
+        on_frame: Callable[[str], None],
+        tally: EventSampleTally,
     ) -> None:
         with self._client.stream(
             "GET",
@@ -424,8 +324,8 @@ class AtelierApi:
             _refuse_unexpected_encoding(response, url)
             _refuse_unless_event_stream(response, url, maximum_bytes)
             _raise_for_bounded_failure(response, url, maximum_bytes)
-            chunks = _capped(response.iter_bytes(), maximum_bytes, into)
-            _collect_frames(_decoded_lines(chunks, url), maximum_frames, into)
+            chunks = _capped(response.iter_bytes(), maximum_bytes, tally)
+            _sample_frames(_decoded_lines(chunks, url), maximum_frames, on_frame, tally)
 
     def _request(
         self,
@@ -592,30 +492,35 @@ def _decoded_lines(chunks: Iterable[bytes], url: str) -> Iterator[str]:
         yield _decoded_line(buffer, url)
 
 
-def _collect_frames(
-    lines: Iterator[str], maximum_frames: int, into: EventFrameCollection
+def _sample_frames(
+    lines: Iterator[str],
+    maximum_frames: int,
+    on_frame: Callable[[str], None],
+    tally: EventSampleTally,
 ) -> None:
-    """Every frame `lines` assembles, up to `maximum_frames`, written into
-    `into` as each one is decoded, and the outcome that ended the read.
+    """Every frame `lines` assembles, up to `maximum_frames`, handed on the
+    moment it completes, and the outcome that ended the sample.
 
-    Frames land in the caller's own collection the moment they complete: an
-    outer stop -- the reading phase's alarm firing mid-read -- still finds
-    them there rather than losing what this call already knew.
+    Frames leave this call as they decode rather than at its end: a sample
+    stopped from outside -- a reading whose deadline ran out around it -- has
+    then already delivered what it knew instead of losing it.
     """
 
+    read = 0
     try:
         for data in server_sent_data(lines):
-            into.frames.append(data)
-            if len(into.frames) >= maximum_frames:
-                into.outcome = EventSampleOutcome.FRAME_LIMIT
+            on_frame(data)
+            read += 1
+            if read >= maximum_frames:
+                tally.outcome = EventSampleOutcome.FRAME_LIMIT
                 return
     except _ByteCapExceeded:
-        into.outcome = EventSampleOutcome.BYTE_LIMIT
+        tally.outcome = EventSampleOutcome.BYTE_LIMIT
         return
     except httpx.ReadTimeout:
-        into.outcome = EventSampleOutcome.SILENT
+        tally.outcome = EventSampleOutcome.SILENT
         return
-    into.outcome = EventSampleOutcome.CLOSED_EARLY
+    tally.outcome = EventSampleOutcome.CLOSED_EARLY
 
 
 def _raise_for_bounded_failure(
@@ -701,15 +606,13 @@ def _drained(chunks: Iterator[bytes]) -> bytes:
 
 
 def _capped(
-    chunks: Iterator[bytes],
-    maximum_bytes: int,
-    into: EventFrameCollection | None = None,
+    chunks: Iterator[bytes], maximum_bytes: int, tally: EventSampleTally | None = None
 ) -> Iterator[bytes]:
     """`chunks`, stopping before one would push their sum past a cap.
 
     The cap is checked before a chunk is ever added to a caller's own
     buffer, not after: what a caller never receives, it never has to hold,
-    whatever that chunk's own size turns out to be. `into`, when given, is
+    whatever that chunk's own size turns out to be. `tally`, when given, is
     told how much has arrived after every chunk -- a caller that wants to
     know that even after an early stop keeps its own reference.
     """
@@ -719,8 +622,8 @@ def _capped(
         if received + len(chunk) > maximum_bytes:
             raise _ByteCapExceeded
         received += len(chunk)
-        if into is not None:
-            into.bytes_read = received
+        if tally is not None:
+            tally.bytes_read = received
         yield chunk
 
 

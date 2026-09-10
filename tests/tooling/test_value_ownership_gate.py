@@ -109,23 +109,29 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "one named owner for every CLI request; the run/resolve flag is still "
         "pending and stands as an open finding on #251",
     ),
-    "host/instance_watch.py::REQUEST_TIMEOUT_SECONDS": SpelledValue(
+    "host/instance_reader.py::DOOR_READ_TIMEOUT_SECONDS": SpelledValue(
         1,
         "stable slice invariant: how long one plain GET among watch's fixed "
         "endpoints may take before it counts as unreachable; an operator reads "
         "a report, not a per-call patience knob (#1502)",
     ),
-    "host/instance_watch.py::EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS": SpelledValue(
+    "host/instance_reader.py::EVENT_SAMPLE_READ_TIMEOUT_SECONDS": SpelledValue(
         1,
         "stable slice invariant: the read timeout on every chunk of the "
         "attention-feed sample -- what tells a silent feed from a hung one; "
         "not an operator's patience to dial (#1502)",
     ),
-    "host/instance_watch.py::WATCH_DEADLINE_SECONDS": SpelledValue(
+    "host/instance_reader.py::READING_DEADLINE_SECONDS": SpelledValue(
         1,
-        "stable slice invariant: the whole reading phase's enforced wall "
-        "clock, the one alarm over every call a watch makes together; an "
-        "operator's turnaround is the report's, never this read's (#1502)",
+        "stable slice invariant: the whole reading's wall clock, held by the "
+        "process that reports against the process that reads; an operator's "
+        "turnaround is the report's, never this read's (#1502)",
+    ),
+    "host/instance_reader.py::READER_STOP_GRACE_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: what the reading process gets to exit on its "
+        "own, and again to die after it was told to, before it is killed -- a "
+        "bound on a child's exit, never an operator's patience (#1502)",
     ),
     "host/provider_canary.py::PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE": SpelledValue(
         1,
