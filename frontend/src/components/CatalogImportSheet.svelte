@@ -124,6 +124,9 @@
     {#if failure !== null}
       <p class="failure" role="alert">{failure}</p>
     {/if}
+    {#if addHeld}
+      <p class="hint">{wrapDisplayCopy(catalogPageCopy.noKindDeclared)}</p>
+    {/if}
 
     <footer>
       {#if canDeclare}
@@ -161,6 +164,7 @@
   .kind-chip.selected { color: var(--ink); border-bottom-color: var(--ink); background: transparent; }
   .brick { margin: 0 0 var(--space-4); padding: var(--space-2) var(--space-3); border-left: var(--edge-strong) solid var(--signal-failure); color: var(--signal-failure); font-size: var(--text-xs); }
   .failure { color: var(--signal-failure); }
+  .hint { margin: 0 0 var(--space-4); color: var(--ink-dim); font-size: var(--text-xs); }
   button.held { cursor: not-allowed; }
   @media (max-width: 480px) { .count { display: none; } }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }

@@ -15,6 +15,7 @@ import {
   pinnedModelLine,
   projectDefaultLine,
   startAccountSuffix,
+  startNotStartableReason,
   startUnavailableSuffix,
   workItemFor,
   workflowStartCopy
@@ -777,7 +778,11 @@ function resolvedRole(
 function configuration(
   hash: string,
   model: string,
-  startable = true
+  startable = true,
+  // The wire's own closed enum; a value outside it proves the sheet still
+  // shows the server's own text for a reason this client does not map yet
+  // (#1500).
+  notStartableReason: string = "agent-executor-binding-unavailable"
 ): AgentConfigurationRevisionListItem {
   return {
     agent_configuration_revision_hash: hash,
@@ -789,7 +794,9 @@ function configuration(
     requested_capability: "headless",
     startable,
     structurally_startable: startable,
-    not_startable_reason: startable ? null : "agent-executor-binding-unavailable",
+    not_startable_reason: startable
+      ? null
+      : (notStartableReason as AgentConfigurationRevisionListItem["not_startable_reason"]),
     provider_probe_problem_code: null,
     provider_probe_observed_at: null
   };
@@ -1012,6 +1019,38 @@ describe("the catalog start sheet's project model resolution", () => {
     expect(picker.value).toBe(healthyHash);
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
       .toBe(false);
+  });
+
+  it("proves(#1500): names a not-startable reason's human sentence with its next step, not just Unavailable", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [resolvedRole()]));
+    const cockpitApi = modelApi(resolveProjectModels, [
+      configuration(configurationHash, "cook-model", false, "model-not-registered")
+    ]);
+    await openStart(cockpitApi);
+
+    const sentence = startNotStartableReason("cook", "model-not-registered");
+    expect(sentence).toBe("Needs a model for cook — set one in Settings.");
+    expect(screen.getByText(sentence, { exact: false })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(sentence);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("proves(#1500): shows the server's own text for a not-startable reason this client does not map", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [resolvedRole()]));
+    const unmappedReason = "provider-maintenance-window";
+    const cockpitApi = modelApi(resolveProjectModels, [
+      configuration(configurationHash, "cook-model", false, unmappedReason)
+    ]);
+    await openStart(cockpitApi);
+
+    expect(screen.getByText(unmappedReason, { exact: false })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(unmappedReason);
   });
 
   it("drops a vanished project default during the mandatory pre-start resolution", async () => {

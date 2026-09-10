@@ -72,7 +72,7 @@ export const catalogPageCopy = {
   kindAgent: "Agent",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
-  noKindDeclared: "no kind declared yet",
+  noKindDeclared: "Choose a kind above to add this to the catalog.",
   importFailed: "This file could not be imported.",
   recognitionFailed: "This file could not be recognized.",
   notAWorkflow: "This is not a workflow — nothing was added.",
@@ -204,6 +204,28 @@ export function startAccountSuffix(accountId: string): string {
 
 export function startUnavailableSuffix(): string {
   return ` · ◇ ${workflowStartCopy.unavailable}`;
+}
+
+/**
+ * The four `not_startable_reason` values a listed agent configuration can
+ * carry (`client.ts`'s closed enum): each names the door a start would meet
+ * first, so each gets its own sentence naming {@link role} and the next
+ * step. A reason this atelier does not yet map keeps the server's own text
+ * instead of showing nothing -- the same choice `humanRefusal.ts` makes for
+ * a workflow's `not_executable_reason`.
+ */
+const NOT_STARTABLE_REASON_SENTENCE: Readonly<Record<string, (role: string) => string>> = {
+  "agent-executor-binding-unavailable": (role) =>
+    `${role}'s model can't run on this atelier yet — choose a different configuration.`,
+  "model-not-registered": (role) => `Needs a model for ${role} — set one in Settings.`,
+  "provider-probe-receipt-missing": (role) =>
+    `${role}'s connection hasn't been checked yet — check it in Settings.`,
+  "provider-probe-failed": (role) => `${role}'s connection failed its last check — fix it in Settings.`
+};
+
+export function startNotStartableReason(role: string, reason: string | null): string {
+  if (reason === null) return workflowStartCopy.startNeedsConfiguration(role);
+  return (NOT_STARTABLE_REASON_SENTENCE[reason] ?? (() => reason))(role);
 }
 
 export function pinnedModelLine(model: string, account: string, unavailable: string): string {

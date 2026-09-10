@@ -19,6 +19,7 @@
     projectDefaultLine,
     startAccountSuffix,
     startConfigurationLabel,
+    startNotStartableReason,
     startOrderByteCount,
     startOrderGroup,
     startUnavailableSuffix,
@@ -121,7 +122,8 @@
     orders,
     roles,
     resolutions,
-    registeredConfigurations
+    registeredConfigurations,
+    configurations
   );
 
   onMount(() => {
@@ -267,6 +269,17 @@
     );
   }
 
+  /**
+   * The listed configuration behind a hash, straight from the exhaustive
+   * fetch (`configurations`) rather than the registry-matched subset
+   * (`registeredConfigurations`): the host's `not_startable_reason` for a
+   * resolved-but-unavailable role lives here even when the model registry
+   * never matched that configuration into `registeredConfigurations` at all.
+   */
+  function configurationByHash(hash: string): AgentConfigurationRevisionListItem | undefined {
+    return configurations.find((candidate) => candidate.agent_configuration_revision_hash === hash);
+  }
+
   function roleCanStart(role: string): boolean {
     const resolution = resolutions[role];
     if (resolution?.agent_configuration_revision_hash === null) return false;
@@ -388,7 +401,8 @@
     currentOrders: readonly OrderDraft[],
     currentRoles: readonly string[],
     currentResolutions: Readonly<Record<string, RoleResolution>>,
-    currentConfigurations: readonly RegisteredConfiguration[]
+    currentConfigurations: readonly RegisteredConfiguration[],
+    everyConfiguration: readonly AgentConfigurationRevisionListItem[]
   ): string | null {
     if (isLoading || isResolving) return workflowStartCopy.startPreparing;
     const incompleteOrder = currentOrders.find((order) => !orderCanStart(order));
@@ -407,9 +421,13 @@
         configuration.agent_configuration_revision_hash === configurationHash
       )?.configuration.startable !== true;
     });
-    return unresolvedRole === undefined
-      ? null
-      : workflowStartCopy.startNeedsConfiguration(unresolvedRole);
+    if (unresolvedRole === undefined) return null;
+    const resolvedHash = currentResolutions[unresolvedRole]?.agent_configuration_revision_hash ?? null;
+    if (resolvedHash === null) return workflowStartCopy.startNeedsConfiguration(unresolvedRole);
+    const reason = everyConfiguration.find((candidate) =>
+      candidate.agent_configuration_revision_hash === resolvedHash
+    )?.not_startable_reason ?? null;
+    return startNotStartableReason(unresolvedRole, reason);
   }
 
   function requiredFieldsFilled(order: OrderDraft): boolean {
@@ -998,6 +1016,7 @@
             {@const resolution = resolutions[role]}
             {@const resolvedHash = resolution?.agent_configuration_revision_hash ?? null}
             {@const resolvedConfiguration = registeredConfiguration(resolvedHash)}
+            {@const roleUnavailable = resolvedHash !== null && !roleCanStart(role)}
             <div class="role-row">
               <label>
                 {role}
@@ -1027,12 +1046,13 @@
                   </select>
                 </span>
               </label>
-              {#if resolvedHash !== null && resolution?.source === "chosen-now"}
+              {#if resolvedHash !== null && (resolution?.source === "chosen-now" || roleUnavailable)}
                 <p class="role-source">
-                  {#if resolvedConfiguration?.configuration.startable === false}
-                    <span class="unavailable">◇ {workflowStartCopy.unavailable}</span> ·
+                  {#if roleUnavailable}
+                    <span class="unavailable">◇ {startNotStartableReason(role, configurationByHash(resolvedHash)?.not_startable_reason ?? null)}</span>
+                    {#if resolution?.source === "chosen-now"} · {/if}
                   {/if}
-                  {workflowStartCopy.chosenNow}
+                  {#if resolution?.source === "chosen-now"}{workflowStartCopy.chosenNow}{/if}
                 </p>
               {/if}
             </div>
