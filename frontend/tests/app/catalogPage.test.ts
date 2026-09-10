@@ -848,6 +848,30 @@ describe("the catalog room", () => {
     expect((add as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("proves(#1500): focus alone is not a choice, so the sentence and the button never disagree", async () => {
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "unrecognized" as const,
+        refusals: [{ kind: "workflow" as const, expected: "format_version", refused_because: "missing" }]
+      }))
+    });
+
+    const file = { name: "notes.md", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
+
+    // The sheet moves focus to the first kind chip on open (keyboard-first),
+    // which is exactly the moment a focus ring could be misread as a choice.
+    const workflowChip = await screen.findByRole("button", { name: catalogPageCopy.kindWorkflow });
+    await waitFor(() => expect(document.activeElement).toBe(workflowChip));
+
+    expect(workflowChip.getAttribute("aria-pressed")).toBe("false");
+    expect(workflowChip.classList).not.toContain("selected");
+    expect(screen.getByText(catalogPageCopy.noKindDeclared)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: catalogPageCopy.addToCatalog }) as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
   it("Skill is not a choice on the Import sheet, so an uncertain file cannot be declared as Skill and the sheet never silently closes", async () => {
     const addLibraryDocument = vi.fn();
     openCatalog({
