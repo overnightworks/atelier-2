@@ -3000,7 +3000,10 @@ function problemVariant<
                   "override-not-registered",
                   "workflow-model-not-registered",
                   "workflow-model-ambiguous",
+                  "model-not-in-node-mode",
                   "no-project-default",
+                  "project-default-model-ambiguous",
+                  "role-modes-conflict",
                   "family-difference-unavailable",
                 ]),
                 family_differs_from: z

@@ -20,6 +20,7 @@ from atelier2.application.resolve_start_bindings import (
     cast_unbound_roles,
     undeclared_agent_role_refusal,
 )
+from atelier2.application.role_candidates import registered_configurations
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -672,24 +673,13 @@ def get_project_model_resolution(
         return ModelResolutionInvalidAgentBindings()
     match channel.model_configuration_snapshot(project):
         case HostModelConfigurationSnapshot(registries, defaults):
-            override_models = {}
-            for binding in requested_bindings.bindings:
-                found = catalog.agent_configuration_revision(
-                    binding.agent_configuration_revision_hash
-                )
-                if found is not None:
-                    configuration, auth_profile = found
-                    override_models[binding.agent_configuration_revision_hash] = (
-                        auth_profile.provider_id.value,
-                        configuration.model,
-                    )
             return ProjectModelResolutionRead(
                 cast_unbound_roles(
                     graph,
                     requested_bindings,
                     defaults,
                     registries,
-                    override_models,
+                    registered_configurations(registries, requested_bindings, catalog),
                 )
             )
         case HostConfigurationReadUnavailable(detail):

@@ -214,7 +214,10 @@ class ModelResolutionUncastReason(StrEnum):
     OVERRIDE_NOT_REGISTERED = "override-not-registered"
     WORKFLOW_MODEL_NOT_REGISTERED = "workflow-model-not-registered"
     WORKFLOW_MODEL_AMBIGUOUS = "workflow-model-ambiguous"
+    MODEL_NOT_IN_NODE_MODE = "model-not-in-node-mode"
     NO_PROJECT_DEFAULT = "no-project-default"
+    PROJECT_DEFAULT_MODEL_AMBIGUOUS = "project-default-model-ambiguous"
+    ROLE_MODES_CONFLICT = "role-modes-conflict"
     FAMILY_DIFFERENCE_UNAVAILABLE = "family-difference-unavailable"
 
 
