@@ -7,7 +7,7 @@ govern the start, never the admission.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, assert_never
 
 from atelier2.application.admit_queue_item import confirm_queue_proposal
@@ -27,7 +27,7 @@ from atelier2.application.queue_sweep_reads import (
     active_policy,
     open_tracker_items,
     projected_items,
-    validated_snapshot,
+    reserved_launch,
 )
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -46,6 +46,7 @@ from atelier2.application.start_published_run import (
     WorkItemOrderUnreadable,
     start_published_run,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
@@ -110,11 +111,8 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
-    QueueLaunchAlreadyBound,
-    QueueLaunchBlocked,
     QueueLaunchReleased,
     QueueLaunchReleaseRefused,
-    QueueLaunchReserved,
     QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
@@ -403,12 +401,17 @@ def advance_queue(
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
     *,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None = None,
     tracker: TrackerItemSource | None = None,
     page_limit: int = MAXIMUM_PAGE_ITEMS,
 ) -> tuple[QueueAdvanceOutcome, ...]:
     """Start each exact queue launch once, carrying the item it is about.
+
+    `start_judge` answers what a start would answer and keeps none of it. A
+    fresh launch asks it before the launch is reserved, so a start that would
+    be refused never takes a place under the project's cap.
 
     `workflow_document_parser` is what turns a bound revision's published bytes
     into the graph a start can read `graph_inputs` from (ADR 0007's parsing
@@ -439,6 +442,7 @@ def advance_queue(
             queue,
             catalog,
             starter,
+            start_judge,
             workflow_document_parser,
             served_project,
             tracker,
@@ -454,6 +458,7 @@ def _released_or_advanced(
     queue: QueueProjection,
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
@@ -472,7 +477,14 @@ def _released_or_advanced(
     if released is not None:
         return released
     return _advance_one(
-        item, queue, catalog, starter, workflow_document_parser, served_project, tracker
+        item,
+        queue,
+        catalog,
+        starter,
+        start_judge,
+        workflow_document_parser,
+        served_project,
+        tracker,
     )
 
 
@@ -554,6 +566,7 @@ def _advance_one(
     queue: QueueProjection,
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
@@ -599,25 +612,24 @@ def _advance_one(
             ),
             revision_hash,
         )
-        reservation = queue.reserve_launch(proposed_binding)
-        match reservation:
-            case QueueLaunchReserved(binding=reserved):
-                binding = reserved
-            case QueueLaunchAlreadyBound(binding=reserved):
-                binding = reserved
-            case QueueLaunchBlocked(item=blocked):
-                blocked = validated_snapshot(blocked)
-                return QueueItemBlocked(
-                    blocked.item_reference.item_id, blocked.blockers
-                )
-            case DurableWriteUnavailable():
-                raise QueueAdvanceUnavailable("the launch reservation could not commit")
-            case PortDurableStateCorrupt():
-                raise QueueAdvanceCorrupt("the launch reservation found corrupt state")
-            case _:
-                raise QueueAdvanceCorrupt(
-                    "the queue answered an unknown launch reservation outcome"
-                )
+        # Judged first, by the start itself over a store that keeps nothing, so
+        # a start it would refuse never holds a place under the project's cap.
+        judged = _advance_one(
+            replace(item, launch_binding=proposed_binding),
+            queue,
+            catalog,
+            start_judge,
+            start_judge,
+            workflow_document_parser,
+            served_project,
+            tracker,
+        )
+        if isinstance(judged, QueueItemBlocked):
+            return judged
+        reserved = reserved_launch(queue, proposed_binding)
+        if isinstance(reserved, QueueItemSnapshot):
+            return QueueItemBlocked(reserved.item_reference.item_id, reserved.blockers)
+        binding = reserved
     order = _bound_work_item_order(item, binding, catalog, workflow_document_parser)
     if isinstance(order, _RequiredOrderUnavailable):
         # The document declares graph inputs this sweep cannot fill, so the
@@ -668,6 +680,7 @@ def _advance_one(
             | RunIdentityConflict()
             | RunFormatNotExecutable()
             | BindingConstraintRefused()
+            | AgentModeMismatch()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()
         ):

@@ -53,10 +53,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.github import (
-    GitHubConnectionUncomposable,
-    GitHubCredentialUnresolvable,
-)
+from atelier2.adapters.github import GitHubConnectionUncomposable
 from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
@@ -823,8 +820,6 @@ def _github_connected_settings(
 def test_a_connected_project_composes_the_live_open_pr_adapter_from_the_record(
     tmp_path: Path,
 ) -> None:
-    # A token file must exist because the adapter reads it by reference when it
-    # opens; a valid one lets the live factory bind without any network call.
     # The adapter carries the credential reference but does no network work at
     # composition; an unmatched readback later enters reconciliation.
     _app, runtime = compose_application(
@@ -840,13 +835,20 @@ def test_a_connected_project_composes_the_live_open_pr_adapter_from_the_record(
 
 
 @pytest.mark.parametrize("token", [None, "", "   \n"])
-def test_a_connected_project_without_a_readable_token_refuses_to_serve(
+def test_a_connected_project_without_a_readable_token_still_serves(
     tmp_path: Path, token: str | None
 ) -> None:
-    # Missing, empty, and whitespace-only token files each fail the whole start
-    # rather than serving open-pr silently disabled (`#430`).
-    with pytest.raises(GitHubCredentialUnresolvable):
-        compose_application(_github_connected_settings(tmp_path, token))
+    # The token is read by reference at each operation that needs it, so a
+    # missing, empty, or whitespace-only file refuses that operation and never
+    # the start the operator needs to set the token in the first place.
+    _app, runtime = compose_application(_github_connected_settings(tmp_path, token))
+    try:
+        assert (
+            runtime.effect_adapter_binding.operational_identity.value
+            == "FlexOr2/atelier-2"
+        )
+    finally:
+        runtime.close()
 
 
 def test_a_corrupt_current_github_record_without_a_ref_refuses_to_serve(

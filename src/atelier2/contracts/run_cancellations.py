@@ -19,13 +19,13 @@ is, by construction, inside the reserved namespace `is_operator_run_cancel`
 recognizes. That namespace is disjoint from the two existing
 `AgentAttemptCancellation.command_id` families in `agent_attempt_store.py`:
 `STOP_AFTER_DRIVER_LOSS` (`atelier2-driver-lost`, a driver-lost restart) and
-`_unavailable_executor_cleanup_command_id` (`agent-executor-binding-unavailable:
-<attempt id>`, never-launched cleanup) -- neither literal starts with this
-module's prefix, so a command minted for one purpose can never be mistaken
-for another. `is_operator_run_cancel` is the one recognizer both P2's store
-and P4's route namespace refusal share, mirroring the mint/recognize pair
-`_unavailable_executor_cleanup_command_id`/`_is_unavailable_executor_cleanup`
-already use for their own family.
+`_unstartable_node_cleanup_command_id` (`<refusal word>:<attempt id>`, the
+never-launched cleanup of a node that cannot start) -- neither starts with
+this module's prefix, so a command minted for one purpose can never be
+mistaken for another. `is_operator_run_cancel` is the one recognizer both P2's
+store and P4's route namespace refusal share, mirroring the mint/recognize pair
+`_unstartable_node_cleanup_command_id`/`_is_unstartable_node_cleanup` already
+use for their own family.
 """
 
 from __future__ import annotations

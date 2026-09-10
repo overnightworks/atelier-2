@@ -53,6 +53,7 @@ from atelier2.application.resolve_start_bindings import (
     undeclared_agent_role_refusal,
 )
 from atelier2.application.role_candidates import registered_configurations
+from atelier2.contracts.agent_modes import agent_mode_mismatch
 from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -919,6 +920,8 @@ class DbosDurableRunStarter:
         )
         if not isinstance(bindings_result, tuple):
             return bindings_result
+        if (mismatch := agent_mode_mismatch(read.graph, bindings_result)) is not None:
+            return mismatch
         orders = _admitted_orders(connection, read.graph, bound)
         if not isinstance(orders, tuple):
             return orders
