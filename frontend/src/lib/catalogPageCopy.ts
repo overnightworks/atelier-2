@@ -218,10 +218,14 @@ type NotStartableReason = NonNullable<AgentConfigurationRevisionListItem["not_st
  * - `agent-executor-binding-unavailable`: no factory runs this executor on
  *   this atelier at all -- always the same fact, so always the same door
  *   (a different configuration, offered right here).
- * - `model-not-registered`: the registry does not currently point at this
- *   exact configuration -- true whether it was never registered or a newer
- *   revision superseded it, so the sentence names both real doors instead
- *   of assuming "never registered".
+ * - `model-not-registered`: no checked registry entry currently points at
+ *   this exact configuration -- true whether it was never registered, a
+ *   newer revision superseded it, or an existing entry is still
+ *   `not-checked`/`unknown-at-provider` (`resolve_start_bindings.py`'s
+ *   eligible-candidate filter keeps only `checked` entries), so the
+ *   sentence never claims "not registered" outright and names the two
+ *   Settings doors that exist for an existing-but-unchecked entry (`Check`,
+ *   `Correct the ID`) alongside choosing a different configuration here.
  * - `provider-probe-receipt-missing`: no receipt currently proves this
  *   configuration -- true whether none was ever taken or the only one on
  *   file is a stale, no-longer-current success (agent_catalog.py's own
@@ -238,7 +242,7 @@ const NOT_STARTABLE_REASON_SENTENCE: Readonly<Record<NotStartableReason, (role: 
   "agent-executor-binding-unavailable": (role) =>
     `${role}'s model can't run on this atelier yet — choose a different configuration.`,
   "model-not-registered": (role) =>
-    `${role}'s configuration isn't registered — choose a different one, or register a model in Settings.`,
+    `${role}'s configuration has no current, checked registration — check it or correct the model ID in Settings, or choose a different one.`,
   "provider-probe-receipt-missing": (role) =>
     `${role}'s connection has no current check on file — the next canary run renews it.`,
   "provider-probe-failed": (role) =>

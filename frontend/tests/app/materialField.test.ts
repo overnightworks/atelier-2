@@ -1037,7 +1037,8 @@ describe("the catalog start sheet's project model resolution", () => {
     ],
     [
       "model-not-registered",
-      "cook's configuration isn't registered — choose a different one, or register a model in Settings."
+      "cook's configuration has no current, checked registration — check it or correct the model ID in " +
+        "Settings, or choose a different one."
     ],
     [
       "provider-probe-receipt-missing",
