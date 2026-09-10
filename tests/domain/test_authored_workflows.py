@@ -32,11 +32,13 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaAccepted, read_schema_document
 from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA
 from atelier2.contracts.work_items import WORK_ITEM_ORDER_SCHEMA_DOCUMENT
+from atelier2.contracts.workflow_executability import (
+    what_a_v3_document_still_waits_for,
+)
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     VersionedReference,
     WorkflowGraphV3,
-    what_a_v3_document_still_waits_for,
 )
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
