@@ -15,6 +15,7 @@
   import {
     applyAttentionFrame,
     attentionStopped,
+    feedDefectiveAfter,
     markAttentionConnecting,
     markAttentionLive,
     startAttentionHold,
@@ -299,9 +300,7 @@
   function applyEvent(rawData: string): void {
     const applied = applyAttentionFrame(hold, rawData);
     hold = applied.hold;
-    if (applied.unreadable !== null) {
-      feedDefective = withDefectiveRow(feedDefective, applied.unreadable);
-    }
+    feedDefective = feedDefectiveAfter(feedDefective, applied);
     if (applied.event === null) {
       if (attentionStopped(hold)) {
         stream?.close();

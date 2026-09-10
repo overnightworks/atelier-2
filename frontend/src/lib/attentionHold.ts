@@ -6,6 +6,7 @@ import {
   type Problem,
   type RunEvent
 } from "../api/client";
+import { withDefectiveRow } from "./runList";
 import type { ConnectionState, ProtocolProblem } from "./runProjection";
 
 /**
@@ -107,4 +108,20 @@ export function applyAttentionFrame(
 
 function decoderFailure(hold: AttentionHold): AppliedAttentionFrame {
   return { hold: { ...hold, protocol_problem: { type: "decoder" } }, event: null, unreadable: null };
+}
+
+/**
+ * The runs the feed has named unreadable, after one more frame.
+ *
+ * A readable event of a named run is the feed confirming that run reads
+ * again, so its row leaves; the feed replays every run on reconnect, so a
+ * repaired run is cleared by the next connect rather than never.
+ */
+export function feedDefectiveAfter(
+  rows: readonly DefectiveRunRow[],
+  applied: AppliedAttentionFrame
+): DefectiveRunRow[] {
+  if (applied.unreadable !== null) return withDefectiveRow(rows, applied.unreadable);
+  const readable = applied.event?.public_run_reference;
+  return rows.filter((row) => row.public_run_reference !== readable);
 }
