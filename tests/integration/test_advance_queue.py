@@ -29,6 +29,8 @@ from atelier2.application.advance_queue import (
     QueueRunStarted,
     advance_queue,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
+from atelier2.contracts.agents import AgentExecutionCapability
 from atelier2.contracts.catalog_v3 import CatalogLineageDisplayName, CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
@@ -414,6 +416,24 @@ def test_a_document_with_no_graph_inputs_starts_exactly_as_before() -> None:
     assert isinstance(outcome, QueueRunStarted)
     (asked,) = starter.asks
     assert isinstance(asked, StartPublishedRunRequest)
+
+
+def test_a_start_refused_for_a_node_bound_outside_its_mode_blocks_the_item() -> None:
+    item = _admitted("gh:302", rank=1)
+    queue = _QueueRecording(QueueItemsPage((item,), None))
+    catalog = _CatalogResolverStub({LINEAGE: REVISION_HASH})
+    starter = _ScriptedStarter(
+        [
+            AgentModeMismatch(
+                "review", "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+            )
+        ]
+    )
+
+    (outcome,) = advance_queue(queue, catalog, starter, workflow_document_parser=None)
+
+    assert isinstance(outcome, QueueItemBlocked)
+    assert outcome.blockers == (QueueBlockerKind.START_REFUSED,)
 
 
 @pytest.mark.proves("a-manually-approved-queue-item-starts-once")

@@ -46,6 +46,7 @@ from atelier2.application.start_published_run import (
     WorkItemOrderUnreadable,
     start_published_run,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
@@ -668,6 +669,7 @@ def _advance_one(
             | RunIdentityConflict()
             | RunFormatNotExecutable()
             | BindingConstraintRefused()
+            | AgentModeMismatch()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()
         ):

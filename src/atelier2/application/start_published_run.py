@@ -16,6 +16,7 @@ from atelier2.application.refusals import (
     SourcePayloadMalformed,
     WriteUnavailable,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -139,6 +140,7 @@ type StartPublishedRunResult = (
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
     | BindingConstraintRefused
+    | AgentModeMismatch
     | RunInputRefused
     | WorkItemOrderUnreadable
     | WriteUnavailable
@@ -242,33 +244,17 @@ def start_published_run(
             return UncastAgentRoles(roles)
         case DurableAgentConfigurationRevisionMissing():
             return AgentConfigurationRevisionMissing()
-        case DurableAgentExecutorBindingUnavailable():
+        case (
+            DurableAgentExecutorBindingUnavailable()
+            | DurableAgentExecutorCapabilityUnavailable()
+        ):
             return AgentExecutorBindingUnavailable()
-        case DurableAgentExecutorCapabilityUnavailable():
-            return AgentExecutorBindingUnavailable()
-        case DurableAgentExecutorWithoutWorkspaceFileTools(role, executor_revision):
-            # The same answer the two refusals above give, for the same reason
-            # an asker can act on: the executor this role was cast to cannot
-            # serve what its node asks for. Which of the three it was is what
-            # the answer no longer carries, so the operator reading the host's
-            # log is told here what the durable refusal named -- the cast that
-            # has to change, not just that some cast did.
-            _LOG.warning(
-                "Run %s casts role %s onto executor %s, which reaches no file "
-                "of the attempt's workspace.",
-                run_id.value,
-                role,
-                executor_revision,
-                extra={
-                    "event": "agent_executor_without_workspace_file_tools",
-                    "run_id": run_id.value,
-                    "role": role,
-                    "executor_revision": executor_revision,
-                },
-            )
-            return AgentExecutorBindingUnavailable()
+        case DurableAgentExecutorWithoutWorkspaceFileTools() as refused:
+            return _executor_without_workspace_file_tools(run_id, refused)
         case DurableBindingConstraintRefused(node, distinct_from):
             return BindingConstraintRefused(node, distinct_from)
+        case AgentModeMismatch() as refused:
+            return refused
         case DurableV3StartInputRefused(name, refusal, detail, violation):
             return RunInputRefused(name, refusal, detail, violation)
         case DurableWorkItemOrderUnread():
@@ -281,6 +267,34 @@ def start_published_run(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _executor_without_workspace_file_tools(
+    run_id: RunId, refused: DurableAgentExecutorWithoutWorkspaceFileTools
+) -> AgentExecutorBindingUnavailable:
+    """The answer the executor refusals give, and the cast that must change, logged.
+
+    The same answer as the other two executor refusals, for the same reason an
+    asker can act on: the executor this role was cast to cannot serve what its
+    node asks for. Which of the three it was is what the answer no longer
+    carries, so the operator reading the host's log is told here what the
+    durable refusal named -- the cast that has to change, not just that some
+    cast did.
+    """
+    _LOG.warning(
+        "Run %s casts role %s onto executor %s, which reaches no file "
+        "of the attempt's workspace.",
+        run_id.value,
+        refused.role,
+        refused.executor_revision,
+        extra={
+            "event": "agent_executor_without_workspace_file_tools",
+            "run_id": run_id.value,
+            "role": refused.role,
+            "executor_revision": refused.executor_revision,
+        },
+    )
+    return AgentExecutorBindingUnavailable()
 
 
 def _named(orders: tuple[AuthoredOrder, ...]) -> tuple[PortAuthoredOrder, ...]:

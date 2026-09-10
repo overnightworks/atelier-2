@@ -4381,6 +4381,33 @@
         ],
         "type": "object"
       },
+      "ProblemAgentModeMismatch": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "const": 422,
+            "type": "integer"
+          },
+          "title": {
+            "const": "Agent mode mismatch",
+            "type": "string"
+          },
+          "type": {
+            "const": "urn:atelier2:problem:v1:agent-mode-mismatch",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
       "ProblemAnswerExecutionStale": {
         "additionalProperties": false,
         "properties": {
@@ -16125,6 +16152,9 @@
                       "$ref": "#/components/schemas/ProblemBindingConstraintRefused"
                     },
                     {
+                      "$ref": "#/components/schemas/ProblemAgentModeMismatch"
+                    },
+                    {
                       "$ref": "#/components/schemas/ProblemRunInputRefused"
                     }
                   ]
@@ -17066,6 +17096,9 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemAgentModeMismatch"
                     }
                   ]
                 }

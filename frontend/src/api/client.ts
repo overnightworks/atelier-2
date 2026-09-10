@@ -943,6 +943,7 @@ export const problemDefinitions = {
     status: 422,
     title: "Binding constraint refused",
   },
+  "agent-mode-mismatch": { status: 422, title: "Agent mode mismatch" },
   "invalid-agent-attempt-id": {
     status: 400,
     title: "Invalid agent attempt id",
@@ -1406,6 +1407,10 @@ const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "binding-constraint-refused",
     problemDefinitions["binding-constraint-refused"],
+  ),
+  problemVariant(
+    "agent-mode-mismatch",
+    problemDefinitions["agent-mode-mismatch"],
   ),
   problemVariant(
     "invalid-agent-attempt-id",
