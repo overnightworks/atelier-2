@@ -1,0 +1,7 @@
+claim_id = "89b2e520229743f899c3155c1b0759a0"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "e5ed8d9aaa7f05b147e4cef5f2aa5ff5089cd8dd"
+branch = "claude/issue-1514-casting-by-mode"
+scope = ["src/atelier2/application/role_candidates.py", "src/atelier2/application/advance_queue.py", "src/atelier2/api/problem_vocabulary.py"]
+opened_commit = "b5662009c7c84e2e5715e2ea74993461118c9ef6"
