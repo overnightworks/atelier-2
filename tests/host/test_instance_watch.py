@@ -30,8 +30,9 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import Event, Thread
 from typing import Self
@@ -99,6 +100,7 @@ from tests.host.reader_entries import (
     dies_before_saying_anything,
     hangs_on_after_closing_the_pipe,
     ignores_being_stopped,
+    interrupted_supervision,
     logs_a_reply_to_a_file,
     names_its_trouble_then_dies,
     signals_its_first_frame,
@@ -1829,44 +1831,36 @@ def test_an_interrupted_wait_still_kills_the_reading_process(
     assert waited_on[0].returncode == -signal.SIGKILL
 
 
-def test_an_interrupt_at_the_moment_the_reading_starts_still_ends_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+_INTERRUPT_CARRIER_SECONDS = 30.0
+"""Long enough for one whole supervision in a fresh interpreter -- its own
+start, the reading's, and the stopping's two short waits."""
+
+
+def test_an_interrupt_at_the_moment_the_reading_starts_still_ends_it() -> None:
     """An interrupt arriving between the reading process existing and this
     process holding its handle would leave a reader nobody stops. It waits
     until the handle is bound: the interrupt still comes out of the call, and
-    the process it landed on is stopped and reaped first.
+    the process it landed on is ended and reaped first -- by a stop it took,
+    or by the kill behind it, whichever reached a reader that young.
+
+    The interrupt is a real signal, so the supervision runs in an interpreter
+    of its own (`interrupted_supervision`): a signal sent inside a test worker
+    is delivered to whichever thread that worker keeps unmasked, which is not
+    the one under test.
     """
 
-    started: list[subprocess.Popen[bytes]] = []
-    open_a_process = subprocess.Popen
+    carrier = subprocess.run(
+        [sys.executable, "-m", interrupted_supervision.__name__],
+        capture_output=True,
+        text=True,
+        timeout=_INTERRUPT_CARRIER_SECONDS,
+        check=False,
+    )
 
-    def start_and_interrupt(
-        command: Sequence[str],
-        *,
-        stdin: int,
-        stdout: int,
-        stderr: int,
-        pass_fds: Sequence[int],
-    ) -> subprocess.Popen[bytes]:
-        """The reading process, started exactly as production starts it, with
-        an interrupt sent the instant it exists."""
-
-        reader = open_a_process(
-            command, stdin=stdin, stdout=stdout, stderr=stderr, pass_fds=pass_fds
-        )
-        started.append(reader)
-        os.kill(os.getpid(), signal.SIGINT)
-        return reader
-
-    monkeypatch.setattr(subprocess, "Popen", start_and_interrupt)
-
-    with pytest.raises(KeyboardInterrupt):
-        supervised_reading(
-            ignores_being_stopped.__name__, SERVICE_URL, _REAL_READ_BUDGET
-        )
-
-    assert started[0].returncode == -signal.SIGKILL
+    assert carrier.returncode == 0, carrier.stderr
+    seen, ending = carrier.stdout.split()
+    assert seen == interrupted_supervision.INTERRUPT_SEEN
+    assert int(ending) in {-signal.SIGTERM, -signal.SIGKILL}
 
 
 def test_a_pipe_this_process_can_no_longer_read_ends_the_gathering(

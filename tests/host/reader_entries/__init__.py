@@ -7,4 +7,10 @@ putting its client away, or writes onto the pipe something no record could be.
 Each runs as much of the production reader as its own defect leaves standing,
 and whatever it replaces it replaces in its own process -- nothing here can
 reach the process that reports.
+
+One module here is not a reading but a whole supervision
+(`interrupted_supervision`), for the one proof that needs a real signal: it
+runs in an interpreter of its own, because a signal sent inside a test worker
+is delivered to whichever thread that worker keeps unmasked, which is never
+the one under test.
 """
