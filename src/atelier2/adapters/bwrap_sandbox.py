@@ -249,7 +249,9 @@ def sandbox_from_frame(value: object) -> SandboxedLaunch | None:
 
 
 def _framed_paths(value: object) -> tuple[Path, ...]:
-    if type(value) is not list or any(type(entry) is not str for entry in value):
+    if not isinstance(value, list) or any(
+        not isinstance(entry, str) for entry in value
+    ):
         raise ValueError("launch sandbox grant is malformed")
     return tuple(Path(entry) for entry in value)
 
