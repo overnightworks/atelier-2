@@ -12,7 +12,6 @@ from httpx import Response
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -66,12 +65,10 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
-    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
     WorkItemKind,
@@ -83,10 +80,6 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.effects import EffectAdapterRegistration, EffectAdapterRegistry
 from atelier2.ports.issue_observation import WorkItemRevisionObserved
-from atelier2.ports.published_revisions import (
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
-)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -97,13 +90,15 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.issue_to_pr_catalog import publish_issue_to_pr_catalog
 from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
 from tests.scenarios.runs import submit_wait_answer
 from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 WORKFLOW_PATH = Path("workflows/issue-to-pr.yaml")
-BUDGET_PATH = Path("workflows/budgets/push-implement.json")
+PUSHING_MODEL = "grok-4.6"
+"""The model this document pins to build, and whom the push operation credits."""
 PROJECT = ProjectId("issue-to-pr-workflow")
 ITEM = TrackerItemReference("gh:1232")
 RUN = RunId("v3/issue-to-pr")
@@ -271,80 +266,14 @@ def _publish_workflow(
     AgentBindingSet,
     tuple[GitCommitIdentity, GitCommitIdentity],
 ]:
-    # The live revisions pin the operator as author and the pushing node's model
-    # as committer (#883, operator ruling 30.08.2026); the shipped document pins
-    # that same model, so reproducing this exact pair is what makes the derived
-    # grant hash equal the one it names.
-    connected_account_address = "44832414+FlexOr2@users.noreply.github.com"
-    author = GitCommitIdentity("Felix Hummert", connected_account_address)
-    pushing_model = "grok-4.6"
-    committer = GitCommitIdentity("Grok 4.6", connected_account_address)
-    push_operation = PublishedRevision(
-        RevisionKind.ADAPTER_OPERATION,
-        json.dumps(
-            {
-                "operation": AdapterOperationName.PUSH_ATELIER_COMMIT.value,
-                "author": author.as_json(),
-                "committer": committer.as_json(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    )
-    push_grant = PublishedRevision(
-        RevisionKind.TOOL,
-        json.dumps(
-            {
-                "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
-                "operation": {
-                    "ref": "push-atelier-commit",
-                    "revision": push_operation.revision_hash.value,
-                },
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    )
-    verification_grant = PublishedRevision(
-        RevisionKind.TOOL,
-        json.dumps(
-            {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    )
-    store = DbosCatalogStore(runtime.engine)
-    for revision in (
-        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
-        PublishedRevision(
-            RevisionKind.SCHEMA,
-            Path("workflows/schemas/issue_to_pr_candidate_report.json").read_bytes(),
-        ),
-        PublishedRevision(
-            RevisionKind.SCHEMA,
-            Path("workflows/schemas/code_review_result.json").read_bytes(),
-        ),
-        PublishedRevision(
-            RevisionKind.SCHEMA,
-            Path("workflows/schemas/issue_to_pr_release_decision.json").read_bytes(),
-        ),
-        PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_PATH.read_bytes()),
-        push_operation,
-        PublishedRevision(RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'),
-        push_grant,
-        verification_grant,
-    ):
-        published = store.publish_revision(revision)
-        assert isinstance(
-            published, (PublishedRevisionCreated, PublishedRevisionExisting)
-        ), published
+    pinned = publish_issue_to_pr_catalog(runtime.engine)
 
     shipped_document = WORKFLOW_PATH.read_bytes()
-    assert push_grant.revision_hash.value.encode() in shipped_document
-    assert verification_grant.revision_hash.value.encode() in shipped_document
+    assert pinned.push_grant.revision_hash.value.encode() in shipped_document
+    assert pinned.verification_grant.revision_hash.value.encode() in shipped_document
     builder = parse_workflow_document(shipped_document).node(BUILD_NODE)
     assert isinstance(builder, AgentNodeV3)
-    assert builder.model == pushing_model
+    assert builder.model == PUSHING_MODEL
     workflow = WorkflowRevision(shipped_document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
 
@@ -375,7 +304,7 @@ def _publish_workflow(
         )
         publish_checked_model_registry(runtime.engine, provider, (configuration,))
         bindings.append(AgentBinding(AgentRole(role), configuration.revision_hash))
-    return workflow, AgentBindingSet(tuple(bindings)), (author, committer)
+    return workflow, AgentBindingSet(tuple(bindings)), (pinned.author, pinned.committer)
 
 
 def _start(

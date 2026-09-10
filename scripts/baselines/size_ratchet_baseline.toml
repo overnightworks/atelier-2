@@ -115,7 +115,7 @@ lines = 888
 
 [[file]]
 path = "src/atelier2/contracts/workflows_v3.py"
-lines = 1865
+lines = 1464
 
 [[file]]
 path = "src/atelier2/host/__init__.py"

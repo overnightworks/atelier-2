@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Never
 
 from fastapi import FastAPI
@@ -492,6 +495,72 @@ def durable_queries(
     point of the change this helper follows.
     """
     return DbosQueries(engine, projection_limit or permissive_projection_limit())
+
+
+FROZEN_OPENAPI_DOCUMENT_PATH = (
+    Path(__file__).resolve().parents[1] / "api" / "openapi_frozen.json"
+)
+
+# The document itself is served at this path (#1501's own route, added by hand
+# because FastAPI would otherwise serve it through a bare Starlette route with
+# no dependant this guard could ever reach) but is not one of its own listed
+# paths (`include_in_schema=False`), so a caller proving the guard covers every
+# route names it here rather than finding it in the frozen document.
+OPENAPI_DOCUMENT_PATH = API_PREFIX + "/openapi.json"
+
+# The one value per path-parameter name any operation in the frozen document
+# needs to reach past FastAPI's own path-shape routing and into a route's own
+# body -- never a value chosen to satisfy that route's *own* validation
+# (a wrong shape there answers 400 or 404, not 422, so it never reads as this
+# guard's own refusal). `kind` and `provider_id` are the two names a route
+# enforces before reaching this guard's sibling dependencies (a real
+# `Path(pattern=...)`, or an enum on the path itself); every hash-shaped name
+# below is a real SHA-256 hex string for the same reason.
+QUERY_PATH_PARAMETER_EXAMPLES: dict[str, str] = {
+    "artifact_hash": "a" * 64,
+    "schema_revision_hash": "a" * 64,
+    "agent_definition_revision_hash": "a" * 64,
+    "workflow_revision_hash": "a" * 64,
+    "intake_id": "a" * 64,
+    "lineage_id": "a" * 64,
+    "attempt_id": "a" * 64,
+    "kind": "workflow",
+    "name": "example",
+    "public_project_reference": "example",
+    "public_source_reference": "example",
+    "public_ref": "example",
+    "node_id": "example",
+    "provider_id": "example",
+}
+
+_PATH_PARAMETER = re.compile(r"\{([^}]+)\}")
+
+
+def resolved_frozen_path(template: str) -> str:
+    """One example URL for a frozen-document path template.
+
+    Fails loudly for a path-parameter name this module does not yet carry an
+    example for, rather than guessing one at the call site.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        assert name in QUERY_PATH_PARAMETER_EXAMPLES, (
+            f"no example value registered for path parameter {name!r}; "
+            "add one to QUERY_PATH_PARAMETER_EXAMPLES"
+        )
+        return QUERY_PATH_PARAMETER_EXAMPLES[name]
+
+    return _PATH_PARAMETER.sub(replace, template)
+
+
+def frozen_document_paths(method: str) -> tuple[str, ...]:
+    """Every frozen-document path declaring the named HTTP method (lowercase)."""
+
+    document = json.loads(FROZEN_OPENAPI_DOCUMENT_PATH.read_text())
+    return tuple(
+        path for path, operations in document["paths"].items() if method in operations
+    )
 
 
 def healthy_runs(page: RunPage) -> tuple[RunProjection, ...]:

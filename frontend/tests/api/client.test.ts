@@ -17,9 +17,7 @@ import {
   projectSourceConnectionRevisionSchema,
   projectSourceListSchema,
   projectSourceResourceSchema,
-  problemDefinitions,
   workflowRevisionDetailSchema,
-  type Problem,
   type RunProjectionCorrupt
 } from "../../src/api/client";
 import { cancelMutation } from "../../src/lib/mutationJournal";
@@ -85,20 +83,31 @@ function pageCursorParameterName(document: typeof servedDocument, path: string):
   return cursor.name;
 }
 
-function publishedProblemDefinitions(document: typeof servedDocument) {
+function publishedProblemDefinitions(
+  document: typeof servedDocument
+): Record<string, { status: number; title: string }> {
   return Object.fromEntries(
     Object.values(document.components.schemas).flatMap((schema) => {
       const type = schema.properties?.type?.const;
-      return typeof type === "string" && type.startsWith(PROBLEM_TYPE_PREFIX)
-        ? [
-            [
-              type.slice(PROBLEM_TYPE_PREFIX.length),
-              { status: schema.properties?.status?.const, title: schema.properties?.title?.const }
-            ]
-          ]
-        : [];
+      if (typeof type !== "string" || !type.startsWith(PROBLEM_TYPE_PREFIX)) return [];
+      const status = schema.properties?.status?.const;
+      const title = schema.properties?.title?.const;
+      if (typeof status !== "number" || typeof title !== "string") {
+        throw new Error(`${type} is missing a const status or title in the served document`);
+      }
+      return [[type.slice(PROBLEM_TYPE_PREFIX.length), { status, title }]];
     })
   );
+}
+
+const publishedProblems = publishedProblemDefinitions(servedDocument);
+
+function publishedProblemTitle(code: string): string {
+  const definition = publishedProblems[code];
+  if (definition === undefined) {
+    throw new Error(`the served document names no ${code} problem`);
+  }
+  return definition.title;
 }
 
 type Equal<Left, Right> =
@@ -106,20 +115,6 @@ type Equal<Left, Right> =
     ? true
     : false;
 type Assert<Value extends true> = Value;
-export type ProblemTypeIsClosed = Assert<
-  Equal<Problem["type"], `urn:atelier2:problem:v1:${keyof typeof problemDefinitions}`>
->;
-export type ProblemVariantIsExact = Assert<
-  Equal<
-    Extract<Problem, { type: "urn:atelier2:problem:v1:run-not-found" }>,
-    {
-      type: "urn:atelier2:problem:v1:run-not-found";
-      title: "Run not found";
-      status: 404;
-      detail: string;
-    }
-  >
->;
 export type RunProjectionCorruptProblemIsDurableStateCorrupt = Assert<
   Equal<
     RunProjectionCorrupt["problem"]["type"],
@@ -510,8 +505,8 @@ describe("closed API decoders", () => {
     });
   });
 
-  it.each(Object.entries(problemDefinitions))(
-    "binds problem %s to its exact title and status",
+  it.each(Object.entries(publishedProblems))(
+    "decodes the %s problem the document publishes, and only with its exact title and status",
     (code, definition) => {
       const exact = {
         type: `urn:atelier2:problem:v1:${code}`,
@@ -527,10 +522,6 @@ describe("closed API decoders", () => {
       expect(() => decodeProblem({ ...exact, status: definition.status + 1 })).toThrow();
     }
   );
-
-  it("decodes exactly the problem definitions the document publishes", () => {
-    expect(problemDefinitions).toEqual(publishedProblemDefinitions(servedDocument));
-  });
 });
 
 const configurationInput = {
@@ -842,7 +833,7 @@ describe("answering a wait over the existing door", () => {
     async (code, status, definitive) => {
       const problem = {
         type: `${PROBLEM_TYPE_PREFIX}${code}`,
-        title: problemDefinitions[code].title,
+        title: publishedProblemTitle(code),
         status,
         detail: "The durable answer door names this outcome."
       };
@@ -903,6 +894,29 @@ describe("cancelling a run over its cancel door", () => {
     expect(result).toEqual({ status: 202, value: run });
   });
 
+  it("proves(the-cockpit-decodes-the-served-run-cancel-problems): mirrors exactly the run-cancel problems the document publishes", () => {
+    const servedRunCancelProblems = Object.keys(publishedProblems)
+      .filter((code) => code === "run-not-cancellable" || code.startsWith("run-cancellation-"))
+      .sort();
+
+    expect(servedRunCancelProblems).toEqual([
+      "run-cancellation-command-conflict",
+      "run-cancellation-overtaken-by-success",
+      "run-not-cancellable"
+    ]);
+    for (const code of servedRunCancelProblems) {
+      const type = `${PROBLEM_TYPE_PREFIX}${code}`;
+      expect(
+        decodeProblem({
+          type,
+          title: publishedProblemTitle(code),
+          status: 409,
+          detail: "operation-specific detail"
+        }).type
+      ).toBe(type);
+    }
+  });
+
   it.each([
     "run-not-cancellable",
     "run-cancellation-command-conflict",
@@ -912,7 +926,7 @@ describe("cancelling a run over its cancel door", () => {
     async (code) => {
       const problem = {
         type: `${PROBLEM_TYPE_PREFIX}${code}`,
-        title: problemDefinitions[code].title,
+        title: publishedProblemTitle(code),
         status: 409,
         detail: "The server's own words for why this cancel cannot land."
       };

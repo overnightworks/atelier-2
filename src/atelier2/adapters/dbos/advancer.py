@@ -82,16 +82,18 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.contracts.work_items import WorkItemOrderDocument
+from atelier2.contracts.workflow_executability import (
+    DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES,
+    action_body_source,
+    is_documentation_release_action_form,
+)
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import producing_round
 from atelier2.contracts.workflows_v3 import (
-    DOCUMENTATION_RELEASE_ACTION_INPUT_NAMES,
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocumentNode,
     GraphInputSource,
-    action_body_source,
-    is_documentation_release_action_form,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
