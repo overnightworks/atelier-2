@@ -1,0 +1,7 @@
+claim_id = "ed183bb279ae437796f9c695dacc1e85"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "f9bda5d648c2e48d5602df984c364dcecd0f95ad"
+branch = "claude/issue-1508-role-candidates"
+scope = ["src/atelier2/application/resolve_start_bindings.py", "src/atelier2/application/role_candidates.py", "src/atelier2/adapters/dbos/agent_catalog.py"]
+opened_commit = "d089fbbc40cc5f0fa8188422d3d637e54a979d89"
