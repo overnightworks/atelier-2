@@ -237,16 +237,20 @@ class UncastRole:
             raise ValueError("an uncast family reference must name a role")
 
 
+def _invalid_model_id_error() -> ValueError:
+    return ValueError(
+        "a model id must contain 1.."
+        f"{MAXIMUM_EXACT_MODEL_ID_CHARACTERS} exact non-whitespace characters"
+    )
+
+
 def _exact_model_id(value: object) -> str:
-    if (
-        type(value) is not str
-        or not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS
-        or any(character.isspace() for character in value)
+    if type(value) is not str:
+        raise _invalid_model_id_error()
+    if not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS or any(
+        character.isspace() for character in value
     ):
-        raise ValueError(
-            "a model id must contain 1.."
-            f"{MAXIMUM_EXACT_MODEL_ID_CHARACTERS} exact non-whitespace characters"
-        )
+        raise _invalid_model_id_error()
     return value
 
 
