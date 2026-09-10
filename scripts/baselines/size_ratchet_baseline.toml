@@ -402,10 +402,6 @@ qualified_name = "atelier2.api.projection.runs.run_resource"
 lines = 95
 
 [[function]]
-qualified_name = "atelier2.api.routes.queue._snapshot_resource"
-lines = 65
-
-[[function]]
 qualified_name = "atelier2.api.routes.runs.cancel_agent_attempt_route"
 lines = 63
 
@@ -438,16 +434,12 @@ qualified_name = "atelier2.application.model_configuration.get_project_model_res
 lines = 78
 
 [[function]]
-qualified_name = "atelier2.application.model_configuration.publish_model_registry"
-lines = 105
-
-[[function]]
 qualified_name = "atelier2.application.model_configuration.publish_project_model_defaults"
 lines = 61
 
 [[function]]
 qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
-lines = 86
+lines = 74
 
 [[function]]
 qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
@@ -564,14 +556,6 @@ complexity = 21
 [[complexity]]
 qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
 complexity = 18
-
-[[complexity]]
-qualified_name = "atelier2.application.model_configuration.publish_model_registry"
-complexity = 22
-
-[[complexity]]
-qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
-complexity = 21
 
 [[complexity]]
 qualified_name = "atelier2.application.start_published_run.start_published_run"
