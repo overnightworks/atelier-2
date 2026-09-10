@@ -18,4 +18,4 @@ if __name__ == "__main__":
     chatter = logging.getLogger("httpcore.http11")
     chatter.setLevel(logging.DEBUG)
     chatter.addHandler(logging.FileHandler(os.environ[CHATTER_LOG_CHANNEL]))
-    raise SystemExit(read_as_a_child(reader_invocation()))
+    read_as_a_child(reader_invocation())

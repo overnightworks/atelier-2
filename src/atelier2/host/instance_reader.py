@@ -409,15 +409,15 @@ def _reader_command(
     ]
 
 
-def read_as_a_child(invocation: ReaderInvocation) -> int:
+def read_as_a_child(invocation: ReaderInvocation) -> None:
     """The reading process's whole life: go quiet, read, say what happened.
 
     Nothing here is allowed to end in a traceback nobody reads. Trouble it did
     not expect becomes a record naming the phase it happened in, and this
-    process then exits cleanly, because a reader that died and a reader that
-    broke are two different findings. Only the pipe itself comes before that:
-    with no way to say anything, there is nothing to say and nobody to hear
-    it.
+    process then leaves the way a reading process leaves: 0 when it read, a
+    signal's death when something stopped it -- never a code this function
+    invents. Only the pipe itself comes before that: with no way to say
+    anything, there is nothing to say and nobody to hear it.
     """
 
     try:
@@ -426,7 +426,7 @@ def read_as_a_child(invocation: ReaderInvocation) -> int:
         os._exit(_NO_PIPE_EXIT_CODE)
     api = _prepared(invocation, send)
     if api is None:
-        return 0
+        return
     everything_read = True
     try:
         send_reading(api, invocation.budget, send)
@@ -437,7 +437,6 @@ def read_as_a_child(invocation: ReaderInvocation) -> int:
     # can never leave a report that looks complete.
     if _closed(api, send) and everything_read:
         send(ReadingEnd())
-    return 0
 
 
 def _prepared(

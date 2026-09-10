@@ -40,4 +40,4 @@ def _sink_that_says_when_a_frame_arrived(
 
 if __name__ == "__main__":
     instance_reader.record_sink = _sink_that_says_when_a_frame_arrived
-    raise SystemExit(instance_reader.read_as_a_child(reader_invocation()))
+    instance_reader.read_as_a_child(reader_invocation())

@@ -21,4 +21,4 @@ class ClientThatCannotBePutAway(instance_reader.AtelierApi):
 
 if __name__ == "__main__":
     instance_reader.AtelierApi = ClientThatCannotBePutAway
-    raise SystemExit(instance_reader.read_as_a_child(reader_invocation()))
+    instance_reader.read_as_a_child(reader_invocation())

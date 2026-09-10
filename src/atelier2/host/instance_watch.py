@@ -234,23 +234,28 @@ def _ending_findings(
     left cleanly is a reader that broke, and that failure is the whole finding.
     """
 
+    findings: list[WatchFinding] = []
     if not reading.reader_reaped:
-        return (_reader_died_finding(reading, _UNKILLABLE_SENTENCE),)
-    if reading.reader_ended:
-        return ()
-    if reading.deadline_passed:
-        return (
+        findings.append(_reader_died_finding(reading, _UNKILLABLE_SENTENCE))
+    elif reading.reader_ended:
+        pass
+    elif reading.deadline_passed:
+        findings.append(
             WatchFinding(
                 WatchFindingKind.READING_CUT_SHORT,
                 _unread_endpoint(reading),
                 f"{_CUT_SHORT_SENTENCE} of {budget.deadline_seconds} seconds",
-            ),
+            )
         )
-    if reading.failure is not None and reading.reader_exit_code == _CLEAN_EXIT_CODE:
-        return ()
-    return (
-        _reader_died_finding(reading, f"it ended with code {reading.reader_exit_code}"),
-    )
+    elif reading.failure is not None and reading.reader_exit_code == _CLEAN_EXIT_CODE:
+        pass
+    else:
+        findings.append(
+            _reader_died_finding(
+                reading, f"it ended with code {reading.reader_exit_code}"
+            )
+        )
+    return tuple(findings)
 
 
 def _reader_died_finding(reading: InstanceReading, why: str) -> WatchFinding:
@@ -325,34 +330,45 @@ def _door_findings(door: DoorRead | DoorRefused) -> tuple[WatchFinding, ...]:
 
 
 def _health_decoded(body: bytes) -> tuple[WatchFinding, ...]:
+    findings: list[WatchFinding] = []
     try:
         health = HealthResource.model_validate_json(body)
     except ValidationError as error:
-        return (_unreadable_finding(HEALTH_PATH, error),)
-    if health.redeploy is None:
-        return ()
-    # `blocked_since` is safe to name: `RedeployBlockedResource` pins it to
-    # `RECORDED_AT_PATTERN`, so a value that decoded at all cannot carry
-    # anything but digits, dashes, `T`, colons, and `Z`. `.reason` is free
-    # text the watcher wrote about its own failure and never appears here.
-    since = health.redeploy.blocked_since or "an unrecorded time"
-    return (
-        WatchFinding(
-            WatchFindingKind.REDEPLOY_BLOCKED, HEALTH_PATH, f"blocked since {since}"
-        ),
-    )
+        findings.append(_unreadable_finding(HEALTH_PATH, error))
+    else:
+        if health.redeploy is not None:
+            # `blocked_since` is safe to name: `RedeployBlockedResource` pins it
+            # to `RECORDED_AT_PATTERN`, so a value that decoded at all cannot
+            # carry anything but digits, dashes, `T`, colons, and `Z`. `.reason`
+            # is free text the watcher wrote about its own failure and never
+            # appears here.
+            since = health.redeploy.blocked_since or "an unrecorded time"
+            findings.append(
+                WatchFinding(
+                    WatchFindingKind.REDEPLOY_BLOCKED,
+                    HEALTH_PATH,
+                    f"blocked since {since}",
+                )
+            )
+    return tuple(findings)
 
 
 def _seat_decoded(body: bytes) -> tuple[WatchFinding, ...]:
+    findings: list[WatchFinding] = []
     try:
         seat = SeatResource.model_validate_json(body)
     except ValidationError as error:
-        return (_unreadable_finding(SEAT_PATH, error),)
-    if seat.state is SeatState.ALIVE:
-        return ()
-    # Never the address `seat.url` may carry: that would hand the terminal's
-    # own access token to anything reading this report.
-    return (WatchFinding(WatchFindingKind.SEAT_NOT_ALIVE, SEAT_PATH, seat.state.value),)
+        findings.append(_unreadable_finding(SEAT_PATH, error))
+    else:
+        if seat.state is not SeatState.ALIVE:
+            # Never the address `seat.url` may carry: that would hand the
+            # terminal's own access token to anything reading this report.
+            findings.append(
+                WatchFinding(
+                    WatchFindingKind.SEAT_NOT_ALIVE, SEAT_PATH, seat.state.value
+                )
+            )
+    return tuple(findings)
 
 
 def _listing_decoded(body: bytes) -> tuple[WatchFinding, ...]:

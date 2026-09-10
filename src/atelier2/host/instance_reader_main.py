@@ -54,4 +54,4 @@ def reader_invocation(arguments: Sequence[str] | None = None) -> ReaderInvocatio
 
 
 if __name__ == "__main__":
-    raise SystemExit(read_as_a_child(reader_invocation()))
+    read_as_a_child(reader_invocation())
