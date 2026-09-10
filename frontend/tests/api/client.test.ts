@@ -2009,6 +2009,31 @@ describe("the node a click asks the server about", () => {
     expect(detail.transcript).toEqual({ events: [servedStdout] });
   });
 
+  it("decodes a provider terminal refusal and a truncation marker in one attempt transcript", async () => {
+    const refusal = {
+      event: "provider-terminal-refusal" as const,
+      terminal_reason: "rate_limit_error",
+      api_error_status: "429",
+      text: "refused",
+      redacted: false,
+      moment: beforeMoments
+    };
+    const truncated = {
+      event: "transcript-truncated" as const,
+      dropped_events: 3,
+      moment: beforeMoments
+    };
+    const fetcher = answering({
+      ...nodeDetail,
+      state: "failed",
+      transcript: { events: [refusal, truncated] }
+    });
+
+    const detail = await createCockpitApi(fetcher).getNodeDetail(publicReference, "review");
+
+    expect(detail.transcript).toEqual({ events: [refusal, truncated] });
+  });
+
   it("still decodes a node payload that omits transcript", async () => {
     const detail = await createCockpitApi(answering(nodeDetail)).getNodeDetail(
       publicReference,

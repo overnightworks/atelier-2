@@ -37,6 +37,150 @@ export const AgentBindingResourceV2 = zod.strictObject({
 export type AgentBindingResourceV2 = zod.input<typeof AgentBindingResourceV2>;
 export type AgentBindingResourceV2Output = zod.output<typeof AgentBindingResourceV2>;
 
+export const transcriptRecordedMomentResourceRecordedAtRegExp = new RegExp('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$');
+
+
+export const TranscriptRecordedMomentResource = zod.strictObject({
+  "origin": zod.literal("recorded").meta({ title: 'Origin' }),
+  "recorded_at": zod.string().regex(transcriptRecordedMomentResourceRecordedAtRegExp)
+}).describe('The instant an event entered the transcript and the source of that instant.');
+
+export type TranscriptRecordedMomentResource = zod.input<typeof TranscriptRecordedMomentResource>;
+export type TranscriptRecordedMomentResourceOutput = zod.output<typeof TranscriptRecordedMomentResource>;
+
+export const TranscriptBeforeMomentsResource = zod.strictObject({
+  "origin": zod.literal("v1-before-moments").meta({ title: 'Origin' })
+}).describe('An event read from a v1 transcript, before event moments existed.');
+
+export type TranscriptBeforeMomentsResource = zod.input<typeof TranscriptBeforeMomentsResource>;
+export type TranscriptBeforeMomentsResourceOutput = zod.output<typeof TranscriptBeforeMomentsResource>;
+
+export const assistantTurnEventResourceTextMax = 8192;
+
+
+
+export const AssistantTurnEventResource = zod.strictObject({
+  "event": zod.literal("assistant-turn").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "redacted": zod.boolean(),
+  "text": zod.string().max(assistantTurnEventResourceTextMax)
+});
+
+export type AssistantTurnEventResource = zod.input<typeof AssistantTurnEventResource>;
+export type AssistantTurnEventResourceOutput = zod.output<typeof AssistantTurnEventResource>;
+
+export const toolCalledEventResourceArgumentsMax = 8192;
+
+export const toolCalledEventResourceNameMax = 8192;
+
+
+
+export const ToolCalledEventResource = zod.strictObject({
+  "arguments": zod.string().max(toolCalledEventResourceArgumentsMax),
+  "event": zod.literal("tool-called").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "name": zod.string().max(toolCalledEventResourceNameMax),
+  "redacted": zod.boolean()
+});
+
+export type ToolCalledEventResource = zod.input<typeof ToolCalledEventResource>;
+export type ToolCalledEventResourceOutput = zod.output<typeof ToolCalledEventResource>;
+
+export const toolReturnedEventResourceNameMax = 8192;
+
+export const toolReturnedEventResourceResultMax = 8192;
+
+
+
+export const ToolReturnedEventResource = zod.strictObject({
+  "event": zod.literal("tool-returned").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "name": zod.string().max(toolReturnedEventResourceNameMax),
+  "redacted": zod.boolean(),
+  "result": zod.string().max(toolReturnedEventResourceResultMax)
+});
+
+export type ToolReturnedEventResource = zod.input<typeof ToolReturnedEventResource>;
+export type ToolReturnedEventResourceOutput = zod.output<typeof ToolReturnedEventResource>;
+
+export const usageEventResourceCacheCreationInputTokensMin = 0;
+
+export const usageEventResourceCacheReadInputTokensMin = 0;
+
+export const usageEventResourceInputTokensMin = 0;
+
+export const usageEventResourceOutputTokensMin = 0;
+
+
+
+export const UsageEventResource = zod.strictObject({
+  "cache_creation_input_tokens": zod.int().min(usageEventResourceCacheCreationInputTokensMin),
+  "cache_read_input_tokens": zod.int().min(usageEventResourceCacheReadInputTokensMin),
+  "event": zod.literal("usage").meta({ title: 'Event' }),
+  "input_tokens": zod.int().min(usageEventResourceInputTokensMin),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "output_tokens": zod.int().min(usageEventResourceOutputTokensMin)
+});
+
+export type UsageEventResource = zod.input<typeof UsageEventResource>;
+export type UsageEventResourceOutput = zod.output<typeof UsageEventResource>;
+
+export const providerTerminalRefusalEventResourceApiErrorStatusMax = 8192;
+
+export const providerTerminalRefusalEventResourceTerminalReasonMax = 8192;
+
+export const providerTerminalRefusalEventResourceTextMax = 8192;
+
+
+
+export const ProviderTerminalRefusalEventResource = zod.strictObject({
+  "api_error_status": zod.string().max(providerTerminalRefusalEventResourceApiErrorStatusMax),
+  "event": zod.literal("provider-terminal-refusal").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "redacted": zod.boolean(),
+  "terminal_reason": zod.string().max(providerTerminalRefusalEventResourceTerminalReasonMax),
+  "text": zod.string().max(providerTerminalRefusalEventResourceTextMax)
+});
+
+export type ProviderTerminalRefusalEventResource = zod.input<typeof ProviderTerminalRefusalEventResource>;
+export type ProviderTerminalRefusalEventResourceOutput = zod.output<typeof ProviderTerminalRefusalEventResource>;
+
+export const unrecognisedProviderOutputEventResourceTextMax = 8192;
+
+
+
+export const UnrecognisedProviderOutputEventResource = zod.strictObject({
+  "event": zod.literal("unrecognised-provider-output").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource]),
+  "redacted": zod.boolean(),
+  "text": zod.string().max(unrecognisedProviderOutputEventResourceTextMax)
+});
+
+export type UnrecognisedProviderOutputEventResource = zod.input<typeof UnrecognisedProviderOutputEventResource>;
+export type UnrecognisedProviderOutputEventResourceOutput = zod.output<typeof UnrecognisedProviderOutputEventResource>;
+
+
+
+
+export const TranscriptTruncatedEventResource = zod.strictObject({
+  "dropped_events": zod.int().min(1),
+  "event": zod.literal("transcript-truncated").meta({ title: 'Event' }),
+  "moment": zod.union([TranscriptRecordedMomentResource,TranscriptBeforeMomentsResource])
+});
+
+export type TranscriptTruncatedEventResource = zod.input<typeof TranscriptTruncatedEventResource>;
+export type TranscriptTruncatedEventResourceOutput = zod.output<typeof TranscriptTruncatedEventResource>;
+
+
+
+
+export const AttemptTranscriptResource = zod.strictObject({
+  "events": zod.array(zod.union([ToolCalledEventResource,ToolReturnedEventResource,AssistantTurnEventResource,UsageEventResource,ProviderTerminalRefusalEventResource,UnrecognisedProviderOutputEventResource,TranscriptTruncatedEventResource])).min(1)
+}).describe('The decoded, already-redacted steps of one attempt, and nothing else.\n\nThe document kind and the stored bytes stay off the wire: a reader of this\nresource is looking at the events, not at how they were kept.');
+
+export type AttemptTranscriptResource = zod.input<typeof AttemptTranscriptResource>;
+export type AttemptTranscriptResourceOutput = zod.output<typeof AttemptTranscriptResource>;
+
 export const defectiveRunRowResourceDetailMax = 512;
 
 export const defectiveRunRowResourcePublicRunReferenceRegExp = new RegExp('^run1\\.[A-Za-z0-9_-]+$');
@@ -129,7 +273,8 @@ export const NodeDetailResource = zod.strictObject({
   "refusal_output": zod.union([NodeRefusalOutputResource,zod.null()]).optional(),
   "run_id": zod.string().min(1),
   "started_at": zod.union([zod.string(),zod.null()]).optional(),
-  "state": zod.enum(['queued', 'working', 'needs_you', 'succeeded', 'failed', 'cancelled', 'interrupted'])
+  "state": zod.enum(['queued', 'working', 'needs_you', 'succeeded', 'failed', 'cancelled', 'interrupted']),
+  "transcript": zod.union([AttemptTranscriptResource,zod.null()]).optional()
 }).describe('One node of a run, answered the way an operator asks about it.\n\nFive answers, each allowed to be absent, because absence is itself the\nanswer. `job` is what the run really handed this node\'s provider, recomposed\nthrough the one owner that composed it; `job_hash` is the hash of exactly\nthose bytes and nothing more. It is \*\*not\*\* the receipt\'s `request_hash`,\nwhich frames the execution identity, the revision, the binding and the\noperational identity around the job -- a reader comparing the two would\nreject a job that is right. `provenance.request_hash` is the field that\nmeets the receipt.\n\n`answer` is what the node wrote, with the hash its own completion event\nkept. `provenance` is who did it. `refusal` is what stops the run here, and\nonly that: a node whose predecessor has simply not written yet carries no\njob and no refusal, because nothing has judged anything. Anything that would\nmean the store disagrees with itself -- a payload that no longer matches its\nhash, a pinned schema revision that is gone -- is not softened into a\nrefusal here; it leaves as durable corruption, loudly.\n\n`refusal_output` is deliberately not `answer`: `answer` is the value the run\naccepted, and a schema-refused value never was that (#664). It carries a\nredacted presentation of the bytes a schema owner judged and refused, read\nback from the content-addressed artifact the failure transaction kept, its\ncredential shapes replaced before this resource is built -- present only\nwhere such a judgment happened and something to keep survived it; every\nother refusal, including one this receipt family predates, answers with no\nsuch field rather than a guess. Its own type, `NodeRefusalOutputResource`,\nnames the redaction and the bound this field alone carries.\n\n`transcript` is the decoded events of the attempt that named one. The key\nis omitted when no attempt of this execution did -- never `\"transcript\":\nnull` -- so a node that stored nothing does not grow a new column. The\nstored document kind and raw bytes stay off this resource.');
 
 export type NodeDetailResource = zod.input<typeof NodeDetailResource>;
