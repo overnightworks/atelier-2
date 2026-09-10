@@ -3,5 +3,6 @@ agent = "Claude Opus 5 (head)"
 role = "builder"
 base = "31774fec09a8ede09af598eb881e41e32480244b"
 branch = "claude/issue-972-mode-capability"
-scope = ["src/atelier2/contracts/workflows_v3.py", "src/atelier2/adapters/dbos/starter.py", "docs/decisions/0006-node-vocabulary.md"]
+scope = ["src/atelier2/contracts/workflows_v3.py", "src/atelier2/adapters/dbos/starter.py", "docs/decisions/0006-node-vocabulary.md", "src/atelier2/contracts/agent_modes.py", "src/atelier2/adapters/dbos/run_fork_store.py", "src/atelier2/ports/durable_runs.py", "src/atelier2/ports/durable_run_forks.py", "src/atelier2/application/start_published_run.py", "src/atelier2/application/fork_run.py", "src/atelier2/application/advance_queue.py", "src/atelier2/api/routes/runs.py", "src/atelier2/api/problem_vocabulary.py", "src/atelier2/api/openapi.py", "frontend/src/api/client.ts", "docs/product/runtime.md", "src/atelier2/application/bind_node.py", "src/atelier2/adapters/dbos/runtime.py", "src/atelier2/adapters/dbos/queue_projection_store.py", "src/atelier2/adapters/dbos/queue_launch_runs.py", "src/atelier2/adapters/dbos/workflow.py"]
 opened_commit = "bb48e838350f6e9cbcc893d11d013ab46739499b"
+whole_reason = "Eine Sicherheitsgrenze gilt nur, wenn jeder Weg zu einem gebundenen Versuch sie prüft: Start, Queue-Reservierung, Fork, Wiederaufnahme und Ersatzversuch ziehen in derselben Landung mit."
