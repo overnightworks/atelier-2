@@ -561,6 +561,90 @@ def _ended_launch(
             assert_never(unreachable)
 
 
+def _proposed_launch_binding(
+    item: QueueItemSnapshot, catalog: CatalogResolver
+) -> QueueLaunchBinding | QueueItemBlocked:
+    """The launch binding the item's admitted proposal names, unreserved.
+
+    Raises `QueueAdvanceCorrupt` when the item does not carry one complete
+    admitted proposal; returns a `QueueItemBlocked` in place of a binding
+    wherever admission or the catalog leaves nothing to bind yet.
+    """
+    proposal = item.proposal
+    admission = item.admission
+    if (
+        item.state is QueueItemState.ADMITTED
+        and proposal is None
+        and admission is not None
+        and admission.authority is None
+        and admission.proposal_revision is None
+    ):
+        return QueueItemBlocked(
+            item.item_reference.item_id,
+            (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
+        )
+    if (
+        item.state is not QueueItemState.ADMITTED
+        or proposal is None
+        or admission is None
+        or admission.authority is None
+        or admission.proposal_revision is None
+    ):
+        raise QueueAdvanceCorrupt(
+            "the queue item does not carry one complete admitted proposal"
+        )
+    if item.blockers:
+        return QueueItemBlocked(item.item_reference.item_id, item.blockers)
+    revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
+    if revision_hash is None:
+        return QueueItemBlocked(
+            item.item_reference.item_id,
+            (QueueBlockerKind.BINDING_UNRESOLVED,),
+        )
+    return QueueLaunchBinding(
+        item.item_reference.item_id,
+        admission.proposal_revision,
+        _derive_run_id(item.item_reference.item_id, admission.proposal_revision.value),
+        revision_hash,
+    )
+
+
+def _resolved_launch_binding(
+    item: QueueItemSnapshot,
+    queue: QueueProjection,
+    catalog: CatalogResolver,
+    start_judge: DurablePublishedRunStarter,
+    workflow_document_parser: WorkflowDocumentParser | None,
+    served_project: ProjectId | None,
+    tracker: TrackerItemSource | None,
+) -> QueueLaunchBinding | QueueItemBlocked:
+    """The item's proposed binding, judged and reserved, or why neither holds.
+
+    Judged first, by `start_judge` over a store that keeps nothing, so a start
+    it would refuse never holds a place under the project's cap.
+    """
+    proposed = _proposed_launch_binding(item, catalog)
+    if isinstance(proposed, QueueItemBlocked):
+        return proposed
+    judged_item: QueueItemSnapshot = replace(item, launch_binding=proposed)
+    judged = _advance_one(
+        judged_item,
+        queue,
+        catalog,
+        start_judge,
+        start_judge,
+        workflow_document_parser,
+        served_project,
+        tracker,
+    )
+    if isinstance(judged, QueueItemBlocked):
+        return judged
+    reserved = reserved_launch(queue, proposed)
+    if isinstance(reserved, QueueItemSnapshot):
+        return QueueItemBlocked(reserved.item_reference.item_id, reserved.blockers)
+    return reserved
+
+
 def _advance_one(
     item: QueueItemSnapshot,
     queue: QueueProjection,
@@ -573,63 +657,18 @@ def _advance_one(
 ) -> QueueAdvanceOutcome | None:
     binding = item.launch_binding
     if binding is None:
-        proposal = item.proposal
-        admission = item.admission
-        if (
-            item.state is QueueItemState.ADMITTED
-            and proposal is None
-            and admission is not None
-            and admission.authority is None
-            and admission.proposal_revision is None
-        ):
-            return QueueItemBlocked(
-                item.item_reference.item_id,
-                (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
-            )
-        if (
-            item.state is not QueueItemState.ADMITTED
-            or proposal is None
-            or admission is None
-            or admission.authority is None
-            or admission.proposal_revision is None
-        ):
-            raise QueueAdvanceCorrupt(
-                "the queue item does not carry one complete admitted proposal"
-            )
-        if item.blockers:
-            return QueueItemBlocked(item.item_reference.item_id, item.blockers)
-        revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
-        if revision_hash is None:
-            return QueueItemBlocked(
-                item.item_reference.item_id,
-                (QueueBlockerKind.BINDING_UNRESOLVED,),
-            )
-        proposed_binding = QueueLaunchBinding(
-            item.item_reference.item_id,
-            admission.proposal_revision,
-            _derive_run_id(
-                item.item_reference.item_id, admission.proposal_revision.value
-            ),
-            revision_hash,
-        )
-        # Judged first, by the start itself over a store that keeps nothing, so
-        # a start it would refuse never holds a place under the project's cap.
-        judged = _advance_one(
-            replace(item, launch_binding=proposed_binding),
+        resolved = _resolved_launch_binding(
+            item,
             queue,
             catalog,
-            start_judge,
             start_judge,
             workflow_document_parser,
             served_project,
             tracker,
         )
-        if isinstance(judged, QueueItemBlocked):
-            return judged
-        reserved = reserved_launch(queue, proposed_binding)
-        if isinstance(reserved, QueueItemSnapshot):
-            return QueueItemBlocked(reserved.item_reference.item_id, reserved.blockers)
-        binding = reserved
+        if isinstance(resolved, QueueItemBlocked):
+            return resolved
+        binding = resolved
     order = _bound_work_item_order(item, binding, catalog, workflow_document_parser)
     if isinstance(order, _RequiredOrderUnavailable):
         # The document declares graph inputs this sweep cannot fill, so the
