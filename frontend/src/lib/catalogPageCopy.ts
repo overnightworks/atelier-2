@@ -1,3 +1,4 @@
+import type { AgentConfigurationRevisionListItem } from "../api/client";
 import type { CatalogNameState } from "./catalogName";
 
 /** Git's own short-hash convention (`git rev-parse --short`). */
@@ -206,26 +207,48 @@ export function startUnavailableSuffix(): string {
   return ` · ◇ ${workflowStartCopy.unavailable}`;
 }
 
+/** The wire's own closed vocabulary (`client.ts`'s generated enum) for why a
+ * listed agent configuration cannot start -- never widened to a bare
+ * `string`, so a fifth reason breaks this file's build until it is mapped. */
+type NotStartableReason = NonNullable<AgentConfigurationRevisionListItem["not_startable_reason"]>;
+
 /**
- * The four `not_startable_reason` values a listed agent configuration can
- * carry (`client.ts`'s closed enum): each names the door a start would meet
- * first, so each gets its own sentence naming {@link role} and the next
- * step. A reason this atelier does not yet map keeps the server's own text
- * instead of showing nothing -- the same choice `humanRefusal.ts` makes for
- * a workflow's `not_executable_reason`.
+ * One sentence per reason, true of every case that reason actually covers
+ * (agent_catalog.py's precedence), not just its most common one:
+ * - `agent-executor-binding-unavailable`: no factory runs this executor on
+ *   this atelier at all -- always the same fact, so always the same door
+ *   (a different configuration, offered right here).
+ * - `model-not-registered`: the registry does not currently point at this
+ *   exact configuration -- true whether it was never registered or a newer
+ *   revision superseded it, so the sentence names both real doors instead
+ *   of assuming "never registered".
+ * - `provider-probe-receipt-missing`: no receipt currently proves this
+ *   configuration -- true whether none was ever taken or the only one on
+ *   file is a stale, no-longer-current success (agent_catalog.py's own
+ *   comment on this exact branch). Settings' "Check" validates a model's
+ *   registration, not this live evidence, so no UI door is named; the
+ *   provider canary (`provider_canary.py`) is the only thing that changes
+ *   this field, and is named honestly instead of a step this atelier does
+ *   not offer today.
+ * - `provider-probe-failed`: the latest receipt is itself a genuine
+ *   failure -- one case, but for the same reason as above, no Settings door
+ *   repairs a live connection, so none is claimed.
  */
-const NOT_STARTABLE_REASON_SENTENCE: Readonly<Record<string, (role: string) => string>> = {
+const NOT_STARTABLE_REASON_SENTENCE: Readonly<Record<NotStartableReason, (role: string) => string>> = {
   "agent-executor-binding-unavailable": (role) =>
     `${role}'s model can't run on this atelier yet — choose a different configuration.`,
-  "model-not-registered": (role) => `Needs a model for ${role} — set one in Settings.`,
+  "model-not-registered": (role) =>
+    `${role}'s configuration isn't registered — choose a different one, or register a model in Settings.`,
   "provider-probe-receipt-missing": (role) =>
-    `${role}'s connection hasn't been checked yet — check it in Settings.`,
-  "provider-probe-failed": (role) => `${role}'s connection failed its last check — fix it in Settings.`
+    `${role}'s connection has no current check on file — the next canary run renews it.`,
+  "provider-probe-failed": (role) =>
+    `${role}'s last connection check failed — the next canary run will retry it.`
 };
 
-export function startNotStartableReason(role: string, reason: string | null): string {
-  if (reason === null) return workflowStartCopy.startNeedsConfiguration(role);
-  return (NOT_STARTABLE_REASON_SENTENCE[reason] ?? (() => reason))(role);
+export function startNotStartableReason(role: string, reason: NotStartableReason | null): string {
+  return reason === null
+    ? workflowStartCopy.startNeedsConfiguration(role)
+    : NOT_STARTABLE_REASON_SENTENCE[reason](role);
 }
 
 export function pinnedModelLine(model: string, account: string, unavailable: string): string {

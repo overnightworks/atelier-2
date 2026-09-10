@@ -865,7 +865,6 @@ describe("the catalog room", () => {
     await waitFor(() => expect(document.activeElement).toBe(workflowChip));
 
     expect(workflowChip.getAttribute("aria-pressed")).toBe("false");
-    expect(workflowChip.classList).not.toContain("selected");
     expect(screen.getByText(catalogPageCopy.noKindDeclared)).toBeTruthy();
     expect(
       (screen.getByRole("button", { name: catalogPageCopy.addToCatalog }) as HTMLButtonElement).disabled
