@@ -1,3 +1,5 @@
+import { PRODUCT_NAME } from "./productName";
+
 /**
  * What this installation's one project is called on screen.
  *
@@ -15,4 +17,4 @@
  * When #133 gives a project a backend identity, this constant is replaced by
  * that name, and every screen that reads it follows.
  */
-export { PRODUCT_NAME as THE_ONE_PROJECT } from "./productName";
+export const THE_ONE_PROJECT = PRODUCT_NAME;

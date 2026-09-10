@@ -245,7 +245,7 @@ def _invalid_model_id_error() -> ValueError:
 
 
 def _exact_model_id(value: object) -> str:
-    if type(value) is not str:
+    if not isinstance(value, str):
         raise _invalid_model_id_error()
     if not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS or any(
         character.isspace() for character in value
