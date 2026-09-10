@@ -354,8 +354,9 @@ the only question before anything is built; a reviewer judges the plan the item
 carries against its owner documents; then the builder, review, release and
 open-PR nodes of `issue-to-pr` follow, under the same tool grants, budget,
 schemas and adapter operations. Two things about the builder differ: it is
-handed the reviewed plan under `plan` and follows the item body where the two
-disagree, and it pins no model, so the cast rather than the document decides
+handed the reviewed plan under `result of plan_review: result`, the label a
+composed job gives an earlier node's work, and follows the item body where the
+two disagree, and it pins no model, so the cast rather than the document decides
 which provider builds. Plan review and candidate review are one role, filled
 once, in a provider family different from the builder's. Its two waits are
 answer-or-cancel doors: their schemas admit one word

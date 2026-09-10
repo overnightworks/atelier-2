@@ -70,23 +70,24 @@ nodes:
     mode: headless
     depends_on: [pull]
     instruction: >-
-      Review the item body carried under "item_body" against the owner
+      Review the work item carried under "context" against the owner
       documents carried under "owner_documents". The pull decision carried
-      under "context" is the operator's own ruling that this item is worth
-      building; it settles that question and never contradicts the item body.
+      under "result of pull: decision" is the operator's own ruling that this
+      item is worth building; it settles that question and never contradicts
+      the item body.
       You cannot read files, run anything, or use tools in this headless call;
       these artifacts are your only evidence. Pass a plan only when its risks,
       steps, files, and tests are sufficient to implement the item without
       contradicting its owners; otherwise revise it. Revise only with at least
       one risk; cannot-judge must carry a reason.
     inputs:
-      - name: item_body
+      - name: context
         from:
           graph_input: context
       - name: owner_documents
         from:
           graph_input: owner_documents
-      - name: context
+      - name: pull_decision
         from:
           node: pull
           output: decision
@@ -109,11 +110,11 @@ nodes:
       pushing asks nothing of you here. Read AGENTS.md in this workspace and
       work to it. Implement the work item carried under "context": its body
       is the whole brief, and nothing outside this workspace is yours to
-      change. The reviewed plan carried under "plan" is the route through it;
-      where that plan and the item body disagree, follow the body and name the
-      disagreement in your summary. Leave the tree green -- the atelier runs
-      the project's own declared verification here after you finish, and a red
-      one ends the attempt with no candidate.
+      change. The reviewed plan carried under "result of plan_review: result"
+      is the route through it; where that plan and the item body disagree,
+      follow the body and name the disagreement in your summary. Leave the
+      tree green -- the atelier runs the project's own declared verification
+      here after you finish, and a red one ends the attempt with no candidate.
       Your edited workspace is the candidate: the atelier captures it and
       publishes it through the push-atelier-commit grant on its own, so you
       call no tool to publish and none exists here. Return a JSON object
@@ -134,7 +135,7 @@ nodes:
       - name: context
         from:
           graph_input: context
-      - name: plan
+      - name: plan_review_result
         from:
           node: plan_review
           output: result

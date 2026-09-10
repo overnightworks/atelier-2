@@ -32,6 +32,7 @@ from atelier2.adapters.git_transport.effects import (
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.openapi import API_PREFIX
+from atelier2.application.compose_node_job import ORDER_HEADING, RESULT_HEADING
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -45,7 +46,6 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effect_requests import GitCommitIdentity
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -55,20 +55,18 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
     RunState,
     WorkflowRevision,
 )
-from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
-    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
     WorkItemKind,
+    work_item_order_document,
 )
 from atelier2.contracts.workflow_executability import (
     what_a_v3_document_still_waits_for,
@@ -91,34 +89,37 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 from tests.scenarios.issue_observation import FakeTrackerItemSource
+from tests.scenarios.issue_to_pr_catalog import (
+    publish_issue_to_pr_catalog,
+    published_schema,
+)
 from tests.scenarios.projects import declaring_verification, git_project, run_git
 from tests.scenarios.run_waiting import wait_for_run_state
-from tests.scenarios.runs import publish_pinned_revisions, submit_wait_answer
+from tests.scenarios.runs import submit_wait_answer
 from tests.scenarios.work_item_claims import fake_agent_claim_executable
 
 WORKFLOW_PATH = Path("workflows/head-loop.yaml")
-BUDGET_PATH = Path("workflows/budgets/push-implement.json")
-SCHEMA_DIRECTORY = Path("workflows/schemas")
-PINNED_SCHEMA_NAMES = (
+OWN_SCHEMA_NAMES = (
     "nonempty_string",
     "requestion_result",
     "head_loop_pull_decision",
     "plan_review_result",
-    "issue_to_pr_candidate_report",
-    "code_review_result",
-    "issue_to_pr_release_decision",
 )
+"""What this document pins beyond the set it shares with `issue-to-pr`."""
 
 REQUESTION_NODE = "requestion"
 PULL_WAIT = "pull"
+PULL_DECISION_OUTPUT = "decision"
 PLAN_REVIEW_NODE = "plan_review"
+PLAN_REVIEW_OUTPUT = "result"
+BUILD_NODE = "build"
 REVIEW_NODE = "review"
 RELEASE_WAIT = "authorize_pr"
 NODES_IN_ORDER = (
     REQUESTION_NODE,
     PULL_WAIT,
     PLAN_REVIEW_NODE,
-    "build",
+    BUILD_NODE,
     REVIEW_NODE,
     RELEASE_WAIT,
     "open_pr",
@@ -130,6 +131,13 @@ RUN = RunId("v3/head-loop")
 ITEM_ORDER = "context"
 OWNER_DOCUMENTS_ORDER = "owner_documents"
 OWNER_DOCUMENTS = "AGENTS.md: grow the repository only to remove a named problem."
+OBSERVED_ITEM = ObservedWorkItemRevision(
+    ITEM,
+    WorkItemKind.ISSUE,
+    b"Write the line this run is for.\n\n## Bereich\none.txt\n",
+    WorkItemChangeMarker("issue-1232-v1"),
+    RecordedAt("2026-09-10T12:00:00Z"),
+)
 
 PLANNER_PROVIDER = ProviderId("planner-family")
 REVIEWER_PROVIDER = ProviderId("reviewer-family")
@@ -202,7 +210,7 @@ class _Stage:
 
     runtime: DbosRuntime
     github: GitHubEffectAdapterFactory
-    builder: RecordingAgentExecutorFactoryV2
+    executors: tuple[RecordingAgentExecutorFactoryV2, ...]
     workflow: WorkflowRevision
 
 
@@ -292,70 +300,10 @@ def _runtime(
     return runtime, github
 
 
-def _push_operation() -> PublishedRevision:
-    """The push operation whose hash the shipped push grant names.
-
-    The live revision pins the operator as author and one exact model as
-    committer, and the shipped grant's hash is derived from those bytes, so a
-    start only resolves the grant this document pins when the same pair is
-    republished here.
-    """
-    address = "44832414+FlexOr2@users.noreply.github.com"
-    return PublishedRevision(
-        RevisionKind.ADAPTER_OPERATION,
-        json.dumps(
-            {
-                "operation": AdapterOperationName.PUSH_ATELIER_COMMIT.value,
-                "author": GitCommitIdentity("Felix Hummert", address).as_json(),
-                "committer": GitCommitIdentity("Grok 4.6", address).as_json(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    )
-
-
-def _push_grant(operation: PublishedRevision) -> PublishedRevision:
-    return PublishedRevision(
-        RevisionKind.TOOL,
-        json.dumps(
-            {
-                "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
-                "operation": {
-                    "ref": "push-atelier-commit",
-                    "revision": operation.revision_hash.value,
-                },
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    )
-
-
 def _publish_catalog(runtime: DbosRuntime) -> WorkflowRevision:
     """Everything the shipped document pins, then the document itself."""
-    push_operation = _push_operation()
-    publish_pinned_revisions(
-        runtime.engine,
-        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
-        *(
-            PublishedRevision(
-                RevisionKind.SCHEMA,
-                (SCHEMA_DIRECTORY / f"{name}.json").read_bytes(),
-            )
-            for name in PINNED_SCHEMA_NAMES
-        ),
-        PublishedRevision(RevisionKind.BUDGET_POLICY, BUDGET_PATH.read_bytes()),
-        push_operation,
-        PublishedRevision(RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'),
-        _push_grant(push_operation),
-        PublishedRevision(
-            RevisionKind.TOOL,
-            json.dumps(
-                {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value},
-                separators=(",", ":"),
-            ).encode(),
-        ),
+    publish_issue_to_pr_catalog(
+        runtime.engine, *(published_schema(name) for name in OWN_SCHEMA_NAMES)
     )
     workflow = WorkflowRevision(WORKFLOW_PATH.read_bytes())
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -393,19 +341,12 @@ def _publish_bindings(runtime: DbosRuntime) -> AgentBindingSet:
 
 def _start(stage: _Stage, bindings: AgentBindingSet) -> Response:
     """Start the run the way the head does: the bindings, the issue, the owners."""
-    item = ObservedWorkItemRevision(
-        ITEM,
-        WorkItemKind.ISSUE,
-        b"Write the line this run is for.\n\n## Bereich\none.txt\n",
-        WorkItemChangeMarker("issue-1232-v1"),
-        RecordedAt("2026-09-10T12:00:00Z"),
-    )
     client = durable_api_client(
         stage.runtime,
         served_project_id=PROJECT,
         tracker_item_source=FakeTrackerItemSource(
-            snapshot_answer=WorkItemRevisionObserved(item),
-            expected_snapshot_reference=item.item,
+            snapshot_answer=WorkItemRevisionObserved(OBSERVED_ITEM),
+            expected_snapshot_reference=OBSERVED_ITEM.item,
         ),
     )
     return client.post(
@@ -435,10 +376,10 @@ def _started_stage(
     tmp_path: Path, *, requestion_result: bytes, review_result: bytes
 ) -> _Stage:
     """A launched run of the shipped document, standing at its first question."""
-    planner, reviewer, builder = _executors(requestion_result, review_result)
-    runtime, github = _runtime(tmp_path, (planner, reviewer, builder))
+    executors = _executors(requestion_result, review_result)
+    runtime, github = _runtime(tmp_path, executors)
     workflow = _publish_catalog(runtime)
-    stage = _Stage(runtime, github, builder, workflow)
+    stage = _Stage(runtime, github, executors, workflow)
     response = _start(stage, _publish_bindings(runtime))
     assert response.status_code == 201, response.text
     runtime.launch()
@@ -494,10 +435,25 @@ def _nodes_that_ran_an_agent(stage: _Stage) -> set[str]:
         )
 
 
-def _job_handed_to_the_builder(stage: _Stage) -> str:
-    assert stage.builder.opened is not None
-    (built,) = stage.builder.opened.requests
-    return built.job_bytes.decode("utf-8")
+def _job_handed_to(stage: _Stage, node_id: str) -> str:
+    """The exact request bytes one node's agent received, as its executor got them.
+
+    Read from the recorded execution request rather than recomposed here, so the
+    labels asserted against it are the ones the production composition wrote.
+    """
+    (job,) = (
+        request.job_bytes
+        for factory in stage.executors
+        if factory.opened is not None
+        for request in factory.opened.requests
+        if request.node_id == node_id
+    )
+    return job.decode("utf-8")
+
+
+def _carried_under(heading: str, material: bytes) -> str:
+    """One composed section as its reader sees it: the heading, then its material."""
+    return f"{heading}\n\n{material.decode('utf-8')}"
 
 
 def test_the_head_loop_document_is_one_chain_of_seven_nodes() -> None:
@@ -531,13 +487,16 @@ def test_an_overtaken_requestion_stands_at_the_pull_wait_before_any_builder_star
         stage.runtime.close()
 
 
-def test_the_pulled_item_reaches_the_builder_with_the_reviewed_plan(
+def test_the_pulled_item_reaches_both_agents_under_the_labels_that_deliver_it(
     tmp_path: Path,
 ) -> None:
     """Answering the pull sends the item through plan review and into the build.
 
-    The builder can only hold the reviewed plan if `plan_review` answered
-    first, so the job it was handed is where that order is read.
+    A job labels its material by where it came from, never by the alias a node
+    declared for it: an order announces itself under the graph input's own name,
+    and an earlier node's work under that node and the output it wrote. What the
+    two instructions tell their agents to read has to be those labels, so the
+    reviewer's and the builder's own requests are where they are read.
     """
     stage = _started_stage(
         tmp_path, requestion_result=STILL_A_PROBLEM, review_result=APPROVING_REVIEW
@@ -546,8 +505,27 @@ def test_the_pulled_item_reaches_the_builder_with_the_reviewed_plan(
         _question_at(stage, PULL_WAIT)
         _answer(stage, PULL_WAIT, PULL_ANSWER)
         _question_at(stage, RELEASE_WAIT)
+        reviewed = _job_handed_to(stage, PLAN_REVIEW_NODE)
+        built = _job_handed_to(stage, BUILD_NODE)
 
-        assert PASSED_PLAN.decode("utf-8") in _job_handed_to_the_builder(stage)
+        item_order = ORDER_HEADING.format(name=ITEM_ORDER)
+        item_document = work_item_order_document(OBSERVED_ITEM)
+        assert _carried_under(item_order, item_document) in reviewed
+        assert (
+            _carried_under(
+                RESULT_HEADING.format(node=PULL_WAIT, name=PULL_DECISION_OUTPUT),
+                PULL_ANSWER,
+            )
+            in reviewed
+        )
+        assert _carried_under(item_order, item_document) in built
+        assert (
+            _carried_under(
+                RESULT_HEADING.format(node=PLAN_REVIEW_NODE, name=PLAN_REVIEW_OUTPUT),
+                PASSED_PLAN,
+            )
+            in built
+        )
     finally:
         stage.runtime.close()
 
