@@ -311,6 +311,22 @@ def _version_answering(program: str, version: str | None) -> str:
     ) + program
 
 
+def stand_in_bubblewrap(directory: Path) -> Path:
+    """An executable named `bwrap` that fences nothing.
+
+    A deployment fake has to name the enforcer its launches would start, and a
+    test that never starts one only needs a path that could be it. Every proof
+    about the fence itself names this host's own bubblewrap instead.
+    """
+
+    tools = directory / "tools"
+    tools.mkdir(exist_ok=True)
+    bubblewrap = tools / "bwrap"
+    bubblewrap.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    bubblewrap.chmod(0o755)
+    return bubblewrap
+
+
 def claude_search_path(directory: Path) -> str:
     """A search path carrying the bubblewrap the scrubbing CLI insists on.
 
@@ -319,12 +335,7 @@ def claude_search_path(directory: Path) -> str:
     deployment this executor accepts.
     """
 
-    tools = directory / "tools"
-    tools.mkdir(exist_ok=True)
-    bubblewrap = tools / "bwrap"
-    bubblewrap.write_text(f"#!{sys.executable}\n", encoding="utf-8")
-    bubblewrap.chmod(0o755)
-    return str(tools)
+    return str(stand_in_bubblewrap(directory).parent)
 
 
 PERSONAL_SUBSCRIPTION_TYPE = "max"

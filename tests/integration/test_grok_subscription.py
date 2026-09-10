@@ -17,6 +17,7 @@ import pytest
 import sqlalchemy as sa
 from dbos import DBOSClient
 
+from atelier2.adapters.bwrap_sandbox import resolved_sandbox_executable
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -310,8 +311,15 @@ def grok_subscription_deployment(
     authentication = credentials / "auth.json"
     authentication.write_bytes(b"{}")
     authentication.chmod(0o600)
+    search_path = os.environ.get("PATH", "/usr/bin")
     return GrokSubscriptionSettings(
-        executable, workspace, credentials, os.environ.get("PATH", "/usr/bin")
+        executable,
+        workspace,
+        credentials,
+        search_path,
+        # This host's own bubblewrap, because the attestations below really
+        # fence a start; the fake toolchain above is what does not run.
+        resolved_sandbox_executable(search_path),
     )
 
 
@@ -2898,7 +2906,7 @@ def test_a_deployment_whose_host_cannot_fence_this_vector_is_refused_at_composit
     fenceless.mkdir()
     settings = replace(
         grok_named_deployment(tmp_path, "deployment", INTROSPECTING_GROK),
-        search_path=str(fenceless),
+        sandbox_executable=fenceless / "bwrap",
     )
 
     with pytest.raises(GrokExecutableUnsupported, match="bwrap"):

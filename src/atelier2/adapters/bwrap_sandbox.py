@@ -35,6 +35,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from atelier2.adapters.bounded_processes import (
+    BoundedProcessFailure,
+    bounded_process_streams,
+)
 from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.contracts.sandbox_grants import (
     SandboxedLaunch,
@@ -45,6 +49,9 @@ from atelier2.contracts.sandbox_grants import (
 SANDBOX_EXECUTABLE_NAME = "bwrap"
 
 _HOST_PROBE_TIMEOUT_SECONDS = 20.0
+_PROBE_OUTPUT_BYTES = 4_096
+"""What a probe may write before this seam stops reading it: one marker file and
+whatever an enforcer says when it refuses, and nothing that could fill memory."""
 _PROBE_PREFIX = "atelier2-fence-probe-"
 _PROBE_MARKER_NAME = "grant"
 _PROBE_MARKER_TEXT = "one directory, handed over as its descriptor\n"
@@ -95,7 +102,8 @@ SYSTEM_READ_ONLY_FILES = (
     Path("/etc/resolv.conf"),
     Path("/etc/hosts"),
     Path("/etc/nsswitch.conf"),
-    Path("/etc/ssl"),
+    Path("/etc/ssl/certs"),
+    Path("/etc/ssl/openssl.cnf"),
     Path("/etc/ca-certificates"),
     Path("/etc/ca-certificates.conf"),
     Path("/etc/passwd"),
@@ -104,11 +112,15 @@ SYSTEM_READ_ONLY_FILES = (
 )
 """The named parts of `/etc` a tool that speaks HTTPS needs, and no more.
 
-The resolver's three files answer a hostname, the certificate store answers
-whether that answer may be trusted, the account files let a runtime name the
-user it runs as, and the zone file makes its timestamps this host's. Anything
-else a real toolchain turns out to need is a named gap on the item that owns
-this fence, never a widening nobody wrote down.
+The resolver's three files answer a hostname, the public certificate material
+answers whether that answer may be trusted, the account files let a runtime
+name the user it runs as, and the zone file makes its timestamps this host's.
+
+`/etc/ssl` is not granted whole: the same directory that holds the public
+certificate store holds `/etc/ssl/private`, the keys a server on this account
+can read. Only what a client needs to verify a certificate is named here.
+Anything else a real toolchain turns out to need is a named gap on the item
+that owns this fence, never a widening nobody wrote down.
 """
 
 
@@ -243,7 +255,7 @@ def _framed_paths(value: object) -> tuple[Path, ...]:
 
 
 def toolchain_sandbox(
-    executable: Path, search_path: str, state_directory: Path
+    executable: Path, enforcer: Path, state_directory: Path
 ) -> SandboxedLaunch:
     """Grant one command-line toolchain its own files, and nothing beside them.
 
@@ -259,37 +271,52 @@ def toolchain_sandbox(
     one statically linked executable, and a tool it shells out to that stands
     under no system root is not there.
 
-    The host is verified on every start rather than remembered from
-    composition: an enforcer that disappeared has to stop the next launch, not
-    the next restart.
+    The enforcer is the absolute path this deployment was configured with,
+    never a name looked up again on a search path, and it is verified on every
+    start rather than remembered from composition: one that disappeared or
+    stopped working has to stop the next launch, not the next restart.
     """
 
-    enforcer = verified_sandbox_host(search_path)
+    verified_sandbox_host(enforcer)
     readable = _narrowed((executable, *SYSTEM_READ_ONLY_ROOTS, *SYSTEM_READ_ONLY_FILES))
     return SandboxedLaunch(enforcer, SandboxGrants((state_directory,), readable))
 
 
-def verified_sandbox_host(search_path: str) -> Path:
-    """The enforcer this host offers, or the reason it may not serve fenced work.
+def resolved_sandbox_executable(search_path: str) -> Path:
+    """Where this host keeps its enforcer, asked once when a deployment is composed.
+
+    A name is looked up here and nowhere else: what a launch starts is the
+    absolute path this answer became, so no later change to a search path can
+    put another binary in the fence's place. A host that carries none answers
+    with the bare name, which no start accepts -- an executor that needs a
+    fence is refused where its startability is probed, and the house it is one
+    executor of still serves.
+    """
+
+    found = shutil.which(SANDBOX_EXECUTABLE_NAME, path=search_path)
+    return Path(found) if found is not None else Path(SANDBOX_EXECUTABLE_NAME)
+
+
+def verified_sandbox_host(enforcer: Path) -> None:
+    """Refuse an enforcer this host cannot really fence a start with.
 
     The capability is probed, never read off a version number: `--bind-fd`
     reached different releases through different distributions, so a number is
     a claim about a build while the option is the fact. One throwaway start
-    answers all of it at once -- that bubblewrap is here, that this account may
-    still open a user namespace, that every option a launch uses parses, and
-    that a directory handed over as a descriptor really arrives -- because it
-    is that start, composed by the same function a job's is.
+    answers all of it at once -- that this binary is here, that this account
+    may still open a user namespace, that every option a launch uses parses,
+    and that a directory handed over as a descriptor really arrives -- because
+    it is that start, composed by the same function a job's is.
     """
 
-    found = shutil.which(SANDBOX_EXECUTABLE_NAME, path=search_path)
-    if found is None:
+    if not enforcer.is_absolute():
         raise SandboxUnavailable(
-            f"serving a tool-bearing provider needs {SANDBOX_EXECUTABLE_NAME} on "
-            f"the deployment's search path, and {search_path!r} carries none"
+            f"serving a tool-bearing provider needs {SANDBOX_EXECUTABLE_NAME} at an "
+            f"absolute path, and this deployment named {enforcer}: a name is "
+            "resolved again wherever a launch stands, which for a fenced start is "
+            "a directory a provider writes"
         )
-    enforcer = Path(found)
     _attest_enforcer(enforcer)
-    return enforcer
 
 
 def _attest_enforcer(enforcer: Path) -> None:
@@ -322,24 +349,29 @@ def _answered(
     inherited: tuple[int, ...],
     enforcer: Path,
 ) -> str:
+    """What one probe start wrote, under a byte bound and a deadline of its own."""
+
     refusal = f"{enforcer} could not start the fence this deployment needs"
     try:
-        answer = subprocess.run(
+        process = subprocess.Popen(
             arguments,
-            capture_output=True,
-            check=False,
             cwd=entered,
-            encoding="utf-8",
-            errors="replace",
             pass_fds=inherited,
             stdin=subprocess.DEVNULL,
-            timeout=_HOST_PROBE_TIMEOUT_SECONDS,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError) as error:
+        return_code, answer, diagnostics = bounded_process_streams(
+            process, _HOST_PROBE_TIMEOUT_SECONDS, _PROBE_OUTPUT_BYTES
+        )
+    except (OSError, subprocess.SubprocessError, BoundedProcessFailure) as error:
         raise SandboxUnavailable(f"{refusal}: {error}") from error
-    if answer.returncode != 0:
-        raise SandboxUnavailable(f"{refusal}: {answer.stderr.strip()}")
-    return answer.stdout
+    if return_code != 0:
+        raise SandboxUnavailable(
+            f"{refusal}: {diagnostics.decode('utf-8', 'replace').strip()}"
+        )
+    return answer.decode("utf-8", "replace")
 
 
 def _narrowed(paths: tuple[Path, ...]) -> tuple[Path, ...]:

@@ -34,6 +34,11 @@ def guarded_arguments(
 
     guarded = (
         sys.executable,
+        # Isolated, because this interpreter starts in the directory a provider
+        # writes: without it Python would import this module through whatever
+        # `atelier2` package that directory happens to hold, before the guard
+        # has joined containment or the fence exists.
+        "-I",
         "-m",
         GUARD_MODULE,
         "--cgroup",

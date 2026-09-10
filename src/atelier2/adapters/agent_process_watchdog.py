@@ -18,6 +18,11 @@ from typing import Any
 
 from atelier2.adapters.agent_process_exec_guard import guarded_arguments
 from atelier2.adapters.bwrap_sandbox import entered_fence, sandbox_from_frame
+from atelier2.adapters.process_containment import (
+    ask_provider_to_end,
+    cgroup_populated,
+    killpg,
+)
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.ports.agent_executions import (
@@ -190,6 +195,7 @@ class Watchdog:
         self._termination_escalated = False
         self._termination_disposition: str | None = None
         self._termination_owner: str | None = None
+        self._enforcer_pid: int | None = None
         self._owner_dead = False
 
     def serve(self, announce_ready: Callable[[], None]) -> None:
@@ -476,6 +482,7 @@ class Watchdog:
                     start_new_session=True,
                 )
             self._process = process
+            self._enforcer_pid = process.pid if sandbox is not None else None
             self._standard_input = standard_input
             launch_response = encode_control_frame({"type": "STARTED"})
             try:
@@ -694,7 +701,7 @@ class Watchdog:
             if (
                 return_code is not None
                 and self._provider_output_closed()
-                and not _cgroup_populated(self._cgroup)
+                and not cgroup_populated(self._cgroup)
             ):
                 process.wait()
                 self._publish_process_completion(now)
@@ -703,7 +710,7 @@ class Watchdog:
             return
         if (
             process.poll() is not None
-            and not _cgroup_populated(self._cgroup)
+            and not cgroup_populated(self._cgroup)
             and self._provider_output_closed()
         ):
             process.wait()
@@ -732,13 +739,15 @@ class Watchdog:
             "SUPERVISION": _CoordinatorState.SUPERVISION_TERMINATING,
             "OWNER_DEATH": _CoordinatorState.OWNER_DEATH_TERMINATING,
         }[owner]
-        if self._process.poll() is not None and not _cgroup_populated(self._cgroup):
+        if self._process.poll() is not None and not cgroup_populated(self._cgroup):
             self._termination_disposition = "EXITED_BEFORE_SIGNAL"
             if self._provider_output_closed():
                 self._process.wait()
                 self._finish_termination(now)
                 return
-        elif self._process.poll() is None and _killpg(self._process, signal.SIGTERM):
+        elif self._process.poll() is None and ask_provider_to_end(
+            self._process, self._cgroup, self._enforcer_pid, signal.SIGTERM
+        ):
             self._termination_disposition = "REAPED_AFTER_TERM"
         self._termination_deadline = now + self._grace
 
@@ -760,11 +769,11 @@ class Watchdog:
             return
         self._termination_escalated = True
         self._termination_deadline = None
-        if _cgroup_populated(self._cgroup):
+        if cgroup_populated(self._cgroup):
             (self._cgroup / "cgroup.kill").write_text("1", encoding="ascii")
             self._termination_disposition = "REAPED_AFTER_KILL"
         if self._process is not None and self._process.poll() is None:
-            _killpg(self._process, signal.SIGKILL)
+            killpg(self._process, signal.SIGKILL)
         self._termination_deadline = now + max(1.0, self._grace)
 
     def _finish_termination(self, now: float) -> None:
@@ -1159,19 +1168,6 @@ def _decode_exchange_request(
         cancellation_frame,
         close_input,
     )
-
-
-def _killpg(process: subprocess.Popen[bytes], signal_number: int) -> bool:
-    try:
-        os.killpg(process.pid, signal_number)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _cgroup_populated(cgroup: Path) -> bool:
-    events = (cgroup / "cgroup.events").read_text(encoding="ascii").splitlines()
-    return "populated 1" in events
 
 
 def main(arguments: Sequence[str] | None = None) -> None:

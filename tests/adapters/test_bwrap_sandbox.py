@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from atelier2.adapters.bwrap_sandbox import (
+    SANDBOX_EXECUTABLE_NAME,
     SYSTEM_READ_ONLY_FILES,
     SYSTEM_READ_ONLY_ROOTS,
+    resolved_sandbox_executable,
     sandbox_frame,
     sandbox_from_frame,
     sandboxed_arguments,
@@ -149,28 +152,31 @@ def test_a_prompt_of_shell_metacharacters_stays_one_argument() -> None:
     assert fenced[fenced.index(END_OF_FLAGS) + 1 :] == (str(TOOLCHAIN), "-p", prompt)
 
 
-def test_a_grant_names_the_toolchain_and_the_system_and_never_a_search_path(
-    tmp_path: Path,
-) -> None:
-    """What a shell would look through is not what a child may read: a search
-    path carrying a home directory, a checkout or a scratch root would hand all
-    three over, so the grant names its roots itself."""
+def _granted(tmp_path: Path) -> SandboxGrants:
+    """What one toolchain standing beside its enforcer is granted."""
 
     tools = tmp_path / "tools"
     tools.mkdir()
-    _fake_enforcer(tools)
     toolchain = tools / "grok"
     toolchain.touch()
     state = tmp_path / "state"
     state.mkdir()
-    search_path = ":".join((str(tools), str(tmp_path), "relative/bin"))
+    return toolchain_sandbox(toolchain, _fake_enforcer(tools), state).grants
 
-    grants = toolchain_sandbox(toolchain, search_path, state).grants
 
-    assert grants.writable == (state,)
+def test_a_grant_names_the_toolchain_and_the_system_and_nothing_around_them(
+    tmp_path: Path,
+) -> None:
+    """The directory a toolchain stands in is not the toolchain: granting it
+    would hand over whatever else was installed, deployed or unpacked beside
+    the executable, so the grant names the file and the system roots itself."""
+
+    grants = _granted(tmp_path)
+
+    assert grants.writable == (tmp_path / "state",)
     assert tmp_path not in grants.readable_and_executable
-    assert tools not in grants.readable_and_executable
-    assert set(grants.readable_and_executable) == {toolchain} | {
+    assert tmp_path / "tools" not in grants.readable_and_executable
+    assert set(grants.readable_and_executable) == {tmp_path / "tools" / "grok"} | {
         path
         for path in (*SYSTEM_READ_ONLY_ROOTS, *SYSTEM_READ_ONLY_FILES)
         if path.exists()
@@ -183,23 +189,48 @@ def test_a_grant_hands_over_no_directory_of_this_account_beyond_its_own(
     """The named `/etc` files, and not the directory that holds this host's
     accounts, services and credentials."""
 
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    _fake_enforcer(tools)
-    toolchain = tools / "grok"
-    toolchain.touch()
-    state = tmp_path / "state"
-    state.mkdir()
-
-    grants = toolchain_sandbox(toolchain, str(tools), state).grants
+    grants = _granted(tmp_path)
 
     assert Path("/etc") not in grants.readable_and_executable
     assert Path.home() not in grants.readable_and_executable
 
 
-def test_a_deployment_without_bubblewrap_is_told_so_by_name(tmp_path: Path) -> None:
-    with pytest.raises(SandboxUnavailable, match="search path"):
-        verified_sandbox_host(str(tmp_path))
+def test_a_grant_of_certificate_material_names_no_private_key_of_this_host(
+    tmp_path: Path,
+) -> None:
+    """`/etc/ssl` holds both halves: the public store a client verifies with,
+    and the keys any server on this account was issued. Only the first is what
+    speaking HTTPS needs, so only the first is ever named."""
+
+    granted = _granted(tmp_path).readable_and_executable
+
+    assert Path("/etc/ssl") not in granted
+    assert Path("/etc/ssl/private") not in granted
+    assert not [path for path in granted if "private" in path.parts]
+
+
+@pytest.mark.parametrize(
+    "named",
+    (
+        pytest.param(
+            lambda directory: resolved_sandbox_executable(str(directory)),
+            id="a deployment whose search path carries no bubblewrap at all",
+        ),
+        pytest.param(
+            lambda directory: _fake_enforcer(directory).relative_to(directory.anchor),
+            id="a deployment that named one relatively",
+        ),
+    ),
+)
+def test_an_enforcer_this_deployment_cannot_name_absolutely_is_refused(
+    tmp_path: Path, named: Callable[[Path], Path]
+) -> None:
+    """A name that is not an absolute path is resolved against whatever
+    directory a launch stands in, which for this fence is a directory a
+    provider writes -- so it is refused instead of started."""
+
+    with pytest.raises(SandboxUnavailable, match=f"{SANDBOX_EXECUTABLE_NAME} at an"):
+        verified_sandbox_host(named(tmp_path))
 
 
 def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_that_option(
@@ -209,10 +240,8 @@ def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_that_option(
     releases through different distributions, and a build without it would
     leave the leased directory to be found by name."""
 
-    _fake_enforcer(tmp_path, refuses="--bind-fd")
-
     with pytest.raises(SandboxUnavailable, match="could not start the fence"):
-        verified_sandbox_host(str(tmp_path))
+        verified_sandbox_host(_fake_enforcer(tmp_path, refuses="--bind-fd"))
 
 
 def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
@@ -220,10 +249,8 @@ def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
 ) -> None:
     """A start that answers without the directory it was given proves nothing."""
 
-    _fake_enforcer(tmp_path, answers="")
-
     with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
-        verified_sandbox_host(str(tmp_path))
+        verified_sandbox_host(_fake_enforcer(tmp_path, answers=""))
 
 
 def test_a_grant_survives_the_launch_frame_it_travels_in() -> None:

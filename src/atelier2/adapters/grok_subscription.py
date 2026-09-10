@@ -376,6 +376,15 @@ class GrokSubscriptionSettings:
     workspace: Path
     credential_directory: Path
     search_path: str
+    sandbox_executable: Path
+    """The enforcer this deployment fences its tool-bearing calls with.
+
+    It is configured rather than looked up per launch: a name resolved again on
+    a search path is whatever stands first on that path when the launch runs.
+    Whether the path is absolute and whether the binary can really fence a
+    start is the enforcer's own boundary to answer, and `verified_sandbox_host`
+    answers it before every start rather than once at composition.
+    """
 
     def __post_init__(self) -> None:
         executable = self.executable.resolve()
@@ -1464,7 +1473,9 @@ def _workspace_tool_sandbox(
     descriptor its launcher verified, so it is granted without being named.
     """
 
-    return toolchain_sandbox(settings.executable, settings.search_path, state_directory)
+    return toolchain_sandbox(
+        settings.executable, settings.sandbox_executable, state_directory
+    )
 
 
 def _jobless_invocation_answer(

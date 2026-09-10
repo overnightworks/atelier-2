@@ -15,6 +15,7 @@ from atelier2.adapters.agent_workspaces import (
     AgentScratchRootRefused,
     LocalAgentAttemptWorkspaceOwner,
 )
+from atelier2.adapters.bwrap_sandbox import resolved_sandbox_executable
 from atelier2.adapters.claude_subscription import (
     MANAGED_POLICY_ROOTS,
     ClaudeExecutableUnsupported,
@@ -848,6 +849,7 @@ def _grok_subscription_settings(
         parsed.grok_workspace,
         parsed.grok_credential_directory,
         search_path,
+        resolved_sandbox_executable(search_path),
     )
     try:
         verify_grok_capability(settings.executable)
