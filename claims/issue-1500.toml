@@ -1,0 +1,7 @@
+claim_id = "8146fb7884d840ff9329fc2f964365ce"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1500-disabled-reasons"
+scope = ["frontend/src/components/WorkflowStartSheet.svelte", "frontend/src/components/CatalogImportSheet.svelte", "frontend/src/lib/catalogPageCopy.ts"]
+opened_commit = "e46f32b6a3c38d0ec44db864d2da5a3a4a4f51a4"
