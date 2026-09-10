@@ -894,6 +894,29 @@ describe("cancelling a run over its cancel door", () => {
     expect(result).toEqual({ status: 202, value: run });
   });
 
+  it("proves(the-cockpit-decodes-the-served-run-cancel-problems): mirrors exactly the run-cancel problems the document publishes", () => {
+    const servedRunCancelProblems = Object.keys(publishedProblems)
+      .filter((code) => code === "run-not-cancellable" || code.startsWith("run-cancellation-"))
+      .sort();
+
+    expect(servedRunCancelProblems).toEqual([
+      "run-cancellation-command-conflict",
+      "run-cancellation-overtaken-by-success",
+      "run-not-cancellable"
+    ]);
+    for (const code of servedRunCancelProblems) {
+      const type = `${PROBLEM_TYPE_PREFIX}${code}`;
+      expect(
+        decodeProblem({
+          type,
+          title: publishedProblemTitle(code),
+          status: 409,
+          detail: "operation-specific detail"
+        }).type
+      ).toBe(type);
+    }
+  });
+
   it.each([
     "run-not-cancellable",
     "run-cancellation-command-conflict",
