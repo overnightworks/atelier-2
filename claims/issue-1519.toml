@@ -1,0 +1,8 @@
+claim_id = "8c91da57c9964d9cb7fb16ce29263f95"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "8fc69b0a61ed6399e421ee0d588fd26e9e58181f"
+branch = "claude/issue-1519-problem-transformer"
+scope = ["frontend/orval.config.ts", "frontend/src/api/client.ts", "frontend/src/api/generated", "frontend/tests/api/client.test.ts", "frontend/tests/api/servedVocabulary.test.ts"]
+opened_commit = "66ee734b629e3caa60ca8b409b96d8094d4d6ca7"
+whole_reason = "Transformer, Config, Generat, Fassade und beide Tests wechseln zusammen, sonst bleibt ein aufruferloses Generat"
