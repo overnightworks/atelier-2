@@ -730,9 +730,18 @@ that one vocabulary and moved nothing else, and a record derived from a record
 stays as frozen as the text it reads.
 """
 
+_MODEL_REGISTRY_ENTRIES_ONE_PER_MODEL = """
+CREATE TABLE host_model_registry_entries (
+ revision_hash TEXT NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL, agent_configuration_revision_hash TEXT NOT NULL, source TEXT NOT NULL, provider_check TEXT NOT NULL, PRIMARY KEY (revision_hash, model_id), UNIQUE (revision_hash, provider_id, model_id, agent_configuration_revision_hash), FOREIGN KEY(revision_hash, provider_id) REFERENCES host_model_registry_revisions (revision_hash, provider_id), FOREIGN KEY(agent_configuration_revision_hash) REFERENCES agent_configuration_revisions (revision_hash), CHECK (length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'), CHECK (length(provider_id) BETWEEN 1 AND 64), CHECK (provider_id GLOB '[a-z]*'), CHECK (provider_id NOT GLOB '*[^a-z0-9._-]*'), CHECK (length(model_id) BETWEEN 1 AND 1024), CHECK (instr(model_id, ' ') = 0 AND instr(model_id, char(9)) = 0 AND instr(model_id, char(10)) = 0 AND instr(model_id, char(13)) = 0), CHECK (length(agent_configuration_revision_hash) = 64 AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'), CHECK (source IN ('discovered', 'operator')), CHECK (provider_check IN ('not-checked', 'checked', 'unknown-at-provider'))
+)
+"""
+"""The registry entry table V40 through V55 published: one entry per model."""
+
 
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     **PUBLISHED_QUEUE_TABLE_SHAPES,
+    (40, "host_model_registry_entries"): _MODEL_REGISTRY_ENTRIES_ONE_PER_MODEL,
+    (55, "host_model_registry_entries"): _MODEL_REGISTRY_ENTRIES_ONE_PER_MODEL,
     (33, "host_project_source_connection_revisions"): (
         _V44_PROJECT_SOURCE_CONNECTION_REVISIONS
     ),
