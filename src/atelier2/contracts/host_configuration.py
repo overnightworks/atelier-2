@@ -275,6 +275,33 @@ class ModelRegistryEntry:
             raise TypeError("model registry provider check must use its typed contract")
 
 
+def _canonical_registry_entries(
+    entries: tuple[ModelRegistryEntry, ...],
+) -> tuple[ModelRegistryEntry, ...]:
+    """The entries in hash order, refusing one model twice under one configuration.
+
+    The configuration only breaks a tie, so a revision holding each model once
+    keeps the hash it was published under.
+    """
+    ordered = tuple(
+        sorted(
+            entries,
+            key=lambda entry: (
+                entry.model_id.encode("utf-8"),
+                entry.agent_configuration_revision_hash.value,
+            ),
+        )
+    )
+    pairs = {
+        (entry.model_id, entry.agent_configuration_revision_hash) for entry in ordered
+    }
+    if len(pairs) != len(ordered):
+        raise ValueError(
+            "model registry entries must be unique per model and configuration"
+        )
+    return ordered
+
+
 @dataclass(frozen=True)
 class ModelRegistryRevision:
     provider_id: ProviderId
@@ -296,11 +323,7 @@ class ModelRegistryRevision:
             not isinstance(entry, ModelRegistryEntry) for entry in self.entries
         ):
             raise TypeError("model registry entries must use their typed contract")
-        ordered = tuple(
-            sorted(self.entries, key=lambda entry: entry.model_id.encode("utf-8"))
-        )
-        if len({entry.model_id for entry in ordered}) != len(ordered):
-            raise ValueError("model registry model ids must be unique per provider")
+        ordered = _canonical_registry_entries(self.entries)
         if len(ordered) > MAXIMUM_MODEL_REGISTRY_ENTRIES:
             raise ValueError(
                 "model registry revisions must contain at most "
