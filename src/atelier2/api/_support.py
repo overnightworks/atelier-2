@@ -5,7 +5,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import assert_never
 
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.dependencies.models import Dependant
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -256,6 +256,51 @@ def _declared_query_parameter_names(dependant: Dependant) -> frozenset[str]:
     for sub_dependant in dependant.dependencies:
         names |= _declared_query_parameter_names(sub_dependant)
     return frozenset(names)
+
+
+def reject_unsupported_query_contract(app: FastAPI) -> None:
+    """Fail at construction, not at the first request that meets the gap.
+
+    `reject_unknown_query_params` trusts each query field's plain `alias` as
+    the name a caller must send. Two shapes break that trust, and neither is
+    declared by any route today: a Pydantic model expanded as one query
+    parameter (FastAPI records the whole type under one alias, not its
+    fields' own names), and a field whose `validation_alias` differs from its
+    `alias` (Pydantic reads a value under the former; the guard would read
+    the latter). Call this once, after every route is installed, so the
+    first route to declare either shape breaks loudly here rather than
+    silently rejecting or admitting the wrong names in production.
+    """
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            _reject_unsupported_query_contract(route.dependant, route.path)
+
+
+def _reject_unsupported_query_contract(dependant: Dependant, route_path: str) -> None:
+    for field in dependant.query_params:
+        annotation = field.field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            raise TypeError(
+                f"{route_path!r} declares query parameter {field.name!r} as a "
+                f"Pydantic model ({annotation.__name__}); "
+                "reject_unknown_query_params does not expand one yet -- teach "
+                "it to before adding this shape."
+            )
+        # Read `field_info.validation_alias` directly, not the `ModelField`
+        # property of the same name: that property collapses an `AliasPath`
+        # or `AliasChoices` form to `None`, which would hide exactly the
+        # mismatch this exists to catch.
+        validation_alias = field.field_info.validation_alias
+        if validation_alias is not None and validation_alias != field.alias:
+            raise RuntimeError(
+                f"{route_path!r} query parameter {field.name!r} sets "
+                f"validation_alias {validation_alias!r}, which differs from "
+                f"its alias {field.alias!r}; reject_unknown_query_params reads "
+                "alias only -- teach it to read validation_alias too before "
+                "using this shape."
+            )
+    for sub_dependant in dependant.dependencies:
+        _reject_unsupported_query_contract(sub_dependant, route_path)
 
 
 def require_sse_accept(request: Request) -> None:

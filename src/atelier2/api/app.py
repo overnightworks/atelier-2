@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Lifespan
 
-from atelier2.api._support import reject_unknown_query_params
+from atelier2.api._support import (
+    reject_unknown_query_params,
+    reject_unsupported_query_contract,
+)
 from atelier2.api.context import (
     AgentCatalogUseCases,
     ApiContext,
@@ -638,8 +641,11 @@ def create_app(
     openapi_document_path = API_PREFIX + "/openapi.json"
     app = FastAPI(
         title="Atelier 2 durable workflow API",
+        # `_install_openapi_document` below takes over serving this path
+        # instead (#1501's own guard needs a real `APIRoute`, not the plain
+        # Starlette one FastAPI would otherwise add here).
         version="1",
-        openapi_url=openapi_document_path,
+        openapi_url=None,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -702,9 +708,35 @@ def create_app(
     )
 
     _install_routers(app)
-
-    install_custom_openapi(app, limits)
+    _install_openapi_document(app, openapi_document_path, limits)
+    reject_unsupported_query_contract(app)
     return app
+
+
+def _install_openapi_document(
+    app: FastAPI, openapi_document_path: str, limits: ApiLimits
+) -> None:
+    """Build, cache, and serve the document at the path this app names it at.
+
+    FastAPI's own automatic route for `openapi_url` is a plain Starlette
+    route (`add_route`), which carries no dependant at all and so could never
+    meet `reject_unknown_query_params` no matter how that guard were wired --
+    `create_app` passes `openapi_url=None` and this takes over the same path
+    as a real `APIRoute` instead, so this self-describing path answers the
+    same guard every route under `API_PREFIX` does (#1501).
+    """
+    install_custom_openapi(app, limits)
+
+    async def serve_openapi_document() -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    app.add_api_route(
+        openapi_document_path,
+        serve_openapi_document,
+        methods=["GET"],
+        include_in_schema=False,
+        dependencies=[Depends(reject_unknown_query_params)],
+    )
 
 
 # Every path the browser can be given cold — reloaded, pasted, bookmarked — must

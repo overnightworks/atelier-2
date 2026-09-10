@@ -145,10 +145,6 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
         ),
     },
     {
-        "names": ("api/openapi.py:openapi",),
-        "why": "FastAPI reads `app.openapi` when it serves the document.",
-    },
-    {
         "names": ("host/logging.py:disabled",),
         "why": "The stdlib `logging.Logger.disabled` flag host/logging.py sets.",
     },
