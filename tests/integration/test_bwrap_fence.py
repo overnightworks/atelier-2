@@ -9,20 +9,20 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from atelier2.adapters import agent_processes as process_module
-from atelier2.adapters.bwrap_sandbox import sandboxed_arguments, toolchain_sandbox
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.contracts.sandbox_grants import (
-    LEASED_DIRECTORY_DESCRIPTOR,
-    SandboxUnavailable,
+from atelier2.adapters.bwrap_sandbox import (
+    entered_fence,
+    toolchain_sandbox,
 )
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.contracts.sandbox_grants import SandboxUnavailable
 from atelier2.ports.agent_executions import AgentProcessCompletion
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
@@ -31,16 +31,17 @@ from tests.scenarios.agents import (
     process_invocation,
 )
 
-INTERPRETER = Path(sys.executable).resolve()
-"""The fake toolchain every proof here runs: this suite's own interpreter.
+INTERPRETER = Path("/usr/bin/python3")
+"""The fake toolchain every proof here runs: the system interpreter.
 
-Resolved, because a fenced child follows this path inside its own namespace,
-where a symlink out of the granted interpreter tree leads nowhere.
+The suite's own interpreter lives outside every granted root, and a fenced
+child reaches nothing that is not granted -- which is the whole point, so the
+fake toolchain is one that stands where a real one does.
 """
 
-SEARCH_PATH = os.pathsep.join((os.environ.get("PATH", "/usr/bin"), sys.base_prefix))
-"""What a deployment of that fake toolchain offers it: this account's own search
-path, plus the interpreter tree the scripts below run on."""
+SEARCH_PATH = os.environ.get("PATH", "/usr/bin")
+"""Where a deployment finds its enforcer. It is not where a child may read:
+this grant names its roots itself."""
 
 _UNFENCEABLE = None
 try:
@@ -73,11 +74,11 @@ for name, path in json.loads(sys.argv[1]).items():
     except OSError as error:
         report[name] = type(error).__name__
 try:
-    with open("/etc/atelier2-probe", "w") as handle:
+    with open(sys.argv[2], "w") as handle:
         handle.write("landed")
-    report["system"] = "written"
+    report["read_only_grant"] = "written"
 except OSError as error:
-    report["system"] = type(error).__name__
+    report["read_only_grant"] = type(error).__name__
 report["environment"] = sorted(os.environ)
 os.write(1, json.dumps(report).encode())
 """
@@ -88,10 +89,44 @@ subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
 time.sleep(300)
 """
 
+_REPORTS_ITS_DESCRIPTORS = """
+import json, os
+descriptors = sorted(os.listdir("/proc/self/fd"))
+climbed = []
+for name in descriptors:
+    try:
+        held = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=int(name))
+    except OSError:
+        continue
+    os.close(held)
+    climbed.append(name)
+kept = [name for name in descriptors if int(name) < 3]
+os.write(1, json.dumps({"descriptors": kept, "climbed": climbed}).encode())
+"""
+
+_ENDS_ON_TERM = """
+import signal, time
+def note(number, frame):
+    open("ended-on-term", "w").write("asked")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, note)
+open("started", "w").write("up")
+time.sleep(120)
+"""
+
 _ECHOES_ITS_LAST_ARGUMENT = """
 import os, sys
 os.write(1, sys.argv[-1].encode())
 """
+
+
+def _wait_for(evidence: Path, seconds: float = 20.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if evidence.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"the fenced child never wrote {evidence}")
 
 
 def _fenced_completion(
@@ -167,7 +202,7 @@ def test_a_fenced_child_writes_its_leased_workspace_and_reaches_nothing_else(
     completion, workspace = _fenced_completion(
         tmp_path,
         "fence/negative",
-        (str(INTERPRETER), "-c", _REPORTS_WHAT_IT_REACHES, reachable),
+        (str(INTERPRETER), "-c", _REPORTS_WHAT_IT_REACHES, reachable, str(INTERPRETER)),
         (("HOME", str(tmp_path / "private-home")), ("PATH", SEARCH_PATH)),
     )
 
@@ -176,7 +211,7 @@ def test_a_fenced_child_writes_its_leased_workspace_and_reaches_nothing_else(
     assert (workspace / "candidate.txt").read_text(encoding="utf-8") == "landed"
     assert report["keys"] == "FileNotFoundError"
     assert report["store"] == "FileNotFoundError"
-    assert report["system"] == "OSError"
+    assert report["read_only_grant"] == "OSError"
 
 
 def test_a_fenced_child_carries_no_variable_of_the_server_that_started_it(
@@ -189,7 +224,7 @@ def test_a_fenced_child_carries_no_variable_of_the_server_that_started_it(
     completion, _ = _fenced_completion(
         tmp_path,
         "fence/environment",
-        (str(INTERPRETER), "-c", _REPORTS_WHAT_IT_REACHES, "{}"),
+        (str(INTERPRETER), "-c", _REPORTS_WHAT_IT_REACHES, "{}", str(INTERPRETER)),
         (("HOME", str(tmp_path / "private-home")), ("PATH", SEARCH_PATH)),
     )
 
@@ -219,23 +254,58 @@ def test_a_prompt_of_shell_metacharacters_is_carried_and_never_run(
     assert not marker.exists()
 
 
-def test_a_job_argument_that_spells_the_handover_placeholder_stays_that_word(
-    tmp_path: Path,
-) -> None:
-    """The launcher resolves a placeholder of the fence, never one of the job."""
+def test_a_fenced_child_holds_no_descriptor_of_this_host(tmp_path: Path) -> None:
+    """The door a grant cannot close: a directory descriptor answers `..`.
+
+    The enforcer closes the one it binds the workspace from, and a start passes
+    it nothing else, so the child keeps its three standard streams and no way
+    to walk the host filesystem past every grant.
+    """
 
     completion, _ = _fenced_completion(
         tmp_path,
-        "fence/placeholder",
-        (
-            str(INTERPRETER),
-            "-c",
-            _ECHOES_ITS_LAST_ARGUMENT,
-            LEASED_DIRECTORY_DESCRIPTOR,
-        ),
+        "fence/descriptors",
+        (str(INTERPRETER), "-c", _REPORTS_ITS_DESCRIPTORS),
     )
 
-    assert completion.standard_output.decode("utf-8") == LEASED_DIRECTORY_DESCRIPTOR
+    report = json.loads(completion.standard_output)
+    assert report["descriptors"] == ["0", "1", "2"]
+    assert report["climbed"] == []
+
+
+def test_a_fenced_child_is_still_asked_to_end_before_it_is_killed(
+    tmp_path: Path,
+) -> None:
+    """Measured under the fence: the enforcer is the child's process group, not
+    a wall around it, so the group signal supervision sends still reaches the
+    payload and it ends its own way."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    standing = workspace.stat()
+    with entered_fence(
+        (str(INTERPRETER), "-c", _ENDS_ON_TERM),
+        workspace,
+        standing.st_dev,
+        standing.st_ino,
+        toolchain_sandbox(INTERPRETER, SEARCH_PATH, tmp_path),
+    ) as (arguments, entered, inherited):
+        process = subprocess.Popen(
+            arguments, cwd=entered, pass_fds=inherited, start_new_session=True
+        )
+    try:
+        _wait_for(workspace / "started")
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=20)
+
+        # The enforcer stands in the child's own process group, so the same
+        # signal ends it too and its exit is what a launcher reads back; what
+        # this proves is that the payload was asked first and answered.
+        assert (workspace / "ended-on-term").read_text(encoding="utf-8") == "asked"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
 
 
 def test_the_kill_cgroup_ends_the_enforcer_and_the_child_inside_it(
@@ -245,13 +315,16 @@ def test_the_kill_cgroup_ends_the_enforcer_and_the_child_inside_it(
 
     cgroup = process_module.delegated_cgroup_root() / f"atelier2-fence-{os.getpid()}"
     cgroup.mkdir()
-    fenced = sandboxed_arguments(
+    standing = tmp_path.stat()
+    joining = ("/bin/sh", "-c", f'echo $$ > "{cgroup}/cgroup.procs"; exec "$@"', "sh")
+    with entered_fence(
         (str(INTERPRETER), "-c", _SPAWNS_A_CHILD_AND_WAITS),
         tmp_path,
+        standing.st_dev,
+        standing.st_ino,
         toolchain_sandbox(INTERPRETER, SEARCH_PATH, tmp_path),
-    )
-    joining = ("/bin/sh", "-c", f'echo $$ > "{cgroup}/cgroup.procs"; exec "$@"', "sh")
-    process = subprocess.Popen((*joining, *fenced))
+    ) as (fenced, entered, inherited):
+        process = subprocess.Popen((*joining, *fenced), cwd=entered, pass_fds=inherited)
     try:
         deadline = time.monotonic() + 20
         held: list[str] = []

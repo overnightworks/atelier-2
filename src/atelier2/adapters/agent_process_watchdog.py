@@ -9,7 +9,6 @@ import selectors
 import signal
 import socket
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -17,8 +16,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.adapters.agent_process_exec_guard import guarded_arguments
+from atelier2.adapters.bwrap_sandbox import entered_fence, sandbox_from_frame
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
+from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
@@ -450,37 +451,24 @@ class Watchdog:
                 standard_input,
                 standard_output_frame_bytes,
                 duplex,
+                sandbox,
             ) = _decode_launch_request(request)
             self._standard_output_frame_bytes = standard_output_frame_bytes
             self._duplex = duplex
-            guarded = (
-                sys.executable,
-                "-m",
-                "atelier2.adapters.agent_process_exec_guard",
-                "--cgroup",
-                str(self._cgroup),
-                "--watchdog-pid",
-                str(os.getpid()),
-                "--",
-                *arguments,
-            )
             device, inode = working_directory_identity
-            child_environment = {
-                **os.environ,
-                "ATELIER2_AGENT_ENVIRONMENT_B64": base64.b64encode(
-                    json.dumps(
-                        sorted(environment.items()), separators=(",", ":")
-                    ).encode("utf-8")
-                ).decode("ascii"),
-            }
-            with entered_leased_directory(Path(working_directory), device, inode) as (
-                leased_cwd,
-                leased_descriptor,
-            ):
+            with entered_fence(
+                arguments, Path(working_directory), device, inode, sandbox
+            ) as (fenced, leased_cwd, inherited):
+                guarded, child_environment = guarded_arguments(
+                    self._cgroup,
+                    os.getpid(),
+                    fenced,
+                    tuple(sorted(environment.items())),
+                )
                 process = subprocess.Popen(
                     guarded,
                     cwd=leased_cwd,
-                    pass_fds=(leased_descriptor,),
+                    pass_fds=inherited,
                     env=child_environment,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -1039,14 +1027,27 @@ class Watchdog:
             self._close_provider_stream(role)
 
 
-def _decode_launch_request(
-    request: dict[str, Any],
-) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int, bool]:
+_LaunchRequest = tuple[
+    tuple[str, ...],
+    str,
+    tuple[int, int],
+    dict[str, str],
+    bytes,
+    int,
+    bool,
+    SandboxedLaunch | None,
+]
+"""What one launch frame says: argv, where, whose identity, environment, input,
+frame bound, whether a conversation follows, and the grant it runs behind."""
+
+
+def _decode_launch_request(request: dict[str, Any]) -> _LaunchRequest:
     # `duplex` names only a conversation launch, so print-mode stays as given.
     if set(request) - {"duplex"} != {
         "arguments",
         "environment",
         "operation",
+        "sandbox",
         "standard_input",
         "standard_output_frame_bytes",
         "working_directory",
@@ -1092,6 +1093,7 @@ def _decode_launch_request(
         standard_input,
         standard_output_frame_bytes,
         duplex,
+        sandbox_from_frame(request["sandbox"]),
     )
 
 

@@ -6,13 +6,15 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters.bwrap_sandbox import (
+    SYSTEM_READ_ONLY_FILES,
     SYSTEM_READ_ONLY_ROOTS,
+    sandbox_frame,
+    sandbox_from_frame,
     sandboxed_arguments,
     toolchain_sandbox,
     verified_sandbox_host,
 )
 from atelier2.contracts.sandbox_grants import (
-    LEASED_DIRECTORY_DESCRIPTOR,
     SandboxedLaunch,
     SandboxGrants,
     SandboxUnavailable,
@@ -28,7 +30,7 @@ END_OF_FLAGS = "--"
 
 def _fenced(
     grants: SandboxGrants,
-    descriptor: str | None = None,
+    descriptor: int = 7,
     command: tuple[str, ...] = COMMAND,
 ) -> tuple[str, ...]:
     return sandboxed_arguments(
@@ -47,70 +49,76 @@ def _bindings(arguments: tuple[str, ...]) -> tuple[tuple[str, str, str], ...]:
     )
 
 
-def _fake_enforcer(directory: Path, reported: str) -> Path:
+def _fake_enforcer(
+    directory: Path, refuses: str = "", answers: str | None = None
+) -> Path:
+    """A stand-in enforcer: it refuses one option, or answers its own way."""
+
     executable = directory / "bwrap"
-    executable.write_text(f"#!/bin/sh\necho '{reported}'\n", encoding="utf-8")
+    told = 'cat "$@"' if answers is None else f"printf %s {answers!r}"
+    executable.write_text(
+        "#!/bin/sh\n"
+        f'for argument in "$@"; do [ "$argument" = {refuses!r} ] && exit 2; done\n'
+        'while [ "$1" != "--" ]; do shift; done\n'
+        "shift 2\n"
+        f"{told}\n",
+        encoding="utf-8",
+    )
     executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
     return executable
 
 
 @pytest.mark.parametrize(
-    ("grants", "descriptor", "mounted"),
+    ("grants", "mounted"),
     (
         pytest.param(
             SandboxGrants(),
-            None,
-            ((("--bind", str(WORKSPACE), str(WORKSPACE))),),
-            id="the directory a child stands in is the one directory it may write",
+            (("--bind-fd", "7", str(WORKSPACE)),),
+            id="a child reaches the directory it stands in and nothing else",
         ),
         pytest.param(
             SandboxGrants(readable_and_executable=(TOOLCHAIN,)),
-            None,
             (
                 ("--ro-bind", str(TOOLCHAIN), str(TOOLCHAIN)),
-                ("--bind", str(WORKSPACE), str(WORKSPACE)),
+                ("--bind-fd", "7", str(WORKSPACE)),
             ),
             id="a granted toolchain is readable under the name it already has",
         ),
         pytest.param(
             SandboxGrants(writable=(PRIVATE_HOME,)),
-            None,
             (
                 ("--bind", str(PRIVATE_HOME), str(PRIVATE_HOME)),
-                ("--bind", str(WORKSPACE), str(WORKSPACE)),
+                ("--bind-fd", "7", str(WORKSPACE)),
             ),
             id="a granted private home is writable beside the workspace",
         ),
         pytest.param(
             SandboxGrants(writable=(WORKSPACE,)),
-            None,
-            ((("--bind", str(WORKSPACE), str(WORKSPACE))),),
-            id="a workspace that is already granted is not mounted twice",
+            (("--bind-fd", "7", str(WORKSPACE)),),
+            id="a workspace named by the grant too is still bound by descriptor only",
         ),
         pytest.param(
             SandboxGrants(
                 writable=(PRIVATE_HOME,), readable_and_executable=(TOOLCHAIN,)
             ),
-            LEASED_DIRECTORY_DESCRIPTOR,
             (
                 ("--ro-bind", str(TOOLCHAIN), str(TOOLCHAIN)),
                 ("--bind", str(PRIVATE_HOME), str(PRIVATE_HOME)),
-                ("--bind-fd", LEASED_DIRECTORY_DESCRIPTOR, str(WORKSPACE)),
+                ("--bind-fd", "7", str(WORKSPACE)),
             ),
-            id="a leased workspace arrives as its descriptor and never as its path",
+            id="every grant it names, and the workspace as its descriptor",
         ),
     ),
 )
 def test_a_grant_becomes_exactly_the_mounts_it_names(
     grants: SandboxGrants,
-    descriptor: str | None,
     mounted: tuple[tuple[str, str, str], ...],
 ) -> None:
-    assert _bindings(_fenced(grants, descriptor)) == mounted
+    assert _bindings(_fenced(grants)) == mounted
 
 
 def test_a_command_that_declared_no_grant_is_started_as_it_came() -> None:
-    assert sandboxed_arguments(COMMAND, WORKSPACE, None) == COMMAND
+    assert sandboxed_arguments(COMMAND, WORKSPACE, None, 7) == COMMAND
 
 
 def test_a_fenced_command_keeps_its_own_arguments_behind_the_end_of_flags() -> None:
@@ -141,29 +149,52 @@ def test_a_prompt_of_shell_metacharacters_stays_one_argument() -> None:
     assert fenced[fenced.index(END_OF_FLAGS) + 1 :] == (str(TOOLCHAIN), "-p", prompt)
 
 
-def test_a_grant_names_only_paths_that_exist_and_none_inside_another(
+def test_a_grant_names_the_toolchain_and_the_system_and_never_a_search_path(
     tmp_path: Path,
 ) -> None:
-    """The record is the whole reach, so it stays readable: no duplicate, no
-    path already covered by a granted parent, and nothing bubblewrap would
-    refuse the whole start over."""
+    """What a shell would look through is not what a child may read: a search
+    path carrying a home directory, a checkout or a scratch root would hand all
+    three over, so the grant names its roots itself."""
 
     tools = tmp_path / "tools"
     tools.mkdir()
-    _fake_enforcer(tools, "bubblewrap 0.9.0")
+    _fake_enforcer(tools)
     toolchain = tools / "grok"
     toolchain.touch()
-    absent = tmp_path / "gone"
     state = tmp_path / "state"
     state.mkdir()
-    search_path = ":".join((str(tools), str(tmp_path), str(absent), "relative/bin"))
+    search_path = ":".join((str(tools), str(tmp_path), "relative/bin"))
 
     grants = toolchain_sandbox(toolchain, search_path, state).grants
 
     assert grants.writable == (state,)
-    assert set(grants.readable_and_executable) == {tmp_path} | {
-        root for root in SYSTEM_READ_ONLY_ROOTS if root.exists()
+    assert tmp_path not in grants.readable_and_executable
+    assert tools not in grants.readable_and_executable
+    assert set(grants.readable_and_executable) == {toolchain} | {
+        path
+        for path in (*SYSTEM_READ_ONLY_ROOTS, *SYSTEM_READ_ONLY_FILES)
+        if path.exists()
     }
+
+
+def test_a_grant_hands_over_no_directory_of_this_account_beyond_its_own(
+    tmp_path: Path,
+) -> None:
+    """The named `/etc` files, and not the directory that holds this host's
+    accounts, services and credentials."""
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    _fake_enforcer(tools)
+    toolchain = tools / "grok"
+    toolchain.touch()
+    state = tmp_path / "state"
+    state.mkdir()
+
+    grants = toolchain_sandbox(toolchain, str(tools), state).grants
+
+    assert Path("/etc") not in grants.readable_and_executable
+    assert Path.home() not in grants.readable_and_executable
 
 
 def test_a_deployment_without_bubblewrap_is_told_so_by_name(tmp_path: Path) -> None:
@@ -171,19 +202,69 @@ def test_a_deployment_without_bubblewrap_is_told_so_by_name(tmp_path: Path) -> N
         verified_sandbox_host(str(tmp_path))
 
 
-def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_its_version(
+def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_that_option(
     tmp_path: Path,
 ) -> None:
-    """Below 0.9.0 a leased directory could only be handed over as a path."""
+    """The capability, not a version number: `--bind-fd` reached different
+    releases through different distributions, and a build without it would
+    leave the leased directory to be found by name."""
 
-    _fake_enforcer(tmp_path, "bubblewrap 0.8.0")
+    _fake_enforcer(tmp_path, refuses="--bind-fd")
 
-    with pytest.raises(SandboxUnavailable, match="0.8.0"):
+    with pytest.raises(SandboxUnavailable, match="could not start the fence"):
         verified_sandbox_host(str(tmp_path))
 
 
-def test_a_bubblewrap_that_reports_no_version_is_refused(tmp_path: Path) -> None:
-    _fake_enforcer(tmp_path, "not a version")
+def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
+    tmp_path: Path,
+) -> None:
+    """A start that answers without the directory it was given proves nothing."""
 
-    with pytest.raises(SandboxUnavailable, match="did not report a version"):
+    _fake_enforcer(tmp_path, answers="")
+
+    with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
         verified_sandbox_host(str(tmp_path))
+
+
+def test_a_grant_survives_the_launch_frame_it_travels_in() -> None:
+    launch = SandboxedLaunch(
+        ENFORCER, SandboxGrants((PRIVATE_HOME,), (TOOLCHAIN, Path("/usr")))
+    )
+
+    assert sandbox_from_frame(sandbox_frame(launch)) == launch
+    assert sandbox_from_frame(sandbox_frame(None)) is None
+
+
+@pytest.mark.parametrize(
+    "frame",
+    (
+        pytest.param({"enforcer": str(ENFORCER)}, id="a grant with fields missing"),
+        pytest.param(
+            {"enforcer": 7, "readable_and_executable": [], "writable": []},
+            id="an enforcer that is no path",
+        ),
+        pytest.param(
+            {
+                "enforcer": str(ENFORCER),
+                "readable_and_executable": "/usr",
+                "writable": [],
+            },
+            id="a grant that is no list",
+        ),
+        pytest.param(
+            {
+                "enforcer": str(ENFORCER),
+                "readable_and_executable": ["../usr"],
+                "writable": [],
+            },
+            id="a grant naming a path to be resolved",
+        ),
+    ),
+)
+def test_a_grant_this_reader_cannot_recognise_ends_the_launch(
+    frame: dict[str, object],
+) -> None:
+    """The one place a boundary arrives from outside the process that draws it."""
+
+    with pytest.raises(ValueError):
+        sandbox_from_frame(frame)

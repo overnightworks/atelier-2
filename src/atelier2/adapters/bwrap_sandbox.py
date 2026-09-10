@@ -4,7 +4,9 @@ The fence is a pure argv transformation: a grant plus the command a provider
 asked for become the command this host really starts. It is a function and not
 a launcher because the live start and the start probes that attest it have to
 be the same vector -- a probe that attests an unfenced start says nothing about
-the fenced start that then runs.
+the fenced start that then runs. `entered_fence` is the one way in: every seam
+that starts a provider -- supervision, both composition probes, model
+validation -- enters its directory through it and hands it over the same way.
 
 ADR 0009 §1 owns the containment doctrine, and §2 forbids an isolation
 mechanism of our own making, which is why nothing here implements a boundary:
@@ -15,37 +17,44 @@ is therefore the whole of what exists: the child's home, its toolchain, the
 system files a program needs to run at all, and the directory it stands in.
 The operator's keys, the live store and every other checkout are not absent by
 a rule that could be worded around -- they have no name in that namespace.
+
+Two things a fenced start must never hand its child, both measured against
+bubblewrap 0.9.0: an open descriptor on a host directory, because `openat` on
+one walks straight out of every grant -- the enforcer closes the descriptor it
+binds from before it runs the command, so a start passes that one and nothing
+else -- and a shell, because this transformation prepends words to an argument
+vector and never builds a line.
 """
 
 from __future__ import annotations
 
-import os
-import re
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.contracts.sandbox_grants import (
-    LEASED_DIRECTORY_BIND,
-    LEASED_DIRECTORY_DESCRIPTOR,
     SandboxedLaunch,
     SandboxGrants,
     SandboxUnavailable,
 )
-from atelier2.ports.agent_executions import AgentProcessInvocation
 
 SANDBOX_EXECUTABLE_NAME = "bwrap"
-MINIMUM_SANDBOX_VERSION = (0, 9, 0)
-"""`--bind-fd` arrived in bubblewrap 0.9.0.
 
-It is the whole reason for a floor: without it a leased directory could only be
-handed over as a path, and resolving that name a second time is exactly the
-window the lease exists to close.
-"""
-
-_VERSION_FLAG = "--version"
-_REPORTED_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _HOST_PROBE_TIMEOUT_SECONDS = 20.0
+_PROBE_PREFIX = "atelier2-fence-probe-"
+_PROBE_MARKER_NAME = "grant"
+_PROBE_MARKER_TEXT = "one directory, handed over as its descriptor\n"
+_PROBE_READER = Path("/bin/cat")
+"""What the host probe runs behind the fence: coreutils reading one file.
+
+The probe needs a command that proves the bind really happened rather than one
+that merely started, and it reads its answer out of the same system roots every
+fenced child is granted.
+"""
 
 _UNSHARE_EVERY_NAMESPACE = "--unshare-all"
 _KEEP_THE_NETWORK = "--share-net"
@@ -58,15 +67,16 @@ _DEVICE_FILES = "--dev"
 _TEMPORARY_FILESYSTEM = "--tmpfs"
 _READ_ONLY_BIND = "--ro-bind"
 _WRITABLE_BIND = "--bind"
+_WRITABLE_BIND_OF_DESCRIPTOR = "--bind-fd"
 _ENTER_DIRECTORY = "--chdir"
 _END_OF_FLAGS = "--"
 
 _PROCESS_TABLE_PATH = Path("/proc")
 _DEVICE_PATH = Path("/dev")
 _TEMPORARY_PATH = Path("/tmp")
+
 SYSTEM_READ_ONLY_ROOTS = (
     Path("/usr"),
-    Path("/etc"),
     Path("/bin"),
     Path("/lib"),
     Path("/lib64"),
@@ -74,10 +84,31 @@ SYSTEM_READ_ONLY_ROOTS = (
 )
 """What any program on this host needs before it is a program at all.
 
-`/usr` carries the binaries and shared libraries, `/etc` the certificate store
-and the resolver a network call needs, and the four remaining names are where a
-merged-usr system keeps the loader and the shell a tool spawns. They are read
-only: a child that may rewrite the tools it runs is not fenced by them.
+`/usr` carries the binaries and shared libraries, and the four names beside it
+are where a merged-usr system keeps the loader and the shell a tool spawns.
+They are read only: a child that may rewrite the tools it runs is not fenced by
+them. A whole `/etc` is not among them -- that would hand a child every
+account, service and credential file this host configures.
+"""
+
+SYSTEM_READ_ONLY_FILES = (
+    Path("/etc/resolv.conf"),
+    Path("/etc/hosts"),
+    Path("/etc/nsswitch.conf"),
+    Path("/etc/ssl"),
+    Path("/etc/ca-certificates"),
+    Path("/etc/ca-certificates.conf"),
+    Path("/etc/passwd"),
+    Path("/etc/group"),
+    Path("/etc/localtime"),
+)
+"""The named parts of `/etc` a tool that speaks HTTPS needs, and no more.
+
+The resolver's three files answer a hostname, the certificate store answers
+whether that answer may be trusted, the account files let a runtime name the
+user it runs as, and the zone file makes its timestamps this host's. Anything
+else a real toolchain turns out to need is a named gap on the item that owns
+this fence, never a widening nobody wrote down.
 """
 
 
@@ -85,7 +116,7 @@ def sandboxed_arguments(
     arguments: tuple[str, ...],
     working_directory: Path,
     launch: SandboxedLaunch | None,
-    working_directory_descriptor: str | None = None,
+    working_directory_descriptor: int,
 ) -> tuple[str, ...]:
     """The argv one start really runs: the command, held inside its grant.
 
@@ -94,9 +125,10 @@ def sandboxed_arguments(
     may invent.
 
     The working directory is always the child's to write in -- it is where the
-    provider was told to work. It is bound from `working_directory_descriptor`
-    where the launcher opened and verified the directory itself, and by path
-    only where the caller created the directory it is about to enter.
+    provider was told to work -- and it is always bound from the descriptor its
+    launcher opened and checked. No start of this repository binds it by name:
+    a name is what something else can stand in for between the check and the
+    mount.
     """
 
     if launch is None:
@@ -116,34 +148,98 @@ def sandboxed_arguments(
     for path in launch.grants.readable_and_executable:
         fenced += [_READ_ONLY_BIND, str(path), str(path)]
     for path in launch.grants.writable:
-        fenced += [_WRITABLE_BIND, str(path), str(path)]
-    if working_directory_descriptor is None:
-        if working_directory not in launch.grants.writable:
-            fenced += [_WRITABLE_BIND, str(working_directory), str(working_directory)]
-    else:
-        fenced += [
-            LEASED_DIRECTORY_BIND,
-            working_directory_descriptor,
-            str(working_directory),
-        ]
-    fenced += [_ENTER_DIRECTORY, str(working_directory), _END_OF_FLAGS]
+        if path != working_directory:
+            fenced += [_WRITABLE_BIND, str(path), str(path)]
+    fenced += [
+        _WRITABLE_BIND_OF_DESCRIPTOR,
+        str(working_directory_descriptor),
+        str(working_directory),
+        _ENTER_DIRECTORY,
+        str(working_directory),
+        _END_OF_FLAGS,
+    ]
     return (*fenced, *arguments)
 
 
-def launch_arguments(invocation: AgentProcessInvocation) -> tuple[str, ...]:
-    """The argv this supervised launch starts, fenced where its command asked.
+@contextmanager
+def entered_fence(
+    arguments: tuple[str, ...],
+    working_directory: Path,
+    device: int,
+    inode: int,
+    launch: SandboxedLaunch | None,
+) -> Iterator[tuple[tuple[str, ...], str, tuple[int, ...]]]:
+    """What one fenced start is made of: its argv, its `cwd`, its descriptors.
 
-    The leased directory is named by the placeholder the launching process
-    resolves, because only that process knows the number of the descriptor it
-    opened.
+    The directory is opened once and checked against the identity it was leased
+    under, and that one descriptor is both what the child enters through and
+    what the enforcer binds from -- so nothing between the check and the mount
+    can swap the directory, and no second name for it is ever resolved.
+
+    The descriptors yielded here are the whole set a start may pass on. The
+    enforcer closes the one it binds from before it runs the command, so a
+    fenced child holds no descriptor of this host at all; one passed beside it
+    would be a door out of every grant, because `openat` on a directory
+    descriptor answers `..` as readily as any other name.
     """
 
-    return sandboxed_arguments(
-        invocation.command.arguments,
-        invocation.lease.working_directory,
-        invocation.command.sandbox,
-        LEASED_DIRECTORY_DESCRIPTOR,
+    with entered_leased_directory(working_directory, device, inode) as (
+        entered,
+        descriptor,
+    ):
+        yield (
+            sandboxed_arguments(arguments, working_directory, launch, descriptor),
+            entered,
+            (descriptor,),
+        )
+
+
+def sandbox_frame(launch: SandboxedLaunch | None) -> dict[str, object] | None:
+    """One grant as a launch frame carries it to the process that enforces it."""
+
+    if launch is None:
+        return None
+    return {
+        "enforcer": str(launch.enforcer),
+        "readable_and_executable": [
+            str(path) for path in launch.grants.readable_and_executable
+        ],
+        "writable": [str(path) for path in launch.grants.writable],
+    }
+
+
+def sandbox_from_frame(value: object) -> SandboxedLaunch | None:
+    """The grant a launch frame declared, or a refusal to read it as one.
+
+    This is the one place a boundary arrives from outside the process that
+    draws it, so its shape is checked rather than trusted: a grant this reader
+    cannot recognise ends the launch instead of widening it.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "enforcer",
+        "readable_and_executable",
+        "writable",
+    }:
+        raise ValueError("launch sandbox is malformed")
+    enforcer = value["enforcer"]
+    if type(enforcer) is not str:
+        raise ValueError("launch sandbox enforcer is malformed")
+    return SandboxedLaunch(
+        Path(enforcer),
+        SandboxGrants(
+            _framed_paths(value["writable"]),
+            _framed_paths(value["readable_and_executable"]),
+        ),
     )
+
+
+def _framed_paths(value: object) -> tuple[Path, ...]:
+    if type(value) is not list or any(type(entry) is not str for entry in value):
+        raise ValueError("launch sandbox grant is malformed")
+    return tuple(Path(entry) for entry in value)
 
 
 def toolchain_sandbox(
@@ -151,29 +247,38 @@ def toolchain_sandbox(
 ) -> SandboxedLaunch:
     """Grant one command-line toolchain its own files, and nothing beside them.
 
-    What the child may run is its own executable plus whatever stands on the
-    deployment's search path -- the same programs its shell would find without
-    a fence -- read only. What it may write is the private state directory it
-    was given. The host is verified on every start rather than remembered from
+    The grant is named here rather than derived from the deployment's search
+    path: a path entry is what a shell looks through, and turning that into
+    reach hands a child whatever happens to stand on it -- a home directory, a
+    checkout, a scratch root. So a fenced child reads its own executable and
+    the system roots any program needs, writes the private state directory it
+    was given, and works in the directory it was leased.
+
+    What a real toolchain needs beyond that is a named gap on the item that
+    owns this fence rather than a widening: the release this vector serves is
+    one statically linked executable, and a tool it shells out to that stands
+    under no system root is not there.
+
+    The host is verified on every start rather than remembered from
     composition: an enforcer that disappeared has to stop the next launch, not
     the next restart.
     """
 
     enforcer = verified_sandbox_host(search_path)
-    readable = _narrowed(
-        (executable, *SYSTEM_READ_ONLY_ROOTS, *_search_path_directories(search_path))
-    )
+    readable = _narrowed((executable, *SYSTEM_READ_ONLY_ROOTS, *SYSTEM_READ_ONLY_FILES))
     return SandboxedLaunch(enforcer, SandboxGrants((state_directory,), readable))
 
 
 def verified_sandbox_host(search_path: str) -> Path:
     """The enforcer this host offers, or the reason it may not serve fenced work.
 
-    Three questions, because each has its own answer: is bubblewrap on the
-    deployment's search path at all, is it a release that can take a directory
-    as a descriptor, and does this kernel still let this account open a user
-    namespace. The last is asked by fencing bubblewrap's own version call, so
-    what is proved is the transformation this module really emits.
+    The capability is probed, never read off a version number: `--bind-fd`
+    reached different releases through different distributions, so a number is
+    a claim about a build while the option is the fact. One throwaway start
+    answers all of it at once -- that bubblewrap is here, that this account may
+    still open a user namespace, that every option a launch uses parses, and
+    that a directory handed over as a descriptor really arrives -- because it
+    is that start, composed by the same function a job's is.
     """
 
     found = shutil.which(SANDBOX_EXECUTABLE_NAME, path=search_path)
@@ -183,59 +288,50 @@ def verified_sandbox_host(search_path: str) -> Path:
             f"the deployment's search path, and {search_path!r} carries none"
         )
     enforcer = Path(found)
-    version = _reported_version(enforcer)
-    if version < MINIMUM_SANDBOX_VERSION:
-        raise SandboxUnavailable(
-            f"{enforcer} reports version {_spelled(version)}, and a leased "
-            "directory can only be handed over as a descriptor from "
-            f"{_spelled(MINIMUM_SANDBOX_VERSION)} on"
-        )
-    _attest_user_namespace(enforcer)
+    _attest_enforcer(enforcer)
     return enforcer
 
 
-def _spelled(version: tuple[int, int, int]) -> str:
-    return ".".join(str(part) for part in version)
-
-
-def _reported_version(enforcer: Path) -> tuple[int, int, int]:
-    answer = _answered(
-        (str(enforcer), _VERSION_FLAG),
-        f"{enforcer} did not answer {_VERSION_FLAG}",
-    )
-    reported = _REPORTED_VERSION.search(answer)
-    if reported is None:
-        raise SandboxUnavailable(
-            f"{enforcer} did not report a version at {_VERSION_FLAG}: {answer.strip()}"
+def _attest_enforcer(enforcer: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix=_PROBE_PREFIX) as probe_root:
+        directory = Path(probe_root)
+        marker = directory / _PROBE_MARKER_NAME
+        marker.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
+        standing = directory.stat()
+        grants = SandboxGrants(
+            readable_and_executable=_narrowed((_PROBE_READER, *SYSTEM_READ_ONLY_ROOTS))
         )
-    first, second, third = reported.groups()
-    return int(first), int(second), int(third)
-
-
-def _attest_user_namespace(enforcer: Path) -> None:
-    """Start the enforcer's own version call inside the fence it composes."""
-
-    grants = SandboxGrants(
-        readable_and_executable=_narrowed((enforcer, *SYSTEM_READ_ONLY_ROOTS))
-    )
-    _answered(
-        sandboxed_arguments(
-            (str(enforcer), _VERSION_FLAG),
-            SYSTEM_READ_ONLY_ROOTS[0],
+        with entered_fence(
+            (str(_PROBE_READER), str(marker)),
+            directory,
+            standing.st_dev,
+            standing.st_ino,
             SandboxedLaunch(enforcer, grants),
-        ),
-        f"{enforcer} could not open a user namespace for this account",
-    )
+        ) as (arguments, entered, inherited):
+            answered = _answered(arguments, entered, inherited, enforcer)
+    if answered != _PROBE_MARKER_TEXT:
+        raise SandboxUnavailable(
+            f"{enforcer} did not hand a directory it was given as a descriptor to a "
+            f"command behind the fence: that command answered {answered!r}"
+        )
 
 
-def _answered(arguments: tuple[str, ...], refusal: str) -> str:
+def _answered(
+    arguments: tuple[str, ...],
+    entered: str,
+    inherited: tuple[int, ...],
+    enforcer: Path,
+) -> str:
+    refusal = f"{enforcer} could not start the fence this deployment needs"
     try:
         answer = subprocess.run(
             arguments,
             capture_output=True,
             check=False,
+            cwd=entered,
             encoding="utf-8",
             errors="replace",
+            pass_fds=inherited,
             stdin=subprocess.DEVNULL,
             timeout=_HOST_PROBE_TIMEOUT_SECONDS,
         )
@@ -244,16 +340,6 @@ def _answered(arguments: tuple[str, ...], refusal: str) -> str:
     if answer.returncode != 0:
         raise SandboxUnavailable(f"{refusal}: {answer.stderr.strip()}")
     return answer.stdout
-
-
-def _search_path_directories(search_path: str) -> tuple[Path, ...]:
-    """Every directory this deployment's search path really offers a child."""
-
-    return tuple(
-        Path(entry)
-        for entry in dict.fromkeys(search_path.split(os.pathsep))
-        if entry and Path(entry).is_absolute() and Path(entry).is_dir()
-    )
 
 
 def _narrowed(paths: tuple[Path, ...]) -> tuple[Path, ...]:

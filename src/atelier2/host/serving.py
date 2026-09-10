@@ -25,7 +25,7 @@ from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
     bounded_process_streams,
 )
-from atelier2.adapters.bwrap_sandbox import sandboxed_arguments
+from atelier2.adapters.bwrap_sandbox import entered_fence
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.claude_subscription import (
     ClaudeAtelierDoorsExecutorFactory,
@@ -146,6 +146,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorKey,
     AgentExecutorRegistration,
     AgentExecutorRegistry,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
     WorkspaceFileTools,
@@ -726,32 +727,9 @@ class HostProviderModelValidator:
                     status.st_dev,
                     status.st_ino,
                 )
-                process = subprocess.Popen(
-                    sandboxed_arguments(command.arguments, path, command.sandbox),
-                    cwd=path,
-                    env=dict(command.environment),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    start_new_session=True,
+                return_code, standard_output, standard_error = _validation_streams(
+                    command, lease, self.inspection_timeout_seconds
                 )
-                assert process.stdin is not None
-                try:
-                    process.stdin.write(command.standard_input)
-                    process.stdin.close()
-                    return_code, standard_output, standard_error = (
-                        bounded_process_streams(
-                            process,
-                            self.inspection_timeout_seconds,
-                            max(
-                                command.standard_output_frame_bytes,
-                                MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
-                            ),
-                        )
-                    )
-                finally:
-                    if not process.stdin.closed:
-                        process.stdin.close()
                 if (
                     len(standard_output) > command.standard_output_frame_bytes
                     or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
@@ -787,6 +765,52 @@ class HostProviderModelValidator:
             finally:
                 executor.close()
         return result
+
+
+def _validation_streams(
+    command: AgentProcessCommand,
+    lease: AgentAttemptWorkspaceLease,
+    timeout_seconds: float,
+) -> tuple[int, bytes, bytes]:
+    """Start one model-validation call and read back what it wrote.
+
+    It is started the way every provider process of this deployment is: through
+    the fence its command declared, entering the directory it leased by the
+    descriptor that was checked rather than by its name.
+    """
+
+    with entered_fence(
+        command.arguments,
+        lease.working_directory,
+        lease.device,
+        lease.inode,
+        command.sandbox,
+    ) as (arguments, entered, inherited):
+        process = subprocess.Popen(
+            arguments,
+            cwd=entered,
+            pass_fds=inherited,
+            env=dict(command.environment),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    assert process.stdin is not None
+    try:
+        process.stdin.write(command.standard_input)
+        process.stdin.close()
+        return bounded_process_streams(
+            process,
+            timeout_seconds,
+            max(
+                command.standard_output_frame_bytes,
+                MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+            ),
+        )
+    finally:
+        if not process.stdin.closed:
+            process.stdin.close()
 
 
 def _model_validation_request(

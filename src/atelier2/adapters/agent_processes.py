@@ -23,7 +23,7 @@ from atelier2.adapters.agent_process_watchdog import (
     encode_control_frame,
     maximum_agent_wait_response_bytes,
 )
-from atelier2.adapters.bwrap_sandbox import launch_arguments
+from atelier2.adapters.bwrap_sandbox import sandbox_frame
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
@@ -894,18 +894,18 @@ class AgentProcessSupervisor(AgentSession):
 
 
 def _close_watchdog_pipes(process: subprocess.Popen[bytes]) -> None:
-    if process.stdout is not None:
-        process.stdout.close()
-    if process.stderr is not None:
-        process.stderr.close()
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
 
 
 def _launch_request(invocation: AgentProcessInvocation) -> dict[str, object]:
     command = invocation.command
     request: dict[str, object] = {
-        "arguments": launch_arguments(invocation),
+        "arguments": command.arguments,
         "environment": command.environment,
         "operation": "LAUNCH",
+        "sandbox": sandbox_frame(command.sandbox),
         "standard_input": base64.b64encode(command.standard_input).decode("ascii"),
         "standard_output_frame_bytes": command.standard_output_frame_bytes,
         "working_directory": str(invocation.lease.working_directory),

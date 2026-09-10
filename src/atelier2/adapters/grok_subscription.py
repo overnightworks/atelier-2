@@ -43,7 +43,8 @@ import stat
 import subprocess
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,7 +52,7 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_answer,
     bounded_process_streams,
 )
-from atelier2.adapters.bwrap_sandbox import sandboxed_arguments, toolchain_sandbox
+from atelier2.adapters.bwrap_sandbox import entered_fence, toolchain_sandbox
 from atelier2.adapters.grok_capability import (
     GROK_PROBE_TIMEOUT_SECONDS,
     GrokExecutableUnsupported,
@@ -545,20 +546,23 @@ def attest_grok_containment(
     profile read outside the fence is not the profile a fenced job loads.
     """
 
+    inspecting = (str(settings.executable), _INSPECT_COMMAND, _INSPECT_JSON_FLAG)
     try:
-        process = subprocess.Popen(
-            sandboxed_arguments(
-                (str(settings.executable), _INSPECT_COMMAND, _INSPECT_JSON_FLAG),
-                state_directory,
-                sandbox,
-            ),
-            cwd=state_directory,
-            env=dict(_child_environment(settings, state_directory)),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        with _entered_probe_directory(inspecting, state_directory, sandbox) as (
+            arguments,
+            entered,
+            inherited,
+        ):
+            process = subprocess.Popen(
+                arguments,
+                cwd=entered,
+                pass_fds=inherited,
+                env=dict(_child_environment(settings, state_directory)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         return_code, answer = bounded_process_answer(
             process, timeout_seconds, _INSPECT_OUTPUT_BYTES
         )
@@ -1427,14 +1431,36 @@ def _workspace_tool_arguments(
     )
 
 
+@contextmanager
+def _entered_probe_directory(
+    arguments: tuple[str, ...],
+    state_directory: Path,
+    sandbox: SandboxedLaunch | None,
+) -> Iterator[tuple[tuple[str, ...], str, tuple[int, ...]]]:
+    """Enter a probe's own directory exactly as a supervised launch enters a lease.
+
+    A probe that opened its working directory its own way would attest a start
+    nobody makes: the identity check, the descriptor handover and the set of
+    descriptors a child may inherit are what the fence is made of, so they are
+    the same call here as under supervision.
+    """
+
+    standing = state_directory.stat()
+    with entered_fence(
+        arguments, state_directory, standing.st_dev, standing.st_ino, sandbox
+    ) as entered:
+        yield entered
+
+
 def _workspace_tool_sandbox(
     settings: GrokSubscriptionSettings, state_directory: Path
 ) -> SandboxedLaunch:
     """The file boundary every start of this vector runs behind (ADR 0009 §1).
 
-    Its own toolchain and search path to read, its private home to write, and
-    nothing else this account owns: not the operator's keys, not the live
-    store, not another checkout. The attempt's workspace joins as the
+    Its own executable and the system roots any program needs to read, its
+    private home to write, and nothing else this account owns: not the
+    operator's keys, not the live store, not another checkout, and not what
+    happens to stand on a search path. The attempt's workspace joins as the
     descriptor its launcher verified, so it is granted without being named.
     """
 
@@ -1446,6 +1472,7 @@ def _jobless_invocation_answer(
     arguments: tuple[str, ...],
     state_directory: Path,
     timeout_seconds: float,
+    sandbox: SandboxedLaunch,
 ) -> str:
     """Start this exact invocation with no credentials, and read back how it refused.
 
@@ -1457,15 +1484,21 @@ def _jobless_invocation_answer(
     """
 
     try:
-        process = subprocess.Popen(
-            arguments,
-            cwd=state_directory,
-            env=dict(_child_environment(settings, state_directory)),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        with _entered_probe_directory(arguments, state_directory, sandbox) as (
+            fenced,
+            entered,
+            inherited,
+        ):
+            process = subprocess.Popen(
+                fenced,
+                cwd=entered,
+                pass_fds=inherited,
+                env=dict(_child_environment(settings, state_directory)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
     except OSError as error:
         raise GrokExecutableUnsupported(
             f"the Grok executable could not start this executor's invocation: {error}"
@@ -1520,13 +1553,12 @@ def attest_grok_workspace_tool_invocation(
             _configuration_bytes(),
             _CONFIG_FILE_MODE,
         )
-        arguments = sandboxed_arguments(
-            _workspace_tool_arguments(settings.executable, _INVOCATION_PROBE_MODEL, ""),
-            state_directory,
-            _workspace_tool_sandbox(settings, state_directory),
+        sandbox = _workspace_tool_sandbox(settings, state_directory)
+        arguments = _workspace_tool_arguments(
+            settings.executable, _INVOCATION_PROBE_MODEL, ""
         )
         started = _jobless_invocation_answer(
-            settings, arguments, state_directory, timeout_seconds
+            settings, arguments, state_directory, timeout_seconds, sandbox
         )
         if _ARGUMENT_REFUSAL_MARKER in started:
             raise GrokExecutableUnsupported(
@@ -1537,7 +1569,7 @@ def attest_grok_workspace_tool_invocation(
             )
         control_arguments = (*arguments, _UNKNOWN_FLAG_CONTROL)
         control = _jobless_invocation_answer(
-            settings, control_arguments, state_directory, timeout_seconds
+            settings, control_arguments, state_directory, timeout_seconds, sandbox
         )
         if _ARGUMENT_REFUSAL_MARKER not in control:
             raise GrokExecutableUnsupported(

@@ -6,7 +6,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -279,11 +278,15 @@ INLINE_PROMPT_GROK = INTROSPECTING_GROK.replace(
 )
 
 
+FAKE_TOOLCHAIN_INTERPRETER = Path("/usr/bin/python3")
+"""What the fake CLIs below run on: an interpreter under a granted system root."""
+
+
 def _write_executable(path: Path, source: str) -> Path:
-    # The resolved interpreter, because a fenced child follows this shebang
-    # inside its own namespace, where a symlink chain out of the granted
-    # interpreter tree leads nowhere.
-    path.write_text(f"#!{Path(sys.executable).resolve()}\n" + source)
+    # The system interpreter, because a fenced child follows this shebang
+    # inside its own namespace, where this suite's own interpreter -- outside
+    # every granted root -- is not there.
+    path.write_text(f"#!{FAKE_TOOLCHAIN_INTERPRETER}\n" + source)
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
 
@@ -294,19 +297,6 @@ def grok_named_deployment(
     directory = root / name
     directory.mkdir()
     return grok_subscription_deployment(directory, source)
-
-
-def _deployment_search_path() -> str:
-    """The search path a deployment of these fake toolchains has to name.
-
-    A fenced child reads and runs what its deployment's search path offers and
-    nothing else, and these fakes are scripts rather than the real toolchain's
-    one static executable: the interpreter tree they run on is part of what
-    this deployment offers them, so it stands on the path beside this account's
-    own.
-    """
-
-    return os.pathsep.join((os.environ.get("PATH", "/usr/bin"), sys.base_prefix))
 
 
 def grok_subscription_deployment(
@@ -321,7 +311,7 @@ def grok_subscription_deployment(
     authentication.write_bytes(b"{}")
     authentication.chmod(0o600)
     return GrokSubscriptionSettings(
-        executable, workspace, credentials, _deployment_search_path()
+        executable, workspace, credentials, os.environ.get("PATH", "/usr/bin")
     )
 
 

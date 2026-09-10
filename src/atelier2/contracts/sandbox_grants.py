@@ -12,20 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-LEASED_DIRECTORY_BIND = "--bind-fd"
-LEASED_DIRECTORY_DESCRIPTOR = "{atelier2-leased-directory-descriptor}"
-"""How a fenced argv says the leased working directory will be handed over.
-
-The directory travels as the descriptor its launcher opened and checked, and a
-descriptor number exists only inside the process that opens it -- which is not
-the process that composes the argv. So the argv carries this word behind the
-flag above, and the launching process replaces it with the number it opened.
-
-The two are one token, never one alone: a launcher that replaced the word
-wherever it stood would rewrite a job's own argument that happened to spell
-it, and a flag without the word would name a descriptor nobody opened.
-"""
-
 
 class SandboxUnavailable(ValueError):
     """This host cannot enforce a grant, so nothing may be started behind it.
