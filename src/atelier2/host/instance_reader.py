@@ -105,7 +105,8 @@ spend the very time the deadline bounds."""
 READER_REAP_SECONDS: Final = 5.0
 """How long a killed reading process is waited for. Wide, because a process
 that took a kill is reaped as soon as the kernel is done with it: what outlasts
-this is a process nothing could end, never an observer that was impatient."""
+this only proves the kernel still held it at the cutoff, so the watch reports
+READER_DIED instead of waiting longer."""
 
 MAXIMUM_RESPONSE_BYTES: Final = 65_536
 """How much of any one fixed door's answer this reading ever buffers."""
