@@ -34,8 +34,12 @@ send is licensed. This slice composes the personal-access-token method only
 The credential reaches this adapter by reference, never by value (ADR 0009 §6,
 ADR 0010 §3), the same pattern `ClaudeSubscriptionSettings.credential_directory`
 already uses: the durable settings hold a directory, and the token itself is
-read from it once, at `open()`, and lives nowhere durable afterward -- not in
-a lease, a receipt, an event, a log, or an API projection.
+read from it at each `readback` and `execute`, before anything is sent, and
+lives nowhere durable afterward -- not in a lease, a receipt, an event, a log,
+or an API projection. Reading it per operation is what lets the operator set or
+replace the token while the host serves: the next operation sends whatever the
+directory holds then, and one that finds no token refuses before it sends
+rather than the host refusing to start.
 """
 
 from __future__ import annotations
@@ -132,8 +136,8 @@ class GitHubTokenCredential:
 
     Pattern: `ClaudeSubscriptionSettings.credential_directory`
     (`atelier2.adapters.claude_subscription`). The directory is a deployment
-    value, resolved once when the adapter opens; the token it names is never
-    copied into anything durable this adapter writes.
+    value; the token it names is read afresh by each operation that sends, and
+    never copied into anything durable this adapter writes.
     """
 
     credential_directory: Path
@@ -356,10 +360,17 @@ def _listing_did_not_end(started: float) -> UnknownOutcomeReason:
 
 
 def _github_client(
-    token: str, transport: httpx.BaseTransport | None
+    token_credential: GitHubTokenCredential, transport: httpx.BaseTransport | None
 ) -> githubkit.GitHub[githubkit.TokenAuthStrategy]:
+    """A client for one operation, carrying the token the directory holds now.
+
+    Never entered as a context: `githubkit` then opens and closes its own HTTP
+    client around each request, so a client built per operation holds no
+    connection past it.
+    """
+
     return githubkit.GitHub(
-        token,
+        token_credential.resolve(),
         transport=transport,
         # A cached read could answer a retry's search from before an earlier
         # crashed attempt's create, which is exactly the twin the
@@ -447,24 +458,31 @@ class LiveGitHubEffectAdapterFactory:
         return True
 
     def open(self) -> LiveGitHubEffectAdapter:
-        client = _github_client(self.token_credential.resolve(), self.transport)
         publisher = (
             None
             if self.documentation_publisher_factory is None
             else self.documentation_publisher_factory.open()
         )
-        return LiveGitHubEffectAdapter(client, self.repository, self.binding, publisher)
+        return LiveGitHubEffectAdapter(
+            self.token_credential,
+            self.transport,
+            self.repository,
+            self.binding,
+            publisher,
+        )
 
 
 class LiveGitHubEffectAdapter:
     def __init__(
         self,
-        client: githubkit.GitHub[githubkit.TokenAuthStrategy],
+        token_credential: GitHubTokenCredential,
+        transport: httpx.BaseTransport | None,
         repository: GitHubRepository,
         binding: EffectAdapterBinding,
         documentation_publisher: ReviewedDocumentationPublisher | None,
     ) -> None:
-        self._client = client
+        self._token_credential = token_credential
+        self._transport = transport
         self._repository = repository
         self._binding = binding
         self._documentation_publisher = documentation_publisher
@@ -472,7 +490,8 @@ class LiveGitHubEffectAdapter:
 
     def readback(self, intent: EffectIntent, phase: ReadbackPhase) -> EffectReadback:
         request = self._authorized_request(intent)
-        found = self._find_recorded_pull_request(intent, request)
+        client = _github_client(self._token_credential, self._transport)
+        found = self._find_recorded_pull_request(client, intent, request)
         if isinstance(found, _PullRequestSearchFailed):
             return EffectUnknownOutcome(intent.reference, found.reason)
         if isinstance(found, _NoPullRequestOnBranch):
@@ -483,19 +502,20 @@ class LiveGitHubEffectAdapter:
 
     def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         request = self._authorized_request(intent)
-        found = self._find_recorded_pull_request(intent, request)
+        client = _github_client(self._token_credential, self._transport)
+        found = self._find_recorded_pull_request(client, intent, request)
         if isinstance(found, _PullRequestSearchFailed):
             return EffectUnknownOutcome(intent.reference, found.reason)
         if isinstance(found, _RecordedPullRequest):
             return self._performed(found)
         if isinstance(request, ReviewedDocumentationPullRequest):
-            self._verify_reviewed_base(request)
+            self._verify_reviewed_base(client, request)
             if self._documentation_publisher is None:
                 raise GitHubEffectRefused(
                     "reviewed documentation open-pr requires its push publisher"
                 )
             self._documentation_publisher.publish(intent, request)
-        created = self._create_pull_request(intent, request)
+        created = self._create_pull_request(client, intent, request)
         if isinstance(created, UnknownOutcomeReason):
             return EffectUnknownOutcome(intent.reference, created)
         return self._performed(created)
@@ -516,8 +536,12 @@ class LiveGitHubEffectAdapter:
         self._authorize_binding(intent)
         return open_pull_request(intent.request)
 
-    def _verify_reviewed_base(self, request: ReviewedDocumentationPullRequest) -> None:
-        response = self._client.rest.repos.get_branch(
+    def _verify_reviewed_base(
+        self,
+        client: githubkit.GitHub[githubkit.TokenAuthStrategy],
+        request: ReviewedDocumentationPullRequest,
+    ) -> None:
+        response = client.rest.repos.get_branch(
             self._repository.owner,
             self._repository.name,
             self._repository.base_branch,
@@ -542,7 +566,10 @@ class LiveGitHubEffectAdapter:
             raise RuntimeError("github live effect adapter is closed")
 
     def _find_recorded_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequestRequest
+        self,
+        client: githubkit.GitHub[githubkit.TokenAuthStrategy],
+        intent: EffectIntent,
+        request: OpenPullRequestRequest,
     ) -> _PullRequestSearch:
         """Which pull request on this head branch carries this request's marker.
 
@@ -562,7 +589,7 @@ class LiveGitHubEffectAdapter:
         listed_any = False
         for page_number in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
             page = _list_head_branch_page(
-                self._client, self._repository, branch, page_number, started
+                client, self._repository, branch, page_number, started
             )
             if isinstance(page, _PullRequestSearchFailed):
                 return page
@@ -584,7 +611,10 @@ class LiveGitHubEffectAdapter:
         return _PullRequestSearchFailed(_listing_did_not_end(started))
 
     def _create_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequestRequest
+        self,
+        client: githubkit.GitHub[githubkit.TokenAuthStrategy],
+        intent: EffectIntent,
+        request: OpenPullRequestRequest,
     ) -> _RecordedPullRequest | UnknownOutcomeReason:
         branch = request.head_branch.value
         title, body = _title_and_content_for(request, intent.request.request_hash.value)
@@ -598,7 +628,7 @@ class LiveGitHubEffectAdapter:
             create_body["draft"] = request.draft
         started = time.monotonic()
         try:
-            response = self._client.rest.pulls.create(
+            response = client.rest.pulls.create(
                 self._repository.owner,
                 self._repository.name,
                 data=create_body,
@@ -613,7 +643,7 @@ class LiveGitHubEffectAdapter:
             # still does not name the winner leaves this attempt's own outcome
             # unknown -- the create was sent, so its result is a reconciliation
             # for the operator, never an exception thrown over a sent request.
-            found = self._find_recorded_pull_request(intent, request)
+            found = self._find_recorded_pull_request(client, intent, request)
             if isinstance(found, _RecordedPullRequest):
                 return found
             return _refused_search(error, _elapsed_milliseconds(started))
@@ -665,7 +695,7 @@ class LiveGitHubHeadBranchPullRequests:
     def open_pull_requests_on(
         self, head_branch: HeadBranch
     ) -> HeadBranchPullRequestState:
-        client = _github_client(self.token_credential.resolve(), self.transport)
+        client = _github_client(self.token_credential, self.transport)
         started = time.monotonic()
         for page_number in range(1, MAXIMUM_PULL_REQUEST_LISTING_PAGES + 1):
             page = _list_head_branch_page(

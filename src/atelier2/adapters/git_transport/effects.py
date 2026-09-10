@@ -62,6 +62,35 @@ class GitTransportRefused(RuntimeError):
     """The durable request does not authorize the proposed git mutation."""
 
 
+class GitCredentialUnresolvable(GitTransportRefused):
+    """The remote's credential file holds no readable token (`platform-credential-unresolvable`)."""
+
+
+def _require_a_readable_token(credential_file: Path | None) -> None:
+    """Refuse a remote call whose credential helper would answer git with nothing.
+
+    Checked at each remote call rather than when the adapter opens, so the
+    operator can set or replace the token while the host serves. The bytes read
+    here only prove the file holds a token and are dropped at once: the helper
+    git invokes reads the file itself.
+    """
+
+    if credential_file is None:
+        return
+    try:
+        holds_a_token = bool(credential_file.read_bytes().strip())
+    except OSError as error:
+        raise GitCredentialUnresolvable(
+            f"platform-credential-unresolvable: git credential file "
+            f"{credential_file} is not readable: {error.strerror}"
+        ) from error
+    if not holds_a_token:
+        raise GitCredentialUnresolvable(
+            f"platform-credential-unresolvable: git credential file "
+            f"{credential_file} is empty"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class GitRemote:
     identity: str
@@ -246,17 +275,15 @@ class GitTransportEffectAdapterFactory:
         return True
 
     def open(self) -> GitTransportEffectAdapter:
-        store = self.candidate_store.resolve()
         credential_file = self.remote.credential_file
-        if credential_file is not None:
-            credential_file = credential_file.resolve()
-            if not credential_file.is_file() or credential_file.stat().st_size == 0:
-                raise GitTransportRefused(
-                    f"git credential file is missing or empty: {credential_file}"
-                )
+        # Absolute rather than resolved: a symlink the operator repoints is
+        # followed by the next remote call instead of pinned at the host's start.
+        absolute_credential_file = (
+            None if credential_file is None else credential_file.absolute()
+        )
         return GitTransportEffectAdapter(
-            store,
-            GitRemote(self.remote.identity, self.remote.url, credential_file),
+            self.candidate_store.resolve(),
+            GitRemote(self.remote.identity, self.remote.url, absolute_credential_file),
             self.binding,
             self.head_branch_pull_requests,
             self.command_runner,
@@ -724,6 +751,7 @@ class GitTransportEffectAdapter:
     def _remote_git(
         self, arguments: tuple[str, ...], *, in_store: bool = False
     ) -> GitCommandResult:
+        _require_a_readable_token(self._remote.credential_file)
         prefix = (*_HOOK_FREE_ARGUMENTS, *self._credential_arguments())
         environment = isolated_git_environment()
         if in_store:

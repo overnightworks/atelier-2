@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import sys
+import traceback
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import githubkit.exception
 import httpx
 import pytest
 
@@ -27,6 +30,7 @@ from atelier2.adapters.github.composition import (
 from atelier2.adapters.github.live_effects import (
     MAXIMUM_PULL_REQUEST_LISTING_PAGES,
     PULL_REQUESTS_PER_LISTING_PAGE,
+    GitHubCredentialUnresolvable,
     GitHubEffectRefused,
     GitHubRepository,
     GitHubTokenCredential,
@@ -126,13 +130,18 @@ class _FakeGitHubServer:
     pull_request_searches: int = 0
 
     pull_request_search_answer: httpx.Response | None = None
+    pull_request_create_answer: httpx.Response | None = None
     fail_pull_request_search_on_page: int | None = None
     """Which page (1-indexed) of a pull-request listing answers a failure."""
+
+    authorizations: list[str] = field(default_factory=list)
+    """The `Authorization` header of every request, in the order it arrived."""
 
     _next_number: int = 1
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.http_calls += 1
+        self.authorizations.append(request.headers.get("authorization", ""))
         path = request.url.path
         prefix = f"/repos/{self.owner}/{self.repo}"
         if request.method == "GET" and path == f"{prefix}/branches/{self.base_branch}":
@@ -178,6 +187,8 @@ class _FakeGitHubServer:
                 },
             )
         if request.method == "POST" and path == f"{prefix}/pulls":
+            if self.pull_request_create_answer is not None:
+                return self.pull_request_create_answer
             payload = json.loads(request.content)
             head_label = f"{self.owner}:{payload['head']}"
             if any(
@@ -372,10 +383,11 @@ def effect_intent(
     *,
     typed: bool = True,
     work_item_reference: TrackerItemReference | None = None,
+    head_branch: HeadBranch = HEAD_BRANCH,
 ) -> EffectIntent:
     request_payload = (
         OpenPullRequest(
-            payload.decode("utf-8"), HEAD_BRANCH, work_item_reference
+            payload.decode("utf-8"), head_branch, work_item_reference
         ).canonical_bytes()
         if typed
         else payload
@@ -861,6 +873,109 @@ def test_no_token_appears_in_any_adapter_output(
     assert CANARY_TOKEN.encode() not in performed.result.payload
     for pull_request in server.pull_requests:
         assert CANARY_TOKEN not in str(pull_request["body"])
+
+
+def _set_token(credential_directory: Path, token: str | None) -> None:
+    """What the operator leaves in the credential directory; `None` removes it."""
+
+    token_file = credential_directory / "token"
+    if token is None:
+        token_file.unlink(missing_ok=True)
+    else:
+        token_file.write_text(token, encoding="utf-8")
+
+
+def _everything_an_exception_says(error: BaseException) -> str:
+    said = ["".join(traceback.format_exception(error))]
+    link: BaseException | None = error
+    while link is not None:
+        said.append(repr(link))
+        link = link.__cause__ or link.__context__
+    return "\n".join(said)
+
+
+@pytest.mark.parametrize("operation", ["readback", "execute", "reviewed-execute"])
+@pytest.mark.parametrize(
+    "token", [None, "", "  \n"], ids=["missing", "empty", "whitespace"]
+)
+def test_an_open_pr_without_a_token_is_refused_before_anything_is_sent(
+    factory: LiveGitHubEffectAdapterFactory,
+    credential_directory: Path,
+    server: _FakeGitHubServer,
+    operation: str,
+    token: str | None,
+) -> None:
+    publisher = _RecordingDocumentationPublisher()
+    _set_token(credential_directory, token)
+    adapter = replace(
+        factory,
+        documentation_publisher_factory=_DocumentationPublisherFactory(publisher),
+    ).open()
+    sending = {
+        "readback": lambda: adapter.readback(
+            effect_intent(), ReadbackPhase.BEFORE_SEND
+        ),
+        "execute": lambda: adapter.execute(effect_intent()),
+        "reviewed-execute": lambda: adapter.execute(reviewed_documentation_intent()),
+    }
+    try:
+        with pytest.raises(GitHubCredentialUnresolvable):
+            sending[operation]()
+    finally:
+        adapter.close()
+
+    assert server.http_calls == 0
+    assert publisher.requests == []
+
+
+def test_a_token_set_or_replaced_after_opening_is_the_one_the_next_pull_request_carries(
+    factory: LiveGitHubEffectAdapterFactory,
+    credential_directory: Path,
+    server: _FakeGitHubServer,
+) -> None:
+    first_token = "gho_first_scenario_token"
+    replaced_token = "gho_replaced_scenario_token"
+    _set_token(credential_directory, None)
+    adapter = factory.open()
+    try:
+        _set_token(credential_directory, first_token)
+        published(adapter.execute(effect_intent()))
+        sent_with_the_first_token = len(server.authorizations)
+        _set_token(credential_directory, replaced_token)
+        published(
+            adapter.execute(
+                effect_intent(head_branch=HeadBranch("atelier2/work-item/" + "f" * 64))
+            )
+        )
+    finally:
+        adapter.close()
+
+    before_the_swap = server.authorizations[:sent_with_the_first_token]
+    after_the_swap = server.authorizations[sent_with_the_first_token:]
+    assert len(server.pull_requests) == 2
+    assert before_the_swap and all(first_token in sent for sent in before_the_swap)
+    assert after_the_swap and all(replaced_token in sent for sent in after_the_swap)
+
+
+def test_no_token_reaches_an_exception_or_a_log_line_when_the_sdk_raises(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    server.pull_request_create_answer = httpx.Response(
+        403, json={"message": "Resource not accessible by personal access token"}
+    )
+    caplog.set_level(logging.DEBUG)
+    adapter = factory.open()
+    try:
+        with pytest.raises(githubkit.exception.RequestFailed) as raised:
+            adapter.execute(effect_intent())
+    finally:
+        adapter.close()
+
+    assert server.http_calls > 0
+    assert CANARY_TOKEN not in _everything_an_exception_says(raised.value)
+    assert CANARY_TOKEN not in caplog.text
 
 
 def load_acceptance_gate() -> ModuleType:

@@ -16,6 +16,7 @@ import pytest
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitCommandRunner,
+    GitCredentialUnresolvable,
     GitRemote,
     GitTransportEffectAdapterFactory,
     SubprocessGitCommandRunner,
@@ -140,10 +141,11 @@ def _factory(
     remote: Path,
     runner: GitCommandRunner | None = None,
     pull_requests: FakeHeadBranchPullRequests | None = None,
+    credential_file: Path | None = None,
 ) -> GitTransportEffectAdapterFactory:
     arguments = (
         store,
-        GitRemote("local-test", str(remote)),
+        GitRemote("local-test", str(remote), credential_file),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
         pull_requests or FakeHeadBranchPullRequests(),
@@ -455,29 +457,30 @@ def test_inconclusive_read_after_send_reconciles_and_retry_sends_no_second_push(
         assert outcome.reason.detail == inconclusive.stderr.decode()
 
 
-def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
-    tmp_path: Path,
-) -> None:
-    store, remote, base, _tree = _repositories(tmp_path)
-    runner = _ScriptedRemoteReadRunner([None] * 8)
-    factory = _factory(store, remote, runner)
+def _reviewed_documentation_request(base: str) -> ReviewedDocumentationPullRequest:
     replacement = ReviewedDocumentReplacement(
         "kept.txt", sha256(b"base\n").hexdigest(), b"reviewed exact bytes\n"
     )
     title = "Reviewed documentation"
     body = "The approved replacement."
-    candidate_digest = reviewed_documentation_candidate_digest(
-        base, (replacement,), title, body
-    )
-    request = ReviewedDocumentationPullRequest(
+    return ReviewedDocumentationPullRequest(
         base,
-        candidate_digest,
+        reviewed_documentation_candidate_digest(base, (replacement,), title, body),
         "d" * 64,
         (replacement,),
         title,
         body,
         HEAD_BRANCH,
     )
+
+
+def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, _tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([None] * 8)
+    factory = _factory(store, remote, runner)
+    request = _reviewed_documentation_request(base)
     outer_intent, _push_request = _intent(factory, base, _tree)
     adapter = factory.open()
     try:
@@ -598,6 +601,58 @@ def test_a_credential_git_printed_never_reaches_the_kept_reason(
     assert result.reason is not None
     assert token not in result.reason.detail
     assert REDACTION_MARKER in result.reason.detail
+
+
+@pytest.mark.parametrize("operation", ["readback", "execute", "reviewed-publish"])
+@pytest.mark.parametrize(
+    "token", [None, b"", b" \n"], ids=["missing", "empty", "whitespace"]
+)
+def test_without_a_readable_token_no_git_process_reaches_the_remote(
+    tmp_path: Path, operation: str, token: bytes | None
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    if token is not None:
+        credential_file.write_bytes(token)
+    runner = _ScriptedRemoteReadRunner([])
+    factory = _factory(store, remote, runner, credential_file=credential_file)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    reaching_the_remote = {
+        "readback": lambda: adapter.readback(intent, ReadbackPhase.BEFORE_SEND),
+        "execute": lambda: adapter.execute(intent),
+        "reviewed-publish": lambda: adapter.publish(
+            intent, _reviewed_documentation_request(base)
+        ),
+    }
+    try:
+        with pytest.raises(GitCredentialUnresolvable):
+            reaching_the_remote[operation]()
+    finally:
+        adapter.close()
+
+    assert runner.remote_arguments == []
+    assert runner.push_arguments == []
+
+
+def test_a_token_set_after_the_adapter_opened_licenses_the_next_push(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    factory = _factory(store, remote, credential_file=credential_file)
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        credential_file.write_text("gho_scenario_token", encoding="utf-8")
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(performed, PerformedEffect)
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == (
+        request.expected_commit_oid(intent.request.request_hash.value)
+    )
 
 
 def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(
