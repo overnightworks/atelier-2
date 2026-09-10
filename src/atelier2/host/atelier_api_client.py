@@ -10,8 +10,11 @@ translates that one failure into whatever vocabulary its own callers expect.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import time
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -29,6 +32,44 @@ on classifying it further; past this, further bytes buy nothing but memory."""
 
 class AtelierApiAddressUnusable(ValueError):
     """`service_url` names nothing this client could ever reach."""
+
+
+class EventSampleLimit(StrEnum):
+    """Why `AtelierApi.sampled_event_frames` stopped itself before the stream did.
+
+    A stream this call samples may run forever by design, so every dimension
+    it could hang or grow on stops the read itself instead of the connection
+    ending on its own: `SILENT` is a request-timeout wait with no byte
+    arriving, `FRAME_LIMIT` and `BYTE_LIMIT` are its own caps, and
+    `OVERALL_DEADLINE` is the whole call's wall-clock budget. The connection
+    ending on its own within budget is not one of these -- a caller reads
+    that from `BoundedEventSample.stopped` being `None`.
+    """
+
+    SILENT = "silent"
+    FRAME_LIMIT = "frame-limit"
+    BYTE_LIMIT = "byte-limit"
+    OVERALL_DEADLINE = "overall-deadline"
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedEventSample:
+    """As much of one event stream as `sampled_event_frames` read before stopping.
+
+    `frames` is every complete `data:` payload it decoded, oldest first.
+    `stopped` names why the read stopped itself; it is `None` when the
+    connection closed on its own -- an early end for a stream documented to
+    never end, and exactly as reportable as any of the named limits.
+    """
+
+    frames: tuple[str, ...]
+    stopped: EventSampleLimit | None
+
+
+class _EventSampleBudgetExceeded(Exception):
+    def __init__(self, limit: EventSampleLimit) -> None:
+        super().__init__(limit.value)
+        self.limit = limit
 
 
 class AtelierApiTransportFailure(Exception):
@@ -129,9 +170,62 @@ class AtelierApi:
                 "GET", url, headers={"accept": accept}, timeout=None
             ) as response:
                 self._raise_for_failure(response, url)
-                yield from _decoded_lines(response, url)
+                yield from _decoded_lines(response.iter_bytes(), url)
         except httpx.HTTPError as unavailable:
             raise _transport_unavailable(url, unavailable) from unavailable
+
+    def sampled_event_frames(
+        self,
+        path: str,
+        *,
+        accept: str,
+        request_timeout_seconds: float,
+        overall_deadline_seconds: float,
+        maximum_bytes: int,
+        maximum_frames: int,
+    ) -> BoundedEventSample:
+        """Read at most `maximum_frames` frames of one event stream, on a budget.
+
+        `event_lines` trusts the service to end the stream; this is for a
+        caller that only wants to know whether a stream that may never end on
+        its own looks healthy right now. `request_timeout_seconds` is the read
+        timeout on every chunk (a silent stream stops this call rather than
+        hanging it), `overall_deadline_seconds` bounds the whole call's
+        wall-clock time, and `maximum_bytes` bounds what it buffers -- each is
+        named in the returned sample, never a raised failure, because running
+        into one of them is exactly what this call exists to survive. It
+        always closes the connection itself before returning.
+        """
+
+        url = self.base_url + path
+        deadline = time.monotonic() + overall_deadline_seconds
+        frames: list[str] = []
+        stopped: EventSampleLimit | None = None
+        try:
+            with self._client.stream(
+                "GET",
+                url,
+                headers={"accept": accept},
+                timeout=httpx.Timeout(request_timeout_seconds),
+            ) as response:
+                self._raise_for_failure(response, url)
+                lines = _decoded_lines(_bounded_chunks(response, maximum_bytes), url)
+                try:
+                    for data in server_sent_data(lines):
+                        frames.append(data)
+                        if len(frames) >= maximum_frames:
+                            stopped = EventSampleLimit.FRAME_LIMIT
+                            break
+                        if time.monotonic() >= deadline:
+                            stopped = EventSampleLimit.OVERALL_DEADLINE
+                            break
+                except _EventSampleBudgetExceeded as budget:
+                    stopped = budget.limit
+                except httpx.ReadTimeout:
+                    stopped = EventSampleLimit.SILENT
+        except httpx.HTTPError as unavailable:
+            raise _transport_unavailable(url, unavailable) from unavailable
+        return BoundedEventSample(frames=tuple(frames), stopped=stopped)
 
     def _request(
         self,
@@ -201,7 +295,7 @@ def _bounded_body(response: httpx.Response) -> bytes:
     return bytes(body)
 
 
-def _decoded_lines(response: httpx.Response, url: str) -> Iterator[str]:
+def _decoded_lines(chunks: Iterable[bytes], url: str) -> Iterator[str]:
     """Every line of a byte stream, decoded strictly as UTF-8 text.
 
     `httpx.Response.iter_lines` decodes with substitution, which would turn a
@@ -210,13 +304,53 @@ def _decoded_lines(response: httpx.Response, url: str) -> Iterator[str]:
     """
 
     buffer = b""
-    for chunk in response.iter_bytes():
+    for chunk in chunks:
         buffer += chunk
         while (newline := buffer.find(b"\n")) != -1:
             yield _decoded_line(buffer[:newline], url)
             buffer = buffer[newline + 1 :]
     if buffer:
         yield _decoded_line(buffer, url)
+
+
+def _bounded_chunks(response: httpx.Response, maximum_bytes: int) -> Iterator[bytes]:
+    """A response's byte chunks, stopping the instant their sum passes a cap.
+
+    `maximum_bytes` bounds what `_decoded_lines` ever buffers from this
+    response: raising past it, rather than yielding a truncated chunk, keeps
+    the byte cap and the frame-limit/deadline caps in `sampled_event_frames`
+    reported through the same one path.
+    """
+
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > maximum_bytes:
+            raise _EventSampleBudgetExceeded(EventSampleLimit.BYTE_LIMIT)
+        yield chunk
+
+
+def server_sent_data(lines: Iterator[str]) -> Iterator[str]:
+    """Every complete `data:` payload of an SSE stream, joined per frame.
+
+    One frame's `data:` lines join with `\\n`, exactly as the SSE spec joins
+    them; a blank line ends the frame. This reads only that generic framing,
+    never a payload's own shape -- a caller decodes what the joined text
+    means.
+    """
+
+    data_lines: list[str] = []
+    for line in lines:
+        if not line:
+            if data_lines:
+                yield "\n".join(data_lines)
+            data_lines = []
+            continue
+        field, _, value = line.partition(":")
+        if field == "data":
+            data_lines.append(value.removeprefix(" "))
+    if data_lines:
+        yield "\n".join(data_lines)
 
 
 def _decoded_line(raw_line: bytes, url: str) -> str:

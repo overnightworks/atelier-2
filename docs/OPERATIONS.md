@@ -583,6 +583,24 @@ workflow that owns it is still open: an open workflow must finish or be
 reconciled first, but once it has ended, history under the old address never
 blocks the restart, whatever that intent's own recorded state.
 
+### `atelier2 watch`: read a served instance without touching it (#1502)
+
+`atelier2 watch --service URL` is a read-only observer, not a client of any
+one feature: it GETs a fixed list of paths -- `/health`, `/seat`, `/runs`,
+`/workflow-revisions`, and a bounded sample of `/events` -- and prints one
+JSON report of typed findings to stdout. Every finding is one of: a non-2xx
+or problem-document answer on a listed path; a `STREAM_FAILED` frame on the
+attention feed; a `RUN_PROJECTION_CORRUPT` frame, with its run reference; a
+seat that is not `ALIVE`; `health.redeploy` present (its absence is clean);
+or the service unreachable. The attention feed never ends on its own, so it
+is sampled, not followed: a request timeout per chunk, an overall deadline, a
+byte cap, and a frame cap each stop the read on their own and are never a
+hang. The report never carries the seat's own terminal address (it holds the
+terminal's access token, `served_seat.py`), only its state. Exit is 0 with an
+empty report, non-zero otherwise. This slice reads only what a test double
+serves it; reading the live instance itself waits on the operator's ruling
+on the observer contract that #1046 opens.
+
 ### Publish the issue-to-pr catalog
 
 `serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a

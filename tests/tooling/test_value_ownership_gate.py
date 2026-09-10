@@ -109,6 +109,24 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "one named owner for every CLI request; the run/resolve flag is still "
         "pending and stands as an open finding on #251",
     ),
+    "host/instance_watch.py::REQUEST_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: how long one plain GET among watch's fixed "
+        "endpoints may take before it counts as unreachable; an operator reads "
+        "a report, not a per-call patience knob (#1502)",
+    ),
+    "host/instance_watch.py::EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: the read timeout on every chunk of the "
+        "attention-feed sample -- what tells a silent feed from a hung one; "
+        "not an operator's patience to dial (#1502)",
+    ),
+    "host/instance_watch.py::EVENT_SAMPLE_DEADLINE_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: the attention-feed sample's whole wall-clock "
+        "budget, bounding a stream documented to never end on its own; an "
+        "operator's turnaround is the report's, never this call's (#1502)",
+    ),
     "host/provider_canary.py::PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE": SpelledValue(
         1,
         "stable slice invariant: OPERATIONS.md documents discovery as capped "
