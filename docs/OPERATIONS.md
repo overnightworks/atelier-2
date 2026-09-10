@@ -645,12 +645,15 @@ it did not die, and the report says one thing. One that named its trouble and
 died anyway says both, because what ended that process is not what it
 reported.
 
-The last word decides all of that. Once it has arrived the reading is
-complete, and nothing the reading process then does on its way out is a
-finding: a process slow to leave is stopped by the watch itself, and the code
-that stop produces belongs to the observer's own machine, not to the instance
-that had answered every door. Only a reading that never got to say it can be
-cut short, gone, or dead.
+The last word decides all of that, except over a process that is still
+running. A reader the watch could not get rid of is always a finding, whatever
+it had said: the watch started that process, and a report that left one behind
+unnamed would be lying about what it did to the machine. Past that, once the
+last word has arrived the reading is complete and nothing the reading process
+then does on its way out is a finding: a process slow to leave is stopped by
+the watch itself, and the code that stop produces belongs to the observer's own
+machine, not to the instance that had answered every door. Only a reading that
+never got to say it can be cut short, gone, or dead.
 
 A process rather than a timer, because a deadline that has to interrupt a
 blocking read from inside can only do it by throwing into somebody else's
@@ -658,10 +661,13 @@ code: an exception landing in httpx's connection pool leaves that lock held
 and deadlocks the observer before it can report. A child cannot do that. Past
 the deadline it is terminated, killed if it does not go, and reaped, and the
 operating system reclaims every socket and lock it held; nothing but records
-ever crosses into the process that reports. Every wait in that stopping is
-short and bounded -- measured against a reader that ignores being told to
-stop, a 4 s deadline gave the whole call 4.5 s -- and a process that survives
-even a kill is reported as still running rather than waited for. It cannot
+ever crosses into the process that reports. The waits before the kill are
+short, because a process that may still change its mind must not spend the
+deadline -- measured against a reader that ignores being told to stop, a 4 s
+deadline gave the whole call 4.5 s. The wait after the kill is wide instead: a
+killed process is reaped as soon as the kernel is done with it, so "still
+running" names a reader nothing can end rather than a loaded machine, and such
+a survivor is reported rather than waited for further. It cannot
 outlive the watch either: it asks the kernel to kill it once the process that
 reads its report is gone, and it leaves without a word if that process was
 already gone by the time it asked.

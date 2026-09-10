@@ -69,6 +69,7 @@ from atelier2.host.instance_reader import (
     HEALTH_PATH,
     MAXIMUM_RESPONSE_BYTES,
     READER_MODULE,
+    READER_REAP_SECONDS,
     READER_STOP_GRACE_SECONDS,
     RUN_PATH,
     SEAT_PATH,
@@ -1242,9 +1243,9 @@ _STUBBORN_READER_BUDGET = ReadingBudget(
 """Long enough that the reading process is certainly up and has taken the
 signal it means to ignore before the deadline reaches it."""
 
-_STOP_BUDGET_SECONDS = 3 * READER_STOP_GRACE_SECONDS
-"""The whole stopping: one wait for a clean exit, one after a stop, one after
-a kill."""
+_STOP_BUDGET_SECONDS = 2 * READER_STOP_GRACE_SECONDS + READER_REAP_SECONDS
+"""The whole stopping: one short wait for a clean exit, one short one after a
+stop, and the wide one a killed process is reaped within."""
 
 _UNUSABLE_ADDRESS = "nowhere-a-client-could-reach"
 
@@ -1734,6 +1735,29 @@ def test_a_reading_that_finished_is_clean_however_its_process_then_goes() -> Non
     report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
     assert report.findings == ()
     assert watch_exit_code(report) == 0
+
+
+def test_a_reading_process_that_outlived_its_kill_is_reported_whatever_it_said() -> (
+    None
+):
+    """What this command started, it answers for: a reading process still
+    running when the report was built is a finding even though the reading
+    itself finished, because nobody else will ever name that survivor.
+
+    Driven through the records one reading delivers rather than a real
+    process: no child can survive a kill on purpose -- only one the kernel
+    itself is holding does -- and this is exactly the pair `supervised_reading`
+    hands over when it meets one, now that the wait after the kill is wide
+    enough that only such a process reaches it.
+    """
+
+    reading = InstanceReading(reader_ended=True, reader_reaped=False)
+
+    report = watch_report(SERVICE_URL, reading, _TEST_BUDGET)
+
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.READER_DIED
+    assert watch_exit_code(report) != 0
 
 
 def test_a_reader_that_cannot_put_its_client_away_says_so_and_nothing_else() -> None:

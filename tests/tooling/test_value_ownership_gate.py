@@ -133,6 +133,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "own, and again to die after it was told to, before it is killed -- a "
         "bound on a child's exit, never an operator's patience (#1502)",
     ),
+    "host/instance_reader.py::READER_REAP_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: how long a killed reading process is waited "
+        "for before the report may call it one nothing can end -- a bound on "
+        "the kernel reaping a child, never an operator's patience (#1502)",
+    ),
     "host/provider_canary.py::PROVIDER_CANARY_CONFIGURATION_PAGE_SIZE": SpelledValue(
         1,
         "stable slice invariant: OPERATIONS.md documents discovery as capped "

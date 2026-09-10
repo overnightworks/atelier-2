@@ -33,8 +33,6 @@ could carry ends the gathering with a named failure.
 
 from __future__ import annotations
 
-import ctypes
-import logging
 import os
 import pickle
 import select
@@ -59,6 +57,7 @@ from atelier2.host.atelier_api_client import (
     api_base_url,
     failure_category,
 )
+from atelier2.host.instance_reader_guard import die_with_the_parent, go_quiet
 from atelier2.host.run_command import RUN_PATH
 
 HEALTH_PATH: Final = "/health"
@@ -98,10 +97,15 @@ EVENT_SAMPLE_READ_TIMEOUT_SECONDS: Final = 2.0
 feed stops the sample rather than the whole reading."""
 
 READER_STOP_GRACE_SECONDS: Final = 0.5
-"""How long the reading process is waited for at each step of its stopping --
-to exit after it said it had finished, to die after it was told to, and to be
-reaped after it was killed. Short, and never open-ended: a stop that waited on
-a process that will not go would spend the very time the deadline bounds."""
+"""How long the reading process is waited for at each step before the kill --
+to exit after it said it had finished, and to die after it was told to. Short,
+and never open-ended: a stop that waited on a process that may not go would
+spend the very time the deadline bounds."""
+
+READER_REAP_SECONDS: Final = 5.0
+"""How long a killed reading process is waited for. Wide, because a process
+that took a kill is reaped as soon as the kernel is done with it: what outlasts
+this is a process nothing could end, never an observer that was impatient."""
 
 MAXIMUM_RESPONSE_BYTES: Final = 65_536
 """How much of any one fixed door's answer this reading ever buffers."""
@@ -119,11 +123,6 @@ _INTERRUPT_SIGNALS: Final = frozenset({signal.SIGINT})
 between the process existing and this one holding its handle would leave a
 reading nobody could stop."""
 
-TRANSPORT_LOGGER_NAMES: Final = ("httpx", "httpcore")
-"""The libraries the reading process silences in itself: httpx logs every
-request's status line -- the far side's own reason phrase included -- at
-`INFO`, and httpcore logs a reply's headers at `DEBUG`."""
-
 FRAME_HEADER: Final = struct.Struct("!I")
 """How long the payload after it is: the whole framing, on both ends."""
 
@@ -138,18 +137,6 @@ _NO_DESCRIPTOR: Final = -1
 _NO_PIPE_EXIT_CODE: Final = 2
 """How a reading process ends when it has no pipe to report through: there is
 nothing it could say and nobody who would hear it."""
-
-_ORPHANED_EXIT_CODE: Final = 0
-"""How a reading process ends when the process that would read its report is
-already gone: quietly, because nothing it did would be looked at."""
-
-_SILENT_LEVEL: Final = logging.CRITICAL + 1
-"""Above every level `logging` defines, so a logger set to it makes no record
-at all."""
-
-_PARENT_DEATH_SIGNAL_OPTION: Final = 1
-"""`PR_SET_PDEATHSIG` (`linux/prctl.h`), the same arming
-`adapters/agent_process_exec_guard.py` gives an agent's own child."""
 
 _READ_CHUNK_BYTES: Final = 65_536
 """How much of the pipe one read takes; a frame spans however many it needs."""
@@ -461,8 +448,8 @@ def _prepared(
     can fail too, and a failure there is a record like any other."""
 
     try:
-        _go_quiet()
-        _die_with_the_parent(invocation.parent_process_id)
+        go_quiet()
+        die_with_the_parent(invocation.parent_process_id)
         return AtelierApi(invocation.service_url)
     except Exception as trouble:
         send(_reader_failure(ReaderPhase.SETUP, trouble))
@@ -666,11 +653,18 @@ def _stopped(
     is already on its way out and gets what is left of the deadline, capped at
     one grace, to get there on its own -- so an ordinary ending is never
     mistaken for a killed one. One the deadline interrupted gets none of that:
-    it is told to stop, then killed, each with one short bounded wait, because
-    waiting here would spend the very time the deadline bounds. Every step
-    stands in the `finally` of the one before it, so an interruption while
-    waiting cannot skip the harder step behind it, and a process that survives
-    even a kill is reported rather than waited for.
+    it is told to stop with one short bounded wait, because waiting on a
+    process that may still change its mind would spend the very time the
+    deadline bounds.
+
+    The wait after the kill is the one that is wide. What this returns is the
+    difference between a process the operating system has taken back and one
+    nothing can end, and that answer has to be about the reader rather than
+    about how loaded this machine was: a kill is answered as soon as the kernel
+    is done with the process, so a survivor of `READER_REAP_SECONDS` is a
+    reader no signal reaches. Every step stands in the `finally` of the one
+    before it, so an interruption while waiting cannot skip the harder step
+    behind it.
     """
 
     try:
@@ -684,7 +678,7 @@ def _stopped(
         finally:
             if reader.poll() is None:
                 reader.kill()
-                _waited(reader, READER_STOP_GRACE_SECONDS)
+                _waited(reader, READER_REAP_SECONDS)
     return reader.poll() is not None
 
 
@@ -749,46 +743,3 @@ def _refused_feed_outcome(
 
 def _refusal(failure: AtelierApiTransportFailure) -> ReadRefusal:
     return ReadRefusal(failure.reason, status=failure.status, body=failure.body)
-
-
-def _go_quiet() -> None:
-    """Leave this process nothing to say anywhere but its pipe.
-
-    This process is private: it reports through its pipe and has no reader for
-    anything else, so nothing in it may log at all. `logging.disable` is what
-    makes that true whoever asks -- a level on the two library loggers is
-    walked past by a child logger that sets its own, and a handler hung
-    directly on `httpcore.http11` would then carry the far side's headers to
-    wherever it points -- and the root keeps a handler that drops what is
-    left. Where a write below Python would land is not decided here: the
-    standard streams of a reading process belong to whoever starts it, and
-    `supervised_reading` gives them the null device.
-    """
-
-    logging.disable(logging.CRITICAL)
-    logging.getLogger().handlers = [logging.NullHandler()]
-    for name in TRANSPORT_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(_SILENT_LEVEL)
-
-
-def _die_with_the_parent(parent_process_id: int) -> None:
-    """Ask the kernel to kill this process when the process that reads its
-    report is gone, and leave at once if it already is.
-
-    A parent that died between this process starting and this arming would
-    leave the arming pointing at whoever adopted this process instead -- an
-    ask that would never come -- so the parent is checked again afterwards,
-    and a reading nobody is waiting for ends here without a word.
-
-    The same arming an agent's own child gets before it execs
-    (`adapters/agent_process_exec_guard.py`), which cannot be called here:
-    that function never returns, and wants a cgroup and a watchdog this
-    reading has neither of.
-    """
-
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(_PARENT_DEATH_SIGNAL_OPTION, signal.SIGKILL) != 0:
-        errno = ctypes.get_errno()
-        raise OSError(errno, os.strerror(errno))
-    if os.getppid() != parent_process_id:
-        os._exit(_ORPHANED_EXIT_CODE)

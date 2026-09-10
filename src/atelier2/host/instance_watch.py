@@ -217,23 +217,27 @@ def _ending_findings(
 ) -> tuple[WatchFinding, ...]:
     """What the way the reading ended has to answer for.
 
-    A reading that said its last word is complete, and nothing its process
-    then does on the way out takes that back: one slow to leave is stopped by
-    this read itself, and the code that stop produces says how loaded the
-    observer's own machine was, not what the instance answered.
+    A process still running when this report was built comes first and is
+    always a finding: what it said before is no discharge of it, because this
+    command started that process and a report that leaves one behind unnamed
+    is the report lying about what it did to this machine.
 
-    What an ending can add is therefore only ever about a reading that never
-    got to say it: one whose process would not be killed, one the deadline
-    interrupted, and one that is simply gone -- including one that named its
-    trouble and died anyway, because what ended that process is not what it
-    reported. A reading that named its trouble and then left cleanly is a
-    reader that broke, and that failure is the whole finding.
+    Past that, a reading that said its last word is complete, and how its
+    process then went is not the instance's doing: one slow to leave is
+    stopped by this read itself, and the code that stop produces says how
+    loaded the observer's own machine was, not what the instance answered.
+
+    What an ending can otherwise add is about a reading that never got to say
+    it: one the deadline interrupted, and one that is simply gone -- including
+    one that named its trouble and died anyway, because what ended that
+    process is not what it reported. A reading that named its trouble and then
+    left cleanly is a reader that broke, and that failure is the whole finding.
     """
 
-    if reading.reader_ended:
-        return ()
     if not reading.reader_reaped:
         return (_reader_died_finding(reading, _UNKILLABLE_SENTENCE),)
+    if reading.reader_ended:
+        return ()
     if reading.deadline_passed:
         return (
             WatchFinding(
