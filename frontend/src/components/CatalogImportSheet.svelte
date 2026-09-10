@@ -173,5 +173,11 @@
   .hint { margin: 0 0 var(--space-4); color: var(--ink-dim); font-size: var(--text-xs); }
   button.held { cursor: not-allowed; }
   @media (max-width: 480px) { .count { display: none; } }
-  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
+  /*
+   * A `showModal()`-opened dialog stays capped by Chromium's own UA rule
+   * (`max-width: calc((100% - 6px) - 2em)`) unless a rule here overrides
+   * `max-width` too (#1500); `width: 100%` alone cannot beat a narrower
+   * `max-width`.
+   */
+  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>

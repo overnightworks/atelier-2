@@ -1112,5 +1112,11 @@
   .needs-choice { border-color: var(--signal-attention); color: var(--signal-attention); }
   .role-source { color: var(--ink); font-size: var(--text-2xs); font-weight: var(--weight-strong); margin: var(--space-1) 0 0; }
   .unavailable { color: var(--ink-dim); }
-  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
+  /*
+   * A `showModal()`-opened dialog stays capped by Chromium's own UA rule
+   * (`max-width: calc((100% - 6px) - 2em)`) unless a rule here overrides
+   * `max-width` too (#1500); `width: 100%` alone cannot beat a narrower
+   * `max-width`.
+   */
+  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>
