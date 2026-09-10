@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from atelier2.application.role_candidates import (
     ModelResolutionSource,
+    RegisteredConfiguration,
     _candidate_choices,
     _ModelCandidate,
     _RoleChoices,
@@ -26,6 +28,7 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.workflows_v3 import (
+    AgentMode,
     AgentNodeV3,
     DeclaredRole,
     RoleDifficulty,
@@ -391,35 +394,65 @@ class _ComponentSearch:
         }
 
 
-def cast_unbound_roles(
+def _declared_modes(graph: WorkflowGraphV3) -> dict[str, frozenset[AgentMode]]:
+    """Every mode each role is asked to be filled in.
+
+    A role is the casting unit and a mode belongs to a node, so the answer is
+    what all of a role's nodes ask for together: a document asking one role for
+    two modes is answered as the contradiction it is, never by one of them.
+    """
+    asked: dict[str, set[AgentMode]] = {}
+    for node in graph.nodes:
+        if isinstance(node, AgentNodeV3):
+            asked.setdefault(node.role, set()).add(node.mode)
+    return {role: frozenset(modes) for role, modes in asked.items()}
+
+
+def _choices_by_role(
     graph: WorkflowGraphV3,
-    requested: AgentBindingSet,
+    declarations: tuple[DeclaredRole, ...],
+    requested_by_role: dict[str, AgentBinding],
+    configurations: Mapping[AgentConfigurationRevisionHash, RegisteredConfiguration],
     defaults: ProjectModelDefaultsRevision | None,
     registries: tuple[ModelRegistryRevision, ...],
-    override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]]
-    | None = None,
-) -> CastUnboundRolesResult:
-    """Resolve every role once under the workshop's fixed model precedence.
-
-    Start overrides stand first, followed by the workflow's exact pin, the
-    project's row for the declared difficulty, and only then rows for a higher
-    difficulty. A family rule filters those candidates in the same order. No
-    candidate means an explicit `uncast` resolution and no binding, so the
-    existing completeness guard remains the start gate.
-    """
-    requested_by_role = {binding.role.value: binding for binding in requested.bindings}
-    declarations = declared_roles_of(graph)
-    known_override_models = {} if override_models is None else override_models
-    choices_by_role = {
+) -> dict[str, _RoleChoices]:
+    """Who may occupy each declared role, each read in the mode its nodes ask for."""
+    modes = _declared_modes(graph)
+    return {
         declaration.role: _candidate_choices(
             declaration,
+            modes[declaration.role],
             requested_by_role,
-            known_override_models,
+            configurations,
             defaults,
             registries,
         )
         for declaration in declarations
     }
+
+
+def cast_unbound_roles(
+    graph: WorkflowGraphV3,
+    requested: AgentBindingSet,
+    defaults: ProjectModelDefaultsRevision | None,
+    registries: tuple[ModelRegistryRevision, ...],
+    configurations: Mapping[AgentConfigurationRevisionHash, RegisteredConfiguration],
+) -> CastUnboundRolesResult:
+    """Resolve every role once under the workshop's fixed model precedence.
+
+    Start overrides stand first, followed by the workflow's exact pin, the
+    project's row for the declared difficulty, and only then rows for a higher
+    difficulty. A family rule filters those candidates in the same order, and a
+    pin or default names a model, whose configuration in the node's own mode is
+    the one that fills the role. No candidate means an explicit `uncast`
+    resolution and no binding, so the existing completeness guard remains the
+    start gate.
+    """
+    requested_by_role = {binding.role.value: binding for binding in requested.bindings}
+    declarations = declared_roles_of(graph)
+    choices_by_role = _choices_by_role(
+        graph, declarations, requested_by_role, configurations, defaults, registries
+    )
     selected: dict[str, _ModelCandidate | None] = {}
     uncast_reasons = {
         role: choices.uncast_reason

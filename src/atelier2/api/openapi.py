@@ -50,6 +50,7 @@ from atelier2.api.wire.resources import (
     StreamFailureResource,
 )
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
+from atelier2.contracts.host_configuration import ModelResolutionUncastReason
 from atelier2.contracts.workflow_documents import WORKFLOW_DOCUMENT_FORMATS
 
 API_PREFIX = "/atelier/api/v1"
@@ -880,13 +881,7 @@ def _install_problem_components(schema: dict[str, Any]) -> None:
                 },
                 "reason": {
                     "type": "string",
-                    "enum": [
-                        "override-not-registered",
-                        "workflow-model-not-registered",
-                        "workflow-model-ambiguous",
-                        "no-project-default",
-                        "family-difference-unavailable",
-                    ],
+                    "enum": [reason.value for reason in ModelResolutionUncastReason],
                 },
                 "family_differs_from": {
                     "oneOf": [

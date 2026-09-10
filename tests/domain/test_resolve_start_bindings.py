@@ -9,11 +9,15 @@ import pytest
 
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
+    CastUnboundRolesResult,
     agent_role_completeness_refusal,
     cast_unbound_roles,
     resolve_start_bindings,
 )
-from atelier2.application.role_candidates import ModelResolutionSource
+from atelier2.application.role_candidates import (
+    ModelResolutionSource,
+    RegisteredConfiguration,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -318,6 +322,35 @@ def _family_graph(links: dict[str, str]) -> WorkflowGraphV3:
     return _family_graph_for_roles(("alpha", "beta", "gamma"), links)
 
 
+def _cast(
+    graph: WorkflowGraphV3,
+    requested: AgentBindingSet,
+    defaults: ProjectModelDefaultsRevision | None,
+    registries: tuple[ModelRegistryRevision, ...],
+    configurations: dict[AgentConfigurationRevisionHash, RegisteredConfiguration]
+    | None = None,
+) -> CastUnboundRolesResult:
+    """The casting entry, told what every configuration in the scenario runs as.
+
+    A registered configuration a scenario says nothing about is a headless one
+    of its own registered model -- the mode every graph here declares -- so a
+    scenario spells a configuration out only where its provider, model or
+    capability is what the scenario is about.
+    """
+    known = {
+        entry.agent_configuration_revision_hash: RegisteredConfiguration(
+            registry.provider_id.value,
+            entry.model_id,
+            AgentExecutionCapability.HEADLESS,
+        )
+        for registry in registries
+        for entry in registry.entries
+    }
+    return cast_unbound_roles(
+        graph, requested, defaults, registries, known | (configurations or {})
+    )
+
+
 def test_start_override_beats_workflow_pin_and_project_default() -> None:
     override = AgentConfigurationRevisionHash("a" * 64)
     overridden = ModelRegistryEntry(
@@ -330,7 +363,7 @@ def test_start_override_beats_workflow_pin_and_project_default() -> None:
     project = _model_entry("project", "c" * 64)
     registry = _model_registry("anthropic", overridden, pinned, project)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(builder_model="pinned"),
         AgentBindingSet((AgentBinding(AgentRole("builder"), override),)),
         _project_defaults((2, registry, project)),
@@ -348,7 +381,7 @@ def test_workflow_pin_beats_project_default() -> None:
     project = _model_entry("project", "c" * 64)
     registry = _model_registry("anthropic", pinned, project)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(builder_model="pinned"),
         AgentBindingSet(()),
         _project_defaults((2, registry, project)),
@@ -366,7 +399,7 @@ def test_missing_difficulty_uses_only_the_next_higher_project_default() -> None:
     easy = _model_entry("easy", "e" * 64)
     registry = _model_registry("anthropic", hard, easy)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(builder_difficulty=2),
         AgentBindingSet(()),
         _project_defaults((1, registry, easy), (3, registry, hard)),
@@ -390,7 +423,7 @@ def test_a_family_rule_tries_a_higher_default_then_leaves_the_role_uncast() -> N
         (3, openai, alternate),
     )
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(
             builder_difficulty=2,
             merger_difficulty=2,
@@ -422,7 +455,7 @@ def test_a_family_rule_tries_a_higher_default_then_leaves_the_role_uncast() -> N
         == 3
     )
 
-    without_alternate = cast_unbound_roles(
+    without_alternate = _cast(
         _v3_graph(merger_family_differs_from="builder"),
         AgentBindingSet(()),
         _project_defaults((2, anthropic, shared)),
@@ -443,7 +476,7 @@ def test_a_removed_registry_entry_invalidates_its_default_and_tries_higher() -> 
     old_registry = _revised_registry("anthropic", 1, removed)
     latest_registry = _revised_registry("anthropic", 2, replacement)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(builder_difficulty=2),
         AgentBindingSet(()),
         _project_defaults(
@@ -466,7 +499,7 @@ def test_an_account_change_invalidates_the_old_exact_default_tuple() -> None:
     old_registry = _revised_registry("anthropic", 1, old_account)
     latest_registry = _revised_registry("anthropic", 2, new_account)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet(()),
         _project_defaults((2, old_registry, old_account)),
@@ -485,7 +518,7 @@ def test_a_default_survives_an_additive_and_reordered_registry_revision() -> Non
     saved_registry = _revised_registry("anthropic", 1, chosen)
     latest_registry = _revised_registry("anthropic", 2, added, chosen)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet(()),
         _project_defaults((2, saved_registry, chosen)),
@@ -504,7 +537,7 @@ def test_an_unrelated_provider_revision_does_not_invalidate_a_default() -> None:
     anthropic = _revised_registry("anthropic", 1, chosen)
     openai = _revised_registry("openai", 9, unrelated)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet(()),
         _project_defaults((2, anthropic, chosen)),
@@ -522,7 +555,7 @@ def test_a_missing_override_is_terminal_and_never_falls_back_to_defaults() -> No
     registry = _model_registry("anthropic", chosen)
     missing = AgentConfigurationRevisionHash("8" * 64)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet((AgentBinding(AgentRole("builder"), missing),)),
         _project_defaults((2, registry, chosen)),
@@ -539,12 +572,16 @@ def test_catalog_metadata_cannot_make_an_absent_override_eligible() -> None:
     absent = AgentConfigurationRevisionHash("8" * 64)
     registry = _model_registry("anthropic", configured)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet((AgentBinding(AgentRole("builder"), absent),)),
         _project_defaults((2, registry, configured)),
         (registry,),
-        {absent: ("anthropic", "unregistered")},
+        {
+            absent: RegisteredConfiguration(
+                "anthropic", "unregistered", AgentExecutionCapability.HEADLESS
+            )
+        },
     )
 
     builder = next(item for item in cast.resolutions if item.role.value == "builder")
@@ -555,7 +592,7 @@ def test_catalog_metadata_must_match_the_one_eligible_registry_tuple() -> None:
     configured = _model_entry("opus", "7" * 64)
     registry = _model_registry("anthropic", configured)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(),
         AgentBindingSet(
             (
@@ -566,7 +603,11 @@ def test_catalog_metadata_must_match_the_one_eligible_registry_tuple() -> None:
         ),
         None,
         (registry,),
-        {configured.agent_configuration_revision_hash: ("anthropic", "sonnet")},
+        {
+            configured.agent_configuration_revision_hash: RegisteredConfiguration(
+                "anthropic", "sonnet", AgentExecutionCapability.HEADLESS
+            )
+        },
     )
 
     builder = next(item for item in cast.resolutions if item.role.value == "builder")
@@ -620,7 +661,7 @@ def test_unchecked_provider_models_are_ineligible_at_every_precedence_branch(
         _project_defaults((2, registry, rejected)) if branch == "default" else None
     )
 
-    cast = cast_unbound_roles(graph, overrides, defaults, (registry,))
+    cast = _cast(graph, overrides, defaults, (registry,))
 
     builder = next(item for item in cast.resolutions if item.role.value == "builder")
     assert builder.uncast_reason is expected_reason
@@ -634,10 +675,10 @@ def test_a_missing_or_ambiguous_workflow_pin_is_terminal() -> None:
     openai = _model_registry("openai", duplicate_b)
     defaults = _project_defaults((2, anthropic, fallback))
 
-    missing = cast_unbound_roles(
+    missing = _cast(
         _v3_graph(builder_model="missing"), AgentBindingSet(()), defaults, (anthropic,)
     )
-    ambiguous = cast_unbound_roles(
+    ambiguous = _cast(
         _v3_graph(builder_model="pinned"),
         AgentBindingSet(()),
         defaults,
@@ -652,8 +693,33 @@ def test_a_missing_or_ambiguous_workflow_pin_is_terminal() -> None:
     )
 
 
+def test_a_workflow_pin_takes_the_configuration_of_its_model_in_the_nodes_mode() -> (
+    None
+):
+    tool_bearing = _model_entry("pinned", "a" * 64)
+    headless = _model_entry("pinned", "b" * 64)
+    registry = _model_registry("anthropic", tool_bearing, headless)
+
+    cast = _cast(
+        _v3_graph(builder_model="pinned"),
+        AgentBindingSet(()),
+        None,
+        (registry,),
+        {
+            tool_bearing.agent_configuration_revision_hash: RegisteredConfiguration(
+                "anthropic", "pinned", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+            )
+        },
+    )
+
+    assert cast.resolutions[0].agent_configuration_revision_hash == (
+        headless.agent_configuration_revision_hash
+    )
+    assert cast.resolutions[0].source is ModelResolutionSource.PINNED_IN_WORKFLOW
+
+
 def test_family_relation_preserves_each_intrinsic_missing_candidate_reason() -> None:
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(
             builder_model="missing",
             merger_family_differs_from="builder",
@@ -676,7 +742,7 @@ def test_a_family_declarer_is_uncast_when_its_final_peer_is_uncast() -> None:
     available = _model_entry("opus", "b" * 64)
     registry = _model_registry("anthropic", available)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(
             builder_model="missing",
             merger_family_differs_from="builder",
@@ -698,7 +764,7 @@ def test_family_chain_is_solved_against_the_final_assignments() -> None:
     anthropic = _model_registry("anthropic", anthropic_entry)
     openai = _model_registry("openai", openai_entry)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _family_graph({"beta": "alpha", "gamma": "beta"}),
         AgentBindingSet(()),
         _project_defaults((2, anthropic, anthropic_entry), (3, openai, openai_entry)),
@@ -758,7 +824,7 @@ def test_an_unsatisfiable_family_chain_keeps_its_largest_valid_tail() -> None:
         ),
     )
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         graph,
         AgentBindingSet(()),
         _project_defaults(
@@ -795,7 +861,7 @@ def test_family_cycle_names_every_role_when_no_final_assignment_exists() -> None
     anthropic = _model_registry("anthropic", anthropic_entry)
     openai = _model_registry("openai", openai_entry)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _family_graph({"alpha": "gamma", "beta": "alpha", "gamma": "beta"}),
         AgentBindingSet(()),
         _project_defaults((2, anthropic, anthropic_entry), (3, openai, openai_entry)),
@@ -822,7 +888,7 @@ def test_one_hundred_family_roles_keep_the_maximal_precedence_assignment(
     anthropic = _model_registry("anthropic", anthropic_entry)
     openai = _model_registry("openai", openai_entry)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _family_graph_for_roles(roles, links),
         AgentBindingSet(()),
         _project_defaults(
@@ -852,7 +918,7 @@ def test_a_registered_override_participates_in_family_selection() -> None:
     anthropic = _model_registry("anthropic", anthropic_entry)
     openai = _model_registry("openai", openai_entry)
 
-    cast = cast_unbound_roles(
+    cast = _cast(
         _v3_graph(merger_family_differs_from="builder"),
         AgentBindingSet(
             (
@@ -874,7 +940,7 @@ def test_a_registered_override_participates_in_family_selection() -> None:
 
 
 def test_without_project_defaults_every_open_role_is_named_uncast() -> None:
-    cast = cast_unbound_roles(_v3_graph(), AgentBindingSet(()), None, ())
+    cast = _cast(_v3_graph(), AgentBindingSet(()), None, ())
 
     assert cast.agent_bindings == AgentBindingSet(())
     assert {resolution.source for resolution in cast.resolutions} == {
