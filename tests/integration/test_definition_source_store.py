@@ -9,6 +9,11 @@ against real documents rather than a fixture that only ever says yes.
 The intake scenarios author their own workflows where the assertion is about a
 name: this repository's authored names are its own, and a test that needed one
 of them to collide would break the moment a workflow here is renamed.
+
+The deploy selects schemas and budget policies beside the workflows, so a
+second dogfood takes this repository's `workflows/schemas` and
+`workflows/budgets` in with them, and the scenarios that need a workflow to run
+read that from the store's own projection.
 """
 
 from __future__ import annotations
@@ -38,6 +43,11 @@ from atelier2.adapters.dbos.schema import (
     published_revisions,
 )
 from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.read_workflow_revisions import (
+    WorkflowRevisionRead,
+    get_workflow_revision,
+)
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -52,6 +62,7 @@ from atelier2.contracts.definition_sources import (
     DefinitionSourceConfiguration,
     DefinitionSourceId,
     DefinitionSourceKind,
+    DefinitionSourceRefusal,
     DefinitionSourceRevision,
     DefinitionSourceSelection,
     RepositoryLocation,
@@ -66,12 +77,18 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.contracts.run_configuration_v3 import (
+    ReferenceRefusalReason,
+    declared_references,
+)
 from atelier2.contracts.runs import WorkflowRevision
+from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
 )
 from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.host import main
 from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
@@ -86,6 +103,11 @@ from tests.scenarios.workflows import declared_output
 
 MAIN = "refs/heads/main"
 WORKFLOW_SELECTION = "workflows/*.yaml"
+EVERY_KIND_SELECTED = (
+    f"{WORKFLOW_SELECTION}=workflow",
+    "workflows/schemas/*.json=schema",
+    "workflows/budgets/*.json=budget_policy",
+)
 PAGE_BUDGET = EnrichedPageBudget(maximum_nodes=1_000, maximum_document_bytes=1 << 20)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _AUTHORED_BY_THE_SCENARIO = {
@@ -616,29 +638,37 @@ def test_the_command_refuses_a_source_id_nobody_registered(
     assert "no definition source is registered" in capsys.readouterr().err
 
 
-def connect(database: Path, repository: Path) -> str:
+def connect(
+    database: Path,
+    repository: Path,
+    selections: tuple[str, ...] = (f"{WORKFLOW_SELECTION}=workflow",),
+) -> str:
     """The source id of a repository this scenario just connected."""
 
-    assert (
-        main(
-            [
-                "definition-source",
-                "connect",
-                "--database",
-                str(database),
-                "--location",
-                str(repository),
-                "--ref",
-                MAIN,
-                "--select",
-                f"{WORKFLOW_SELECTION}=workflow",
-                "--actor",
-                "felix",
-            ]
-        )
-        == 0
-    )
+    assert connect_exit(database, repository, selections) == 0
     return registration(location=str(repository)).source_id.value
+
+
+def connect_exit(database: Path, repository: Path, selections: tuple[str, ...]) -> int:
+    return main(
+        [
+            "definition-source",
+            "connect",
+            "--database",
+            str(database),
+            "--location",
+            str(repository),
+            "--ref",
+            MAIN,
+            *(
+                argument
+                for selection in selections
+                for argument in ("--select", selection)
+            ),
+            "--actor",
+            "felix",
+        ]
+    )
 
 
 def intake(database: Path, source_id: str, *at_position: str) -> int:
@@ -740,21 +770,25 @@ def test_one_intake_takes_every_authored_workflow_in_with_its_provenance(
         )
         for path, document in sorted(authored.items())
     ]
-    assert set(_published_workflow_hashes(engine)) == {
-        PublishedRevisionHash.of(document).value for document in authored.values()
-    }
+    assert {
+        revision_hash
+        for kind, revision_hash in published_pairs(engine)
+        if kind == RevisionKind.WORKFLOW.value
+    } == {PublishedRevisionHash.of(document).value for document in authored.values()}
 
 
-def _published_workflow_hashes(engine: Engine) -> list[str]:
+def published_pairs(engine: Engine) -> set[tuple[str, str]]:
+    """Every published revision the store holds, as its kind and its hash."""
+
     with engine.connect() as connection:
-        return [
-            str(record)
-            for record in connection.execute(
-                sa.select(published_revisions.c.revision_hash).where(
-                    published_revisions.c.kind == RevisionKind.WORKFLOW.value
+        return {
+            (str(kind), str(revision_hash))
+            for kind, revision_hash in connection.execute(
+                sa.select(
+                    published_revisions.c.kind, published_revisions.c.revision_hash
                 )
-            ).scalars()
-        ]
+            )
+        }
 
 
 def test_the_same_commit_taken_in_again_writes_nothing_and_says_so(
@@ -819,7 +853,11 @@ def test_a_moved_ref_takes_the_new_revision_in_and_keeps_the_one_before_it(
 def test_an_intake_refused_at_its_last_file_leaves_the_store_byte_identical(
     tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A batch is one act: the files admitted before the refusal go back too."""
+    """A batch is one act: the files admitted before the refusal go back too.
+
+    The schema and the budget sort before the refused workflow, so they are
+    written on the batch's transaction before the refusal takes them back.
+    """
 
     held = tmp_path / "held.git"
     bare_repository_of(held, {"workflows/build.yaml": workflow_named("build")})
@@ -829,10 +867,12 @@ def test_an_intake_refused_at_its_last_file_leaves_the_store_byte_identical(
         colliding,
         {
             "workflows/a-first.yaml": workflow_named("ship"),
+            "workflows/budgets/bounded.json": a_budget(),
+            "workflows/schemas/result.json": a_schema(),
             "workflows/z-last.yaml": workflow_named("build") + b"\n",
         },
     )
-    source_id = connect(database, colliding)
+    source_id = connect(database, colliding, EVERY_KIND_SELECTED)
     capsys.readouterr()
     settled = logical_dump(database)
 
@@ -864,6 +904,321 @@ def test_a_name_the_catalog_cannot_hold_refuses_before_anything_is_written(
     refused = capsys.readouterr().err
     assert refused.startswith("refused workflows/shout.yaml")
     assert "'SHOUT'" in refused
+    assert logical_dump(database) == settled
+
+
+def a_schema(type_name: str = "object") -> bytes:
+    return f'{{"type": "{type_name}"}}'.encode()
+
+
+def a_budget(deadline_seconds: int = 60) -> bytes:
+    return f'{{"attempt_deadline_seconds": {deadline_seconds}}}'.encode()
+
+
+def pinned_scenario(schema: bytes, budget: bytes) -> dict[str, bytes]:
+    """One workflow whose only node pins this output schema and this budget, with both."""
+
+    workflow = f"""format_version: 3
+name: pinned
+nodes:
+  - id: only
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this workflow is for.
+    budget:
+      ref: bounded
+      revision: "{PublishedRevisionHash.of(budget).value}"
+{declared_output(PublishedRevision(RevisionKind.SCHEMA, schema)).decode("utf-8")}"""
+    return {
+        "workflows/budgets/bounded.json": budget,
+        "workflows/pinned.yaml": workflow.encode(),
+        "workflows/schemas/result.json": schema,
+    }
+
+
+def said_per_path(capsys: pytest.CaptureFixture[str]) -> list[list[str]]:
+    """The last command's line per path, as its words: word, kind, path."""
+
+    return [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+
+
+def scanned(
+    database: Path, source_id: str, capsys: pytest.CaptureFixture[str]
+) -> list[list[str]]:
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "definition-source",
+                "scan",
+                "--database",
+                str(database),
+                "--source-id",
+                source_id,
+            ]
+        )
+        == 0
+    )
+    return said_per_path(capsys)
+
+
+def not_executable_reason(engine: Engine, document: bytes) -> str | None:
+    """What the stored projection of this workflow says keeps it from running."""
+
+    read = get_workflow_revision(
+        WorkflowRevision(document).revision_hash,
+        durable_queries(engine),
+        DbosCatalogStore(engine),
+    )
+    assert isinstance(read, WorkflowRevisionRead)
+    return read.not_executable_reason
+
+
+def test_a_workflow_runs_once_the_schema_and_budget_it_pins_are_taken_in(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Taken in with workflows alone, the stored revision names the pin it misses;
+    the same source reconnected with the deploy's three selections runs it."""
+
+    files = pinned_scenario(a_schema(), a_budget())
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, files)
+    assert intake(database, connect(database, repository)) == 0
+    missing = not_executable_reason(engine, files["workflows/pinned.yaml"])
+    assert missing is not None
+    assert ReferenceRefusalReason.UNPUBLISHED_REVISION.value in missing
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    assert said_per_path(capsys) == [
+        ["published", "budget_policy", "workflows/budgets/bounded.json"],
+        ["present", "workflow", "workflows/pinned.yaml"],
+        ["published", "schema", "workflows/schemas/result.json"],
+    ]
+    assert not_executable_reason(engine, files["workflows/pinned.yaml"]) is None
+
+
+def test_the_same_commit_of_every_kind_taken_in_again_writes_nothing_and_says_so(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, pinned_scenario(a_schema(), a_budget()))
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    assert intake(database, source_id) == 0
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 0
+
+    assert [word for word, *_ in said_per_path(capsys)] == ["present"] * 3
+    assert logical_dump(database) == settled
+
+
+def test_a_schema_its_reader_refuses_stops_the_whole_intake_on_its_path(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Connect answers for the repository and the ref, never for what a file holds."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(
+        repository,
+        {
+            **pinned_scenario(a_schema(), a_budget()),
+            "workflows/schemas/result.json": b"[]",
+        },
+    )
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith("workflows/schemas/result.json would not be published")
+    assert SchemaDocumentRefusal.NOT_A_SCHEMA.value in refused
+    assert logical_dump(database) == settled
+
+
+def test_a_corrupt_publication_met_late_takes_the_whole_batch_back(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """After an earlier batch landed, the budget and workflow written first go back too.
+
+    The store holds other bytes under the edited schema's hash, so publishing
+    onto them is corrupt state rather than a refusal: the batch's own
+    transaction takes back everything it wrote before reaching that path.
+    """
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, pinned_scenario(a_schema(), a_budget()))
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    assert intake(database, source_id) == 0
+    edited_schema = a_schema("string")
+    with engine.begin() as connection:
+        connection.execute(
+            published_revisions.insert().values(
+                kind=RevisionKind.SCHEMA.value,
+                revision_hash=PublishedRevisionHash.of(edited_schema).value,
+                document=a_schema("array"),
+            )
+        )
+    commit_to(repository, pinned_scenario(edited_schema, a_budget(120)))
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    assert "cannot read back" in capsys.readouterr().err
+    assert logical_dump(database) == settled
+
+
+def test_one_schema_at_two_paths_is_one_publication_with_two_origins(
+    tmp_path: Path, database: Path, engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Hash-named bytes hold no name, so a second path carrying them is no conflict."""
+
+    schema = a_schema()
+    paths = ("workflows/schemas/first.json", "workflows/schemas/second.json")
+    repository = tmp_path / "definitions.git"
+    commit = bare_repository_of(repository, dict.fromkeys(paths, schema))
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    capsys.readouterr()
+
+    assert intake(database, source_id) == 0
+
+    assert said_per_path(capsys) == [
+        ["published", "schema", paths[0]],
+        ["present", "schema", paths[1]],
+    ]
+    schema_hash = PublishedRevisionHash.of(schema).value
+    assert {pair for pair in published_pairs(engine) if pair[0] == "schema"} == {
+        ("schema", schema_hash)
+    }
+    assert recorded_intakes(engine) == [
+        (source_id, path, 1, schema_hash, commit) for path in paths
+    ]
+    assert scanned(database, source_id, capsys) == [
+        ["in_sync", "schema", path] for path in paths
+    ]
+    settled = logical_dump(database)
+    assert intake(database, source_id) == 0
+    assert logical_dump(database) == settled
+
+
+def authored_definitions() -> Mapping[str, bytes]:
+    """Every workflow, schema and budget this repository authors, as served."""
+
+    return {
+        authored.relative_to(REPOSITORY_ROOT).as_posix(): authored.read_bytes()
+        for pattern in ("*.yaml", "schemas/*.json", "budgets/*.json")
+        for authored in sorted((REPOSITORY_ROOT / "workflows").glob(pattern))
+    }
+
+
+def v3_graph(document: bytes) -> WorkflowGraphV3:
+    graph = parse_workflow_document(document)
+    assert isinstance(graph, WorkflowGraphV3)
+    return graph
+
+
+def test_one_intake_publishes_every_schema_and_budget_a_shipped_workflow_pins(
+    tmp_path: Path, database: Path, engine: Engine
+) -> None:
+    """The dogfood of the deploy's three selections, into an empty store.
+
+    Only the authored pins are claimed: the house schemas `work-item` and
+    `verdict` belong to the code, and grants and adapter operations stay hand
+    publications, so this is not a claim that every workflow runs here.
+    """
+
+    authored = authored_definitions()
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, authored)
+
+    assert intake(database, connect(database, repository, EVERY_KIND_SELECTED)) == 0
+
+    published = published_pairs(engine)
+    pins = {
+        (declared.kind.value, declared.reference.revision): declared.reference.ref
+        for path, document in authored.items()
+        if path.endswith(".yaml")
+        for declared in declared_references(v3_graph(document))
+        if declared.kind in (RevisionKind.SCHEMA, RevisionKind.BUDGET_POLICY)
+    }
+    assert {ref for pin, ref in pins.items() if pin not in published} <= {
+        "work-item",
+        "verdict",
+    }
+    assert {kind for kind, _ in pins.keys() & published} == {
+        RevisionKind.SCHEMA.value,
+        RevisionKind.BUDGET_POLICY.value,
+    }
+
+
+def test_a_source_reconnected_with_workflows_alone_reads_again_in_the_build_before(
+    tmp_path: Path,
+    database: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recovery OPERATIONS names before reverting the schema and budget intake.
+
+    The build before differs from this one in exactly the kinds a selection may
+    declare, so narrowing that set is that build's reader. It refuses the
+    stored source until this build reconnects it with the workflow selection
+    alone; then its own deploy connect and intake read it again.
+    """
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, pinned_scenario(a_schema(), a_budget()))
+    source_id = connect(database, repository, EVERY_KIND_SELECTED)
+    assert intake(database, source_id) == 0
+    selection_kinds_before = (
+        "atelier2.contracts.definition_sources._SELECTION_KINDS",
+        frozenset({RevisionKind.WORKFLOW}),
+    )
+    capsys.readouterr()
+    with monkeypatch.context() as build_before:
+        build_before.setattr(*selection_kinds_before)
+        assert (
+            connect_exit(database, repository, (f"{WORKFLOW_SELECTION}=workflow",)) == 1
+        )
+    assert "cannot read back" in capsys.readouterr().err
+
+    connect(database, repository)
+
+    monkeypatch.setattr(*selection_kinds_before)
+    assert connect(database, repository) == source_id
+    assert intake(database, source_id) == 0
+
+
+def test_a_path_taken_in_as_a_schema_refuses_to_be_taken_in_as_a_workflow(
+    tmp_path: Path, database: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A changed kind is a named refusal with its way out, never a store gone corrupt."""
+
+    repository = tmp_path / "definitions.git"
+    bare_repository_of(repository, {"definitions/result.yaml": a_schema()})
+    source_id = connect(database, repository, ("definitions/*.yaml=schema",))
+    assert intake(database, source_id) == 0
+    commit_to(repository, {"definitions/result.yaml": workflow_named("result")})
+    connect(database, repository, ("definitions/*.yaml=workflow",))
+    capsys.readouterr()
+    settled = logical_dump(database)
+
+    assert intake(database, source_id) == 1
+
+    refused = capsys.readouterr().err
+    assert refused.startswith(DefinitionSourceRefusal.KIND_CHANGED.value)
+    assert (
+        "definitions/result.yaml was taken in as schema and is now selected as "
+        "workflow" in refused
+    )
+    assert "move the file to a new path" in refused
+    assert "cannot read back" not in refused
     assert logical_dump(database) == settled
 
 
