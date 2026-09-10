@@ -43,7 +43,7 @@ describe("the studio's hold of GET /events", () => {
     });
   });
 
-  it("keeps the hold live on RUN_PROJECTION_CORRUPT without queuing a run event", () => {
+  it("names the unreadable run as a defective row and keeps the hold live", () => {
     const applied = applyAttentionFrame(
       markAttentionLive(startAttentionHold()),
       JSON.stringify({
@@ -59,6 +59,12 @@ describe("the studio's hold of GET /events", () => {
     );
 
     expect(applied.event).toBeNull();
+    expect(applied.unreadable).toEqual({
+      kind: "defective",
+      public_run_reference: publicReference,
+      problem_code: "durable-state-corrupt",
+      detail: "Durable state is corrupt"
+    });
     expect(applied.hold.connection).toBe("live");
     expect(applied.hold.protocol_problem).toBeNull();
     expect(applied.hold.stream_failure).toBeNull();

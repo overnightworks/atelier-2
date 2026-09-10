@@ -33,7 +33,12 @@
     type RetainedRead
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
-  import { newestReadOfEachRun, resolveWorkflowName, splitRunListRows } from "../lib/runList";
+  import {
+    newestReadOfEachRun,
+    resolveWorkflowName,
+    splitRunListRows,
+    withDefectiveRow
+  } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { humanMove, runStanding, standingMarks } from "../lib/runState";
   import { seatCopy } from "../lib/seatCopy";
@@ -109,6 +114,8 @@
 
   let live: RetainedRead<WorkbenchRuns, ReadFailure> = retainedRead<WorkbenchRuns, ReadFailure>();
   let hold: AttentionHold = startAttentionHold();
+  /** Runs the attention feed named unreadable while the run list could still read them. */
+  let feedDefective: DefectiveRunRow[] = [];
   let stream: RunEventSubscription | null = null;
   let streamFailureMessage: string | null = null;
   let disposed = false;
@@ -292,6 +299,9 @@
   function applyEvent(rawData: string): void {
     const applied = applyAttentionFrame(hold, rawData);
     hold = applied.hold;
+    if (applied.unreadable !== null) {
+      feedDefective = withDefectiveRow(feedDefective, applied.unreadable);
+    }
     if (applied.event === null) {
       if (attentionStopped(hold)) {
         stream?.close();
@@ -407,7 +417,7 @@
       move: humanMove(run.state)
     }));
   /** Runs whose own projection failed (#1042): named, never folded into an empty shelf. */
-  $: defective = snapshot?.defective ?? [];
+  $: defective = feedDefective.reduce(withDefectiveRow, snapshot?.defective ?? []);
 </script>
 
 <section class="workbench surface" aria-labelledby="workbench-title">
