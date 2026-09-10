@@ -239,6 +239,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Binding constraint refused",
         "Bind the constrained nodes to different agent configuration revisions. The constraint checks occupation, not independent judgment.",
     ),
+    "agent-mode-mismatch": ProblemDefinition(
+        422,
+        "Agent mode mismatch",
+        "Bind the node's role to an agent configuration whose capability is exactly the mode the node declares.",
+    ),
     "invalid-agent-attempt-id": ProblemDefinition(
         400,
         "Invalid agent attempt id",

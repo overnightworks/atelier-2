@@ -19,11 +19,13 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
     QueueItemId,
     QueueItemSnapshot,
+    QueueLaunchBinding,
     QueueProjectPolicyRevision,
     QueueRestartRefusal,
     WorkItemReference,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
+from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
     OpenTrackerItemsObserved,
     TrackerItemSource,
@@ -33,6 +35,10 @@ from atelier2.ports.issue_observation import (
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
     QueueItemsReader,
+    QueueLaunchAlreadyBound,
+    QueueLaunchBlocked,
+    QueueLaunchReserved,
+    QueueLaunchReserver,
     QueuePolicyReader,
     QueueProjectPolicyAbsent,
     QueueProjectPolicyFound,
@@ -96,6 +102,26 @@ def validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
         raise QueueAdvanceCorrupt(
             "the queue projection returned an inconsistent item"
         ) from error
+
+
+def reserved_launch(
+    queue: QueueLaunchReserver, binding: QueueLaunchBinding
+) -> QueueLaunchBinding | QueueItemSnapshot:
+    """The binding the item now holds, or the item as the store blocked it."""
+
+    match queue.reserve_launch(binding):
+        case QueueLaunchReserved(binding=held) | QueueLaunchAlreadyBound(binding=held):
+            return held
+        case QueueLaunchBlocked(item=blocked):
+            return validated_snapshot(blocked)
+        case DurableWriteUnavailable():
+            raise QueueAdvanceUnavailable("the launch reservation could not commit")
+        case PortDurableStateCorrupt():
+            raise QueueAdvanceCorrupt("the launch reservation found corrupt state")
+        case _:
+            raise QueueAdvanceCorrupt(
+                "the queue answered an unknown launch reservation outcome"
+            )
 
 
 @dataclass(frozen=True)

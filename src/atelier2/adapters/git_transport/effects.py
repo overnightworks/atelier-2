@@ -6,7 +6,6 @@ import hashlib
 import logging
 import os
 import re
-import shlex
 import subprocess
 import tempfile
 import time
@@ -16,6 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from atelier2.adapters.git_transport.credentials import (
+    TokenFileProblem,
+    credential_helper_arguments,
+    read_token_file,
+)
 from atelier2.adapters.project_source import isolated_git_environment
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
@@ -60,6 +64,28 @@ _LOG = logging.getLogger("atelier2")
 
 class GitTransportRefused(RuntimeError):
     """The durable request does not authorize the proposed git mutation."""
+
+
+class GitCredentialUnresolvable(GitTransportRefused):
+    """The remote's credential file holds no well-formed token (`platform-credential-unresolvable`)."""
+
+
+def _checked_token(credential_file: Path | None) -> str | None:
+    """The remote's token, read and checked once for one remote call.
+
+    Checked per call, so a token set while the host serves counts; `None` where
+    the remote needs no credential.
+    """
+
+    if credential_file is None:
+        return None
+    token = read_token_file(credential_file)
+    if isinstance(token, TokenFileProblem):
+        raise GitCredentialUnresolvable(
+            f"platform-credential-unresolvable: git credential file "
+            f"{credential_file} {token.value}"
+        )
+    return token
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,17 +272,14 @@ class GitTransportEffectAdapterFactory:
         return True
 
     def open(self) -> GitTransportEffectAdapter:
-        store = self.candidate_store.resolve()
         credential_file = self.remote.credential_file
-        if credential_file is not None:
-            credential_file = credential_file.resolve()
-            if not credential_file.is_file() or credential_file.stat().st_size == 0:
-                raise GitTransportRefused(
-                    f"git credential file is missing or empty: {credential_file}"
-                )
+        # Absolute, not resolved: a repointed symlink is followed, not pinned.
+        absolute_credential_file = (
+            None if credential_file is None else credential_file.absolute()
+        )
         return GitTransportEffectAdapter(
-            store,
-            GitRemote(self.remote.identity, self.remote.url, credential_file),
+            self.candidate_store.resolve(),
+            GitRemote(self.remote.identity, self.remote.url, absolute_credential_file),
             self.binding,
             self.head_branch_pull_requests,
             self.command_runner,
@@ -708,31 +731,19 @@ class GitTransportEffectAdapter:
             return self._performed(request, expected)
         return _unknown(intent, observation)
 
-    def _credential_arguments(self) -> tuple[str, ...]:
-        credential_file = self._remote.credential_file
-        if credential_file is None:
-            return ()
-        path = shlex.quote(str(credential_file))
-        helper = (
-            '!f() { test "$1" = get || exit 0; '
-            "printf 'username=x-access-token\\npassword='; "
-            f"/bin/cat {path}; printf '\\n'; }}; f"
-        )
-        arguments = ["-c", f"credential.helper={helper}"]
-        return tuple(arguments)
-
     def _remote_git(
         self, arguments: tuple[str, ...], *, in_store: bool = False
     ) -> GitCommandResult:
-        prefix = (*_HOOK_FREE_ARGUMENTS, *self._credential_arguments())
+        token = _checked_token(self._remote.credential_file)
         environment = isolated_git_environment()
         if in_store:
             environment["GIT_DIR"] = str(self._candidate_store)
-        return self._command_runner.run(
-            (*prefix, *arguments),
-            working_directory=self._candidate_store.parent,
-            environment=environment,
-        )
+        with credential_helper_arguments(token) as helper_arguments:
+            return self._command_runner.run(
+                (*_HOOK_FREE_ARGUMENTS, *helper_arguments, *arguments),
+                working_directory=self._candidate_store.parent,
+                environment=environment,
+            )
 
     def _store_git(
         self, arguments: tuple[str, ...], standard_input: bytes | None = None

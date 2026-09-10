@@ -20,6 +20,7 @@ from atelier2.application.queue_label_declines import (
     QueueLabelAdmissionTrackerItemUnknown,
     colliding_lane,
 )
+from atelier2.application.queue_launch_binding import resolved_launch_binding
 from atelier2.application.queue_sweep_reads import (
     QueueAdvanceCorrupt,
     QueueAdvanceUnavailable,
@@ -27,7 +28,6 @@ from atelier2.application.queue_sweep_reads import (
     active_policy,
     open_tracker_items,
     projected_items,
-    validated_snapshot,
 )
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -46,8 +46,7 @@ from atelier2.application.start_published_run import (
     WorkItemOrderUnreadable,
     start_published_run,
 )
-from atelier2.contracts.catalog_v3 import CatalogLineageId
-from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import WorkItemOrderValue
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
@@ -78,7 +77,6 @@ from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import (
     UNSUCCESSFUL_TERMINAL_RUN_STATES,
-    RunId,
     RunState,
     WorkflowRevisionHash,
 )
@@ -102,19 +100,14 @@ from atelier2.ports.issue_observation import (
     WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
-    CatalogNameFound,
-    CatalogNameMissing,
     CatalogResolver,
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import (
-    QueueLaunchAlreadyBound,
-    QueueLaunchBlocked,
     QueueLaunchReleased,
     QueueLaunchReleaseRefused,
-    QueueLaunchReserved,
     QueueLaunchRestartsExhausted,
     QueueLaunchRunEnded,
     QueueLaunchRunOpen,
@@ -126,7 +119,6 @@ from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
 _LOG = logging.getLogger("atelier2")
 
-_QUEUE_ITEM_RUN_DOMAIN = "queue-item-run/v2"
 # Durable reason, then the label that authorized it.
 _AUTOMATION_ADMISSION_REASON: Final = "the tracker item carries the automation label "
 
@@ -403,12 +395,17 @@ def advance_queue(
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
     *,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None = None,
     tracker: TrackerItemSource | None = None,
     page_limit: int = MAXIMUM_PAGE_ITEMS,
 ) -> tuple[QueueAdvanceOutcome, ...]:
     """Start each exact queue launch once, carrying the item it is about.
+
+    `start_judge` answers what a start would answer and keeps none of it. A
+    fresh launch asks it before the launch is reserved, so a start that would
+    be refused never takes a place under the project's cap.
 
     `workflow_document_parser` is what turns a bound revision's published bytes
     into the graph a start can read `graph_inputs` from (ADR 0007's parsing
@@ -439,6 +436,7 @@ def advance_queue(
             queue,
             catalog,
             starter,
+            start_judge,
             workflow_document_parser,
             served_project,
             tracker,
@@ -454,6 +452,7 @@ def _released_or_advanced(
     queue: QueueProjection,
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
@@ -472,7 +471,14 @@ def _released_or_advanced(
     if released is not None:
         return released
     return _advance_one(
-        item, queue, catalog, starter, workflow_document_parser, served_project, tracker
+        item,
+        queue,
+        catalog,
+        starter,
+        start_judge,
+        workflow_document_parser,
+        served_project,
+        tracker,
     )
 
 
@@ -549,75 +555,66 @@ def _ended_launch(
             assert_never(unreachable)
 
 
+def _judged_launch_binding(
+    item: QueueItemSnapshot,
+    queue: QueueProjection,
+    catalog: CatalogResolver,
+    start_judge: DurablePublishedRunStarter,
+    workflow_document_parser: WorkflowDocumentParser | None,
+    served_project: ProjectId | None,
+    tracker: TrackerItemSource | None,
+) -> QueueLaunchBinding | QueueItemBlocked:
+    """The item's proposed binding, judged by a start that keeps nothing, then reserved.
+
+    `resolved_launch_binding` owns proposing and reserving the binding; this
+    sweep owns what judging one means, so the judgment it asks for recurses
+    through `_advance_one` itself, over `start_judge` rather than the real
+    starter, and only its blockers cross back.
+    """
+
+    def judge(judged_item: QueueItemSnapshot) -> tuple[QueueBlockerKind, ...] | None:
+        judged = _advance_one(
+            judged_item,
+            queue,
+            catalog,
+            start_judge,
+            start_judge,
+            workflow_document_parser,
+            served_project,
+            tracker,
+        )
+        return judged.blockers if isinstance(judged, QueueItemBlocked) else None
+
+    resolved = resolved_launch_binding(item, queue, catalog=catalog, judge=judge)
+    if isinstance(resolved, QueueLaunchBinding):
+        return resolved
+    return QueueItemBlocked(item.item_reference.item_id, resolved)
+
+
 def _advance_one(
     item: QueueItemSnapshot,
     queue: QueueProjection,
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
+    start_judge: DurablePublishedRunStarter,
     workflow_document_parser: WorkflowDocumentParser | None,
     served_project: ProjectId | None,
     tracker: TrackerItemSource | None,
 ) -> QueueAdvanceOutcome | None:
     binding = item.launch_binding
     if binding is None:
-        proposal = item.proposal
-        admission = item.admission
-        if (
-            item.state is QueueItemState.ADMITTED
-            and proposal is None
-            and admission is not None
-            and admission.authority is None
-            and admission.proposal_revision is None
-        ):
-            return QueueItemBlocked(
-                item.item_reference.item_id,
-                (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
-            )
-        if (
-            item.state is not QueueItemState.ADMITTED
-            or proposal is None
-            or admission is None
-            or admission.authority is None
-            or admission.proposal_revision is None
-        ):
-            raise QueueAdvanceCorrupt(
-                "the queue item does not carry one complete admitted proposal"
-            )
-        if item.blockers:
-            return QueueItemBlocked(item.item_reference.item_id, item.blockers)
-        revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
-        if revision_hash is None:
-            return QueueItemBlocked(
-                item.item_reference.item_id,
-                (QueueBlockerKind.BINDING_UNRESOLVED,),
-            )
-        proposed_binding = QueueLaunchBinding(
-            item.item_reference.item_id,
-            admission.proposal_revision,
-            _derive_run_id(
-                item.item_reference.item_id, admission.proposal_revision.value
-            ),
-            revision_hash,
+        resolved = _judged_launch_binding(
+            item,
+            queue,
+            catalog,
+            start_judge,
+            workflow_document_parser,
+            served_project,
+            tracker,
         )
-        reservation = queue.reserve_launch(proposed_binding)
-        match reservation:
-            case QueueLaunchReserved(binding=reserved):
-                binding = reserved
-            case QueueLaunchAlreadyBound(binding=reserved):
-                binding = reserved
-            case QueueLaunchBlocked(item=blocked):
-                blocked = validated_snapshot(blocked)
-                return QueueItemBlocked(
-                    blocked.item_reference.item_id, blocked.blockers
-                )
-            case DurableWriteUnavailable():
-                raise QueueAdvanceUnavailable("the launch reservation could not commit")
-            case PortDurableStateCorrupt():
-                raise QueueAdvanceCorrupt("the launch reservation found corrupt state")
-            case _:
-                raise QueueAdvanceCorrupt(
-                    "the queue answered an unknown launch reservation outcome"
-                )
+        if isinstance(resolved, QueueItemBlocked):
+            return resolved
+        binding = resolved
     order = _bound_work_item_order(item, binding, catalog, workflow_document_parser)
     if isinstance(order, _RequiredOrderUnavailable):
         # The document declares graph inputs this sweep cannot fill, so the
@@ -668,6 +665,7 @@ def _advance_one(
             | RunIdentityConflict()
             | RunFormatNotExecutable()
             | BindingConstraintRefused()
+            | AgentModeMismatch()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()
         ):
@@ -681,26 +679,6 @@ def _advance_one(
             raise QueueAdvanceCorrupt("the reserved queue run found corrupt state")
         case _:
             raise QueueAdvanceCorrupt("run start answered an unknown outcome")
-
-
-def _resolve_head(
-    lineage_id: CatalogLineageId, catalog: CatalogResolver
-) -> WorkflowRevisionHash | None:
-    match catalog.resolve_name(RevisionKind.WORKFLOW, lineage_id, "head"):
-        case CatalogNameFound(revision_hash=revision_hash):
-            return WorkflowRevisionHash(revision_hash.value)
-        case CatalogNameMissing():
-            return None
-        case PublishedRevisionsUnavailable():
-            raise QueueAdvanceUnavailable(
-                f"the catalog could not resolve workflow lineage {lineage_id.value}"
-            )
-        case PortDurableStateCorrupt():
-            raise QueueAdvanceCorrupt(
-                f"workflow lineage {lineage_id.value} has corrupt catalog state"
-            )
-        case _:
-            raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
 
 
 def _bound_work_item_order(
@@ -766,15 +744,3 @@ def _resolve_document(
             )
         case _:
             raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
-
-
-def _derive_run_id(item_id: QueueItemId, proposal_revision: int) -> RunId:
-    return RunId(
-        Sha256Hash.of(
-            frame(
-                _QUEUE_ITEM_RUN_DOMAIN,
-                item_id.value.encode("ascii"),
-                str(proposal_revision).encode("ascii"),
-            )
-        ).value
-    )

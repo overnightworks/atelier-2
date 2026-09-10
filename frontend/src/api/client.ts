@@ -791,6 +791,7 @@ const runEventSchema = z
         event: z.literal("AGENT_FAILED"),
         reason: z.enum([
           "agent-executor-binding-unavailable",
+          "agent-mode-mismatch",
           "work-item-claim-unconfigured",
           "work-item-names-no-scope",
           "work-item-claim-refused-by-priority",
@@ -915,6 +916,7 @@ export const problemDefinitions = {
     status: 422,
     title: "Binding constraint refused",
   },
+  "agent-mode-mismatch": { status: 422, title: "Agent mode mismatch" },
   "invalid-agent-attempt-id": {
     status: 400,
     title: "Invalid agent attempt id",
@@ -1378,6 +1380,10 @@ const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "binding-constraint-refused",
     problemDefinitions["binding-constraint-refused"],
+  ),
+  problemVariant(
+    "agent-mode-mismatch",
+    problemDefinitions["agent-mode-mismatch"],
   ),
   problemVariant(
     "invalid-agent-attempt-id",

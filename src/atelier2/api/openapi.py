@@ -4,10 +4,12 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 
+from atelier2.api._support import reject_unknown_query_params
 from atelier2.api.limits import ApiLimits
 from atelier2.api.problem_vocabulary import (
     ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
@@ -440,6 +442,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-agent-bindings",
         "uncast-agent-roles",
         "binding-constraint-refused",
+        "agent-mode-mismatch",
         "agent-configuration-revision-not-found",
         "agent-executor-binding-unavailable",
         "run-identity-conflict",
@@ -482,6 +485,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "run-fork-prefix-not-reusable",
         "run-fork-command-conflict",
         "agent-executor-binding-unavailable",
+        "agent-mode-mismatch",
         "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -659,6 +663,50 @@ def install_custom_openapi(app: FastAPI, limits: ApiLimits) -> None:
 
     app.openapi = custom_openapi
     custom_openapi()
+
+
+def install_openapi_document_route(
+    app: FastAPI, openapi_document_path: str, limits: ApiLimits
+) -> None:
+    """Build, cache, and serve the document at the path this app names it at.
+
+    FastAPI's own automatic route for `openapi_url` is a plain Starlette
+    route (`add_route`), which carries no dependant at all and so could never
+    meet `reject_unknown_query_params` no matter how that guard were wired --
+    `create_app` passes `openapi_url=None` and this takes over the same path
+    as a real `APIRoute` instead, so this self-describing path answers the
+    same guard every route under `API_PREFIX` does.
+    """
+    install_custom_openapi(app, limits)
+
+    async def serve_openapi_document(request: Request) -> JSONResponse:
+        # Mirrors FastAPI's own automatic `openapi_url` route (installed here
+        # instead, per this function's docstring): a server this app sits
+        # behind under a path prefix advertises that prefix as the document's
+        # server, so a client resolving the document's own relative URLs
+        # resolves them through the same prefix it reached this route by.
+        schema = app.openapi()
+        root_path = request.scope.get("root_path", "").rstrip("/")
+        if root_path and app.root_path_in_servers:
+            server_urls = {server.get("url") for server in schema.get("servers", [])}
+            if root_path not in server_urls:
+                schema = {
+                    **schema,
+                    "servers": [{"url": root_path}, *schema.get("servers", [])],
+                }
+        return JSONResponse(schema)
+
+    app.add_api_route(
+        openapi_document_path,
+        serve_openapi_document,
+        # Starlette's plain `Route` (what FastAPI's own automatic route used
+        # instead of this one) adds HEAD to a GET route implicitly;
+        # `APIRoute` does not, so this names both explicitly to keep
+        # answering a HEAD request the way it always did.
+        methods=["GET", "HEAD"],
+        include_in_schema=False,
+        dependencies=[Depends(reject_unknown_query_params)],
+    )
 
 
 def _install_workflow_document_grammar(schema: dict[str, Any]) -> None:
@@ -899,8 +947,13 @@ def _install_problem_responses(schema: dict[str, Any]) -> None:
     for (path, method), codes in OPERATION_PROBLEMS.items():
         operation = schema["paths"][path][method]
         operation["responses"].pop("422", None)
+        # Every route meets `reject_unknown_query_params` before its own
+        # body, so every route can answer `invalid-request` even where its own
+        # table entry above never names it -- named once here rather than in
+        # every entry above.
+        all_codes = codes if "invalid-request" in codes else (*codes, "invalid-request")
         grouped: defaultdict[int, list[str]] = defaultdict(list)
-        for code in codes:
+        for code in all_codes:
             grouped[PROBLEM_DEFINITIONS[code].status].append(code)
         for status, status_codes in grouped.items():
             operation["responses"][str(status)] = {

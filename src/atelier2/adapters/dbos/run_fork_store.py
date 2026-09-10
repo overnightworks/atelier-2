@@ -49,6 +49,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import fork_bootstrap_workflow_id_for
+from atelier2.contracts.agent_modes import AgentModeMismatch, agent_mode_mismatch
 from atelier2.contracts.effect_requests import OpenPullRequest
 from atelier2.contracts.effects import ConfirmationSource, LogicalEffectKey
 from atelier2.contracts.executions import (
@@ -154,9 +155,9 @@ class DbosRunForkStore:
                 if not isinstance(restart, _ForkOrigin):
                     return restart
                 origin, graph = restart.run, restart.graph
-                executor_refusal = self._executor_refusal(origin)
-                if executor_refusal is not None:
-                    return executor_refusal
+                refusal = self._binding_refusal(origin, graph)
+                if refusal is not None:
+                    return refusal
 
                 run_configuration = _load_run_configuration(connection, origin)
                 orders = load_run_orders(connection, (origin.run_id.value,)).get(
@@ -278,9 +279,20 @@ class DbosRunForkStore:
             if client is not None:
                 client.destroy()
 
-    def _executor_refusal(
-        self, origin: RunV3
-    ) -> DurableRunForkExecutorUnavailable | DurableRunForkCapabilityUnavailable | None:
+    def _binding_refusal(
+        self, origin: RunV3, graph: WorkflowGraphV3
+    ) -> (
+        DurableRunForkExecutorUnavailable
+        | DurableRunForkCapabilityUnavailable
+        | AgentModeMismatch
+        | None
+    ):
+        """What stops the origin's bindings from carrying a successor, if anything.
+
+        A successor inherits the origin's bindings unchanged, so it answers to
+        the same judgement a start does: a missing or incapable executor, and a
+        node bound outside its mode, refuse the fork before anything is written.
+        """
         for binding in origin.agent_bindings:
             key = AgentExecutorKey(
                 binding.auth_profile.provider_id,
@@ -297,7 +309,7 @@ class DbosRunForkStore:
                 key, capability, binding.configuration.revision_hash
             ):
                 return DurableRunForkExecutorUnavailable()
-        return None
+        return agent_mode_mismatch(graph, origin.agent_bindings)
 
 
 @dataclass(frozen=True)

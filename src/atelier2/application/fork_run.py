@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_forks import RunFork
 from atelier2.contracts.runs import RunId
@@ -88,6 +89,7 @@ type ForkRunResult = (
     | RunForkCommandConflict
     | RunForkExecutorUnavailable
     | RunForkCapabilityUnavailable
+    | AgentModeMismatch
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -123,6 +125,8 @@ def fork_run(
             return RunForkExecutorUnavailable()
         case DurableRunForkCapabilityUnavailable():
             return RunForkCapabilityUnavailable()
+        case AgentModeMismatch() as refused:
+            return refused
         case DurableRunForkWriteUnavailable(detail):
             return WriteUnavailable(detail)
         case DurableRunForkStateCorrupt():

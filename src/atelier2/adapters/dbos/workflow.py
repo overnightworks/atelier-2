@@ -97,6 +97,7 @@ from atelier2.adapters.dbos.workflow_ids import (
 from atelier2.application.bind_node import (
     agent_execution_request_v2,
     bind_node,
+    bound_outside_its_mode,
     pinned_project,
     require_the_run_stands_on,
 )
@@ -111,10 +112,10 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     CancelAgentAttemptRequest,
 )
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.agent_permissions import PermissionPolicyRevision
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
-    AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.budgets_v3 import (
@@ -126,7 +127,11 @@ from atelier2.contracts.effects import (
     LogicalEffectKey,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    AgentExecutionRefusal,
+    NodeExecutionId,
+)
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
@@ -669,7 +674,13 @@ class _DurableRunWorkflows:
             binding, run_id, revision_hash, node_id, AGENT_ATTEMPT_ORDINAL
         )
         if attempt.executor is None:
-            return self.refuse_unavailable_executor(attempt.execution.request)
+            return self.refuse_unstartable_node(
+                attempt.execution, AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE
+            )
+        if self.mode_mismatch_of(binding, revision_hash, node_id) is not None:
+            return self.refuse_unstartable_node(
+                attempt.execution, AgentExecutionRefusal.AGENT_MODE_MISMATCH
+            )
         unattested = refuse_unattested_pin(
             self.db,
             binding,
@@ -859,11 +870,12 @@ class _DurableRunWorkflows:
                 node_id,
             )
 
-    def refuse_unavailable_executor(self, request: AgentExecutionRequestV2) -> str:
+    def refuse_unstartable_node(
+        self, execution: AgentAttemptExecution, refusal: AgentExecutionRefusal
+    ) -> str:
         redrive_index = 0
         while True:
-            refusal = self.attempts.refuse_unavailable_executor(request)
-            match refusal:
+            match self.attempts.refuse_unstartable_node(execution, refusal):
                 case AgentExecutorBindingRefusalWritten():
                     return RunState.FAILED.value
                 case AgentExecutorBindingRefusalNeedsPreparedCleanup(
@@ -881,7 +893,6 @@ class _DurableRunWorkflows:
                     )
                     if terminal is None:
                         redrive_index = self.sleep_before_redrive(redrive_index)
-                        continue
                 case AgentExecutorBindingRefusalFenced():
                     return RunState.STARTED.value
                 case _ as unreachable:
@@ -937,6 +948,26 @@ class _DurableRunWorkflows:
             redrive_index = self.sleep_before_redrive(redrive_index)
         self._close_terminal_claim_checkout(RunId(run_id))
         return self.attempts.load(attempt.attempt_id).state.value
+
+    def mode_mismatch_of(
+        self,
+        binding: AgentNodeBindingV2,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+    ) -> AgentModeMismatch | None:
+        """Whether this recorded binding would run its node outside its mode.
+
+        Read from the immutable revision before the node's attempt is prepared,
+        outside a durable step: a node recovered after a restart replays the
+        binding its run recorded, which may predate the start's own check, and a
+        step added here would shift the recorded steps of a run already in
+        flight.
+        """
+        with self.engine.connect() as connection:
+            node = load_graph(connection, revision_hash).node(node_id)
+        if not isinstance(node, AgentNodeV3):
+            return None
+        return bound_outside_its_mode(binding, node)
 
     def durable_agent_attempt_replacement(self, attempt_id: str) -> str:
         replacement = self.attempts.load(AgentAttemptId(attempt_id))

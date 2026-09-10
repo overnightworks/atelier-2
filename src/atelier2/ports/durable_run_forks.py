@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_forks import RunFork
 from atelier2.contracts.runs import RunId
@@ -88,6 +89,7 @@ type DurableRunForkResult = (
     | DurableRunForkCommandConflict
     | DurableRunForkExecutorUnavailable
     | DurableRunForkCapabilityUnavailable
+    | AgentModeMismatch
     | DurableRunForkWriteUnavailable
     | DurableRunForkStateCorrupt
 )
