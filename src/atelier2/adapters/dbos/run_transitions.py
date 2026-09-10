@@ -15,6 +15,7 @@ owns that row. What belongs here is the run's own state.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import sqlalchemy as sa
@@ -84,6 +85,22 @@ from atelier2.contracts.workflows_v3 import (
 
 class RunTransitionConflict(RuntimeError):
     """A retry or transition contradicts the exact durable graph/run/event binding."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunPosition:
+    """Where a run stands: in which state, at which node, in which round.
+
+    A transition moves from one exact source position to one target position.
+    """
+
+    state: RunState
+    node_id: str
+    round_ordinal: int
+
+    @property
+    def ends_the_run(self) -> bool:
+        return self.state in TERMINAL_RUN_STATES
 
 
 def load_graph(
@@ -608,28 +625,17 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
-def _refuse_unfit_target(
-    graph: AnyWorkflowDocument, target_state: RunState, node_id: str, terminal: bool
-) -> None:
-    node = graph.node(node_id)
-    if target_state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
+def _refuse_unfit_target(graph: AnyWorkflowDocument, target: RunPosition) -> None:
+    node = graph.node(target.node_id)
+    if target.state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
-    if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
+    if target.state is RunState.WAITING_RECONCILIATION and not isinstance(
         node, (ActionNodeV3, AgentNodeV3)
     ):
         raise RunTransitionConflict(
             "WAITING_RECONCILIATION target is not an effect-owning node"
         )
-    # Which words end a run has one owner, and CANCELLED is one of them: a run
-    # resting at a pause ends here, under its own attestation, rather than
-    # standing WAITING_INPUT forever because no attempt existed to stop.
-    if terminal != (target_state in TERMINAL_RUN_STATES):
-        raise RunTransitionConflict("terminal transition shape disagrees")
-    if (
-        terminal
-        and target_state is RunState.COMPLETED
-        and not is_sink_node(graph, node_id)
-    ):
+    if target.state is RunState.COMPLETED and not is_sink_node(graph, target.node_id):
         raise RunTransitionConflict("terminal transition must finish the run's sink")
 
 
@@ -649,33 +655,27 @@ def _commit_event(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
-    node_id: str,
     event_kind: RunEventKind,
     payload: bytes,
-    expected_state: RunState,
-    target_state: RunState,
-    target_node_id: str,
+    source: RunPosition,
+    target: RunPosition,
     receipt_logical_key: LogicalEffectKey | None = None,
     receipt_result_hash: Sha256Hash | None = None,
-    terminal: bool = False,
-    agent_attempt_id: AgentAttemptId | None = None,
-    attempt_ordinal: int | None = None,
+    attempt_binding: RunEventAgentAttemptBinding | None = None,
     agent_receipt_hash: AgentReceiptHash | None = None,
-    round_ordinal: int = FIRST_ROUND_ORDINAL,
-    target_round_ordinal: int = FIRST_ROUND_ORDINAL,
     wait_answer_actor: WaitAnswerActor | None = None,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
         run_id,
         revision_hash,
-        node_id,
-        round_ordinal,
+        source.node_id,
+        source.round_ordinal,
         event_kind,
         payload,
         receipt_logical_key,
         receipt_result_hash,
-        agent_attempt_id,
+        None if attempt_binding is None else attempt_binding.attempt_id,
         agent_receipt_hash,
         wait_answer_actor,
     )
@@ -684,39 +684,34 @@ def _commit_event(
     current = load_run(session, run_id)
     if (
         current.revision_hash != revision_hash
-        or current.current_node_id != node_id
-        or current.current_round_ordinal != round_ordinal
-        or current.state is not expected_state
+        or current.current_node_id != source.node_id
+        or current.current_round_ordinal != source.round_ordinal
+        or current.state is not source.state
     ):
         raise RunTransitionConflict("run is not at the transition's exact source")
     graph = load_graph(session, revision_hash)
-    _refuse_unfit_target(graph, target_state, target_node_id, terminal)
+    _refuse_unfit_target(graph, target)
     instant = recorded_instant()
     sequence = current.last_event_sequence + 1
-    if (agent_attempt_id is None) != (attempt_ordinal is None):
-        raise RunTransitionConflict("agent event attempt binding is incomplete")
-    attempt_binding = (
-        None
-        if agent_attempt_id is None or attempt_ordinal is None
-        else RunEventAgentAttemptBinding(agent_attempt_id, attempt_ordinal)
-    )
     event = RunEvent(
         run_id,
         revision_hash,
         sequence,
-        node_id,
-        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
+        source.node_id,
+        NodeExecutionId.for_node(
+            run_id, revision_hash, source.node_id, source.round_ordinal
+        ),
         event_kind,
         payload,
         receipt_logical_key,
         receipt_result_hash,
         attempt_binding,
         agent_receipt_hash=agent_receipt_hash,
-        round_ordinal=round_ordinal,
+        round_ordinal=source.round_ordinal,
         wait_answer_actor=wait_answer_actor,
     )
     terminal_hash: Sha256Hash | None = None
-    if terminal:
+    if target.ends_the_run:
         _insert_event(session, event, at=instant)
         terminal_hash = terminal_hash_for(revision_hash, _event_hashes(session, run_id))
     updated = session.execute(
@@ -724,16 +719,16 @@ def _commit_event(
         .where(
             runs.c.run_id == run_id.value,
             runs.c.revision_hash == revision_hash.value,
-            runs.c.current_node_id == node_id,
-            runs.c.current_round_ordinal == round_ordinal,
-            runs.c.state == expected_state.value,
+            runs.c.current_node_id == source.node_id,
+            runs.c.current_round_ordinal == source.round_ordinal,
+            runs.c.state == source.state.value,
             runs.c.state_version == current.state_version,
             runs.c.last_event_sequence == current.last_event_sequence,
         )
         .values(
-            current_node_id=target_node_id,
-            current_round_ordinal=target_round_ordinal,
-            state=target_state.value,
+            current_node_id=target.node_id,
+            current_round_ordinal=target.round_ordinal,
+            state=target.state.value,
             state_version=current.state_version + 1,
             last_event_sequence=sequence,
             terminal_hash=None if terminal_hash is None else terminal_hash.value,
@@ -741,19 +736,19 @@ def _commit_event(
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("run transition lost its state/version CAS")
-    if terminal:
+    if target.ends_the_run:
         record_run_ended(session, run_id.value, at=instant)
     else:
         _insert_event(session, event, at=instant)
     return TransitionSnapshot(
         run_id,
         revision_hash,
-        target_node_id,
-        target_state,
+        target.node_id,
+        target.state,
         current.state_version + 1,
         sequence,
         event,
-        target_round_ordinal,
+        target.round_ordinal,
     )
 
 
@@ -777,14 +772,10 @@ def commit_waiting_input(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.WAITING_INPUT,
         payload,
-        RunState.STARTED,
-        RunState.WAITING_INPUT,
-        node_id,
-        round_ordinal=round_ordinal,
-        target_round_ordinal=round_ordinal,
+        RunPosition(RunState.STARTED, node_id, round_ordinal),
+        RunPosition(RunState.WAITING_INPUT, node_id, round_ordinal),
         wait_answer_actor=WaitAnswerActor.OPERATOR,
     )
 
@@ -812,15 +803,10 @@ def commit_wait_cancelled(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.WAIT_CANCELLED,
         command_id.encode("utf-8"),
-        RunState.WAITING_INPUT,
-        RunState.CANCELLED,
-        node_id,
-        terminal=True,
-        round_ordinal=round_ordinal,
-        target_round_ordinal=round_ordinal,
+        RunPosition(RunState.WAITING_INPUT, node_id, round_ordinal),
+        RunPosition(RunState.CANCELLED, node_id, round_ordinal),
     )
 
 
@@ -836,14 +822,10 @@ def commit_reconciliation_required(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.ACTION_RECONCILIATION_REQUIRED,
         request,
-        RunState.STARTED,
-        RunState.WAITING_RECONCILIATION,
-        node_id,
-        round_ordinal=current_round_ordinal,
-        target_round_ordinal=current_round_ordinal,
+        RunPosition(RunState.STARTED, node_id, current_round_ordinal),
+        RunPosition(RunState.WAITING_RECONCILIATION, node_id, current_round_ordinal),
     )
 
 
@@ -909,14 +891,10 @@ def commit_reconciliation_resolved(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.ACTION_RECONCILIATION_RESOLVED,
         result,
-        RunState.WAITING_RECONCILIATION,
-        RunState.STARTED,
-        node_id,
+        RunPosition(RunState.WAITING_RECONCILIATION, node_id, current_round_ordinal),
+        RunPosition(RunState.STARTED, node_id, current_round_ordinal),
         logical_key,
         result_hash,
-        round_ordinal=current_round_ordinal,
-        target_round_ordinal=current_round_ordinal,
     )

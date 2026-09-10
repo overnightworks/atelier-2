@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.node_records import (
     node_receipt_from_record,
 )
 from atelier2.adapters.dbos.run_transitions import (
+    RunPosition,
     RunTransitionConflict,
     _commit_event,
     event_from_record,
@@ -161,22 +162,14 @@ def _run_input_from_record(record: Row[Any]) -> RunInput:
     )
 
 
-@dataclass(frozen=True)
-class _Continuation:
-    state: RunState
-    node_id: str
-    round_ordinal: int
-    terminal: bool
-
-
 def _continuation_after(
     graph: AnyWorkflowDocument, node_id: str, round_ordinal: int
-) -> _Continuation:
+) -> RunPosition:
     match completion_after_node(graph, node_id, round_ordinal):
         case RunContinues(successor, successor_round):
-            return _Continuation(RunState.STARTED, successor, successor_round, False)
+            return RunPosition(RunState.STARTED, successor, successor_round)
         case RunCompletes():
-            return _Continuation(RunState.COMPLETED, node_id, round_ordinal, True)
+            return RunPosition(RunState.COMPLETED, node_id, round_ordinal)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -835,17 +828,12 @@ def commit_confirmed_effect(
         session,
         run_id,
         revision_hash,
-        node.id,
         RunEventKind.ACTION_COMPLETED,
         receipt.result.payload,
-        RunState.STARTED,
-        continuation.state,
-        continuation.node_id,
+        RunPosition(RunState.STARTED, node.id, run.current_round_ordinal),
+        continuation,
         logical_key,
         receipt.result.payload_hash,
-        terminal=continuation.terminal,
-        round_ordinal=run.current_round_ordinal,
-        target_round_ordinal=continuation.round_ordinal,
     )
 
 
@@ -890,15 +878,10 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         session,
         answer.run_id,
         answer.revision_hash,
-        answer.node_id,
         RunEventKind.WAIT_ANSWERED,
         answer.answer_bytes,
-        RunState.WAITING_INPUT,
-        continuation.state,
-        continuation.node_id,
-        terminal=continuation.terminal,
-        round_ordinal=answer.round_ordinal,
-        target_round_ordinal=continuation.round_ordinal,
+        RunPosition(RunState.WAITING_INPUT, answer.node_id, answer.round_ordinal),
+        continuation,
     )
     if durable.state is WaitAnswerState.PENDING:
         updated = session.execute(
@@ -929,13 +912,10 @@ def commit_subworkflow_completed(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.SUBWORKFLOW_COMPLETED,
         payload,
-        RunState.STARTED,
-        RunState.COMPLETED,
-        node_id,
-        terminal=True,
+        RunPosition(RunState.STARTED, node_id, FIRST_ROUND_ORDINAL),
+        RunPosition(RunState.COMPLETED, node_id, FIRST_ROUND_ORDINAL),
     )
 
 
