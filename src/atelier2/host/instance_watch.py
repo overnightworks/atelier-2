@@ -32,6 +32,7 @@ from atelier2.api.wire.resources import (
     DurableStateCorruptProblemResource,
     HealthResource,
     ProblemResource,
+    RedeployBlockedResource,
     RunProjectionCorruptResource,
     SeatResource,
     StreamFailureResource,
@@ -123,14 +124,16 @@ class WatchFinding:
 
 @dataclass(frozen=True, slots=True)
 class WatchBudget:
-    """The wall-clock guarantee this call's own timing honestly gives.
+    """The wall-clock guarantee this call's own timing gives, enforced.
 
-    `deadline_seconds` is checked before every read a call makes, but not
-    inside one already under way: assembling one response's headers, or one
-    body chunk, still carries its own `read_timeout_seconds` on top. A read
-    already in flight when the deadline passes still finishes or times out
-    on its own terms, so the true worst case for one endpoint is its
-    deadline plus one read timeout, never the deadline alone.
+    `deadline_seconds` is checked before every read a call makes, but a
+    read already under way -- assembling one response's headers, or one
+    body chunk -- still carries its own `read_timeout_seconds` on top. A
+    true wall-clock join around the whole call
+    (`AtelierApi._run_within_wall_clock`) is what makes `deadline_seconds +
+    read_timeout_seconds` the enforced worst case for one endpoint, not
+    only its named one: it stops the call even when the read loop itself
+    never gets to run its own cooperative check at all.
     """
 
     deadline_seconds: float
@@ -241,11 +244,14 @@ def _health_decoded(body: bytes) -> tuple[WatchFinding, ...]:
         return (_unreadable_finding(HEALTH_PATH, error),)
     if health.redeploy is None:
         return ()
+    # `blocked_since` is safe to name: `RedeployBlockedResource` pins it to
+    # `RECORDED_AT_PATTERN`, so a value that decoded at all cannot carry
+    # anything but digits, dashes, `T`, colons, and `Z`. `.reason` is free
+    # text the watcher wrote about its own failure and never appears here.
+    since = health.redeploy.blocked_since or "an unrecorded time"
     return (
         WatchFinding(
-            WatchFindingKind.REDEPLOY_BLOCKED,
-            HEALTH_PATH,
-            f"blocked since {health.redeploy.blocked_since}: {health.redeploy.reason}",
+            WatchFindingKind.REDEPLOY_BLOCKED, HEALTH_PATH, f"blocked since {since}"
         ),
     )
 
@@ -439,6 +445,26 @@ def _refusal_finding(
     )
 
 
+_KNOWN_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    name
+    for model in (
+        HealthResource,
+        RedeployBlockedResource,
+        SeatResource,
+        ProblemResource,
+        StreamFailureResource,
+        RunProjectionCorruptResource,
+        DurableStateCorruptProblemResource,
+    )
+    for name in model.model_fields
+)
+"""Every field name a decode this module runs could legitimately name in a
+`ValidationError`'s `loc`. A pydantic `loc` is built from the document's own
+keys once a model turns `extra="forbid"` on an unrecognized one, so an
+unlisted name is not a field this module ever declared -- it is the
+document's own text, and `_field_path` never repeats it."""
+
+
 def _unreadable_finding(endpoint: str, error: ValidationError) -> WatchFinding:
     """A diagnosis of *why* a body did not read as its published contract --
     the field path and the error kind, never a value: pydantic's own
@@ -460,7 +486,17 @@ def _unreadable_finding(endpoint: str, error: ValidationError) -> WatchFinding:
 
 
 def _field_path(location: tuple[object, ...]) -> str:
-    return ".".join(str(part) for part in location) if location else "<root>"
+    if not location:
+        return "<root>"
+    return ".".join(_field_part(part) for part in location)
+
+
+def _field_part(part: object) -> str:
+    if isinstance(part, int):
+        return str(part)
+    if part in _KNOWN_FIELD_NAMES:
+        return str(part)
+    return "<unknown field>"
 
 
 def add_watch_parser(

@@ -616,12 +616,8 @@ answers `Content-Encoding` anyway before reading a single byte of its body
 (a compressed reply decoded transparently could otherwise outgrow the byte
 cap before the cap ever saw it), and checks its wall-clock deadline before
 every read it makes, including the request itself and an error body, not
-only between whole frames. That deadline check still cannot interrupt a
-read already under way: each endpoint's true worst case is its own deadline
-plus one read timeout, never the deadline alone, and the report's
-`endpoint_budget` and `event_sample_budget` name both numbers honestly
-rather than implying a tighter bound than this call can actually keep. A
-validation diagnosis in the report never carries a response's own values,
+only between whole frames (its enforced worst case beyond that is named
+below). A validation diagnosis in the report never carries a response's own values,
 only the field path and the error kind: pydantic's own `ValidationError`
 embeds the offending input (and, for a missing field, every sibling value)
 in its message, which a naive `str(error)` would otherwise hand back out.
@@ -630,6 +626,32 @@ terminal's access token, `served_seat.py`), only its state. Exit is 0 with
 an empty report, non-zero otherwise. This slice reads only what a test
 double serves it; reading the live instance itself waits on the operator's
 ruling on the observer contract that #1046 opens.
+
+Round after round of review kept finding a new field this reported
+verbatim, so the standing rule is now the principle, not a per-field patch:
+no character from an answer reaches the report, an exception, or a log --
+only values from a fixed vocabulary (an enum, a known problem type, a
+known seat or redeploy state) or a number (a status, a count, a byte, a
+second). A field path in a validation diagnosis is checked against an
+allowlist built from this module's own decoded models
+(`_KNOWN_FIELD_NAMES`); an unrecognized one -- the document's own key, once
+`extra="forbid"` names it in a `ValidationError`'s `loc` -- reads
+`<unknown field>`. A refused `Content-Encoding`, `Content-Type`, or HTTP
+reason phrase is never echoed, only a fixed sentence naming that it was
+refused. httpx's own `INFO`-level request logging (which names a reply's
+reason phrase) is silenced for the duration of every bounded call and
+restored after, so that channel cannot carry one out either.
+
+This call's own wall-clock deadline is enforced, not only checked
+cooperatively: httpx's per-read timeout bounds one read, never how long
+assembling a whole reply can take across many of them, or one that never
+returns at all -- a real wall-clock join around the whole call
+(`AtelierApi._run_within_wall_clock`, its own throwaway `httpx.Client` per
+call so interrupting one call's connection never touches another's) is
+what actually stops that, closing the connection as its best effort to
+free the blocked read promptly. Each endpoint's enforced worst case is its
+own deadline plus one read timeout, named in the report as
+`endpoint_budget` and `event_sample_budget`.
 
 ### Publish the issue-to-pr catalog
 

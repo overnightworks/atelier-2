@@ -13,6 +13,8 @@ import dataclasses
 import gzip
 import itertools
 import json
+import logging
+import threading
 from collections.abc import Iterator
 
 import httpx
@@ -173,18 +175,24 @@ def test_a_run_projection_corrupt_frame_after_a_healthy_one_is_reported_with_its
 
 
 def test_health_redeploy_blocked_is_reported_and_its_absence_is_clean() -> None:
+    """`blocked_since` is pattern-locked and safe to name; `.reason` is free
+    text the watcher wrote about its own failure and must never appear."""
+
     blocked = HealthResource(
         status="serving",
         source_commit="a" * 40,
         source_tree="b" * 40,
         serve_started_at=RECORDED_AT,
-        redeploy=RedeployBlockedResource(blocked_since=RECORDED_AT, reason="stuck"),
+        redeploy=RedeployBlockedResource(
+            blocked_since=RECORDED_AT, reason="SENTINEL-REDEPLOY-REASON"
+        ),
     )
     report = _watched({HEALTH_PATH: blocked.model_dump_json().encode()})
 
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.REDEPLOY_BLOCKED
-    assert "stuck" in finding.detail
+    assert RECORDED_AT in finding.detail
+    assert "SENTINEL-REDEPLOY-REASON" not in json.dumps(dataclasses.asdict(report))
 
 
 def test_a_non_2xx_listing_answer_is_reported_for_its_own_endpoint() -> None:
@@ -391,7 +399,8 @@ def test_bounded_reads_ask_for_identity_encoding() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         seen.append(request.headers.get("accept-encoding"))
-        return httpx.Response(200, content=b"{}")
+        body = b"{}" if request.url.path.endswith("/health") else b""
+        return httpx.Response(200, content=body)
 
     with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
         api.bounded_get(
@@ -465,6 +474,188 @@ def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
         )
 
     assert "content-encoding" in failure.value.reason
+
+
+_LEAK_SENTINEL = "SENTINEL-LEAK-7d3fa1"
+
+
+def _poisoned(text: str) -> str:
+    return f"{text}{_LEAK_SENTINEL}"
+
+
+def _poisoned_fixtures() -> tuple[tuple[str, dict[str, bytes | httpx.Response]], ...]:
+    """Every kind of answer this command reads, with every free-text field
+    and every extension-field key it could carry set to `_LEAK_SENTINEL` --
+    the rule itself proven once, in general, rather than one field at a
+    time the way each of the last three rounds found a new one.
+    """
+
+    poisoned_problem = ProblemResource(
+        type=f"{PROBLEM_TYPE_PREFIX}{_poisoned('unknown-code')}",
+        title=_poisoned("Some Title"),
+        status=500,
+        detail=_poisoned("Some detail"),
+    )
+    poisoned_stream_failure = StreamFailureResource(problem=poisoned_problem)
+    poisoned_corrupt = RunProjectionCorruptResource(
+        public_run_reference="run1.aGVhbHRoeQ",
+        problem=DurableStateCorruptProblemResource(
+            type="urn:atelier2:problem:v1:durable-state-corrupt",
+            title="Durable state is corrupt",
+            status=500,
+            detail=_poisoned("some detail"),
+        ),
+    )
+    return (
+        (
+            "health fields this command never reads at all",
+            {
+                HEALTH_PATH: HealthResource(
+                    status="serving",
+                    source_commit=_poisoned("a" * 40),
+                    source_tree=_poisoned("b" * 40),
+                    serve_started_at=RECORDED_AT,
+                )
+                .model_dump_json()
+                .encode()
+            },
+        ),
+        (
+            "a redeploy block's reason",
+            {
+                HEALTH_PATH: HealthResource(
+                    status="serving",
+                    source_commit="a" * 40,
+                    source_tree="b" * 40,
+                    serve_started_at=RECORDED_AT,
+                    redeploy=RedeployBlockedResource(
+                        blocked_since=RECORDED_AT, reason=_poisoned("stuck")
+                    ),
+                )
+                .model_dump_json()
+                .encode()
+            },
+        ),
+        (
+            "a living seat's url and project id",
+            {
+                SEAT_PATH: SeatResource(
+                    state=SeatState.ALIVE,
+                    url=_poisoned("http://127.0.0.1:9/terminal"),
+                    project_id=_poisoned("p1"),
+                )
+                .model_dump_json()
+                .encode()
+            },
+        ),
+        (
+            "a broken seat document's sibling value and its extra field's own key",
+            {
+                SEAT_PATH: json.dumps(
+                    {
+                        "url": _poisoned("http://127.0.0.1:9/terminal"),
+                        _poisoned("extra-field-name"): "value",
+                    }
+                ).encode()
+            },
+        ),
+        (
+            "a problem document answered with 200",
+            {
+                RUN_PATH: httpx.Response(
+                    200, content=poisoned_problem.model_dump_json().encode()
+                )
+            },
+        ),
+        (
+            "a non-2xx answer's reason phrase and its problem body",
+            {
+                RUN_PATH: httpx.Response(
+                    500,
+                    content=poisoned_problem.model_dump_json().encode(),
+                    extensions={
+                        "reason_phrase": _poisoned("Internal Server Error").encode()
+                    },
+                )
+            },
+        ),
+        (
+            "a refused content-encoding",
+            {
+                HEALTH_PATH: httpx.Response(
+                    200, content=b"{}", headers={"content-encoding": _poisoned("gzip")}
+                )
+            },
+        ),
+        (
+            "a refused content-type on the event stream",
+            {
+                EVENTS_PATH: httpx.Response(
+                    200,
+                    content=poisoned_problem.model_dump_json().encode(),
+                    headers={"content-type": _poisoned("application/problem+json")},
+                )
+            },
+        ),
+        (
+            "a STREAM_FAILED frame's problem",
+            {
+                EVENTS_PATH: httpx.Response(
+                    200, content=_sse(poisoned_stream_failure.model_dump_json())
+                )
+            },
+        ),
+        (
+            "a RUN_PROJECTION_CORRUPT frame's problem detail",
+            {
+                EVENTS_PATH: httpx.Response(
+                    200, content=_sse(poisoned_corrupt.model_dump_json())
+                )
+            },
+        ),
+        (
+            "bytes on the event stream that are not UTF-8 text",
+            {
+                EVENTS_PATH: httpx.Response(
+                    200, content=b"data: \xff\xfe" + _LEAK_SENTINEL.encode() + b"\n\n"
+                )
+            },
+        ),
+    )
+
+
+_POISONED_FIXTURES = _poisoned_fixtures()
+
+
+@pytest.mark.parametrize(
+    ("label", "overrides"),
+    _POISONED_FIXTURES,
+    ids=[label for label, _ in _POISONED_FIXTURES],
+)
+def test_no_sentinel_from_any_answer_ever_reaches_the_report_an_exception_or_a_log(
+    label: str,
+    overrides: dict[str, bytes | httpx.Response],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    del label
+    caplog.set_level(logging.DEBUG)
+
+    report: WatchReport | None = None
+    raised: Exception | None = None
+    try:
+        report = _watched(overrides)
+    except Exception as error:  # noqa: BLE001 -- the sweep itself, not a caller
+        raised = error
+
+    haystack = caplog.text
+    if report is not None:
+        haystack += json.dumps(dataclasses.asdict(report))
+    cause: BaseException | None = raised
+    while cause is not None:
+        haystack += str(cause)
+        cause = cause.__cause__
+
+    assert _LEAK_SENTINEL not in haystack
 
 
 def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> None:
@@ -698,3 +889,63 @@ def test_a_transport_that_never_delivers_is_stopped_by_the_overall_deadline(
 
     assert sample.stopped is EventSampleLimit.OVERALL_DEADLINE
     assert sample.frames == ()
+
+
+def test_a_connection_that_never_answers_at_all_is_stopped_by_the_true_wall_clock() -> (
+    None
+):
+    """No sleep: the handler blocks on an `Event` this test never sets --
+    standing in for a reply that never finishes assembling its headers, or
+    a single read that stalls forever. httpx's own read timeout cannot
+    bound this at all: a transport handler blocking synchronously, inside
+    the call that would deliver a response, is invisible to it -- there is
+    no read yet for httpx to time out on, whatever `request_timeout_seconds`
+    is set to. Only a true wall-clock join -- not a cooperative check inside
+    the read loop, which never runs while the loop itself never starts --
+    can stop this call, so this call's own worst case
+    (`overall_deadline_seconds + request_timeout_seconds`) is what this
+    test keeps small, not evidence that a larger read timeout would help.
+    """
+
+    never_set = threading.Event()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        never_set.wait()
+        return httpx.Response(200, content=b"unreachable")
+
+    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
+        sample = api.sampled_event_frames(
+            EVENTS_PATH,
+            accept="text/event-stream",
+            request_timeout_seconds=0.02,
+            overall_deadline_seconds=0.02,
+            maximum_bytes=1_000,
+            maximum_frames=10,
+        )
+
+    assert sample.stopped is EventSampleLimit.OVERALL_DEADLINE
+    assert sample.frames == ()
+
+
+def test_a_hanging_event_stream_is_named_by_the_deadline_in_the_full_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same hang, driven through `watch_instance` end to end, proving
+    the report itself -- not only the client's own return value -- names
+    the deadline as the outcome."""
+
+    monkeypatch.setattr(instance_watch, "EVENT_SAMPLE_DEADLINE_SECONDS", 0.02)
+    monkeypatch.setattr(instance_watch, "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS", 0.02)
+    never_set = threading.Event()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/events"):
+            never_set.wait()
+            return httpx.Response(200, content=b"unreachable")
+        return httpx.Response(200, content=b"{}")
+
+    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
+        report = watch_instance(SERVICE_URL, api=api)
+
+    assert report.attention_feed_sample == "overall-deadline"
