@@ -9,8 +9,6 @@ git's credential prompt, which prints any line it cannot parse.
 from __future__ import annotations
 
 import os
-import shlex
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import StrEnum
@@ -27,7 +25,6 @@ class TokenFileProblem(StrEnum):
 
 
 _VISIBLE_ASCII = range(0x21, 0x7F)
-_PRIVATE_FILE_MODE = 0o600
 
 
 def read_token_file(path: Path) -> str | TokenFileProblem:
@@ -56,24 +53,41 @@ def read_token_file(path: Path) -> str | TokenFileProblem:
 def credential_helper_arguments(token: str | None) -> Iterator[tuple[str, ...]]:
     """`git -c` arguments whose credential helper answers git with exactly `token`.
 
-    The token is in no argument vector and no environment variable: it waits in
-    a file only this user can read, inside a private directory that is removed
-    when the git call returns, however it returns. No token, no helper.
+    The token waits in an anonymous pipe of this process for the length of one
+    git call: on no disk, in no argument vector or environment variable, and
+    gone with this process however that process ends. No child inherits the
+    pipe; the helper opens it through this process's descriptor table, a path
+    that names this pipe only while it is open, and reads it once -- all one
+    git process asks for. No token, no helper.
     """
 
     if token is None:
         yield ()
         return
-    with tempfile.TemporaryDirectory(prefix="atelier2-git-credential-") as private:
-        answer = Path(private) / "token"
-        descriptor = os.open(
-            answer, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_FILE_MODE
-        )
-        with os.fdopen(descriptor, "w", encoding="ascii") as written:
-            written.write(token)
+    answer, sending = os.pipe()
+    try:
+        _deliver(sending, token.encode("ascii"))
         helper = (
             '!f() { test "$1" = get || exit 0; '
             "printf 'username=x-access-token\\npassword='; "
-            f"/bin/cat {shlex.quote(str(answer))}; printf '\\n'; }}; f"
+            f"/bin/cat /proc/{os.getpid()}/fd/{answer}; printf '\\n'; }}; f"
         )
         yield ("-c", f"credential.helper={helper}")
+    finally:
+        os.close(answer)
+
+
+def _deliver(sending: int, encoded: bytes) -> None:
+    """Put the whole token into the pipe and close its writing end, never blocking.
+
+    Nothing reads the pipe yet, so a token larger than its buffer would block
+    this process forever; it fails loud instead.
+    """
+
+    os.set_blocking(sending, False)
+    try:
+        delivered = os.write(sending, encoded)
+    finally:
+        os.close(sending)
+    if delivered != len(encoded):
+        raise OSError("the token does not fit into one pipe buffer")

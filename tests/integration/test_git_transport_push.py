@@ -6,8 +6,10 @@ import base64
 import logging
 import os
 import re
-import shlex
+import signal
 import subprocess
+import sys
+import tempfile
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -769,14 +771,16 @@ def test_git_is_answered_with_the_checked_token_and_prints_none_of_the_file(
 
 
 @dataclass
-class _AnswerFileWitness:
-    """Looks at the file git's credential helper would read, then lets the git call fail."""
+class _CredentialPromptWitness:
+    """Asks the configured credential helper the way git does, then lets the git call fail."""
 
+    private_temporary_directory: Path
     delegate: SubprocessGitCommandRunner = field(
         default_factory=SubprocessGitCommandRunner
     )
-    answer_files: list[Path] = field(default_factory=list)
-    modes: list[tuple[int, int]] = field(default_factory=list)
+    helpers: list[str] = field(default_factory=list)
+    answers: list[bytes] = field(default_factory=list)
+    temporary_entries: list[list[str]] = field(default_factory=list)
     exposed: list[str] = field(default_factory=list)
 
     def run(
@@ -788,7 +792,11 @@ class _AnswerFileWitness:
         standard_input: bytes | None = None,
     ) -> GitCommandResult:
         helper = next(
-            (argument for argument in arguments if "credential.helper=" in argument),
+            (
+                argument.removeprefix("credential.helper=!")
+                for argument in arguments
+                if argument.startswith("credential.helper=")
+            ),
             None,
         )
         if helper is None:
@@ -798,28 +806,40 @@ class _AnswerFileWitness:
                 environment=environment,
                 standard_input=standard_input,
             )
-        read = re.search(r"/bin/cat (\S+);", helper)
-        assert read is not None, helper
-        answer_file = Path(shlex.split(read.group(1))[0])
-        self.answer_files.append(answer_file)
-        self.modes.append(
-            (
-                answer_file.stat().st_mode & 0o777,
-                answer_file.parent.stat().st_mode & 0o777,
-            )
+        asked = subprocess.run(
+            ("/bin/sh", "-c", f"{helper} get"),
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        self.helpers.append(helper)
+        self.answers.append(asked.stdout)
+        self.temporary_entries.append(
+            sorted(os.listdir(self.private_temporary_directory))
         )
         self.exposed.extend((*arguments, *environment.values()))
         raise OSError("git vanished mid-call")
 
 
-def test_the_checked_token_waits_in_a_private_file_only_while_git_runs(
-    tmp_path: Path,
+@pytest.fixture
+def private_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    directory = tmp_path / "private-temporary"
+    directory.mkdir()
+    monkeypatch.setenv("TMPDIR", str(directory))
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
+    return directory
+
+
+def test_git_s_credential_prompt_is_answered_from_memory_and_nothing_lands_on_disk(
+    tmp_path: Path, private_temporary_directory: Path
 ) -> None:
     token = "sentinel+token/1504"
     store, remote, base, tree = _repositories(tmp_path)
     credential_file = tmp_path / "token"
     credential_file.write_text(token, encoding="ascii")
-    witness = _AnswerFileWitness()
+    witness = _CredentialPromptWitness(private_temporary_directory)
     factory = _factory(store, remote, witness, credential_file=credential_file)
     intent, _request = _intent(factory, base, tree)
     adapter = factory.open()
@@ -829,9 +849,39 @@ def test_the_checked_token_waits_in_a_private_file_only_while_git_runs(
     finally:
         adapter.close()
 
-    assert witness.modes == [(0o600, 0o700)]
-    assert all(not answer.parent.exists() for answer in witness.answer_files)
+    named_paths = {
+        path for helper in witness.helpers for path in re.findall(r"/[^\s;']+", helper)
+    }
+    assert witness.answers == [f"username=x-access-token\npassword={token}\n".encode()]
+    assert witness.temporary_entries == [[]]
+    assert list(private_temporary_directory.iterdir()) == []
+    assert all(
+        path == "/bin/cat" or path.startswith(f"/proc/{os.getpid()}/fd/")
+        for path in named_paths
+    ), named_paths
     assert all(token not in exposed for exposed in witness.exposed)
+
+
+def test_a_process_killed_while_git_runs_leaves_no_copy_of_the_token_behind(
+    private_temporary_directory: Path,
+) -> None:
+    dies_holding_the_token = (
+        "import os, signal, sys\n"
+        "from atelier2.adapters.git_transport.credentials import "
+        "credential_helper_arguments\n"
+        "with credential_helper_arguments(sys.argv[1]):\n"
+        "    os.kill(os.getpid(), signal.SIGKILL)\n"
+    )
+    killed = subprocess.run(
+        (sys.executable, "-c", dies_holding_the_token, "sentinel+token/1504"),
+        env={**os.environ, "TMPDIR": str(private_temporary_directory)},
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    assert list(private_temporary_directory.iterdir()) == []
 
 
 def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(

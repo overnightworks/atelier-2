@@ -590,15 +590,17 @@ the git subprocess as a literal value in its argument vector, per decision 3's
 `/proc/<pid>/cmdline` rule, **and never as a literal value in that subprocess's
 environment either**: `/proc/<pid>/environ` is exactly as readable a leak
 surface as `argv` to a process sharing the host, so neither carries the token's
-own bytes. The subprocess instead receives a **reference** in its constructed
-environment — the same credential-file path decision 3 already resolves the
-token from — and a git credential helper or `GIT_ASKPASS` script git itself
-invokes reads that file and answers git's credential prompt; the pushing
-process's own environment never holds the secret, only the path to it.
-**Stated exactly: the git subprocess's environment may legitimately carry the
-credential-file path — that path is a reference, not the secret — and must
-never carry the credential's own bytes; the two are not the same claim, and
-this amendment makes only the second one.** This amendment adds no second
+own bytes. For each git call the pushing process instead reads and checks the
+token from the credential file decision 3 names, writes that checked value into
+an anonymous pipe no child inherits, and the credential helper git itself
+invokes reads it once through the pushing process's descriptor table
+(`/proc/<pid>/fd/<n>`) to answer git's credential prompt. The token is on no
+disk and in no environment, git never reads the credential file itself, and the
+pipe vanishes with the pushing process however that process ends.
+**Stated exactly: the git subprocess's argument vector may legitimately carry
+that descriptor path — a reference into the pushing process, not the secret —
+and must never carry the credential's own bytes; the two are not the same
+claim, and this amendment makes only the second one.** This amendment adds no second
 credential rule: it states decision 3's existing
 by-reference discipline precisely for the one transport in this record that
 shells out to a subprocess instead of calling an HTTP client library directly.
