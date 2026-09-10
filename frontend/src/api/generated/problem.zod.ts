@@ -1460,7 +1460,7 @@ export const uncastRoleResourceRoleMax = 1024;
 
 export const UncastRoleResource = zod.strictObject({
   "family_differs_from": zod.union([zod.string().min(1).max(uncastRoleResourceFamilyDiffersFromOneMax),zod.null()]).optional(),
-  "reason": zod.enum(['override-not-registered', 'workflow-model-not-registered', 'workflow-model-ambiguous', 'no-project-default', 'family-difference-unavailable']),
+  "reason": zod.enum(['override-not-registered', 'workflow-model-not-registered', 'workflow-model-ambiguous', 'model-not-in-node-mode', 'no-project-default', 'project-default-model-ambiguous', 'role-modes-conflict', 'family-difference-unavailable']),
   "role": zod.string().min(1).max(uncastRoleResourceRoleMax)
 });
 
