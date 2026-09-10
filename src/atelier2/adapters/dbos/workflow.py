@@ -62,6 +62,7 @@ from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
     encode_node_binding,
 )
+from atelier2.adapters.dbos.run_publications import NodeInRun, pinned_source_for
 from atelier2.adapters.dbos.run_store import (
     bootstrap_node_for_snapshot,
     commit_subworkflow_completed,
@@ -279,7 +280,15 @@ def _node_binding(
                     session, node
                 ),
                 maximum_assistant_turns=_pinned_maximum_assistant_turns(session, node),
-                project_source=_pinned_source(node, project),
+                project_source=_pinned_source(
+                    session,
+                    graph,
+                    node,
+                    NodeInRun(
+                        run_id, revision_hash, node_id, run.current_round_ordinal
+                    ),
+                    project,
+                ),
             )
         )
 
@@ -315,17 +324,22 @@ def _node_material(
 
 
 def _pinned_source(
-    node: AnyWorkflowDocumentNode, project: DeclaredProject | None
+    session: Any,
+    graph: AnyWorkflowDocument,
+    node: AnyWorkflowDocumentNode,
+    execution: NodeInRun,
+    project: DeclaredProject | None,
 ) -> ProjectSourcePin | None:
     """The source this runtime pins for one Agent node, resolved once and here.
 
-    Only an Agent node works in a tree, so only an Agent node's binding takes the
-    head -- a Wait or Subworkflow node that resolved it would make a run depend
-    on a repository it never reads.
+    Only an Agent node works in a tree, so only an Agent node's binding takes a
+    pin -- a Wait or Subworkflow node that resolved one would make a run depend
+    on a repository it never reads. Which commit that pin names is the run's own
+    publications to answer, not the head's alone.
     """
     if project is None or not isinstance(node, AgentNodeV3):
         return None
-    return project.source.head()
+    return pinned_source_for(session, graph, execution, project.source)
 
 
 def _executor_key(binding: AgentNodeBindingV2) -> AgentExecutorKey:

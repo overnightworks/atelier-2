@@ -14,7 +14,6 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.advancer import (
-    RunEffectConflict,
     graph_action_intent,
     prepared_effect_intent,
 )
@@ -25,6 +24,7 @@ from atelier2.adapters.dbos.effect_store import (
     encode_found,
     intent_snapshot_from_record,
 )
+from atelier2.adapters.dbos.run_publications import RunPublicationRefused
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     effect_intents,
@@ -895,7 +895,7 @@ def test_a_project_open_pr_action_refuses_without_a_confirmed_push_receipt(
             .where(runs.c.run_id == RUN.value)
             .values(state=RunState.STARTED.value, terminal_hash=None)
         )
-        with pytest.raises(RunEffectConflict, match="confirmed push receipt"):
+        with pytest.raises(RunPublicationRefused, match="confirmed push receipt"):
             graph_action_intent(
                 connection,
                 RUN,
@@ -971,7 +971,7 @@ def test_a_project_open_pr_action_refuses_a_corrupt_confirmed_push_receipt(
             .where(runs.c.run_id == RUN.value)
             .values(state=RunState.STARTED.value, terminal_hash=None)
         )
-        with pytest.raises(RunEffectConflict, match="confirmed push receipt"):
+        with pytest.raises(RunPublicationRefused, match="confirmed push receipt"):
             graph_action_intent(
                 connection,
                 RUN,

@@ -23,7 +23,11 @@ from atelier2.adapters.dbos.effect_store import (
     fork_fenced_resolution,
     intent_snapshot_from_record,
     load_intent,
-    receipt_from_record,
+)
+from atelier2.adapters.dbos.run_publications import (
+    NodeInRun,
+    RunPublicationRefused,
+    confirmed_publication,
 )
 from atelier2.adapters.dbos.run_store import load_node_output_payload
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
@@ -52,7 +56,6 @@ from atelier2.contracts.effect_requests import (
     HeadBranch,
     OpenPullRequest,
     PushAtelierCommit,
-    PushAtelierCommitReceipt,
     ReviewedDocumentationPullRequest,
     ReviewedDocumentReplacement,
     head_branch_for_unbound_request,
@@ -706,53 +709,14 @@ def _confirmed_push_branch(
     round_ordinal: int,
     project_id: ProjectId,
 ) -> HeadBranch:
-    logical_key = logical_effect_key_for_node(
-        run_id, revision_hash, predecessor.id, round_ordinal
+    publication = confirmed_publication(
+        session, NodeInRun(run_id, revision_hash, predecessor.id, round_ordinal)
     )
-    record = (
-        session.execute(
-            sa.select(effect_receipts).where(
-                effect_receipts.c.logical_key == logical_key.value
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if record is None:
-        raise RunEffectConflict(
-            "project open-pr Action requires its predecessor's confirmed push receipt"
-        )
-    try:
-        receipt = receipt_from_record(record)
-        request = PushAtelierCommit.from_canonical_bytes(receipt.intent.request.payload)
-        result = PushAtelierCommitReceipt.from_result_bytes(receipt.result.payload)
-        result_branch = HeadBranch(result.branch)
-    except (TypeError, ValueError) as error:
-        raise RunEffectConflict("confirmed push receipt is corrupt") from error
-    expected_commit = request.expected_commit_oid(
-        receipt.intent.request.request_hash.value
-    )
-    if (
-        receipt.intent.binding.operation_name
-        is not AdapterOperationName.PUSH_ATELIER_COMMIT
-        or receipt.intent.binding.run_id != run_id
-        or receipt.intent.binding.workflow_revision_hash != revision_hash
-        or result.remote_identity
-        != receipt.intent.binding.adapter_operational_identity.value
-        or result.commit_oid != receipt.effect_id.value
-        or result.commit_oid != expected_commit
-        or result.full_ref != request.head_branch.full_ref
-        or result.parent != request.base_commit
-        or result.candidate_tree != request.candidate_tree
-        or result_branch != request.head_branch
-        or result.author != request.author
-        or result.committer != request.committer
-        or result_branch != _head_branch(session, run_id, project_id)
-    ):
-        raise RunEffectConflict(
+    if publication.branch != _head_branch(session, run_id, project_id):
+        raise RunPublicationRefused(
             "confirmed push receipt disagrees with the open-pr head"
         )
-    return result_branch
+    return publication.branch
 
 
 def _operation_for(session: Any, reference: Any) -> AdapterOperationAccepted:
