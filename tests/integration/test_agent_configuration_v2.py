@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Never, cast
@@ -16,6 +17,7 @@ import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.names import NODE_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
     encode_node_binding,
@@ -39,6 +41,7 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.workflow import _node_binding
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
@@ -48,9 +51,14 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.contracts.agent_attempts import (
+    TERMINAL_AGENT_ATTEMPT_STATES,
+    AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptReplacement,
+    AgentAttemptState,
+    AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
@@ -2729,3 +2737,201 @@ def test_the_output_schema_door_admits_the_route_bound_and_refuses_one_byte_past
         assert tuple(record) == (("review", 1, 1) if accepted else ("build", 1, 1))
     finally:
         runtime.close()
+
+
+MODE_MISMATCH_RUN = RunId("mode-mismatch/restart")
+BOTH_UNATTENDED_CAPABILITIES = frozenset(
+    {AgentExecutionCapability.HEADLESS, AgentExecutionCapability.HEADLESS_WITH_TOOLS}
+)
+
+
+def _mode_mismatch_prepared(
+    seeded: DbosRuntime,
+    factory: RecordingAgentExecutorFactoryV2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AgentExecutionRequestV2:
+    """A run recorded before its mode was checked, stopped mid-node by a restart.
+
+    Its first attempt is prepared and its node workflow left enqueued, as a
+    serve that died while driving the node leaves both: the restarted runtime
+    recovers that workflow, so the attempt has a live driver, and the node
+    itself -- not the driverless sweep -- meets what the attempt reached.
+    """
+    seeded.initialize_storage()
+    _publish_output_schema(seeded)
+    workflow, bindings = _publish_single_capability(
+        seeded, AgentExecutionCapability.HEADLESS_WITH_TOOLS, document=_V3_DOCUMENT
+    )
+    with monkeypatch.context() as unchecked:
+        unchecked.setattr(
+            "atelier2.adapters.dbos.starter.agent_mode_mismatch",
+            lambda _graph, _bindings: None,
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(
+                MODE_MISMATCH_RUN, workflow.revision_hash, bindings
+            )
+        )
+    assert isinstance(started, DurableRunCreated)
+    request = _replayed_request(
+        dict(
+            _node_binding(
+                seeded.datasource,
+                MODE_MISMATCH_RUN,
+                workflow.revision_hash,
+                "build",
+                None,
+            )
+        ),
+        MODE_MISMATCH_RUN,
+        workflow.revision_hash,
+        "build",
+        factory.operational_identity,
+        factory.declared_capabilities,
+    )
+    DbosAgentAttemptStore(seeded.engine, seeded.settings.application_version).prepare(
+        agent_attempt_execution(request)
+    )
+    client = DBOSClient(system_database_engine=seeded.engine, use_listen_notify=False)
+    try:
+        client.enqueue(
+            {
+                "workflow_name": NODE_WORKFLOW_NAME,
+                "queue_name": QUEUE_NAME,
+                "workflow_id": node_workflow_id_for(request.node_execution_id),
+                "app_version": seeded.settings.application_version,
+            },
+            MODE_MISMATCH_RUN.value,
+            workflow.revision_hash.value,
+            "build",
+        )
+    finally:
+        client.destroy()
+    return request
+
+
+def _watchdog_bound_by_a_serve_that_died(
+    store: DbosAgentAttemptStore, request: AgentExecutionRequestV2
+) -> None:
+    store.bind_watchdog(
+        agent_attempt_execution(request),
+        AgentProcessOwnerId("the-serve-before-the-restart"),
+        WatchdogGenerationId("generation-before-the-restart"),
+    )
+
+
+def _claimed_before_the_restart(
+    store: DbosAgentAttemptStore, request: AgentExecutionRequestV2
+) -> None:
+    _watchdog_bound_by_a_serve_that_died(store, request)
+    assert isinstance(
+        store.claim(agent_attempt_execution(request)), AgentAttemptClaimedByThisCall
+    )
+
+
+def _replaced_by_ordinal_two(
+    store: DbosAgentAttemptStore, request: AgentExecutionRequestV2
+) -> None:
+    execution = agent_attempt_execution(request)
+    command = CancelAgentAttemptRequest(
+        request.run_id,
+        execution.attempt_id,
+        "replace-before-the-restart",
+        store.load(execution.attempt_id).state_version,
+        AgentAttemptReplacement.ONE,
+    )
+    assert isinstance(
+        store.request_cancellation(command), AgentAttemptCancellationAccepted
+    )
+    store.attest_cancellation_cleanup(
+        command, AgentAttemptCancellationDisposition.NEVER_LAUNCHED, None, None
+    )
+
+
+@pytest.mark.parametrize(
+    "reached",
+    [
+        pytest.param(
+            _watchdog_bound_by_a_serve_that_died, id="prepared-whose-watchdog-died"
+        ),
+        pytest.param(_claimed_before_the_restart, id="claimed"),
+        pytest.param(_replaced_by_ordinal_two, id="replaced-by-ordinal-two"),
+    ],
+)
+def test_a_restart_ends_a_node_bound_outside_its_mode_once_whatever_its_attempt_reached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reached: Callable[[DbosAgentAttemptStore, AgentExecutionRequestV2], None],
+) -> None:
+    """One cleanup, one named ending, and no attempt left alive or launched."""
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude-cli/v1",
+        "seed",
+        b"unused",
+        capability_set=BOTH_UNATTENDED_CAPABILITIES,
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    try:
+        request = _mode_mismatch_prepared(seeded, seeded_factory, monkeypatch)
+        reached(
+            DbosAgentAttemptStore(seeded.engine, seeded.settings.application_version),
+            request,
+        )
+    finally:
+        seeded.close()
+
+    # Each refusal asks for its cleanup once, and the cancellation workflow that
+    # acceptance enqueues may ask once more; a refusal that keeps re-cleaning a
+    # finished attempt asks twice per turn and runs past the bound.
+    bound = 6
+    cleanups = 0
+    requested = DbosAgentAttemptStore.request_cancellation
+
+    def counted(
+        self: DbosAgentAttemptStore, cleanup_request: CancelAgentAttemptRequest
+    ) -> object:
+        nonlocal cleanups
+        cleanups += 1
+        if cleanups > bound:
+            raise AssertionError(f"cleanup requested {cleanups} times for one refusal")
+        return requested(self, cleanup_request)
+
+    monkeypatch.setattr(DbosAgentAttemptStore, "request_cancellation", counted)
+    restarted_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic",
+        "claude-cli/v1",
+        "seed",
+        b"must-not-run",
+        capability_set=BOTH_UNATTENDED_CAPABILITIES,
+    )
+    restarted = _runtime(tmp_path, (restarted_factory,))
+    try:
+        restarted.launch()
+        try:
+            _wait_failed(restarted, MODE_MISMATCH_RUN)
+        finally:
+            assert cleanups <= 3
+        with restarted.engine.connect() as connection:
+            refusals = (
+                connection.execute(
+                    sa.select(run_events.c.payload).where(
+                        run_events.c.event_kind == "AGENT_FAILED",
+                        run_events.c.agent_attempt_id.is_(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            states = connection.execute(sa.select(agent_attempts.c.state)).scalars()
+            attempt_states = {AgentAttemptState(str(state)) for state in states}
+        assert refusals == [
+            AgentExecutionRefusal.AGENT_MODE_MISMATCH.value.encode("ascii")
+        ]
+        assert attempt_states <= TERMINAL_AGENT_ATTEMPT_STATES
+        assert restarted_factory.opened is not None
+        assert restarted_factory.opened.requests == []
+    finally:
+        restarted.close()

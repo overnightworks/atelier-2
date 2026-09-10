@@ -1492,14 +1492,37 @@ def _is_unstartable_node_cleanup(
 def _is_unstartable_node_cleanup_complete(
     attempt: AgentAttempt, refusal: AgentExecutionRefusal
 ) -> bool:
-    cancellation = attempt.cancellation
+    """Whether the cleanup this refusal minted has reached its attested end.
+
+    Any attested ending counts, not only a never-launched one: a watchdog whose
+    serve died with a restart is attested `OWNER_LOST_AFTER_PARENT_DEATH` and
+    leaves the attempt `INTERRUPTED`, and cleaning it again would ask a finished
+    attempt for a cleanup it has already given, over and over.
+    """
+    return _is_unstartable_node_cleanup(attempt, refusal) and attempt.state in {
+        AgentAttemptState.CANCELLED,
+        AgentAttemptState.INTERRUPTED,
+    }
+
+
+def _may_clean_before_refusal(
+    attempt: AgentAttempt, refusal: AgentExecutionRefusal
+) -> bool:
+    """Whether this local attempt, under no command yet, is cleaned for the refusal.
+
+    A prepared attempt never crossed the launch boundary. A claimed one may
+    have: an unavailable executor leaves it fenced, but a binding its node never
+    declared may not keep even a claimed attempt alive, so the mode refusal
+    stops it through the same cleanup, and the owner that died with a restart
+    is attested lost rather than relaunched.
+    """
+    stoppable = {AgentAttemptState.PREPARED}
+    if refusal is AgentExecutionRefusal.AGENT_MODE_MISMATCH:
+        stoppable.add(AgentAttemptState.LAUNCH_ARMED)
     return (
-        _is_unstartable_node_cleanup(attempt, refusal)
-        and attempt.state is AgentAttemptState.CANCELLED
-        and attempt.process_phase is AgentAttemptProcessPhase.CLEANUP_ATTESTED
-        and cancellation is not None
-        and cancellation.disposition
-        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+        attempt.runner_manifest_id is None
+        and attempt.cancellation is None
+        and attempt.state in stoppable
     )
 
 
@@ -1590,11 +1613,11 @@ class DbosAgentAttemptStore:
     ) -> AgentExecutorBindingRefusalResult:
         """Close an unclaimed Agent node under its refusal, inventing no attempt failure.
 
-        The only mutable predecessor is its own attempt in PREPARED, which has not
-        crossed the launch boundary. It first returns its existing cancellation
+        The only mutable predecessor is its own attempt the refusal may clean
+        (`_may_clean_before_refusal`). It first returns its existing cancellation
         cleanup request; callers carry that through the normal supervisor and
         workspace path, then retry this method. The same command, once accepted,
-        stays on that cleanup path until NEVER_LAUNCHED is attested. Every armed,
+        stays on that cleanup path until its ending is attested. Every other armed,
         runner-bound, or foreign cancellation-in-progress record is fenced for
         #15.
         """
@@ -1632,10 +1655,7 @@ class DbosAgentAttemptStore:
                 raise RunTransitionConflict(
                     "unstartable node differs from durable attempt binding"
                 )
-            if (
-                attempt.state is AgentAttemptState.PREPARED
-                and attempt.runner_manifest_id is None
-            ) or (
+            if _may_clean_before_refusal(attempt, refusal) or (
                 _is_unstartable_node_cleanup(attempt, refusal)
                 and not _is_unstartable_node_cleanup_complete(attempt, refusal)
             ):
