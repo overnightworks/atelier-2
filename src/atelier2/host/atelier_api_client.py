@@ -6,17 +6,22 @@ a non-2xx answer, an unreachable service, or a stream that stops decoding as
 text -- into one typed `AtelierApiTransportFailure`. A caller closes the
 client when its invocation ends (a context manager, or `close()`), and
 translates that one failure into whatever vocabulary its own callers expect.
+
+No text an answer wrote ever reaches a failure raised here: not a reason
+phrase, not a served header value, and not a library exception's own message
+-- every translation is `from None`, so a traceback cannot carry one out
+either.
 """
 
 from __future__ import annotations
 
-import logging
+import signal
 import threading
-import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from types import FrameType
 from typing import Final, Self
 from urllib.parse import urlsplit
 
@@ -42,34 +47,80 @@ _UNEXPECTED_ENCODING_REASON: Final = (
     "answered with a content-encoding other than identity, refused before "
     "reading its body"
 )
-"""Never the encoding value itself: a served header is exactly the kind of
-response-carried text this module never repeats -- the fact that it was
-refused is the whole diagnosis a caller needs."""
 
 _NOT_EVENT_STREAM_REASON: Final = (
     "answered something that does not look like an event stream, refused "
     "before reading it as one"
 )
-"""Never the content type or the sniffed byte themselves, for the same
-reason `_UNEXPECTED_ENCODING_REASON` never carries an encoding value."""
+
+_BYTE_LIMIT_REASON: Final = "a bounded read gave up: byte limit"
+_DEADLINE_REASON: Final = "a bounded read gave up: overall deadline"
 
 
 class AtelierApiAddressUnusable(ValueError):
     """`service_url` names nothing this client could ever reach."""
 
 
+class WallClockDeadlineExceeded(Exception):
+    """One bounded call's absolute deadline ran out while it was still reading.
+
+    Raised on the calling thread by the deadline's own alarm, so it interrupts
+    whichever blocking read that thread sits in -- headers that never
+    complete, a socket that never speaks again -- and unwinds through the
+    `with` blocks that close the response and its connection.
+    """
+
+
+class WallClockDeadlineUnavailable(RuntimeError):
+    """A bounded call asked for a deadline this thread cannot be given.
+
+    Only the main thread receives the process's alarm, so anywhere else this
+    refuses rather than running an unbounded read that merely looks bounded.
+    """
+
+
+@contextmanager
+def wall_clock_deadline(seconds: float) -> Iterator[None]:
+    """Stop whatever the calling thread is doing once `seconds` have passed.
+
+    A read timeout bounds one read; this bounds the whole block, including a
+    reply whose headers never finish arriving and a read that never returns
+    at all. The alarm is disarmed before its handler is restored: a signal
+    already delivered as the block ends then resolves against the restored
+    handler and does nothing, instead of landing inside an unrelated later
+    call.
+    """
+
+    if threading.current_thread() is not threading.main_thread():
+        raise WallClockDeadlineUnavailable(
+            "a bounded read's deadline is enforced by this process's alarm, "
+            "which only the main thread receives"
+        )
+    if seconds <= 0:
+        raise WallClockDeadlineExceeded
+
+    def expire(signal_number: int, frame: FrameType | None) -> None:
+        del signal_number, frame
+        raise WallClockDeadlineExceeded
+
+    previous_handler = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 class EventSampleLimit(StrEnum):
     """Why `AtelierApi.sampled_event_frames` stopped itself before the stream did.
 
     A stream this call samples may run forever by design, so every dimension
-    it could hang or grow on stops the read itself instead of the connection
-    ending on its own: `SILENT` is a read-timeout wait with no byte arriving,
-    `FRAME_LIMIT` and `BYTE_LIMIT` are its own caps, and `OVERALL_DEADLINE` is
-    the whole call's wall-clock budget, checked before every read this call
-    makes -- the request itself, every chunk, and an error body alike -- not
-    only between whole frames. The connection ending on its own within budget
-    is not one of these -- a caller reads that from `BoundedEventSample.stopped`
-    being `None`.
+    it could hang or grow on stops the read itself: `SILENT` is a read-timeout
+    wait with no byte arriving, `FRAME_LIMIT` and `BYTE_LIMIT` are its own
+    caps, and `OVERALL_DEADLINE` is the whole call's enforced wall clock. The
+    connection ending on its own within budget is none of these -- a caller
+    reads that from `BoundedEventSample.stopped` being `None`.
     """
 
     SILENT = "silent"
@@ -82,14 +133,13 @@ class EventSampleLimit(StrEnum):
 class BoundedEventSample:
     """As much of one event stream as `sampled_event_frames` read before stopping.
 
-    `frames` is every complete `data:` payload it decoded, oldest first.
-    `stopped` names why the read stopped itself; it is `None` when the
-    connection closed on its own -- an early end for a stream documented to
-    never end, and exactly as reportable as any of the named limits.
-    `bytes_read` is every byte this call actually received, whether or not
-    any of them assembled into a complete frame -- a caller that reads
-    `frames == ()` still needs this to tell a truly silent connection from
-    one that spoke (a heartbeat comment, say) and then closed.
+    `frames` is every complete `data:` payload it decoded, oldest first --
+    including the ones already in hand when the deadline cut the read short,
+    so a failure frame this call did read is never lost to the stop that
+    followed it. `stopped` names why the read stopped itself; it is `None`
+    when the connection closed on its own -- an early end for a stream
+    documented to never end. `bytes_read` is every byte this call received,
+    whether or not any of them assembled into a complete frame.
     """
 
     frames: tuple[str, ...]
@@ -111,79 +161,9 @@ class BoundedResponse:
     body: bytes
 
 
-class _BoundedReadStopped(Exception):
-    """Raised inside a bounded read's own chunk generator; never escapes this
-    module -- each caller catches it and reports in its own vocabulary."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
-class _WallClockDeadlineExceeded(Exception):
-    """A bounded call's own worker did not finish within its true wall-clock
-    limit -- not a cooperative check inside the read loop, which cannot run
-    while that loop is blocked on one read that never returns."""
-
-
-def _run_within_wall_clock[ResultT](
-    deadline_seconds: float,
-    call: Callable[[], ResultT],
-    interrupt: Callable[[], None],
-) -> ResultT:
-    """Run `call` and never wait past `deadline_seconds` for it, whatever it
-    is blocked on.
-
-    httpx's own timeouts bound how long any *one* read may stall, not how
-    long assembling a whole reply can take across many of them -- one byte
-    at a time, each gap just under the read timeout, would otherwise run
-    past this call's deadline forever. Python cannot forcibly stop a
-    running thread, so this runs `call` in its own daemon thread and, once
-    the deadline passes, calls `interrupt` (closing the connection `call`
-    is presumably blocked on) as a best effort to free it, returning to its
-    own caller immediately either way -- an outliving thread is a leaked
-    daemon, never a caller left waiting.
-    """
-
-    outcome: list[ResultT] = []
-    failure: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            outcome.append(call())
-        except BaseException as caught:  # noqa: BLE001 -- reraised on the caller's own thread
-            failure.append(caught)
-
-    with _quieted_transport_logging():
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        worker.join(deadline_seconds)
-        if worker.is_alive():
-            interrupt()
-            raise _WallClockDeadlineExceeded
-    if failure:
-        raise failure[0]
-    return outcome[0]
-
-
-@contextmanager
-def _quieted_transport_logging() -> Iterator[None]:
-    """Silence httpx's and httpcore's own request/response logging for one
-    bounded call, restoring each logger's previous level afterward: httpx
-    logs every request's status line -- including the far side's own HTTP
-    reason phrase -- at `INFO` by default, a channel this module does not
-    otherwise control at all.
-    """
-
-    loggers = tuple(logging.getLogger(name) for name in ("httpx", "httpcore"))
-    previous_levels = tuple(logger.level for logger in loggers)
-    try:
-        for logger in loggers:
-            logger.setLevel(logging.WARNING)
-        yield
-    finally:
-        for logger, level in zip(loggers, previous_levels, strict=True):
-            logger.setLevel(level)
+class _ByteCapExceeded(Exception):
+    """Raised inside a bounded read's own chunk generator once the next chunk
+    would push it past its cap; never escapes this module."""
 
 
 @dataclass
@@ -191,16 +171,9 @@ class _ByteCounter:
     """How many bytes a bounded read has actually received so far.
 
     Mutable and handed to `_capped` by reference: a caller keeps its own
-    reference and reads `.total` once reading stops, for whatever reason --
-    `_capped` itself only ever grows it, never reports it back."""
+    reference and reads `.total` once reading stops, for whatever reason."""
 
     total: int = 0
-
-
-_EVENT_SAMPLE_STOP_REASONS: Final[dict[str, EventSampleLimit]] = {
-    "overall deadline": EventSampleLimit.OVERALL_DEADLINE,
-    "byte limit": EventSampleLimit.BYTE_LIMIT,
-}
 
 
 class AtelierApiTransportFailure(Exception):
@@ -253,7 +226,6 @@ class AtelierApi:
         self, service_url: str, *, transport: httpx.BaseTransport | None = None
     ) -> None:
         self.base_url = api_base_url(service_url)
-        self._transport = transport
         self._client = httpx.Client(transport=transport)
 
     def close(self) -> None:
@@ -304,58 +276,44 @@ class AtelierApi:
                 self._raise_for_failure(response, url)
                 yield from _decoded_lines(response.iter_bytes(), url)
         except httpx.HTTPError as unavailable:
-            raise _transport_unavailable(url, unavailable) from unavailable
+            raise _transport_unavailable(url, unavailable) from None
 
     def bounded_get(
         self,
         path: str,
         *,
         accept: str = JSON_MEDIA_TYPE,
-        request_timeout_seconds: float,
-        overall_deadline_seconds: float,
+        read_timeout_seconds: float,
+        deadline_seconds: float,
         maximum_bytes: int,
     ) -> BoundedResponse:
         """One GET, read on a budget for a caller that does not yet trust the
-        far side: identity-encoded (a compressed reply cannot outgrow the
-        byte cap before the cap sees it), the cap checked before a chunk is
-        kept, and bounded by both the read timeout each read still carries
-        and a true wall-clock limit (`_run_within_wall_clock`) that stops
-        this call even if one single read stalls without ever timing out on
-        its own -- on a fresh, throwaway client, so interrupting it never
-        touches a client another call on this same `AtelierApi` still uses.
+        far side: identity-encoded (a compressed reply cannot outgrow the byte
+        cap before the cap sees it), the cap checked before a chunk is kept,
+        and the whole call under `wall_clock_deadline` -- so a reply that
+        never finishes arriving ends this call rather than outliving it.
         """
 
         url = self.base_url + path
-        client = httpx.Client(transport=self._transport)
         try:
-            return _run_within_wall_clock(
-                overall_deadline_seconds + request_timeout_seconds,
-                lambda: _bounded_get_once(
-                    client,
-                    url,
-                    accept,
-                    request_timeout_seconds,
-                    overall_deadline_seconds,
-                    maximum_bytes,
-                ),
-                client.close,
-            )
-        except _WallClockDeadlineExceeded as stuck:
-            raise AtelierApiTransportFailure(
-                url, "a bounded read gave up: overall deadline"
-            ) from stuck
+            with wall_clock_deadline(deadline_seconds):
+                return self._read_bounded(
+                    url, accept, read_timeout_seconds, maximum_bytes
+                )
+        except WallClockDeadlineExceeded:
+            raise AtelierApiTransportFailure(url, _DEADLINE_REASON) from None
+        except _ByteCapExceeded:
+            raise AtelierApiTransportFailure(url, _BYTE_LIMIT_REASON) from None
         except httpx.HTTPError as unavailable:
-            raise _transport_unavailable(url, unavailable) from unavailable
-        finally:
-            client.close()
+            raise _transport_unavailable(url, unavailable) from None
 
     def sampled_event_frames(
         self,
         path: str,
         *,
         accept: str,
-        request_timeout_seconds: float,
-        overall_deadline_seconds: float,
+        read_timeout_seconds: float,
+        deadline_seconds: float,
         maximum_bytes: int,
         maximum_frames: int,
     ) -> BoundedEventSample:
@@ -363,44 +321,89 @@ class AtelierApi:
 
         `event_lines` trusts the service to end the stream; this is for a
         caller that only wants to know whether a stream that may never end
-        looks healthy now -- identity-encoded like `bounded_get`, its own
-        read timeout on every chunk (silence stops it rather than hanging),
-        its deadline checked before every read including a refused body (not
-        only between whole frames, so all-comments or all-partial-frames
-        cannot outrun it), and its byte cap checked before a chunk is kept.
-        Each of those is named in the returned sample -- see
-        `_collected_sample` -- rather than raised, because running into one
-        is exactly what this call exists to survive; a true wall-clock limit
-        beyond all of that (`_run_within_wall_clock`) still stops this call
-        even if one single read stalls without ever timing out on its own,
-        on a fresh, throwaway client so interrupting it never touches a
-        client another call on this same `AtelierApi` still uses.
+        looks healthy now -- identity-encoded like `bounded_get`, its own read
+        timeout on every chunk, its byte cap checked before a chunk is kept,
+        and the whole call under `wall_clock_deadline`. Each of those is named
+        in the returned sample rather than raised, because running into one is
+        exactly what this call exists to survive, and the frames already read
+        come back with it.
         """
 
         url = self.base_url + path
-        client = httpx.Client(transport=self._transport)
+        collected: list[str] = []
+        counter = _ByteCounter()
         try:
-            return _run_within_wall_clock(
-                overall_deadline_seconds + request_timeout_seconds,
-                lambda: _sampled_event_frames_once(
-                    client,
+            with wall_clock_deadline(deadline_seconds):
+                return self._read_event_sample(
                     url,
                     accept,
-                    request_timeout_seconds,
-                    overall_deadline_seconds,
+                    read_timeout_seconds,
                     maximum_bytes,
                     maximum_frames,
-                ),
-                client.close,
-            )
-        except _WallClockDeadlineExceeded:
+                    collected,
+                    counter,
+                )
+        except WallClockDeadlineExceeded:
             return BoundedEventSample(
-                frames=(), stopped=EventSampleLimit.OVERALL_DEADLINE, bytes_read=0
+                frames=tuple(collected),
+                stopped=EventSampleLimit.OVERALL_DEADLINE,
+                bytes_read=counter.total,
             )
         except httpx.HTTPError as unavailable:
-            raise _transport_unavailable(url, unavailable) from unavailable
-        finally:
-            client.close()
+            raise _transport_unavailable(url, unavailable) from None
+
+    def _read_bounded(
+        self,
+        url: str,
+        accept: str,
+        read_timeout_seconds: float,
+        maximum_bytes: int,
+    ) -> BoundedResponse:
+        with self._client.stream(
+            "GET",
+            url,
+            headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
+            timeout=httpx.Timeout(read_timeout_seconds),
+        ) as response:
+            _refuse_unexpected_encoding(response, url)
+            body = bytearray()
+            for chunk in _capped(response.iter_bytes(), maximum_bytes):
+                body.extend(chunk)
+            return BoundedResponse(status=response.status_code, body=bytes(body))
+
+    def _read_event_sample(
+        self,
+        url: str,
+        accept: str,
+        read_timeout_seconds: float,
+        maximum_bytes: int,
+        maximum_frames: int,
+        collected: list[str],
+        counter: _ByteCounter,
+    ) -> BoundedEventSample:
+        with self._client.stream(
+            "GET",
+            url,
+            headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
+            timeout=httpx.Timeout(read_timeout_seconds),
+        ) as response:
+            _refuse_unexpected_encoding(response, url)
+            _raise_for_bounded_failure(response, url, maximum_bytes)
+            chunks = _capped(response.iter_bytes(), maximum_bytes, counter)
+            try:
+                chunks = _raise_if_not_event_stream(response, url, chunks)
+            except _ByteCapExceeded:
+                return BoundedEventSample(
+                    frames=(),
+                    stopped=EventSampleLimit.BYTE_LIMIT,
+                    bytes_read=counter.total,
+                )
+            except httpx.ReadTimeout:
+                return BoundedEventSample(
+                    frames=(), stopped=EventSampleLimit.SILENT, bytes_read=counter.total
+                )
+            lines = _decoded_lines(chunks, url)
+            return _collected_sample(lines, maximum_frames, collected, counter)
 
     def _request(
         self,
@@ -419,7 +422,7 @@ class AtelierApi:
                 self._raise_for_failure(response, url)
                 return response.read()
         except httpx.HTTPError as unavailable:
-            raise _transport_unavailable(url, unavailable) from unavailable
+            raise _transport_unavailable(url, unavailable) from None
 
     @staticmethod
     def _raise_for_failure(response: httpx.Response, url: str) -> None:
@@ -431,83 +434,6 @@ class AtelierApi:
             status=response.status_code,
             body=_bounded_body(response),
         )
-
-
-def _bounded_get_once(
-    client: httpx.Client,
-    url: str,
-    accept: str,
-    request_timeout_seconds: float,
-    overall_deadline_seconds: float,
-    maximum_bytes: int,
-) -> BoundedResponse:
-    """One attempt at `AtelierApi.bounded_get`'s whole read, the work
-    `_run_within_wall_clock` bounds from outside; see that method's own
-    docstring for what each budget means."""
-
-    deadline = time.monotonic() + overall_deadline_seconds
-    try:
-        if time.monotonic() >= deadline:
-            raise _BoundedReadStopped("overall deadline")
-        with client.stream(
-            "GET",
-            url,
-            headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
-            timeout=httpx.Timeout(request_timeout_seconds),
-        ) as response:
-            _refuse_unexpected_encoding(response, url)
-            body = bytearray()
-            for chunk in _capped(_paced_chunks(response, deadline), maximum_bytes):
-                body.extend(chunk)
-            return BoundedResponse(status=response.status_code, body=bytes(body))
-    except _BoundedReadStopped as stopped:
-        raise AtelierApiTransportFailure(
-            url, f"a bounded read gave up: {stopped.reason}"
-        ) from stopped
-
-
-def _sampled_event_frames_once(
-    client: httpx.Client,
-    url: str,
-    accept: str,
-    request_timeout_seconds: float,
-    overall_deadline_seconds: float,
-    maximum_bytes: int,
-    maximum_frames: int,
-) -> BoundedEventSample:
-    """One attempt at `AtelierApi.sampled_event_frames`'s whole read, the
-    work `_run_within_wall_clock` bounds from outside; see that method's
-    own docstring for what each budget means."""
-
-    deadline = time.monotonic() + overall_deadline_seconds
-    if time.monotonic() >= deadline:
-        return BoundedEventSample(
-            frames=(), stopped=EventSampleLimit.OVERALL_DEADLINE, bytes_read=0
-        )
-    with client.stream(
-        "GET",
-        url,
-        headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
-        timeout=httpx.Timeout(request_timeout_seconds),
-    ) as response:
-        _refuse_unexpected_encoding(response, url)
-        _raise_for_bounded_failure(response, url, deadline, maximum_bytes)
-        counter = _ByteCounter()
-        raw_chunks = _capped(_paced_chunks(response, deadline), maximum_bytes, counter)
-        try:
-            raw_chunks = _raise_if_not_event_stream(response, url, raw_chunks)
-        except _BoundedReadStopped as stopped_read:
-            return BoundedEventSample(
-                frames=(),
-                stopped=_EVENT_SAMPLE_STOP_REASONS[stopped_read.reason],
-                bytes_read=counter.total,
-            )
-        except httpx.ReadTimeout:
-            return BoundedEventSample(
-                frames=(), stopped=EventSampleLimit.SILENT, bytes_read=counter.total
-            )
-        lines = _decoded_lines(raw_chunks, url)
-        return _collected_sample(lines, maximum_frames, counter)
 
 
 @contextmanager
@@ -528,10 +454,11 @@ def opened_api(
 def _transport_unavailable(
     url: str, error: httpx.HTTPError
 ) -> AtelierApiTransportFailure:
-    """`str(error)` is never used here: httpx's own transport exceptions can
-    carry the far side's own text (a proxy's refusal line, for one), so only
-    the exception's class name -- one of httpx's own fixed, known set --
-    ever reaches this failure's reason.
+    """`str(error)` is never used here, and every caller raises this `from
+    None`: httpx's own transport exceptions can carry the far side's own text
+    (a proxy's refusal line, for one), which a chained `__cause__` would carry
+    straight into any traceback. Only the exception's class name -- one of
+    httpx's own fixed, known set -- ever reaches this failure's reason.
     """
 
     return AtelierApiTransportFailure(url, f"transport failure: {type(error).__name__}")
@@ -572,40 +499,45 @@ def _decoded_lines(chunks: Iterable[bytes], url: str) -> Iterator[str]:
 
 
 def _collected_sample(
-    lines: Iterator[str], maximum_frames: int, counter: _ByteCounter
+    lines: Iterator[str],
+    maximum_frames: int,
+    collected: list[str],
+    counter: _ByteCounter,
 ) -> BoundedEventSample:
-    """Every frame `lines` assembles, up to `maximum_frames`, and why the
-    read stopped before that or before the stream itself ended: its own
-    limit, or whichever named reason the bounded chunks beneath `lines`
-    raised."""
+    """Every frame `lines` assembles, up to `maximum_frames`, and why the read
+    stopped before that or before the stream itself ended.
 
-    frames: list[str] = []
+    Frames land in `collected`, the caller's own list, as they are decoded:
+    an outer stop -- the deadline's alarm firing mid-read -- still finds them
+    there rather than losing what this call already knows.
+    """
+
     stopped: EventSampleLimit | None = None
     try:
         for data in server_sent_data(lines):
-            frames.append(data)
-            if len(frames) >= maximum_frames:
+            collected.append(data)
+            if len(collected) >= maximum_frames:
                 stopped = EventSampleLimit.FRAME_LIMIT
                 break
-    except _BoundedReadStopped as stopped_read:
-        stopped = _EVENT_SAMPLE_STOP_REASONS[stopped_read.reason]
+    except _ByteCapExceeded:
+        stopped = EventSampleLimit.BYTE_LIMIT
     except httpx.ReadTimeout:
         stopped = EventSampleLimit.SILENT
     return BoundedEventSample(
-        frames=tuple(frames), stopped=stopped, bytes_read=counter.total
+        frames=tuple(collected), stopped=stopped, bytes_read=counter.total
     )
 
 
 def _raise_for_bounded_failure(
-    response: httpx.Response, url: str, deadline: float, maximum_bytes: int
+    response: httpx.Response, url: str, maximum_bytes: int
 ) -> None:
     """Like `AtelierApi._raise_for_failure`, but for a bounded caller's own
-    read path: the refused body is read through the same deadline- and
-    byte-capped chunks a healthy one would be, never through the unbounded
-    `_bounded_body` every other caller still reads through unchanged --
-    and, unlike `_raise_for_failure`, never `response.reason_phrase`: an
-    HTTP reason phrase is text the far side wrote onto its own status line,
-    not a value this module owns.
+    read path: the refused body is read through the same byte-capped chunks a
+    healthy one would be, never through the unbounded `_bounded_body` every
+    other caller still reads through unchanged -- and, unlike
+    `_raise_for_failure`, never `response.reason_phrase`: an HTTP reason
+    phrase is text the far side wrote onto its own status line, not a value
+    this module owns.
     """
 
     if response.is_success:
@@ -614,7 +546,7 @@ def _raise_for_bounded_failure(
         url,
         "answered a non-2xx status without one of this API's own problem documents",
         status=response.status_code,
-        body=_drained(_capped(_paced_chunks(response, deadline), maximum_bytes)),
+        body=_drained(_capped(response.iter_bytes(), maximum_bytes)),
     )
 
 
@@ -626,8 +558,8 @@ def _refuse_unexpected_encoding(response: httpx.Response, url: str) -> None:
     not an enforcement: a reply that answers with a real `Content-Encoding`
     anyway would otherwise have that encoding decoded by `iter_bytes` itself,
     growing past this call's byte cap before the cap ever sees a byte of the
-    result. Headers are already in hand at this point -- nothing has read
-    the body yet.
+    result. The encoding value itself is never named back -- that it was
+    refused is the whole diagnosis a caller needs.
     """
 
     encoding = response.headers.get("content-encoding")
@@ -705,37 +637,9 @@ def _drained(chunks: Iterator[bytes]) -> bytes:
     try:
         for chunk in chunks:
             body.extend(chunk)
-    except (_BoundedReadStopped, httpx.ReadTimeout):
+    except (_ByteCapExceeded, httpx.ReadTimeout):
         pass
     return bytes(body)
-
-
-def _paced_chunks(response: httpx.Response, deadline: float) -> Iterator[bytes]:
-    """This response's own chunks, one at a time, each requested only once
-    the wall-clock deadline still allows it.
-
-    The check runs before every read this makes -- including the very first,
-    before this response has even answered -- not only between whole frames a
-    higher layer assembles from them, so a reply that never completes one (all
-    comments, or one endless partial line) cannot outrun it either.
-
-    This does not ask `iter_bytes` for a bounded `chunk_size`: httpx buffers
-    ahead to fill one before it ever yields it, so a reply that goes silent
-    or fails mid-read loses everything already received instead of handing
-    it back -- worse than the unbounded read this replaces, not safer. What
-    already arrived over the wire is bounded by the transport itself; the
-    identity encoding this call's caller asks for is what keeps one transport
-    chunk from ever decoding into something larger than it was on the wire.
-    """
-
-    iterator = response.iter_bytes()
-    while True:
-        if time.monotonic() >= deadline:
-            raise _BoundedReadStopped("overall deadline")
-        try:
-            yield next(iterator)
-        except StopIteration:
-            return
 
 
 def _capped(
@@ -755,7 +659,7 @@ def _capped(
     counted = counter if counter is not None else _ByteCounter()
     for chunk in chunks:
         if counted.total + len(chunk) > maximum_bytes:
-            raise _BoundedReadStopped("byte limit")
+            raise _ByteCapExceeded
         counted.total += len(chunk)
         yield chunk
 
@@ -784,16 +688,18 @@ def server_sent_data(lines: Iterator[str]) -> Iterator[str]:
 
 
 def _decoded_line(raw_line: bytes, url: str) -> str:
-    """Never `str(error)`: `UnicodeDecodeError`'s own message names the
-    specific byte value it failed on -- part of the answer's own content.
-    Only the byte position -- a number -- says where, without saying what.
+    """Never `str(error)`, and never chained: `UnicodeDecodeError`'s own
+    message names the specific byte value it failed on -- part of the
+    answer's own content. Only the byte position -- a number -- says where,
+    without saying what.
     """
 
     try:
         return raw_line.decode().rstrip("\r")
     except UnicodeDecodeError as error:
+        position = error.start
         raise AtelierApiTransportFailure(
             url,
             f"the event stream carried bytes that are not UTF-8 text at "
-            f"position {error.start}",
-        ) from error
+            f"position {position}",
+        ) from None

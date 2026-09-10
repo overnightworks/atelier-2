@@ -1,9 +1,12 @@
 """What `atelier2 watch` reports against a served instance's fixed doors.
 
-Every test speaks through `AtelierApi` with an `httpx.MockTransport`, exactly
+Most tests speak through `AtelierApi` with an `httpx.MockTransport`, exactly
 the seam `watch_instance` is built to take a caller's own client through --
 never the live instance (#1502 forbids that; the operator's own ruling on the
-observer contract decides when a real read is added).
+observer contract decides when a real read is added). The deadline is the one
+thing a mock cannot prove, because a mock never opens a socket: those tests
+run against `_LoopbackServer`, a real server on loopback that hangs on
+purpose.
 """
 
 from __future__ import annotations
@@ -11,11 +14,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import gzip
-import itertools
 import json
 import logging
+import socket
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
+from typing import Self
 
 import httpx
 import pytest
@@ -33,14 +38,22 @@ from atelier2.api.wire.resources import (
     StreamFailureResource,
 )
 from atelier2.host import atelier_api_client, instance_watch
-from atelier2.host.atelier_api_client import AtelierApi, EventSampleLimit
+from atelier2.host.atelier_api_client import (
+    AtelierApi,
+    AtelierApiTransportFailure,
+    EventSampleLimit,
+    WallClockDeadlineUnavailable,
+    wall_clock_deadline,
+)
 from atelier2.host.instance_watch import (
     EVENTS_PATH,
     HEALTH_PATH,
     RUN_PATH,
     SEAT_PATH,
     WATCH_ENDPOINTS,
+    WITHHELD_RUN_REFERENCE,
     WORKFLOW_REVISIONS_PATH,
+    AttentionFeedSample,
     WatchBudget,
     WatchFinding,
     WatchFindingKind,
@@ -55,6 +68,20 @@ RECORDED_AT = "2026-09-10T00:00:00Z"
 SEAT_TOKEN = "seat-terminal-access-token-9c41"
 SEAT_ALIVE_URL = f"http://127.0.0.1:9999/terminal?token={SEAT_TOKEN}"
 _TEST_BUDGET = WatchBudget(deadline_seconds=1.0, read_timeout_seconds=1.0)
+_TEST_SAMPLE = AttentionFeedSample("silent", frames_read=0, bytes_read=0)
+
+
+@pytest.fixture(autouse=True)
+def _transport_logger_levels() -> Iterator[None]:
+    """`execute_watch` turns the transport loggers down for the process it
+    owns; a test process is shared, so each test hands their levels back."""
+
+    loggers = [logging.getLogger(name) for name in ("httpx", "httpcore")]
+    levels = [logger.level for logger in loggers]
+    yield
+    for logger, level in zip(loggers, levels, strict=True):
+        logger.setLevel(level)
+
 
 _DEFAULT_HEALTH = HealthResource(
     status="serving",
@@ -172,6 +199,23 @@ def test_a_run_projection_corrupt_frame_after_a_healthy_one_is_reported_with_its
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.RUN_PROJECTION_CORRUPT
     assert finding.public_run_reference == "run1.aGVhbHRoeQ"
+
+
+def test_a_run_reference_the_api_contract_does_not_recognize_is_withheld() -> None:
+    """The field's own pattern admits any `run1.` word, so a frame can dress
+    an answer's text up as a run reference. Only what the contract's parser
+    accepts -- a canonical reference that re-encodes to exactly itself -- is
+    ever printed."""
+
+    corrupt = RunProjectionCorruptResource(
+        public_run_reference=f"run1.{_LEAK_SENTINEL}",
+        problem=_DURABLE_STATE_CORRUPT_PROBLEM,
+    )
+    report = _watched({EVENTS_PATH: _sse(corrupt.model_dump_json())})
+
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.RUN_PROJECTION_CORRUPT
+    assert finding.public_run_reference == WITHHELD_RUN_REFERENCE
 
 
 def test_health_redeploy_blocked_is_reported_and_its_absence_is_clean() -> None:
@@ -302,7 +346,7 @@ def test_a_raw_problem_document_on_the_event_stream_is_reported() -> None:
 
     report = _watched({EVENTS_PATH: raw})
 
-    assert report.attention_feed_sample == "refused"
+    assert report.attention_feed_sample.stopped == "refused"
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.RESPONSE_REFUSED
     assert finding.endpoint == EVENTS_PATH
@@ -332,7 +376,7 @@ def test_the_attention_feed_sample_outcome_is_named_in_the_report() -> None:
     content = _sse(*(f'{{"n": {n}}}' for n in range(5)))
     report = _watched({EVENTS_PATH: httpx.Response(200, content=content)})
 
-    assert report.attention_feed_sample in (
+    assert report.attention_feed_sample.stopped in (
         "frame-limit",
         "byte-limit",
         "overall-deadline",
@@ -344,9 +388,9 @@ def test_the_attention_feed_sample_outcome_is_named_in_the_report() -> None:
 def test_a_feed_that_closes_before_sending_anything_is_a_finding() -> None:
     report = _watched({EVENTS_PATH: httpx.Response(200, content=b"")})
 
-    assert report.attention_feed_sample == "closed-early"
+    assert report.attention_feed_sample.stopped == "closed-early"
     (finding,) = report.findings
-    assert finding.kind == WatchFindingKind.STREAM_CLOSED_EARLY
+    assert finding.kind == WatchFindingKind.STREAM_NEVER_ANSWERED
     assert finding.endpoint == EVENTS_PATH
     assert "before it ever sent a byte" in finding.detail
 
@@ -361,9 +405,9 @@ def test_a_feed_that_sends_only_comments_then_closes_is_named_by_bytes_not_frame
 
     report = _watched({EVENTS_PATH: httpx.Response(200, content=b": heartbeat\n\n")})
 
-    assert report.attention_feed_sample == "closed-early"
+    assert report.attention_feed_sample.stopped == "closed-early"
     (finding,) = report.findings
-    assert finding.kind == WatchFindingKind.STREAM_CLOSED_EARLY
+    assert finding.kind == WatchFindingKind.STREAM_NEVER_ANSWERED
     assert "without ever completing a data frame" in finding.detail
     assert "before it ever sent a byte" not in finding.detail
 
@@ -371,7 +415,7 @@ def test_a_feed_that_sends_only_comments_then_closes_is_named_by_bytes_not_frame
 def test_a_quiet_feed_that_stays_open_is_not_itself_a_finding() -> None:
     report = _watched()
 
-    assert report.attention_feed_sample == "silent"
+    assert report.attention_feed_sample.stopped == "silent"
     assert report.findings == ()
 
 
@@ -388,8 +432,8 @@ def test_bounded_get_never_exceeds_its_byte_cap_without_hanging() -> None:
     ):
         api.bounded_get(
             HEALTH_PATH,
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=100,
         )
 
@@ -405,15 +449,15 @@ def test_bounded_reads_ask_for_identity_encoding() -> None:
     with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
         api.bounded_get(
             HEALTH_PATH,
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=1_000,
         )
         api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=1_000,
             maximum_frames=10,
         )
@@ -442,8 +486,8 @@ def test_a_compressed_reply_is_refused_before_its_body_is_ever_read() -> None:
     ):
         api.bounded_get(
             HEALTH_PATH,
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=4,
         )
 
@@ -467,8 +511,8 @@ def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
         api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=1_000,
             maximum_frames=10,
         )
@@ -477,6 +521,7 @@ def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
 
 
 _LEAK_SENTINEL = "SENTINEL-LEAK-7d3fa1"
+_SWEEP_MAXIMUM_BYTES = 65_536
 
 
 def _poisoned(text: str) -> str:
@@ -614,6 +659,20 @@ def _poisoned_fixtures() -> tuple[tuple[str, dict[str, bytes | httpx.Response]],
             },
         ),
         (
+            "a RUN_PROJECTION_CORRUPT frame's own run reference",
+            {
+                EVENTS_PATH: httpx.Response(
+                    200,
+                    content=_sse(
+                        RunProjectionCorruptResource(
+                            public_run_reference=f"run1.{_LEAK_SENTINEL}",
+                            problem=_DURABLE_STATE_CORRUPT_PROBLEM,
+                        ).model_dump_json()
+                    ),
+                )
+            },
+        ),
+        (
             "bytes on the event stream that are not UTF-8 text",
             {
                 EVENTS_PATH: httpx.Response(
@@ -636,26 +695,111 @@ def test_no_sentinel_from_any_answer_ever_reaches_the_report_an_exception_or_a_l
     label: str,
     overrides: dict[str, bytes | httpx.Response],
     caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """The whole command, not only the report it builds: this drives
+    `execute_watch`, the entry point that also owns turning the transport
+    libraries' own request logging down, and sweeps every channel a
+    character of an answer could leave through -- printed report, log
+    records at `DEBUG`, and any exception that escapes with its causes.
+    """
+
     del label
     caplog.set_level(logging.DEBUG)
 
-    report: WatchReport | None = None
     raised: Exception | None = None
+    transport, _ = _served(overrides)
     try:
-        report = _watched(overrides)
+        with AtelierApi(SERVICE_URL, transport=transport) as api:
+            execute_watch(argparse.Namespace(service=SERVICE_URL), api=api)
     except Exception as error:  # noqa: BLE001 -- the sweep itself, not a caller
         raised = error
 
-    haystack = caplog.text
-    if report is not None:
-        haystack += json.dumps(dataclasses.asdict(report))
+    haystack = caplog.text + capsys.readouterr().out
     cause: BaseException | None = raised
     while cause is not None:
         haystack += str(cause)
         cause = cause.__cause__
 
     assert _LEAK_SENTINEL not in haystack
+
+
+@pytest.mark.parametrize(
+    ("label", "overrides"),
+    _POISONED_FIXTURES,
+    ids=[label for label, _ in _POISONED_FIXTURES],
+)
+def test_no_sentinel_survives_in_a_failure_the_watcher_itself_consumes(
+    label: str, overrides: dict[str, bytes | httpx.Response]
+) -> None:
+    """The sweep above only sees exceptions that escape; the watcher swallows
+    most of them into findings. This reads the same answers at the client
+    boundary the watcher reads them through and inspects the failure it
+    hands over: its message, its reason, and its whole `__cause__` chain --
+    which must be empty, because a chained library exception carries the far
+    side's own text into every traceback that ever prints it.
+
+    `failure.body` is deliberately not swept: those are the answer's own
+    bytes, handed over so the watcher can recognize a problem document in
+    them, and no channel ever prints them.
+    """
+
+    del label
+    transport, _ = _served(overrides)
+    with AtelierApi(SERVICE_URL, transport=transport) as api:
+        for endpoint in (HEALTH_PATH, SEAT_PATH, RUN_PATH, WORKFLOW_REVISIONS_PATH):
+            try:
+                api.bounded_get(
+                    endpoint,
+                    read_timeout_seconds=1.0,
+                    deadline_seconds=1.0,
+                    maximum_bytes=_SWEEP_MAXIMUM_BYTES,
+                )
+            except AtelierApiTransportFailure as failure:
+                _assert_carries_no_sentinel(failure)
+        try:
+            api.sampled_event_frames(
+                EVENTS_PATH,
+                accept="text/event-stream",
+                read_timeout_seconds=1.0,
+                deadline_seconds=1.0,
+                maximum_bytes=_SWEEP_MAXIMUM_BYTES,
+                maximum_frames=10,
+            )
+        except AtelierApiTransportFailure as failure:
+            _assert_carries_no_sentinel(failure)
+
+
+def _assert_carries_no_sentinel(failure: AtelierApiTransportFailure) -> None:
+    assert failure.__cause__ is None
+    assert _LEAK_SENTINEL not in f"{failure}{failure.reason}"
+
+
+def test_a_transport_error_carrying_the_far_sides_text_is_translated_without_a_cause() -> (
+    None
+):
+    """A proxy's refusal line rides out on httpx's own exception message.
+    The typed failure must name only httpx's class, and must not chain the
+    original -- a `__cause__` puts that text into every traceback."""
+
+    def refuse_with_a_talkative_proxy(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(_poisoned("proxy said: "), request=request)
+
+    with (
+        AtelierApi(
+            SERVICE_URL, transport=httpx.MockTransport(refuse_with_a_talkative_proxy)
+        ) as api,
+        pytest.raises(AtelierApiTransportFailure) as raised,
+    ):
+        api.bounded_get(
+            HEALTH_PATH,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
+            maximum_bytes=1_000,
+        )
+
+    assert raised.value.__cause__ is None
+    assert raised.value.reason == "transport failure: ConnectError"
 
 
 def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> None:
@@ -683,8 +827,8 @@ def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> Non
     ):
         api.bounded_get(
             HEALTH_PATH,
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=250,
         )
 
@@ -700,21 +844,28 @@ def test_execute_watch_prints_one_json_report_whose_exit_code_matches_its_findin
         service_url=SERVICE_URL,
         endpoints_read=WATCH_ENDPOINTS,
         findings=(finding,),
-        attention_feed_sample="silent",
+        attention_feed_sample=AttentionFeedSample(
+            "overall-deadline", frames_read=2, bytes_read=412
+        ),
         endpoint_budget=_TEST_BUDGET,
         event_sample_budget=_TEST_BUDGET,
     )
-    monkeypatch.setattr(instance_watch, "watch_instance", lambda service_url: canned)
+    monkeypatch.setattr(
+        instance_watch, "watch_instance", lambda service_url, *, api: canned
+    )
 
     exit_code = execute_watch(argparse.Namespace(service=SERVICE_URL))
 
     printed = json.loads(capsys.readouterr().out)
     assert printed["service_url"] == SERVICE_URL
-    assert printed["attention_feed_sample"] == "silent"
+    assert printed["attention_feed_sample"] == {
+        "stopped": "overall-deadline",
+        "frames_read": 2,
+        "bytes_read": 412,
+    }
     assert printed["endpoint_budget"] == {
         "deadline_seconds": 1.0,
         "read_timeout_seconds": 1.0,
-        "worst_case_seconds": 2.0,
     }
     assert printed["findings"] == [
         {
@@ -732,7 +883,7 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
         service_url=SERVICE_URL,
         endpoints_read=WATCH_ENDPOINTS,
         findings=(),
-        attention_feed_sample="silent",
+        attention_feed_sample=_TEST_SAMPLE,
         endpoint_budget=_TEST_BUDGET,
         event_sample_budget=_TEST_BUDGET,
     )
@@ -740,7 +891,7 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
         service_url=SERVICE_URL,
         endpoints_read=WATCH_ENDPOINTS,
         findings=(WatchFinding(WatchFindingKind.SEAT_NOT_ALIVE, SEAT_PATH, "MISSING"),),
-        attention_feed_sample="silent",
+        attention_feed_sample=_TEST_SAMPLE,
         endpoint_budget=_TEST_BUDGET,
         event_sample_budget=_TEST_BUDGET,
     )
@@ -761,8 +912,8 @@ def test_a_silent_event_feed_stops_the_sample_instead_of_hanging() -> None:
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=0.01,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=0.01,
+            deadline_seconds=1.0,
             maximum_bytes=1_000,
             maximum_frames=5,
         )
@@ -785,8 +936,8 @@ def test_a_stream_that_closes_before_any_budget_is_hit_is_named_by_no_stop_reaso
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=1_000_000,
             maximum_frames=100,
         )
@@ -806,8 +957,8 @@ def test_reading_stops_at_the_frame_limit_without_hanging() -> None:
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=1_000_000,
             maximum_frames=2,
         )
@@ -827,8 +978,8 @@ def test_reading_stops_at_the_byte_limit_without_hanging() -> None:
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=1.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=1.0,
             maximum_bytes=len(chunks[0]),
             maximum_frames=100,
         )
@@ -848,8 +999,8 @@ def test_an_already_passed_deadline_reads_nothing_not_even_the_request() -> None
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=1.0,
-            overall_deadline_seconds=0.0,
+            read_timeout_seconds=1.0,
+            deadline_seconds=0.0,
             maximum_bytes=1_000_000,
             maximum_frames=100,
         )
@@ -858,94 +1009,291 @@ def test_an_already_passed_deadline_reads_nothing_not_even_the_request() -> None
     assert sample.frames == ()
 
 
-def test_a_transport_that_never_delivers_is_stopped_by_the_overall_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No sleep, no real time passing: a controlled fake clock proves the
-    deadline check itself is what stops a source that would otherwise
-    produce chunks forever -- not a lucky end of content."""
+_DEADLINE_SECONDS = 0.5
+"""What every deadline proof below gives the client to finish in."""
 
-    def never_ending_chunks() -> Iterator[bytes]:
-        while True:
-            yield b": heartbeat\n\n"
+_DEADLINE_TOLERANCE_SECONDS = 1.5
+"""How much later than its deadline a call may still return and count as
+bounded -- generous, because what is proven is that it returns at all, not
+how promptly a shared machine schedules it."""
 
-    with AtelierApi(
-        SERVICE_URL,
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, content=never_ending_chunks())
-        ),
-    ) as api:
-        clock = itertools.chain([0.0, 0.0], itertools.repeat(100.0))
-        monkeypatch.setattr(atelier_api_client.time, "monotonic", lambda: next(clock))
+_PATIENT_READ_TIMEOUT_SECONDS = 30.0
+"""Far past the deadline on purpose: whatever ends these calls, it is not
+httpx's own per-read timeout."""
 
-        sample = api.sampled_event_frames(
-            EVENTS_PATH,
-            accept="text/event-stream",
-            request_timeout_seconds=5.0,
-            overall_deadline_seconds=1.0,
-            maximum_bytes=1_000_000,
-            maximum_frames=1_000_000,
-        )
-
-    assert sample.stopped is EventSampleLimit.OVERALL_DEADLINE
-    assert sample.frames == ()
+_DRIBBLE_INTERVAL_SECONDS = 0.02
+_ACCEPT_POLL_SECONDS = 0.05
+_SERVER_JOIN_SECONDS = 5.0
 
 
-def test_a_connection_that_never_answers_at_all_is_stopped_by_the_true_wall_clock() -> (
-    None
-):
-    """No sleep: the handler blocks on an `Event` this test never sets --
-    standing in for a reply that never finishes assembling its headers, or
-    a single read that stalls forever. httpx's own read timeout cannot
-    bound this at all: a transport handler blocking synchronously, inside
-    the call that would deliver a response, is invisible to it -- there is
-    no read yet for httpx to time out on, whatever `request_timeout_seconds`
-    is set to. Only a true wall-clock join -- not a cooperative check inside
-    the read loop, which never runs while the loop itself never starts --
-    can stop this call, so this call's own worst case
-    (`overall_deadline_seconds + request_timeout_seconds`) is what this
-    test keeps small, not evidence that a larger read timeout would help.
+class _LoopbackServer:
+    """A real TCP server on loopback that hangs on purpose.
+
+    `httpx.MockTransport` cannot stand in for this: a mock never opens a
+    socket, so nothing it does can show that a deadline reaching a blocked
+    read leaves no connection behind. `speak` is what this server does with
+    an accepted connection; afterwards it reads until the client closes,
+    which is what `connections_closed_by_client` counts -- a peer's own FIN,
+    the socket-level proof that the interrupted call cleaned up after
+    itself.
     """
 
-    never_set = threading.Event()
+    def __init__(self, speak: Callable[[socket.socket, threading.Event], None]) -> None:
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self._speak = speak
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, name="loopback-server")
+        self.connections_closed_by_client = 0
 
-    def handle(request: httpx.Request) -> httpx.Response:
-        del request
-        never_set.wait()
-        return httpx.Response(200, content=b"unreachable")
+    @property
+    def url(self) -> str:
+        host, port = self._listener.getsockname()[:2]
+        return f"http://{host}:{port}"
 
-    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        self._stop.set()
+        self._thread.join(_SERVER_JOIN_SECONDS)
+        self._listener.close()
+        assert not self._thread.is_alive()
+
+    def _serve(self) -> None:
+        self._listener.settimeout(_ACCEPT_POLL_SECONDS)
+        while not self._stop.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            with connection:
+                self._speak(connection, self._stop)
+                if _read_until_the_client_closes(connection):
+                    self.connections_closed_by_client += 1
+
+
+def _read_until_the_client_closes(connection: socket.socket) -> bool:
+    connection.settimeout(_SERVER_JOIN_SECONDS)
+    try:
+        while connection.recv(4_096):
+            pass
+    except OSError:
+        return False
+    return True
+
+
+def _stay_silent(connection: socket.socket, stop: threading.Event) -> None:
+    """Accept the request and answer nothing at all -- not one header byte."""
+
+    del connection, stop
+
+
+def _dribble_header_bytes(connection: socket.socket, stop: threading.Event) -> None:
+    """A reply whose headers never finish: one byte at a time, always sooner
+    than any read timeout, forever. Only an absolute deadline ends this."""
+
+    try:
+        connection.sendall(b"HTTP/1.1 200 OK\r\nX-Filler: ")
+        while not stop.wait(_DRIBBLE_INTERVAL_SECONDS):
+            connection.sendall(b"x")
+    except OSError:
+        return
+
+
+def _one_frame_then_hang(
+    payload: bytes,
+) -> Callable[[socket.socket, threading.Event], None]:
+    """A complete event stream that delivers `payload` as one frame and then
+    goes quiet forever without closing -- exactly what the attention feed
+    does around a failure it has already published."""
+
+    def speak(connection: socket.socket, stop: threading.Event) -> None:
+        del stop
+        try:
+            connection.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
+                b"data: " + payload + b"\n\n"
+            )
+        except OSError:
+            return
+
+    return speak
+
+
+def test_a_connection_that_never_answers_ends_at_its_deadline_and_closes() -> None:
+    """The whole point of the deadline: a real socket that accepts and then
+    says nothing. httpx's read timeout is set far beyond the deadline, so
+    only the deadline can end this -- and the server sees the client's own
+    close, so nothing is left holding the connection open afterwards."""
+
+    threads_before = set(threading.enumerate())
+    with _LoopbackServer(_stay_silent) as server, AtelierApi(server.url) as api:
+        started = time.monotonic()
+        with pytest.raises(AtelierApiTransportFailure) as raised:
+            api.bounded_get(
+                HEALTH_PATH,
+                read_timeout_seconds=_PATIENT_READ_TIMEOUT_SECONDS,
+                deadline_seconds=_DEADLINE_SECONDS,
+                maximum_bytes=1_000,
+            )
+        elapsed = time.monotonic() - started
+
+    assert raised.value.reason == "a bounded read gave up: overall deadline"
+    assert elapsed < _DEADLINE_SECONDS + _DEADLINE_TOLERANCE_SECONDS
+    assert server.connections_closed_by_client == 1
+    assert set(threading.enumerate()) == threads_before
+
+
+def test_a_reply_whose_headers_never_finish_ends_at_its_deadline_and_closes() -> None:
+    """A reply that keeps trickling header bytes never trips a read timeout
+    at all: every gap is shorter than one. Only the deadline ends it."""
+
+    threads_before = set(threading.enumerate())
+    with (
+        _LoopbackServer(_dribble_header_bytes) as server,
+        AtelierApi(server.url) as api,
+    ):
+        started = time.monotonic()
+        with pytest.raises(AtelierApiTransportFailure) as raised:
+            api.bounded_get(
+                HEALTH_PATH,
+                read_timeout_seconds=_PATIENT_READ_TIMEOUT_SECONDS,
+                deadline_seconds=_DEADLINE_SECONDS,
+                maximum_bytes=1_000_000,
+            )
+        elapsed = time.monotonic() - started
+
+    assert raised.value.reason == "a bounded read gave up: overall deadline"
+    assert elapsed < _DEADLINE_SECONDS + _DEADLINE_TOLERANCE_SECONDS
+    assert server.connections_closed_by_client == 1
+    assert set(threading.enumerate()) == threads_before
+
+
+def test_a_failure_frame_read_before_the_deadline_still_reaches_the_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feed that publishes a `STREAM_FAILED` frame and then hangs: the
+    deadline ends the read, and what it already read is still reported --
+    the finding, and the count of what the sample saw."""
+
+    monkeypatch.setattr(
+        instance_watch, "EVENT_SAMPLE_DEADLINE_SECONDS", _DEADLINE_SECONDS
+    )
+    monkeypatch.setattr(
+        instance_watch,
+        "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS",
+        _PATIENT_READ_TIMEOUT_SECONDS,
+    )
+    failure_frame = StreamFailureResource(
+        problem=problem_resource("durable-state-corrupt")
+    ).model_dump_json()
+
+    threads_before = set(threading.enumerate())
+    with (
+        _LoopbackServer(_one_frame_then_hang(failure_frame.encode())) as server,
+        AtelierApi(server.url) as api,
+    ):
         sample = api.sampled_event_frames(
             EVENTS_PATH,
             accept="text/event-stream",
-            request_timeout_seconds=0.02,
-            overall_deadline_seconds=0.02,
-            maximum_bytes=1_000,
-            maximum_frames=10,
+            read_timeout_seconds=_PATIENT_READ_TIMEOUT_SECONDS,
+            deadline_seconds=_DEADLINE_SECONDS,
+            maximum_bytes=1_000_000,
+            maximum_frames=100,
         )
 
     assert sample.stopped is EventSampleLimit.OVERALL_DEADLINE
-    assert sample.frames == ()
+    assert sample.frames == (failure_frame,)
+    assert sample.bytes_read > 0
+    assert server.connections_closed_by_client == 1
+    assert set(threading.enumerate()) == threads_before
 
 
-def test_a_hanging_event_stream_is_named_by_the_deadline_in_the_full_report(
+def test_the_whole_report_survives_an_instance_that_answers_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same hang, driven through `watch_instance` end to end, proving
-    the report itself -- not only the client's own return value -- names
-    the deadline as the outcome."""
+    """Every fixed endpoint against a server that accepts and then says
+    nothing: each one is reported unreachable, the command still returns,
+    and the single client it holds is still usable for the endpoint after --
+    five interrupted reads in a row, on one `AtelierApi`, leaving no
+    connection and no thread behind."""
 
-    monkeypatch.setattr(instance_watch, "EVENT_SAMPLE_DEADLINE_SECONDS", 0.02)
-    monkeypatch.setattr(instance_watch, "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS", 0.02)
-    never_set = threading.Event()
+    _shorten_watch_budgets(monkeypatch)
 
-    def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/events"):
-            never_set.wait()
-            return httpx.Response(200, content=b"unreachable")
-        return httpx.Response(200, content=b"{}")
+    threads_before = set(threading.enumerate())
+    with _LoopbackServer(_stay_silent) as server, AtelierApi(server.url) as api:
+        report = watch_instance(server.url, api=api)
 
-    with AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api:
-        report = watch_instance(SERVICE_URL, api=api)
+    assert {finding.endpoint for finding in report.findings} == set(WATCH_ENDPOINTS)
+    assert all(
+        finding.kind == WatchFindingKind.SERVICE_UNREACHABLE
+        for finding in report.findings
+    )
+    assert server.connections_closed_by_client == len(WATCH_ENDPOINTS)
+    assert set(threading.enumerate()) == threads_before
 
-    assert report.attention_feed_sample == "overall-deadline"
+
+def test_a_feed_whose_headers_never_finish_is_reported_rather_than_called_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reply that trickles header bytes forever trips no read timeout, so
+    only the deadline ends the sample -- and a sample that ended having read
+    nothing must not leave the report claiming a healthy instance."""
+
+    _shorten_watch_budgets(monkeypatch)
+
+    with (
+        _LoopbackServer(_dribble_header_bytes) as server,
+        AtelierApi(server.url) as api,
+    ):
+        report = watch_instance(server.url, api=api)
+
+    assert report.attention_feed_sample.stopped == "overall-deadline"
+    assert report.attention_feed_sample.bytes_read == 0
+    (finding,) = (
+        finding for finding in report.findings if finding.endpoint == EVENTS_PATH
+    )
+    assert finding.kind == WatchFindingKind.STREAM_NEVER_ANSWERED
+    assert watch_exit_code(report) != 0
+
+
+def _shorten_watch_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production's own ordering, scaled down: the feed's read timeout sits
+    below its deadline, so a feed that says nothing is caught by the timeout
+    and the deadline stays the backstop for one that never stops trickling."""
+
+    monkeypatch.setattr(instance_watch, "REQUEST_TIMEOUT_SECONDS", _DEADLINE_SECONDS)
+    monkeypatch.setattr(
+        instance_watch, "EVENT_SAMPLE_DEADLINE_SECONDS", _DEADLINE_SECONDS
+    )
+    monkeypatch.setattr(
+        instance_watch, "EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS", _DEADLINE_SECONDS / 2
+    )
+
+
+def test_a_deadline_this_thread_cannot_be_given_is_refused_rather_than_skipped() -> (
+    None
+):
+    """Only the main thread receives the process's alarm. Anywhere else the
+    deadline says so, instead of running an unbounded read that merely looks
+    bounded."""
+
+    refusals: list[BaseException] = []
+
+    def ask_off_the_main_thread() -> None:
+        try:
+            with wall_clock_deadline(_DEADLINE_SECONDS):
+                pass
+        except BaseException as refusal:  # noqa: BLE001 -- carried to the assert
+            refusals.append(refusal)
+
+    asking = threading.Thread(target=ask_off_the_main_thread)
+    asking.start()
+    asking.join(_SERVER_JOIN_SECONDS)
+
+    assert not asking.is_alive()
+    (refusal,) = refusals
+    assert isinstance(refusal, WallClockDeadlineUnavailable)
