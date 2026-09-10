@@ -43,7 +43,11 @@ from atelier2.adapters.dbos.names import (
     WORK_ITEM_CLAIM_REFUSE_STEP_NAME,
 )
 from atelier2.adapters.dbos.queue_launch_runs import launch_binding_of_run
-from atelier2.adapters.dbos.run_transitions import _commit_event, load_graph
+from atelier2.adapters.dbos.run_transitions import (
+    RunPosition,
+    _commit_event,
+    load_graph,
+)
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.work_item_intents import (
     head_branch_for_work_item,
@@ -427,15 +431,10 @@ def commit_work_item_claim_refusal(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.AGENT_FAILED,
         refusal.encode(),
-        RunState.STARTED,
-        RunState.FAILED,
-        node_id,
-        terminal=True,
-        round_ordinal=round_ordinal,
-        target_round_ordinal=round_ordinal,
+        RunPosition(RunState.STARTED, node_id, round_ordinal),
+        RunPosition(RunState.FAILED, node_id, round_ordinal),
     ).state.value
 
 

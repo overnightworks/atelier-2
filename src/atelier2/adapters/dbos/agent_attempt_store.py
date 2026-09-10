@@ -41,6 +41,7 @@ from atelier2.adapters.dbos.run_store import (
     load_run_inputs,
 )
 from atelier2.adapters.dbos.run_transitions import (
+    RunPosition,
     RunTransitionConflict,
     _commit_event,
     _insert_event,
@@ -927,17 +928,15 @@ def _fail_current_attempt(
         connection,
         request.run_id,
         request.workflow_revision_hash,
-        request.node_id,
         RunEventKind.AGENT_FAILED,
         failure.value.encode("ascii"),
-        RunState.STARTED,
-        RunState.FAILED if terminal_node_failure else RunState.STARTED,
-        request.node_id,
-        terminal=terminal_node_failure,
-        agent_attempt_id=attempt_id,
-        attempt_ordinal=execution.ordinal,
-        round_ordinal=request.round_ordinal,
-        target_round_ordinal=request.round_ordinal,
+        RunPosition(RunState.STARTED, request.node_id, request.round_ordinal),
+        RunPosition(
+            RunState.FAILED if terminal_node_failure else RunState.STARTED,
+            request.node_id,
+            request.round_ordinal,
+        ),
+        attempt_binding=RunEventAgentAttemptBinding(attempt_id, execution.ordinal),
     )
     return AgentAttemptFailed(durable_failure)
 
@@ -1502,15 +1501,10 @@ def _commit_unavailable_executor_refusal(
         connection,
         request.run_id,
         request.workflow_revision_hash,
-        request.node_id,
         RunEventKind.AGENT_FAILED,
         AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
-        RunState.STARTED,
-        RunState.FAILED,
-        request.node_id,
-        terminal=True,
-        round_ordinal=request.round_ordinal,
-        target_round_ordinal=request.round_ordinal,
+        RunPosition(RunState.STARTED, request.node_id, request.round_ordinal),
+        RunPosition(RunState.FAILED, request.node_id, request.round_ordinal),
     )
 
 
@@ -2063,41 +2057,31 @@ class DbosAgentAttemptStore:
             if verdict_condition_of(graph, request.node_id) is None
             else read_verdict(result.output_bytes),
         )
+        source = RunPosition(RunState.STARTED, request.node_id, request.round_ordinal)
         if _agent_platform_effect_completion_is_deferred(connection, node):
-            target_state = RunState.STARTED
-            target_node_id = request.node_id
-            target_round_ordinal = request.round_ordinal
-            terminal = False
+            target = source
         else:
             match completion:
                 case RunContinues(node_id, target_round):
-                    target_state = RunState.STARTED
-                    target_node_id = node_id
-                    target_round_ordinal = target_round
-                    terminal = False
+                    target = RunPosition(RunState.STARTED, node_id, target_round)
                 case RunCompletes():
-                    target_state = RunState.COMPLETED
-                    target_node_id = request.node_id
-                    target_round_ordinal = request.round_ordinal
-                    terminal = True
+                    target = RunPosition(
+                        RunState.COMPLETED, request.node_id, request.round_ordinal
+                    )
                 case _ as unreachable:
                     assert_never(unreachable)
         _commit_event(
             connection,
             request.run_id,
             request.workflow_revision_hash,
-            request.node_id,
             RunEventKind.AGENT_COMPLETED,
             node_value,
-            RunState.STARTED,
-            target_state,
-            target_node_id,
-            terminal=terminal,
-            agent_attempt_id=durable.attempt_id,
-            attempt_ordinal=execution.ordinal,
+            source,
+            target,
+            attempt_binding=RunEventAgentAttemptBinding(
+                durable.attempt_id, execution.ordinal
+            ),
             agent_receipt_hash=receipt.receipt_hash,
-            round_ordinal=request.round_ordinal,
-            target_round_ordinal=target_round_ordinal,
         )
         return AgentAttemptSucceeded(
             _load_attempt(connection, durable.attempt_id), completion
