@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import gzip
 import itertools
 import json
 from collections.abc import Iterator
@@ -18,11 +19,12 @@ import httpx
 import pytest
 
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import problem_resource
+from atelier2.api.problems import PROBLEM_TYPE_PREFIX, problem_resource
 from atelier2.api.seat import SeatState
 from atelier2.api.wire.resources import (
     DurableStateCorruptProblemResource,
     HealthResource,
+    ProblemResource,
     RedeployBlockedResource,
     RunProjectionCorruptResource,
     SeatResource,
@@ -37,6 +39,7 @@ from atelier2.host.instance_watch import (
     SEAT_PATH,
     WATCH_ENDPOINTS,
     WORKFLOW_REVISIONS_PATH,
+    WatchBudget,
     WatchFinding,
     WatchFindingKind,
     WatchReport,
@@ -49,6 +52,7 @@ SERVICE_URL = "http://127.0.0.1:8422"
 RECORDED_AT = "2026-09-10T00:00:00Z"
 SEAT_TOKEN = "seat-terminal-access-token-9c41"
 SEAT_ALIVE_URL = f"http://127.0.0.1:9999/terminal?token={SEAT_TOKEN}"
+_TEST_BUDGET = WatchBudget(deadline_seconds=1.0, read_timeout_seconds=1.0)
 
 _DEFAULT_HEALTH = HealthResource(
     status="serving",
@@ -267,6 +271,9 @@ def test_a_problem_document_answered_with_200_is_still_reported() -> None:
 
 
 def test_a_bare_problem_document_on_the_event_stream_is_reported() -> None:
+    """A problem document that still arrives wrapped in `data:` framing --
+    the SSE-classified path, distinct from a truly raw body (below)."""
+
     body = problem_resource("internal-error").model_dump_json()
 
     report = _watched({EVENTS_PATH: httpx.Response(200, content=_sse(body))})
@@ -274,6 +281,43 @@ def test_a_bare_problem_document_on_the_event_stream_is_reported() -> None:
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.RESPONSE_REFUSED
     assert finding.endpoint == EVENTS_PATH
+
+
+def test_a_raw_problem_document_on_the_event_stream_is_reported() -> None:
+    """A route caught before it ever starts streaming answers its own
+    content type and a plain JSON body -- not one `data:` line in sight."""
+
+    body = problem_resource("internal-error").model_dump_json().encode()
+    raw = httpx.Response(
+        200, content=body, headers={"content-type": "application/problem+json"}
+    )
+
+    report = _watched({EVENTS_PATH: raw})
+
+    assert report.attention_feed_sample == "refused"
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.RESPONSE_REFUSED
+    assert finding.endpoint == EVENTS_PATH
+
+
+def test_an_unknown_problem_type_never_echoes_its_title_or_type() -> None:
+    """`title` and `type` are free text a served problem document does not
+    have to keep honest -- only a type this repository's own vocabulary
+    recognizes ever reaches the report; anything else says only that."""
+
+    sentinel_type = f"{PROBLEM_TYPE_PREFIX}SENTINEL-TYPE-9f2"
+    sentinel_title = "SENTINEL-TITLE-4c1"
+    body = ProblemResource(
+        type=sentinel_type, title=sentinel_title, status=500, detail="whatever"
+    ).model_dump_json()
+
+    report = _watched({RUN_PATH: httpx.Response(200, content=body.encode())})
+
+    serialized = json.dumps(dataclasses.asdict(report))
+    assert "SENTINEL-TYPE-9f2" not in serialized
+    assert sentinel_title not in serialized
+    (finding,) = report.findings
+    assert finding.detail == "500 unknown problem type"
 
 
 def test_the_attention_feed_sample_outcome_is_named_in_the_report() -> None:
@@ -296,6 +340,24 @@ def test_a_feed_that_closes_before_sending_anything_is_a_finding() -> None:
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.STREAM_CLOSED_EARLY
     assert finding.endpoint == EVENTS_PATH
+    assert "before it ever sent a byte" in finding.detail
+
+
+def test_a_feed_that_sends_only_comments_then_closes_is_named_by_bytes_not_frames() -> (
+    None
+):
+    """No frame does not mean no bytes: a heartbeat comment (no `data:`
+    line, so no frame ever assembles) followed by EOF must not be reported
+    as a connection that "never sent a byte" -- it sent one, just not a
+    data frame."""
+
+    report = _watched({EVENTS_PATH: httpx.Response(200, content=b": heartbeat\n\n")})
+
+    assert report.attention_feed_sample == "closed-early"
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.STREAM_CLOSED_EARLY
+    assert "without ever completing a data frame" in finding.detail
+    assert "before it ever sent a byte" not in finding.detail
 
 
 def test_a_quiet_feed_that_stays_open_is_not_itself_a_finding() -> None:
@@ -350,6 +412,61 @@ def test_bounded_reads_ask_for_identity_encoding() -> None:
     assert seen == ["identity", "identity"]
 
 
+def test_a_compressed_reply_is_refused_before_its_body_is_ever_read() -> None:
+    """`Accept-Encoding: identity` is only a request; a reply that answers
+    compressed anyway must be refused by its header alone, before this call
+    ever asks `iter_bytes` to decode a single byte of it -- otherwise the
+    decoded result could already have outgrown the byte cap before the cap
+    ever saw it."""
+
+    real_gzip = gzip.compress(b"far more bytes once decompressed than compressed")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200, content=real_gzip, headers={"content-encoding": "gzip"}
+        )
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(atelier_api_client.AtelierApiTransportFailure) as failure,
+    ):
+        api.bounded_get(
+            HEALTH_PATH,
+            request_timeout_seconds=1.0,
+            overall_deadline_seconds=1.0,
+            maximum_bytes=4,
+        )
+
+    assert "content-encoding" in failure.value.reason
+    assert failure.value.body == b""
+
+
+def test_a_compressed_event_stream_reply_is_refused_before_being_read() -> None:
+    real_gzip = gzip.compress(b"data: hello\n\n")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200, content=real_gzip, headers={"content-encoding": "gzip"}
+        )
+
+    with (
+        AtelierApi(SERVICE_URL, transport=httpx.MockTransport(handle)) as api,
+        pytest.raises(atelier_api_client.AtelierApiTransportFailure) as failure,
+    ):
+        api.sampled_event_frames(
+            EVENTS_PATH,
+            accept="text/event-stream",
+            request_timeout_seconds=1.0,
+            overall_deadline_seconds=1.0,
+            maximum_bytes=1_000,
+            maximum_frames=10,
+        )
+
+    assert "content-encoding" in failure.value.reason
+
+
 def test_a_bounded_get_that_hits_its_byte_cap_still_closes_the_response() -> None:
     """`bounded_get` aborting early -- here, over its own byte cap -- must
     still leave httpx's own close protocol run: `is_closed` is what httpx
@@ -393,6 +510,8 @@ def test_execute_watch_prints_one_json_report_whose_exit_code_matches_its_findin
         endpoints_read=WATCH_ENDPOINTS,
         findings=(finding,),
         attention_feed_sample="silent",
+        endpoint_budget=_TEST_BUDGET,
+        event_sample_budget=_TEST_BUDGET,
     )
     monkeypatch.setattr(instance_watch, "watch_instance", lambda service_url: canned)
 
@@ -401,6 +520,11 @@ def test_execute_watch_prints_one_json_report_whose_exit_code_matches_its_findin
     printed = json.loads(capsys.readouterr().out)
     assert printed["service_url"] == SERVICE_URL
     assert printed["attention_feed_sample"] == "silent"
+    assert printed["endpoint_budget"] == {
+        "deadline_seconds": 1.0,
+        "read_timeout_seconds": 1.0,
+        "worst_case_seconds": 2.0,
+    }
     assert printed["findings"] == [
         {
             "kind": "SEAT_NOT_ALIVE",
@@ -418,12 +542,16 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
         endpoints_read=WATCH_ENDPOINTS,
         findings=(),
         attention_feed_sample="silent",
+        endpoint_budget=_TEST_BUDGET,
+        event_sample_budget=_TEST_BUDGET,
     )
     dirty = WatchReport(
         service_url=SERVICE_URL,
         endpoints_read=WATCH_ENDPOINTS,
         findings=(WatchFinding(WatchFindingKind.SEAT_NOT_ALIVE, SEAT_PATH, "MISSING"),),
         attention_feed_sample="silent",
+        endpoint_budget=_TEST_BUDGET,
+        event_sample_budget=_TEST_BUDGET,
     )
 
     assert watch_exit_code(clean) == 0

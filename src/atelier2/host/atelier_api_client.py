@@ -34,6 +34,8 @@ _IDENTITY_ENCODING_HEADERS: Final = {"accept-encoding": "identity"}
 could expand past this call's byte cap between the wire and the buffer,
 after the cap already thought it was safe."""
 
+_EVENT_STREAM_CONTENT_TYPE: Final = "text/event-stream"
+
 
 class AtelierApiAddressUnusable(ValueError):
     """`service_url` names nothing this client could ever reach."""
@@ -67,10 +69,15 @@ class BoundedEventSample:
     `stopped` names why the read stopped itself; it is `None` when the
     connection closed on its own -- an early end for a stream documented to
     never end, and exactly as reportable as any of the named limits.
+    `bytes_read` is every byte this call actually received, whether or not
+    any of them assembled into a complete frame -- a caller that reads
+    `frames == ()` still needs this to tell a truly silent connection from
+    one that spoke (a heartbeat comment, say) and then closed.
     """
 
     frames: tuple[str, ...]
     stopped: EventSampleLimit | None
+    bytes_read: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +101,17 @@ class _BoundedReadStopped(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass
+class _ByteCounter:
+    """How many bytes a bounded read has actually received so far.
+
+    Mutable and handed to `_capped` by reference: a caller keeps its own
+    reference and reads `.total` once reading stops, for whatever reason --
+    `_capped` itself only ever grows it, never reports it back."""
+
+    total: int = 0
 
 
 _EVENT_SAMPLE_STOP_REASONS: Final[dict[str, EventSampleLimit]] = {
@@ -233,6 +251,7 @@ class AtelierApi:
                 headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
                 timeout=httpx.Timeout(request_timeout_seconds),
             ) as response:
+                _refuse_unexpected_encoding(response, url)
                 body = bytearray()
                 for chunk in _capped(_paced_chunks(response, deadline), maximum_bytes):
                     body.extend(chunk)
@@ -277,7 +296,7 @@ class AtelierApi:
         try:
             if time.monotonic() >= deadline:
                 return BoundedEventSample(
-                    frames=(), stopped=EventSampleLimit.OVERALL_DEADLINE
+                    frames=(), stopped=EventSampleLimit.OVERALL_DEADLINE, bytes_read=0
                 )
             with self._client.stream(
                 "GET",
@@ -285,11 +304,15 @@ class AtelierApi:
                 headers={"accept": accept, **_IDENTITY_ENCODING_HEADERS},
                 timeout=httpx.Timeout(request_timeout_seconds),
             ) as response:
+                _refuse_unexpected_encoding(response, url)
                 _raise_for_bounded_failure(response, url, deadline, maximum_bytes)
+                _raise_if_not_event_stream(response, url, deadline, maximum_bytes)
+                counter = _ByteCounter()
                 lines = _decoded_lines(
-                    _capped(_paced_chunks(response, deadline), maximum_bytes), url
+                    _capped(_paced_chunks(response, deadline), maximum_bytes, counter),
+                    url,
                 )
-                return _collected_sample(lines, maximum_frames)
+                return _collected_sample(lines, maximum_frames, counter)
         except httpx.HTTPError as unavailable:
             raise _transport_unavailable(url, unavailable) from unavailable
 
@@ -379,7 +402,9 @@ def _decoded_lines(chunks: Iterable[bytes], url: str) -> Iterator[str]:
         yield _decoded_line(buffer, url)
 
 
-def _collected_sample(lines: Iterator[str], maximum_frames: int) -> BoundedEventSample:
+def _collected_sample(
+    lines: Iterator[str], maximum_frames: int, counter: _ByteCounter
+) -> BoundedEventSample:
     """Every frame `lines` assembles, up to `maximum_frames`, and why the
     read stopped before that or before the stream itself ended: its own
     limit, or whichever named reason the bounded chunks beneath `lines`
@@ -397,7 +422,9 @@ def _collected_sample(lines: Iterator[str], maximum_frames: int) -> BoundedEvent
         stopped = _EVENT_SAMPLE_STOP_REASONS[stopped_read.reason]
     except httpx.ReadTimeout:
         stopped = EventSampleLimit.SILENT
-    return BoundedEventSample(frames=tuple(frames), stopped=stopped)
+    return BoundedEventSample(
+        frames=tuple(frames), stopped=stopped, bytes_read=counter.total
+    )
 
 
 def _raise_for_bounded_failure(
@@ -411,15 +438,75 @@ def _raise_for_bounded_failure(
 
     if response.is_success:
         return
+    raise AtelierApiTransportFailure(
+        url,
+        response.reason_phrase,
+        status=response.status_code,
+        body=_drained(response, deadline, maximum_bytes),
+    )
+
+
+def _refuse_unexpected_encoding(response: httpx.Response, url: str) -> None:
+    """Refuse a reply this call never asked to be given compressed, before
+    reading a single byte of its body.
+
+    `Accept-Encoding: identity` (`_IDENTITY_ENCODING_HEADERS`) is a request,
+    not an enforcement: a reply that answers with a real `Content-Encoding`
+    anyway would otherwise have that encoding decoded by `iter_bytes` itself,
+    growing past this call's byte cap before the cap ever sees a byte of the
+    result. Headers are already in hand at this point -- nothing has read
+    the body yet.
+    """
+
+    encoding = response.headers.get("content-encoding")
+    if encoding is not None and encoding.strip().lower() != "identity":
+        raise AtelierApiTransportFailure(
+            url,
+            f"answered content-encoding {encoding!r}, refused before reading its body",
+            status=response.status_code,
+        )
+
+
+def _raise_if_not_event_stream(
+    response: httpx.Response, url: str, deadline: float, maximum_bytes: int
+) -> None:
+    """Refuse a reply that does not carry this feed's own content type,
+    before this call's SSE framing ever tries to read it as one.
+
+    A route caught before it ever starts streaming -- an exception handler,
+    a proxy's own error page -- answers its own content type, most often a
+    bare problem document; `server_sent_data` only ever reads `data:` lines
+    and has no opinion about anything else, so a body like that would
+    otherwise vanish without a single finding. `sse_starlette` publishes
+    every real attention-feed answer as exactly `text/event-stream`
+    (its own default `media_type`), so that content type is trusted here
+    the same way a status code is -- and its absence is not: an empty or
+    missing `Content-Type` is not this call's evidence of anything, so it
+    passes through to the normal per-frame read unread.
+    """
+
+    media_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+    if not media_type or media_type.lower() == _EVENT_STREAM_CONTENT_TYPE:
+        return
+    raise AtelierApiTransportFailure(
+        url,
+        f"answered content-type {media_type!r}, not an event stream",
+        status=response.status_code,
+        body=_drained(response, deadline, maximum_bytes),
+    )
+
+
+def _drained(response: httpx.Response, deadline: float, maximum_bytes: int) -> bytes:
+    """As much of `response`'s body as this call's own bounds allow, read
+    for a caller that is about to refuse it and wants to classify why."""
+
     body = bytearray()
     try:
         for chunk in _capped(_paced_chunks(response, deadline), maximum_bytes):
             body.extend(chunk)
-    except _BoundedReadStopped:
+    except (_BoundedReadStopped, httpx.ReadTimeout):
         pass
-    raise AtelierApiTransportFailure(
-        url, response.reason_phrase, status=response.status_code, body=bytes(body)
-    )
+    return bytes(body)
 
 
 def _paced_chunks(response: httpx.Response, deadline: float) -> Iterator[bytes]:
@@ -450,19 +537,25 @@ def _paced_chunks(response: httpx.Response, deadline: float) -> Iterator[bytes]:
             return
 
 
-def _capped(chunks: Iterator[bytes], maximum_bytes: int) -> Iterator[bytes]:
+def _capped(
+    chunks: Iterator[bytes],
+    maximum_bytes: int,
+    counter: _ByteCounter | None = None,
+) -> Iterator[bytes]:
     """`chunks`, stopping before one would push their sum past a cap.
 
     The cap is checked before a chunk is ever added to a caller's own
     buffer, not after: what a caller never receives, it never has to hold,
-    whatever that chunk's own size turns out to be.
+    whatever that chunk's own size turns out to be. `counter`, when given,
+    is grown by every chunk this actually yields -- a caller that wants to
+    know how much arrived even after an early stop keeps its own reference.
     """
 
-    total = 0
+    counted = counter if counter is not None else _ByteCounter()
     for chunk in chunks:
-        if total + len(chunk) > maximum_bytes:
+        if counted.total + len(chunk) > maximum_bytes:
             raise _BoundedReadStopped("byte limit")
-        total += len(chunk)
+        counted.total += len(chunk)
         yield chunk
 
 

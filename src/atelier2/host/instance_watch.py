@@ -25,6 +25,7 @@ from typing import Final
 
 from pydantic import ValidationError
 
+from atelier2.api.problem_vocabulary import PROBLEM_DEFINITIONS
 from atelier2.api.problems import PROBLEM_TYPE_PREFIX
 from atelier2.api.seat import SeatState
 from atelier2.api.wire.resources import (
@@ -121,15 +122,33 @@ class WatchFinding:
 
 
 @dataclass(frozen=True, slots=True)
+class WatchBudget:
+    """The wall-clock guarantee this call's own timing honestly gives.
+
+    `deadline_seconds` is checked before every read a call makes, but not
+    inside one already under way: assembling one response's headers, or one
+    body chunk, still carries its own `read_timeout_seconds` on top. A read
+    already in flight when the deadline passes still finishes or times out
+    on its own terms, so the true worst case for one endpoint is its
+    deadline plus one read timeout, never the deadline alone.
+    """
+
+    deadline_seconds: float
+    read_timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class WatchReport:
     service_url: str
     endpoints_read: tuple[str, ...]
     findings: tuple[WatchFinding, ...]
     attention_feed_sample: str
     """Why the attention-feed sample itself stopped -- `frame-limit`,
-    `byte-limit`, `overall-deadline`, `silent`, or `closed-early` -- named
-    here even on a clean report, since "this call saw nothing" and "this
-    call saw a healthy feed" are not the same claim."""
+    `byte-limit`, `overall-deadline`, `silent`, `refused`, or `closed-early`
+    -- named here even on a clean report, since "this call saw nothing" and
+    "this call saw a healthy feed" are not the same claim."""
+    endpoint_budget: WatchBudget
+    event_sample_budget: WatchBudget
 
 
 def watch_instance(service_url: str, *, api: AtelierApi | None = None) -> WatchReport:
@@ -161,6 +180,14 @@ def _watched(service_url: str, api: AtelierApi) -> WatchReport:
         endpoints_read=WATCH_ENDPOINTS,
         findings=tuple(findings),
         attention_feed_sample=attention_feed_sample,
+        endpoint_budget=WatchBudget(
+            deadline_seconds=REQUEST_TIMEOUT_SECONDS,
+            read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+        ),
+        event_sample_budget=WatchBudget(
+            deadline_seconds=EVENT_SAMPLE_DEADLINE_SECONDS,
+            read_timeout_seconds=EVENT_SAMPLE_REQUEST_TIMEOUT_SECONDS,
+        ),
     )
 
 
@@ -253,11 +280,14 @@ def _event_sample(api: AtelierApi) -> tuple[tuple[WatchFinding, ...], str]:
     a read's own timeout, `silent` -- also expected of an idle feed, so it
     too is named but not raised; or the connection itself ended before any
     of those did. That last one is the one case this call cannot explain as
-    its own choice: a feed that closes having sent nothing at all is the
-    strongest honest signal something is wrong, so that combination alone is
-    a finding. A close after real frames already arrived is still named as
-    `closed-early` in the report -- an operator reading it is not left
-    guessing -- without being raised as a finding on its own.
+    its own choice, so it alone is a finding -- worded by what actually
+    arrived: `bytes_read == 0` is a connection that answered nothing at all,
+    never mind a data frame; a positive `bytes_read` with no frame is a
+    connection that spoke (a heartbeat comment, most likely) and still
+    closed without ever completing one. A close after a real frame already
+    arrived is still named as `closed-early` in the report -- an operator
+    reading it is not left guessing -- without being raised as a finding on
+    its own.
     """
 
     try:
@@ -270,7 +300,8 @@ def _event_sample(api: AtelierApi) -> tuple[tuple[WatchFinding, ...], str]:
             maximum_frames=EVENT_SAMPLE_MAXIMUM_FRAMES,
         )
     except AtelierApiTransportFailure as failure:
-        return (_refusal_finding(EVENTS_PATH, failure),), "unreachable"
+        outcome = "unreachable" if failure.status is None else "refused"
+        return (_refusal_finding(EVENTS_PATH, failure),), outcome
     findings = [
         finding for frame in sample.frames for finding in _frame_findings(frame)
     ]
@@ -282,7 +313,12 @@ def _event_sample(api: AtelierApi) -> tuple[tuple[WatchFinding, ...], str]:
                 WatchFindingKind.STREAM_CLOSED_EARLY,
                 EVENTS_PATH,
                 "the attention feed is documented to never end on its own; "
-                "this read's connection closed before it ever sent a byte",
+                + (
+                    "this read's connection closed before it ever sent a byte"
+                    if sample.bytes_read == 0
+                    else "this read's connection closed without ever "
+                    "completing a data frame"
+                ),
             )
         )
     return tuple(findings), "closed-early"
@@ -355,12 +391,20 @@ def _run_projection_corrupt_finding(data: str) -> tuple[WatchFinding, ...]:
 def _problem_sentence(
     problem: ProblemResource | DurableStateCorruptProblemResource,
 ) -> str:
-    """Type and title only -- never `.detail`, which is free text this API's
-    own routes write from the answer they are building, not a value pinned
-    to a published, checked vocabulary the way `type`, `title`, and `status`
-    are."""
+    """A sentence built only from this repository's own problem vocabulary --
+    never `problem.title` or `.type` as the answer spelled them. Both are
+    free strings a served problem document does not have to keep honest
+    (unlike `status`, a strictly typed int): a document naming a type this
+    vocabulary does not recognize could otherwise ride any text at all back
+    out through `.title`, or through an unmatched tail of `.type` itself, so
+    an unrecognized type says only that -- nothing the answer wrote.
+    """
 
-    return f"{problem.status} {problem.title} [{problem.type}]"
+    code = problem.type.removeprefix(PROBLEM_TYPE_PREFIX)
+    definition = PROBLEM_DEFINITIONS.get(code)
+    if definition is None:
+        return f"{problem.status} unknown problem type"
+    return f"{problem.status} {definition.title} [{PROBLEM_TYPE_PREFIX}{code}]"
 
 
 def _problem_finding(endpoint: str, body: bytes) -> WatchFinding | None:
@@ -453,11 +497,21 @@ def execute_watch(parsed: argparse.Namespace) -> int:
     return watch_exit_code(report)
 
 
+def _budget_document(budget: WatchBudget) -> dict[str, object]:
+    return {
+        "deadline_seconds": budget.deadline_seconds,
+        "read_timeout_seconds": budget.read_timeout_seconds,
+        "worst_case_seconds": budget.deadline_seconds + budget.read_timeout_seconds,
+    }
+
+
 def _report_document(report: WatchReport) -> dict[str, object]:
     return {
         "service_url": report.service_url,
         "endpoints_read": list(report.endpoints_read),
         "attention_feed_sample": report.attention_feed_sample,
+        "endpoint_budget": _budget_document(report.endpoint_budget),
+        "event_sample_budget": _budget_document(report.event_sample_budget),
         "findings": [
             {
                 "kind": finding.kind,

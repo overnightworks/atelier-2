@@ -589,31 +589,47 @@ blocks the restart, whatever that intent's own recorded state.
 one feature: it GETs a fixed list of paths -- `/health`, `/seat`, `/runs`,
 `/workflow-revisions`, and a bounded sample of `/events` -- and prints one
 JSON report of typed findings to stdout. A problem document is a finding
-wherever it appears, independent of the status that carried it: a 200 that is
-secretly one of this API's own problem documents is exactly as real as a
-non-2xx one carrying no problem document at all. Every finding is one of:
-that; a `STREAM_FAILED` frame on the attention feed; a `RUN_PROJECTION_CORRUPT`
+wherever it appears, independent of the status that carried it and of
+whether it arrived as SSE framing or raw JSON (a route caught before it ever
+starts streaming answers its own content type and a bare body; `/events`
+recognizes that from `Content-Type`, trusting `sse_starlette`'s own
+`text/event-stream` default): a 200 that is secretly one of this API's own
+problem documents is exactly as real as a non-2xx one carrying no problem
+document at all. Its wording never repeats what the answer wrote, only this
+repository's own problem vocabulary: `type` is matched against the known
+problem types, the title comes from that vocabulary, and an unrecognized
+type says only "unknown problem type" -- never the free text a served
+document does not have to keep honest. Every finding is one of: that; a
+`STREAM_FAILED` frame on the attention feed; a `RUN_PROJECTION_CORRUPT`
 frame, with its run reference; a seat that is not `ALIVE`; `health.redeploy`
 present (its absence is clean); the service unreachable; or the attention
-feed's connection closing without ever sending a byte (it is documented to
-never end on its own, so that combination alone is a finding -- a close after
-real frames already arrived is named in the report but not raised as one).
+feed's connection closing before completing a data frame (it is documented
+to never end on its own, so that alone is a finding, worded by whether any
+byte arrived at all or only, say, a heartbeat comment -- a close after a
+real frame already arrived is named in the report but not raised as one).
 The attention feed never ends on its own, so it is sampled, not followed, and
 the report always names why the sample stopped (`attention_feed_sample`):
-`frame-limit`, `byte-limit`, `overall-deadline`, `silent`, or `closed-early`.
-Every bounded read -- the plain GETs and the event sample alike -- asks for
-`Accept-Encoding: identity` (so a compressed reply cannot outgrow its byte cap
-between the wire and the buffer) and checks its wall-clock deadline before
-every read it makes, including the request itself and an error body, not only
-between whole frames. A validation diagnosis in the report never carries a
-response's own values, only the field path and the error kind: pydantic's own
-`ValidationError` embeds the offending input (and, for a missing field, every
-sibling value) in its message, which a naive `str(error)` would otherwise hand
-back out. The report never carries the seat's own terminal address (it holds
-the terminal's access token, `served_seat.py`), only its state. Exit is 0 with
-an empty report, non-zero otherwise. This slice reads only what a test double
-serves it; reading the live instance itself waits on the operator's ruling on
-the observer contract that #1046 opens.
+`frame-limit`, `byte-limit`, `overall-deadline`, `silent`, `refused`, or
+`closed-early`. Every bounded read -- the plain GETs and the event sample
+alike -- asks for `Accept-Encoding: identity` and refuses a reply that
+answers `Content-Encoding` anyway before reading a single byte of its body
+(a compressed reply decoded transparently could otherwise outgrow the byte
+cap before the cap ever saw it), and checks its wall-clock deadline before
+every read it makes, including the request itself and an error body, not
+only between whole frames. That deadline check still cannot interrupt a
+read already under way: each endpoint's true worst case is its own deadline
+plus one read timeout, never the deadline alone, and the report's
+`endpoint_budget` and `event_sample_budget` name both numbers honestly
+rather than implying a tighter bound than this call can actually keep. A
+validation diagnosis in the report never carries a response's own values,
+only the field path and the error kind: pydantic's own `ValidationError`
+embeds the offending input (and, for a missing field, every sibling value)
+in its message, which a naive `str(error)` would otherwise hand back out.
+The report never carries the seat's own terminal address (it holds the
+terminal's access token, `served_seat.py`), only its state. Exit is 0 with
+an empty report, non-zero otherwise. This slice reads only what a test
+double serves it; reading the live instance itself waits on the operator's
+ruling on the observer contract that #1046 opens.
 
 ### Publish the issue-to-pr catalog
 
