@@ -1,7 +1,0 @@
-claim_id = "971c0e3c38c7450c920220a32293c1d0"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "31774fec09a8ede09af598eb881e41e32480244b"
-branch = "claude/issue-1489-sonar-complexity"
-scope = ["src/atelier2/application/model_configuration.py", "src/atelier2/api/routes/queue.py", "src/atelier2/adapters/bounded_processes.py"]
-opened_commit = "cbaf5157615a4d459488d39c0f96ceb5f4071ed5"
