@@ -190,7 +190,13 @@ element shows it. Corollaries the picture applies everywhere:
   > **next higher difficulty** (#557: never silent, never weaker; the field
   says "(next higher)") > none (ochre "choose a configuration", only when no
   higher difficulty has one either or the family rule refuses them all; the
-  conductor asks). **There is no per-role exception and no durable override
+  conductor asks). A default row and a pin name a **model**, and the registry
+  may hold several checked configurations of one model, one per capability: the
+  configuration that fills a role is the one whose capability is the node's
+  declared mode. A model without one leaves the role unoccupied — never a
+  fallback to another capability, and never a step skipped for it. An exact
+  configuration, named by a start override, wins as it was written.
+  **There is no per-role exception and no durable override
   outside the workflow's pin**: what should hold for a project is changed in
   Settings, once, per difficulty. The word "cast" does not appear in the
   house's copy. **The receipt** holds both exact ids — the one the house
