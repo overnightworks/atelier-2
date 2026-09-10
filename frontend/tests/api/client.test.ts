@@ -51,7 +51,39 @@ const servedDocument = JSON.parse(
       }
     >;
   };
+  paths: Record<
+    string,
+    {
+      get?: {
+        parameters?: ReadonlyArray<{
+          name: string;
+          schema?: { pattern?: string; anyOf?: ReadonlyArray<{ pattern?: string }> };
+        }>;
+      };
+    }
+  >;
 };
+
+/**
+ * The route names its own pagination cursor by the regex it accepts, not by
+ * convention -- so reading that name from the served document, rather than
+ * assuming it starts with "after", is what catches a client that asks under
+ * any name the route does not read.
+ */
+const REVISION_HASH_PATTERN = "^[0-9a-f]{64}$";
+
+function pageCursorParameterName(document: typeof servedDocument, path: string): string {
+  const parameters = document.paths[path]?.get?.parameters ?? [];
+  const cursor = parameters.find((parameter) => {
+    const schema = parameter.schema;
+    const variants = schema?.anyOf ?? (schema ? [schema] : []);
+    return variants.some((variant) => variant.pattern === REVISION_HASH_PATTERN);
+  });
+  if (cursor === undefined) {
+    throw new Error(`the served document names no hash-cursor parameter for ${path}`);
+  }
+  return cursor.name;
+}
 
 function publishedProblemDefinitions(document: typeof servedDocument) {
   return Object.fromEntries(
@@ -626,6 +658,39 @@ describe("the saved-workflow listing the cockpit asks for", () => {
         provenance: null
       }
     ]);
+  });
+
+  it("resumes past a full page under the cursor name the route reads", async () => {
+    const cursorParameterName = pageCursorParameterName(
+      servedDocument,
+      "/atelier/api/v1/workflow-revisions"
+    );
+    const secondPageHash = "b".repeat(64);
+    const summary = (workflowRevisionHash: string) => ({
+      workflow_revision_hash: workflowRevisionHash,
+      workflow_format_version: 3,
+      executable: false,
+      not_executable_reason: "agent forms nothing binds yet: outputs",
+      name: "Nightly regression sweep",
+      description: "Runs the sweep and files what it finds.",
+      provenance: null
+    });
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (target) => {
+      const resumed = String(target).includes(`${cursorParameterName}=${digest}`);
+      return new Response(
+        JSON.stringify({
+          items: [summary(resumed ? secondPageHash : digest)],
+          next_after_revision_hash: resumed ? null : digest
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const api = createCockpitApi(fetcher);
+
+    const firstPage = await api.listWorkflowRevisions();
+    const secondPage = await api.listWorkflowRevisions(firstPage.next_after_revision_hash ?? undefined);
+
+    expect(secondPage.items[0]?.workflow_revision_hash).toEqual(secondPageHash);
   });
 });
 

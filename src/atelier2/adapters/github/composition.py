@@ -123,6 +123,21 @@ def live_github_effect_registry(
     )
 
 
+def live_github_head_branch_pull_requests(
+    connection: ProjectSourceConnectionRevision,
+) -> LiveGitHubHeadBranchPullRequests:
+    """Compose the reader that says which branch still carries an open review.
+
+    The same surface the publishing adapter is composed with, given its own
+    factory because a second caller asks the question about a branch it did
+    not publish to: the runtime, about a lane whose run has ended.
+    """
+
+    return LiveGitHubHeadBranchPullRequests(
+        _connected_repository(connection), _token_credential(connection)
+    )
+
+
 def live_github_issue_source(
     connection: ProjectSourceConnectionRevision,
 ) -> LiveGitHubIssueSource:
