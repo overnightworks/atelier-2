@@ -599,8 +599,8 @@ def bound_use_cases(
 # `paths` keys, which the frozen artefact pins byte for byte.
 def _install_routers(app: FastAPI) -> None:
     # One guard for every route these routers carry, rather than one per route:
-    # each route's own dependant already names the query parameters it reads
-    # (#1501), so nothing below this line needs to declare its own copy.
+    # each route's own dependant already names the query parameters it reads,
+    # so nothing below this line needs to declare its own copy.
     unknown_query_guard = (Depends(reject_unknown_query_params),)
     app.include_router(health.router, dependencies=unknown_query_guard)
     app.include_router(seat.router, dependencies=unknown_query_guard)
@@ -642,8 +642,9 @@ def create_app(
     app = FastAPI(
         title="Atelier 2 durable workflow API",
         # `install_openapi_document_route` below takes over serving this path
-        # instead (#1501's own guard needs a real `APIRoute`, not the plain
-        # Starlette one FastAPI would otherwise add here).
+        # instead, because the unknown-query-parameter guard needs a real
+        # `APIRoute`, not the plain Starlette one FastAPI would otherwise add
+        # here.
         version="1",
         openapi_url=None,
         docs_url=None,

@@ -222,7 +222,7 @@ async def require_json_media_dependency(request: Request) -> None:
 
 
 async def reject_unknown_query_params(request: Request) -> None:
-    """Refuse a query string carrying a name no matched route reads (#1501).
+    """Refuse a query string carrying a name no matched route reads.
 
     FastAPI otherwise drops an unknown query parameter in silence, so a
     caller that misspells one -- or a route that renamed one -- gets a

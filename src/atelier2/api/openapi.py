@@ -673,11 +673,11 @@ def install_openapi_document_route(
     meet `reject_unknown_query_params` no matter how that guard were wired --
     `create_app` passes `openapi_url=None` and this takes over the same path
     as a real `APIRoute` instead, so this self-describing path answers the
-    same guard every route under `API_PREFIX` does (#1501).
+    same guard every route under `API_PREFIX` does.
     """
     install_custom_openapi(app, limits)
 
-    async def serve_openapi_document(request: Request) -> JSONResponse:
+    def serve_openapi_document(request: Request) -> JSONResponse:
         # Mirrors FastAPI's own automatic `openapi_url` route (installed here
         # instead, per this function's docstring): a server this app sits
         # behind under a path prefix advertises that prefix as the document's
@@ -945,7 +945,7 @@ def _install_problem_responses(schema: dict[str, Any]) -> None:
     for (path, method), codes in OPERATION_PROBLEMS.items():
         operation = schema["paths"][path][method]
         operation["responses"].pop("422", None)
-        # Every route meets `reject_unknown_query_params` (#1501) before its own
+        # Every route meets `reject_unknown_query_params` before its own
         # body, so every route can answer `invalid-request` even where its own
         # table entry above never names it -- named once here rather than in
         # every entry above.
