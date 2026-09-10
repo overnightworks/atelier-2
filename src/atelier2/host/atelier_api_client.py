@@ -374,13 +374,17 @@ def opened_api(
 
 
 class TransportFailureCategory(StrEnum):
-    """What kind of transport trouble one call ran into, in this module's own
+    """What kind of trouble carrying one read ran into, in this module's own
     fixed words.
 
     A library's exception message can carry the far side's own text, and its
     class alone loses the distinction that matters: one `ConnectError` covers
     a name that does not resolve, a certificate that does not verify, and a
-    port that says no. This is the whole vocabulary a caller ever sees.
+    port that says no. This is the whole vocabulary a caller ever sees --
+    including a caller whose read is carried home by something other than
+    HTTP: `IPC_CORRUPT` is for a read running in its own process whose way
+    back stopped making sense (`instance_reader`), which no HTTP call
+    produces and which nothing else names.
     """
 
     DNS = "dns"
@@ -389,6 +393,7 @@ class TransportFailureCategory(StrEnum):
     RESET = "reset"
     TIMEOUT = "timeout"
     PROTOCOL = "protocol"
+    IPC_CORRUPT = "ipc-corrupt"
     UNCLASSIFIED = "unclassified"
 
 

@@ -5,34 +5,35 @@ Why a process rather than a timer. Every call this reading makes goes through
 httpx, and a deadline that has to interrupt a blocking read from inside the
 process can only do it by throwing into somebody else's code: an exception
 landing in a connection pool's own critical section leaves that lock held, and
-the observer deadlocks before it can report. Here the reading cannot hang the
-observer at all. The parent holds one end of a pipe and a clock; the child
-holds the client, the sockets, and every lock they need; and a child still
-reading when the deadline falls is terminated, killed if it must be, and
-reclaimed by the operating system with everything it held.
+the observer deadlocks before it can report. Here the parent holds one end of
+a pipe and a clock, the child holds the client and every lock it needs, and a
+child still reading when the deadline falls is terminated, killed if it must
+be, and reclaimed by the operating system with everything it held.
+
+The child is an ordinary interpreter this module starts and owns
+(`subprocess.Popen` on this module's own `__main__`), never a
+`multiprocessing.Process`: that one registers every child it starts and joins
+the survivors without a timeout as the process exits, so a reader that
+outlived its kill would hang the very command that had already reported it.
+Here nothing is registered, every wait carries a timeout, and a survivor is
+reported and left.
 
 Nothing but records crosses the pipe: typed, picklable, and carrying no
 exception object, because a library's exception carries its own message and
-the far side's text with it. A refusal becomes this repository's own fixed
-diagnosis (`AtelierApiTransportFailure.reason`) before it is ever sent, and an
-unexpected failure becomes a phase and a category. Each record leaves the
-moment it is known, so a reading the deadline ends has already delivered every
-door and every frame it read.
+the far side's text with it. Each leaves the moment it is known, so a reading
+the deadline ends has already delivered every door and frame it read.
 
-Both ends frame the pipe themselves -- a length and a payload -- rather than
-using the connection's own `send`/`recv`. A reading readable at this end is
-not a whole record: `recv` would block past the deadline waiting for the rest,
-and a reader dying mid-payload would raise instead of reporting. The parent
-reads without blocking against the time it has left, keeps what it has, and
-decodes only complete frames; a half frame is simply never a record.
-
-Because the child is a spawned interpreter, a library caller of
-`read_instance` needs an importable main module (`atelier2/__main__.py` guards
-its own entry for exactly this reason).
+Both ends frame the pipe themselves -- a length and a payload -- because what
+is readable at the reporting end is not necessarily a whole record, and
+waiting for the rest of one is what a deadline must never do. The parent reads
+without blocking against the time it has left and decodes only complete
+frames; a half frame is never a record, and a length no record of this reading
+could carry ends the gathering with a named failure.
 """
 
 from __future__ import annotations
 
+import argparse
 import ctypes
 import logging
 import os
@@ -40,13 +41,12 @@ import pickle
 import select
 import signal
 import struct
+import subprocess
+import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from multiprocessing import get_context
-from multiprocessing.connection import Connection
-from multiprocessing.context import SpawnProcess
 from typing import Final, assert_never
 
 from atelier2.host.atelier_api_client import (
@@ -87,9 +87,8 @@ DOOR_ENDPOINTS: Final[tuple[str, ...]] = tuple(
 
 READING_DEADLINE_SECONDS: Final = 25.0
 """The whole reading's wall clock, measured from before the child is even
-started -- wide enough that each door's own read timeout is what normally ends
-it, and narrow enough that an instance which only trickles bytes cannot hold
-the observer for longer than an operator would wait."""
+started: wide enough that each door's own read timeout normally ends the
+reading, and narrower than an operator's patience with a trickling instance."""
 
 DOOR_READ_TIMEOUT_SECONDS: Final = 5.0
 """How long one plain GET among the fixed doors may wait for its next chunk
@@ -111,19 +110,33 @@ MAXIMUM_RESPONSE_BYTES: Final = 65_536
 EVENT_SAMPLE_MAXIMUM_BYTES: Final = 65_536
 EVENT_SAMPLE_MAXIMUM_FRAMES: Final = 20
 
-READER_PROCESS_NAME: Final = "atelier2-watch-reader"
+READER_MODULE: Final = "atelier2.host.instance_reader"
+"""What a reading process runs: this module's own `__main__`. A caller that
+runs another module in its place gets the same protocol on the same pipe."""
 
 TRANSPORT_LOGGER_NAMES: Final = ("httpx", "httpcore")
 """The libraries the reading process silences in itself: httpx logs every
 request's status line -- the far side's own reason phrase included -- at
 `INFO`, and httpcore logs a reply's headers at `DEBUG`."""
 
-_SPAWN: Final = get_context("spawn")
-"""A fresh interpreter, never a copy of this one: no lock, logger, socket, or
-open file of the process that reports is inherited by the process that reads."""
+FRAME_HEADER: Final = struct.Struct("!I")
+"""How long the payload after it is: the whole framing, on both ends."""
 
-_STANDARD_OUTPUT_DESCRIPTOR: Final = 1
-_STANDARD_ERROR_DESCRIPTOR: Final = 2
+FRAME_LIMIT_BYTES: Final = 4 * MAXIMUM_RESPONSE_BYTES
+"""The largest payload any record of this reading can have -- a door's whole
+answer with room for what a record carries around it. A length beyond it, or
+of nothing at all, is not this reading's writing."""
+
+_NO_DESCRIPTOR: Final = -1
+"""What a descriptor this process has already handed over reads as."""
+
+_NO_PIPE_EXIT_CODE: Final = 2
+"""How a reading process ends when it has no pipe to report through: there is
+nothing it could say and nobody who would hear it."""
+
+_ORPHANED_EXIT_CODE: Final = 0
+"""How a reading process ends when the process that would read its report is
+already gone: quietly, because nothing it did would be looked at."""
 
 _SILENT_LEVEL: Final = logging.CRITICAL + 1
 """Above every level `logging` defines, so a logger set to it makes no record
@@ -133,12 +146,8 @@ _PARENT_DEATH_SIGNAL_OPTION: Final = 1
 """`PR_SET_PDEATHSIG` (`linux/prctl.h`), the same arming
 `adapters/agent_process_exec_guard.py` gives an agent's own child."""
 
-_FRAME_HEADER: Final = struct.Struct("!I")
-"""How long the payload after it is: the whole framing, on both ends."""
-
 _READ_CHUNK_BYTES: Final = 65_536
-"""How much of the pipe one read takes at a time; a frame is reassembled from
-however many of these it spans."""
+"""How much of the pipe one read takes; a frame spans however many it needs."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,12 +280,10 @@ class FeedReading:
 class InstanceReading:
     """Every record one reading delivered, and how that reading ended.
 
-    `reader_ended` is the reading's own last word, `failure` what it said went
-    wrong before it stopped saying anything, `deadline_passed` the parent's
-    clock, `reader_exit_code` what the operating system says the process came
-    back with, and `reader_reaped` whether it went at all -- together they are
-    the difference between a reading that finished, one that was cut off, one
-    that broke, and one that would not die.
+    The reading's own last word, what it said went wrong, the parent's clock,
+    what the operating system says the process came back with, and whether it
+    went at all: together the difference between a reading that finished, one
+    that was cut off, one that broke, and one that would not die.
     """
 
     doors: list[DoorAnswer] = field(default_factory=list)
@@ -288,9 +295,15 @@ class InstanceReading:
     reader_reaped: bool = True
 
 
-type ReaderEntry = Callable[[Connection, str, ReadingBudget], None]
-"""What a reading process runs: it may send records and it may die, and
-either way its whole life is those three arguments."""
+@dataclass(frozen=True, slots=True)
+class ReaderInvocation:
+    """What one reading process is told when it starts: where to read, what to
+    write its records to, and whose child it is."""
+
+    service_url: str
+    budget: ReadingBudget
+    descriptor: int
+    parent_process_id: int
 
 
 def read_instance(service_url: str, budget: ReadingBudget) -> InstanceReading:
@@ -301,20 +314,27 @@ def read_instance(service_url: str, budget: ReadingBudget) -> InstanceReading:
     """
 
     api_base_url(service_url)
-    return supervised_reading(read_into, service_url, budget)
+    return supervised_reading(READER_MODULE, service_url, budget)
 
 
 def supervised_reading(
-    entry: ReaderEntry, service_url: str, budget: ReadingBudget
+    reader_module: str, service_url: str, budget: ReadingBudget
 ) -> InstanceReading:
-    """Run `entry` in a spawned child, gather what it sends until the deadline,
-    and end it whatever state it is in.
+    """Run `reader_module` as a reading process, gather what it sends until the
+    deadline, and end it whatever state it is in.
 
-    The deadline is taken before the child is started, so its own startup is
+    The deadline is taken before the process is started, so its own startup is
     part of the reading rather than free time added to it -- and a deadline
-    already spent starts no process at all. Whatever ends the gathering, the
-    child is stopped, reaped, and reported on before this returns, and the
-    pipe is closed only once no process could still be writing into it.
+    already spent starts nothing at all. The `finally` covers everything from
+    before the start onwards, so an interruption anywhere in between still
+    ends the reading, and the pipe closes whatever that stopping does. The
+    writing end is closed here as soon as the child has it, because a copy
+    left open would keep the pipe from ever reaching its end and make a dead
+    reader look like a thinking one.
+
+    That process has one channel and it is that pipe: its standard streams go
+    to the null device, so a `watch` prints one JSON report and nothing
+    besides, whatever the reading or a library under it would otherwise write.
     """
 
     deadline = time.monotonic() + budget.deadline_seconds
@@ -322,83 +342,147 @@ def supervised_reading(
     if _left_of(deadline) <= 0:
         reading.deadline_passed = True
         return reading
-    receiver, sender = _SPAWN.Pipe(duplex=False)
-    reader = _SPAWN.Process(
-        target=entry,
-        args=(sender, service_url, budget),
-        name=READER_PROCESS_NAME,
-        # A reading outlives nothing: a parent that exits takes its daemonic
-        # children with it, and `_die_with_the_parent` covers the parent that
-        # does not get to exit at all.
-        daemon=True,
-    )
+    reading_end, sending_end = os.pipe()
+    reader: subprocess.Popen[bytes] | None = None
     try:
-        reader.start()
-        # Only the child writes. A copy of the sending end left open here
-        # would keep the pipe from ever reaching its end of file, so a child
-        # that died without a word would look like one still thinking.
-        sender.close()
-        try:
-            _gather(receiver.fileno(), reading, deadline)
-        finally:
-            reading.reader_reaped = _stopped(
-                reader, deadline, finished=not reading.deadline_passed
-            )
-            reading.reader_exit_code = reader.exitcode
+        reader = subprocess.Popen(
+            _reader_command(reader_module, service_url, budget, sending_end),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(sending_end,),
+        )
+        os.close(sending_end)
+        sending_end = _NO_DESCRIPTOR
+        _gather(reading_end, reading, deadline)
     finally:
-        sender.close()
-        receiver.close()
+        try:
+            if reader is not None:
+                reading.reader_reaped = _stopped(
+                    reader, deadline, finished=not reading.deadline_passed
+                )
+                reading.reader_exit_code = reader.returncode
+        finally:
+            for descriptor in (sending_end, reading_end):
+                if descriptor != _NO_DESCRIPTOR:
+                    os.close(descriptor)
     return reading
 
 
-def read_into(connection: Connection, service_url: str, budget: ReadingBudget) -> None:
+def _reader_command(
+    reader_module: str, service_url: str, budget: ReadingBudget, descriptor: int
+) -> list[str]:
+    """How a reading process is asked for: this interpreter, that module, and
+    everything it needs as arguments -- nothing inherited, nothing implied."""
+
+    return [
+        sys.executable,
+        "-m",
+        reader_module,
+        "--service",
+        service_url,
+        "--descriptor",
+        str(descriptor),
+        "--parent",
+        str(os.getpid()),
+        "--deadline-seconds",
+        str(budget.deadline_seconds),
+        "--door-read-timeout-seconds",
+        str(budget.door_read_timeout_seconds),
+        "--event-sample-read-timeout-seconds",
+        str(budget.event_sample_read_timeout_seconds),
+    ]
+
+
+def reader_invocation(arguments: Sequence[str] | None = None) -> ReaderInvocation:
+    """What this reading process was told, read back from its own arguments."""
+
+    parser = argparse.ArgumentParser(prog=READER_MODULE, description=__doc__)
+    parser.add_argument("--service", required=True)
+    parser.add_argument("--descriptor", type=int, required=True)
+    parser.add_argument("--parent", type=int, required=True)
+    parser.add_argument("--deadline-seconds", type=float, required=True)
+    parser.add_argument("--door-read-timeout-seconds", type=float, required=True)
+    parser.add_argument(
+        "--event-sample-read-timeout-seconds", type=float, required=True
+    )
+    parsed = parser.parse_args(arguments)
+    return ReaderInvocation(
+        service_url=parsed.service,
+        budget=ReadingBudget(
+            deadline_seconds=parsed.deadline_seconds,
+            door_read_timeout_seconds=parsed.door_read_timeout_seconds,
+            event_sample_read_timeout_seconds=(
+                parsed.event_sample_read_timeout_seconds
+            ),
+        ),
+        descriptor=parsed.descriptor,
+        parent_process_id=parsed.parent,
+    )
+
+
+def read_as_a_child(arguments: Sequence[str] | None = None) -> int:
     """The reading process's whole life: go quiet, read, say what happened.
 
-    Everything this process learns leaves through `connection` and nothing
-    else, so its own standard streams are pointed at the null device before
-    the first request: a watch's stdout carries one JSON report and nothing
-    besides, and httpx would otherwise write the far side's own reason phrase
-    into any handler this process happens to have.
-
-    Nothing here is allowed to end in a traceback nobody reads. Trouble the
-    reading did not expect becomes a record naming the phase it happened in,
-    and this process then exits cleanly, because a reader that died and a
-    reader that broke are two different findings.
+    Nothing here is allowed to end in a traceback nobody reads. Trouble it did
+    not expect becomes a record naming the phase it happened in, and this
+    process then exits cleanly, because a reader that died and a reader that
+    broke are two different findings. Only the pipe itself comes before that:
+    with no way to say anything, there is nothing to say and nobody to hear
+    it.
     """
 
-    _go_quiet()
-    _die_with_the_parent()
-    send = _record_sink(connection)
-    api = _opened(service_url, send)
-    if api is not None:
-        try:
-            send_reading(api, budget, send)
-        except Exception as trouble:
-            send(_reader_failure(ReaderPhase.READING, trouble))
-        finally:
-            _closed(api, send)
-    connection.close()
-
-
-def _opened(
-    service_url: str, send: Callable[[ReadingRecord], None]
-) -> AtelierApi | None:
+    invocation = reader_invocation(arguments)
     try:
-        return AtelierApi(service_url)
+        send = record_sink(invocation.descriptor)
+    except OSError:
+        os._exit(_NO_PIPE_EXIT_CODE)
+    api = _prepared(invocation, send)
+    if api is None:
+        return 0
+    everything_read = True
+    try:
+        send_reading(api, invocation.budget, send)
+    except Exception as trouble:
+        send(_reader_failure(ReaderPhase.READING, trouble))
+        everything_read = False
+    # The last word comes after the client is away, so a cleanup that failed
+    # can never leave a report that looks complete.
+    if _closed(api, send) and everything_read:
+        send(ReadingEnd())
+    return 0
+
+
+def _prepared(
+    invocation: ReaderInvocation, send: Callable[[ReadingRecord], None]
+) -> AtelierApi | None:
+    """Everything this process does to itself before it reads anything, inside
+    the same translation as the reading: going quiet and arming its own death
+    can fail too, and a failure there is a record like any other."""
+
+    try:
+        _go_quiet()
+        _die_with_the_parent(invocation.parent_process_id)
+        return AtelierApi(invocation.service_url)
     except Exception as trouble:
         send(_reader_failure(ReaderPhase.SETUP, trouble))
         return None
 
 
-def _closed(api: AtelierApi, send: Callable[[ReadingRecord], None]) -> None:
-    """Putting the client away is its own phase: a failure here happened after
-    every door was already reported, and saying so is what keeps it from
-    reading as a reading that never finished."""
+def _closed(api: AtelierApi, send: Callable[[ReadingRecord], None]) -> bool:
+    """Whether the client went away cleanly.
+
+    Putting it away is its own phase, and it happens before the reading's last
+    word, so a cleanup that failed cannot leave a report that reads as
+    complete.
+    """
 
     try:
         api.close()
     except Exception as trouble:
         send(_reader_failure(ReaderPhase.CLEANUP, trouble))
+        return False
+    return True
 
 
 def _reader_failure(phase: ReaderPhase, trouble: BaseException) -> ReaderFailure:
@@ -411,15 +495,14 @@ def send_reading(
     """Read every fixed door and a bounded sample of the feed, sending each
     result the moment it is known.
 
-    Nothing is held back for the end. A reading killed in the middle has
-    already delivered every door it finished and every frame it read, which is
-    what lets a report be built from a reading that never got to finish.
+    Nothing is held back for the end -- a reading killed in the middle has
+    already delivered every door it finished and every frame it read -- and
+    the last word is not sent here: it belongs after the client is away.
     """
 
     for endpoint in DOOR_ENDPOINTS:
         send(_door_answer(api, endpoint, budget))
     send(_sampled_feed(api, budget, send))
-    send(ReadingEnd())
 
 
 def absorb_record(record: ReadingRecord, reading: InstanceReading) -> None:
@@ -448,15 +531,26 @@ def absorb_record(record: ReadingRecord, reading: InstanceReading) -> None:
             assert_never(record)
 
 
-def _record_sink(connection: Connection) -> Callable[[ReadingRecord], None]:
-    """Where the reading process puts a record: one framed payload on the
-    pipe, written whole before the next one starts."""
+def framed(record: ReadingRecord) -> bytes:
+    """One record as it travels: how long its payload is, then its payload."""
 
-    descriptor = connection.fileno()
+    payload = pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL)
+    return FRAME_HEADER.pack(len(payload)) + payload
+
+
+def record_sink(descriptor: int) -> Callable[[ReadingRecord], None]:
+    """Where the reading process puts a record: one framed payload on the
+    pipe, written whole before the next one starts.
+
+    The descriptor is asked about before anything is written to it, so a
+    reading with no way to report finds that out while it still could have
+    done something else about it.
+    """
+
+    os.fstat(descriptor)
 
     def send(record: ReadingRecord) -> None:
-        payload = pickle.dumps(record, protocol=pickle.HIGHEST_PROTOCOL)
-        _written(descriptor, _FRAME_HEADER.pack(len(payload)) + payload)
+        _written(descriptor, framed(record))
 
     return send
 
@@ -474,46 +568,93 @@ def _gather(descriptor: int, reading: InstanceReading, deadline: float) -> None:
     Read without blocking, against the time the reading has left: what is
     readable is whatever the child has written so far, not necessarily a whole
     record, and waiting for the rest of a half-written one is exactly what a
-    deadline must never do. A pipe that ends -- because the reader is gone --
-    ends the gathering; it is never an error here, because the process's own
-    exit is what says what happened to it.
+    deadline must never do.
     """
 
     os.set_blocking(descriptor, False)
     buffer = bytearray()
     while not reading.reader_ended:
-        left = _left_of(deadline)
-        if left <= 0 or not select.select([descriptor], [], [], left)[0]:
-            reading.deadline_passed = True
-            return
-        try:
-            arrived = os.read(descriptor, _READ_CHUNK_BYTES)
-        except BlockingIOError:
-            continue
-        except OSError:
+        arrived = _arrived(descriptor, _left_of(deadline), reading)
+        if arrived is None:
             return
         if not arrived:
-            return
+            continue
         buffer.extend(arrived)
-        for record in _complete_records(buffer):
-            absorb_record(record, reading)
+        try:
+            for record in _complete_records(buffer):
+                absorb_record(record, reading)
+        except _FramingCorrupt:
+            absorb_record(_IPC_CORRUPT_FAILURE, reading)
+            return
+
+
+def _arrived(descriptor: int, left: float, reading: InstanceReading) -> bytes | None:
+    """Whatever the reading has written and this end has not taken yet.
+
+    `None` means the gathering is over: the deadline fell, the pipe reached
+    its end because the reader is gone, or the descriptor itself is no longer
+    one -- none of which is an error here, because the reading process's own
+    exit is what says what happened to it. Empty bytes mean nothing was ready
+    after all and the next look is due.
+    """
+
+    if left <= 0:
+        reading.deadline_passed = True
+        return None
+    try:
+        if not select.select([descriptor], [], [], left)[0]:
+            reading.deadline_passed = True
+            return None
+        return os.read(descriptor, _READ_CHUNK_BYTES) or None
+    except BlockingIOError:
+        return b""
+    except OSError:
+        return None
+
+
+class _FramingCorrupt(Exception):
+    """The pipe carried something no record of this reading could have
+    written; never raised past this module."""
+
+
+_IPC_CORRUPT_FAILURE: Final = ReaderFailure(
+    ReaderPhase.READING, TransportFailureCategory.IPC_CORRUPT
+)
+"""What the reporting side records when the framing itself stops making
+sense: the reading is over, and it is not a clean one."""
 
 
 def _complete_records(buffer: bytearray) -> Iterator[ReadingRecord]:
     """Every whole frame in `buffer`, taken out of it as it is decoded; a
-    partial one stays for the bytes that would complete it."""
+    partial one stays for the bytes that would complete it.
 
-    while len(buffer) >= _FRAME_HEADER.size:
-        (length,) = _FRAME_HEADER.unpack_from(buffer)
-        end = _FRAME_HEADER.size + length
+    A length of nothing, a length beyond anything this reading writes, or a
+    payload that does not decode is not a record this end waits for: it is a
+    pipe that has stopped making sense, and the gathering ends on it.
+    """
+
+    while len(buffer) >= FRAME_HEADER.size:
+        (length,) = FRAME_HEADER.unpack_from(buffer)
+        if not 0 < length <= FRAME_LIMIT_BYTES:
+            raise _FramingCorrupt
+        end = FRAME_HEADER.size + length
         if len(buffer) < end:
             return
-        payload = bytes(buffer[_FRAME_HEADER.size : end])
+        payload = bytes(buffer[FRAME_HEADER.size : end])
         del buffer[:end]
-        yield pickle.loads(payload)
+        yield _decoded(payload)
 
 
-def _stopped(reader: SpawnProcess, deadline: float, *, finished: bool) -> bool:
+def _decoded(payload: bytes) -> ReadingRecord:
+    try:
+        return pickle.loads(payload)
+    except Exception:
+        raise _FramingCorrupt from None
+
+
+def _stopped(
+    reader: subprocess.Popen[bytes], deadline: float, *, finished: bool
+) -> bool:
     """End the reading process, whatever it is doing, and say whether it went.
 
     `finished` is what the pipe said: a last word, or its end. Such a reading
@@ -521,19 +662,34 @@ def _stopped(reader: SpawnProcess, deadline: float, *, finished: bool) -> bool:
     one grace, to get there on its own -- so an ordinary ending is never
     mistaken for a killed one. One the deadline interrupted gets none of that:
     it is told to stop, then killed, each with one short bounded wait, because
-    waiting here would spend the very time the deadline bounds. A process that
-    survives even a kill is not waited for; it is reported.
+    waiting here would spend the very time the deadline bounds. Every step
+    stands in the `finally` of the one before it, so an interruption while
+    waiting cannot skip the harder step behind it, and a process that survives
+    even a kill is reported rather than waited for.
     """
 
-    if finished:
-        reader.join(min(READER_STOP_GRACE_SECONDS, _left_of(deadline)))
-    if reader.is_alive():
-        reader.terminate()
-        reader.join(READER_STOP_GRACE_SECONDS)
-    if reader.is_alive():
-        reader.kill()
-        reader.join(READER_STOP_GRACE_SECONDS)
-    return not reader.is_alive()
+    try:
+        if finished:
+            _waited(reader, min(READER_STOP_GRACE_SECONDS, _left_of(deadline)))
+    finally:
+        try:
+            if reader.poll() is None:
+                reader.terminate()
+                _waited(reader, READER_STOP_GRACE_SECONDS)
+        finally:
+            if reader.poll() is None:
+                reader.kill()
+                _waited(reader, READER_STOP_GRACE_SECONDS)
+    return reader.poll() is not None
+
+
+def _waited(reader: subprocess.Popen[bytes], seconds: float) -> None:
+    """Give the reading process `seconds` to be gone, and no more."""
+
+    try:
+        reader.wait(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return
 
 
 def _left_of(deadline: float) -> float:
@@ -591,36 +747,37 @@ def _refusal(failure: AtelierApiTransportFailure) -> ReadRefusal:
 
 
 def _go_quiet() -> None:
-    """Leave this process no channel but its pipe.
+    """Leave this process nothing to say anywhere but its pipe.
 
     This process is private: it reports through its pipe and has no reader for
     anything else, so nothing in it may log at all. `logging.disable` is what
     makes that true whoever asks -- a level on the two library loggers is
     walked past by a child logger that sets its own, and a handler hung
     directly on `httpcore.http11` would then carry the far side's headers to
-    wherever it points. The root keeps a handler that drops what is left, and
-    the standard descriptors are pointed at the null device rather than only
-    `sys.stdout`, so a write from below Python goes nowhere either.
+    wherever it points -- and the root keeps a handler that drops what is
+    left. Where a write below Python would land is not decided here: the
+    standard streams of a reading process belong to whoever starts it, and
+    `supervised_reading` gives them the null device.
     """
 
     logging.disable(logging.CRITICAL)
     logging.getLogger().handlers = [logging.NullHandler()]
     for name in TRANSPORT_LOGGER_NAMES:
         logging.getLogger(name).setLevel(_SILENT_LEVEL)
-    null_device = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(null_device, _STANDARD_OUTPUT_DESCRIPTOR)
-    os.dup2(null_device, _STANDARD_ERROR_DESCRIPTOR)
-    os.close(null_device)
 
 
-def _die_with_the_parent() -> None:
+def _die_with_the_parent(parent_process_id: int) -> None:
     """Ask the kernel to kill this process when the process that reads its
-    report is gone.
+    report is gone, and leave at once if it already is.
 
-    `daemon=True` covers a parent that exits; this covers one that is killed
-    and never gets to. The same arming an agent's own child gets before it
-    execs (`adapters/agent_process_exec_guard.py`), which cannot be called
-    here: that function never returns, and wants a cgroup and a watchdog this
+    A parent that died between this process starting and this arming would
+    leave the arming pointing at whoever adopted this process instead -- an
+    ask that would never come -- so the parent is checked again afterwards,
+    and a reading nobody is waiting for ends here without a word.
+
+    The same arming an agent's own child gets before it execs
+    (`adapters/agent_process_exec_guard.py`), which cannot be called here:
+    that function never returns, and wants a cgroup and a watchdog this
     reading has neither of.
     """
 
@@ -628,3 +785,15 @@ def _die_with_the_parent() -> None:
     if libc.prctl(_PARENT_DEATH_SIGNAL_OPTION, signal.SIGKILL) != 0:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno))
+    if os.getppid() != parent_process_id:
+        os._exit(_ORPHANED_EXIT_CODE)
+
+
+if __name__ == "__main__":
+    # Through the module under its own name, never through this `__main__`
+    # copy of it: a record pickled here carries the module its class was
+    # defined in, and the process that reports knows no `__main__` of this
+    # one's. Importing it here is what gives the reading that module.
+    from atelier2.host.instance_reader import read_as_a_child as read_the_instance
+
+    raise SystemExit(read_the_instance())

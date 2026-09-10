@@ -622,7 +622,10 @@ an instance with nothing to say. Trouble the reading did not expect is its own
 finding as well -- the phase it happened in (`setup`, `reading`, or `cleanup`)
 and a category, never a message -- and a cleanup that failed after every door
 was already reported says exactly that instead of reading as a reading that
-never finished.
+never finished. A reader that named its trouble and then left cleanly broke;
+it did not die, and the report says one thing. One that named its trouble and
+died anyway says both, because what ended that process is not what it
+reported.
 
 A process rather than a timer, because a deadline that has to interrupt a
 blocking read from inside can only do it by throwing into somebody else's
@@ -631,20 +634,27 @@ and deadlocks the observer before it can report. A child cannot do that. Past
 the deadline it is terminated, killed if it does not go, and reaped, and the
 operating system reclaims every socket and lock it held; nothing but records
 ever crosses into the process that reports. Every wait in that stopping is
-short and bounded, and a process that survives even a kill is reported as
-still running rather than waited for. It cannot outlive the watch either: it
-is daemonic, and it asks the kernel to kill it if the process that reads its
-report is gone. It is started with `spawn`, so no lock, logger, socket, or
-open file of the reporting process is inherited -- which costs a fresh
-interpreter's start (measured at about 1.2 s, the bulk of it importing
-`atelier2.host`), counted inside the deadline rather than added to it. Because
-that start re-imports whichever module began the process, a library caller of
-`read_instance` needs an importable main module that does not run its work on
-import; `atelier2/__main__.py` guards its own entry for exactly this reason.
-The report names the budget it ran on (`budget`: `deadline_seconds`,
-`door_read_timeout_seconds`, `event_sample_read_timeout_seconds`); the
-per-read timeouts bound one read within the deadline, which is what tells a
-feed that went quiet from one that hangs.
+short and bounded -- measured against a reader that ignores being told to
+stop, a 4 s deadline gave the whole call 4.5 s -- and a process that survives
+even a kill is reported as still running rather than waited for. It cannot
+outlive the watch either: it asks the kernel to kill it once the process that
+reads its report is gone, and it leaves without a word if that process was
+already gone by the time it asked.
+
+That child is a fresh interpreter started as an ordinary subprocess
+(`subprocess.Popen` on `atelier2.host.instance_reader`, its standard streams
+at the null device, its records on a pipe of their own), never a
+`multiprocessing.Process`: that one registers every child it starts and joins
+the survivors without a timeout as the process exits, so a reader that
+outlived its kill would hang the very command that had already reported it.
+Nothing of the reporting process is inherited -- no lock, logger, socket, or
+open file -- which costs that interpreter's start, measured at about 1.4 s
+with the bulk of it importing `atelier2.host`, counted inside the deadline
+rather than added to it. The report names the budget it ran on (`budget`:
+`deadline_seconds`, `door_read_timeout_seconds`,
+`event_sample_read_timeout_seconds`); the per-read timeouts bound one read
+within the deadline, which is what tells a feed that went quiet from one that
+hangs.
 
 Both ends frame that pipe themselves, a length and then the record. What is
 readable at the reporting end is whatever the reading has written so far, not
@@ -653,7 +663,11 @@ waiting for the rest, and a reader dying mid-record would raise instead of
 reporting. So the reporting process reads without blocking against the time
 the reading has left, keeps what arrives, and decodes only complete frames --
 a half-written record is simply never a record, and everything before it
-stands.
+stands. A length no record of this reading could have -- none at all, or more
+than any record carries -- is not a frame still arriving but a pipe that has
+stopped making sense: the gathering ends there and the report carries that as
+the reading's own failure (`ipc-corrupt`), instead of waiting for bytes that
+would complete it.
 
 The attention feed never ends on its own, so it is sampled, not followed, and
 it is sampled last, because it is the one read that can spend the whole

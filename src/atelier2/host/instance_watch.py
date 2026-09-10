@@ -201,8 +201,7 @@ def _reading_findings(
     true of a deadline, of a reading that broke, and of a reading process that
     died -- silence from a dead reader must never pass for an instance with
     nothing to report. The reading's own account of what went wrong comes
-    first, because it is the one that explains the rest: a reader that named
-    its trouble and then left cleanly is not a reader that died.
+    first, because it is the one that explains the rest.
     """
 
     findings: list[WatchFinding] = []
@@ -219,22 +218,36 @@ def _reading_findings(
                 f"seconds passed while the instance was still answering",
             )
         )
-    elif reading.failure is None and not _ended_cleanly(reading):
+    elif not _left_cleanly(reading):
         findings.append(
             _reader_died_finding(
-                reading,
-                f"it ended with code {reading.reader_exit_code} before it had "
-                f"read every door",
+                reading, f"it ended with code {reading.reader_exit_code}"
             )
         )
     return tuple(findings)
 
 
-def _ended_cleanly(reading: InstanceReading) -> bool:
-    return reading.reader_ended and reading.reader_exit_code == _CLEAN_EXIT_CODE
+def _left_cleanly(reading: InstanceReading) -> bool:
+    """Whether the reading process's own ending adds nothing to the records it
+    sent.
+
+    A reader that named its trouble and then exited cleanly is a reader that
+    broke, not one that died, and the failure it named is the whole finding.
+    One that named its trouble and died anyway is both, because what ended it
+    is not what it reported. A reader that named nothing is clean only when it
+    said its last word.
+    """
+
+    if reading.reader_exit_code != _CLEAN_EXIT_CODE:
+        return False
+    return reading.failure is not None or reading.reader_ended
 
 
 def _reader_died_finding(reading: InstanceReading, why: str) -> WatchFinding:
+    """Where the reading stood is the finding's endpoint; how its process
+    ended is all the detail says, since a reading that ended cleanly and one
+    that read every door are not the same claim."""
+
     return WatchFinding(
         WatchFindingKind.READER_DIED,
         _unread_endpoint(reading),

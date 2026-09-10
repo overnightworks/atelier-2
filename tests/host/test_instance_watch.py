@@ -2,14 +2,16 @@
 
 Two kinds of proof, because the command is two halves in two processes. What
 an answer *means* is proven through the `httpx.MockTransport` seam, driving
-the very halves the command runs -- `send_reading`, which is the whole life of
-the reading process, and `absorb_record`, which is what the reporting process
-does with every record it receives. A mock transport cannot cross a spawn, so
-the reading process itself is proven against `_LoopbackServer`, a real server
-on loopback that hangs, floods, resets, and lies on purpose: that a deadline
-ends the reading and leaves no process and no socket behind, that a reader
-which dies is never read as a clean instance, and that nothing the transport
-libraries say about a real reply reaches this command's output.
+the very halves the command runs -- `send_reading`, which is what the reading
+process reads with, and `absorb_record`, which is what the reporting process
+does with every record it receives. A mock transport cannot cross into another
+process, so the reading process itself is proven against `_LoopbackServer`, a
+real server on loopback that hangs, floods, resets, and lies on purpose, and
+against the reading processes in `reader_entries`, each of which goes wrong in
+one way a production reader could: that a deadline ends the reading and leaves
+no process and no socket behind, that a reader which dies or breaks is never
+read as a clean instance, and that nothing the transport libraries say about a
+real reply reaches this command's output.
 
 Never the live instance: #1502 forbids that until the operator has ruled on
 the observer contract.
@@ -21,16 +23,14 @@ import argparse
 import dataclasses
 import gzip
 import json
-import logging
-import multiprocessing
 import os
 import signal
 import socket
 import ssl
 import struct
+import subprocess
 import time
 from collections.abc import Callable, Iterator
-from multiprocessing.connection import Connection
 from pathlib import Path
 from threading import Event, Thread
 from typing import Self
@@ -53,6 +53,7 @@ from atelier2.api.wire.resources import (
 from atelier2.host import instance_watch
 from atelier2.host.atelier_api_client import (
     EVENT_STREAM_MEDIA_TYPE,
+    JSON_MEDIA_TYPE,
     PROBLEM_MEDIA_TYPE,
     AtelierApi,
     AtelierApiTransportFailure,
@@ -62,9 +63,10 @@ from atelier2.host.atelier_api_client import (
 )
 from atelier2.host.instance_reader import (
     EVENTS_PATH,
+    FRAME_LIMIT_BYTES,
     HEALTH_PATH,
     MAXIMUM_RESPONSE_BYTES,
-    READER_PROCESS_NAME,
+    READER_MODULE,
     READER_STOP_GRACE_SECONDS,
     RUN_PATH,
     SEAT_PATH,
@@ -75,9 +77,10 @@ from atelier2.host.instance_reader import (
     ReaderFailure,
     ReaderPhase,
     ReadingBudget,
+    ReadingEnd,
+    ReadingRecord,
     absorb_record,
     read_instance,
-    read_into,
     send_reading,
     supervised_reading,
 )
@@ -89,6 +92,17 @@ from atelier2.host.instance_watch import (
     execute_watch,
     watch_exit_code,
     watch_report,
+)
+from tests.host.reader_entries import (
+    cannot_put_its_client_away,
+    dies_before_saying_anything,
+    hangs_on_after_closing_the_pipe,
+    ignores_being_stopped,
+    logs_a_reply_to_a_file,
+    names_its_trouble_then_dies,
+    signals_its_first_frame,
+    stops_mid_record,
+    writes_a_length_no_record_has,
 )
 
 SERVICE_URL = "http://127.0.0.1:8422"
@@ -184,15 +198,21 @@ def _served(
 def _read_here(transport: httpx.BaseTransport) -> InstanceReading:
     """One reading of a served instance, both halves in this process.
 
-    `send_reading` is exactly what the reading process runs and
+    `send_reading` is exactly what the reading process reads with and
     `absorb_record` exactly what the reporting process does with each record
     it receives; the pipe between them is the one thing a mock transport
-    cannot cross, and the real server proofs below cover it.
+    cannot cross, and the real server proofs below cover it. The last word
+    comes after the client is away, where the reading process sends it.
     """
 
     reading = InstanceReading()
+
+    def record(sent: ReadingRecord) -> None:
+        absorb_record(sent, reading)
+
     with AtelierApi(SERVICE_URL, transport=transport) as api:
-        send_reading(api, _TEST_BUDGET, lambda record: absorb_record(record, reading))
+        send_reading(api, _TEST_BUDGET, record)
+    record(ReadingEnd())
     reading.reader_exit_code = _CLEAN_EXIT_CODE
     return reading
 
@@ -1174,9 +1194,6 @@ def test_watch_exit_code_is_zero_only_without_findings() -> None:
 _DRIBBLE_INTERVAL_SECONDS = 0.02
 _ACCEPT_POLL_SECONDS = 0.05
 _SERVER_JOIN_SECONDS = 5.0
-_FRAME_SETTLE_SECONDS = 1.0
-"""Long enough for a reader to have taken a frame off the wire before this
-server tears the connection down under it."""
 
 _HEAD_END = b"\r\n\r\n"
 
@@ -1194,9 +1211,16 @@ _REAL_READ_BUDGET = ReadingBudget(
     event_sample_read_timeout_seconds=2.0,
 )
 """For a real reading whose own read timeouts are what end it: the deadline is
-wide, because the reading process's start is inside it, and the sample's
-timeout outlasts `_FRAME_SETTLE_SECONDS`, so a server that pauses before
-tearing its connection down is read as a reset rather than as silence."""
+wide, because the reading process's start is inside it, and each read timeout
+is long enough that a server which answers at loopback speed is never read as
+having gone quiet."""
+
+_HEALTHY_READ_BUDGET = dataclasses.replace(
+    _REAL_READ_BUDGET, event_sample_read_timeout_seconds=0.5
+)
+"""For the one reading that must come back with nothing to report: a feed that
+stays open and silent ends the sample after this, and a whole healthy instance
+is read in about that."""
 
 _REAL_DEADLINE_BUDGET = ReadingBudget(
     deadline_seconds=5.0,
@@ -1335,21 +1359,32 @@ def _frame_then_bytes_that_are_not_utf8(connection: socket.socket, stop: Event) 
     _sent(connection, b"data: \xff\xfe\n\n")
 
 
-def _frame_then_a_reset(connection: socket.socket, stop: Event) -> None:
+def _frame_then_a_reset_once_it_was_read(
+    arrived: Path,
+) -> Callable[[socket.socket, Event], None]:
     """A frame, then the peer vanishes: `SO_LINGER` with a zero timeout makes
     the close a reset rather than a graceful goodbye.
 
-    A reset discards whatever the reader had not taken off the wire yet, so the
-    frame needs its moment first. This waits rather than handshakes because the
-    peer here is the production reading process, which has nothing to say to a
-    test server about what it has read -- a second of loopback traffic is
-    thousands of times what one frame needs.
+    A reset discards whatever the reader had not taken off the wire yet, so
+    the frame has to be read before this fires -- and the reader says so
+    itself by leaving word at `arrived` (`signals_its_first_frame`), rather
+    than this server pausing long enough to hope for it.
     """
 
-    _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
-    stop.wait(_FRAME_SETTLE_SECONDS)
-    connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-    connection.close()
+    def speak(connection: socket.socket, stop: Event) -> None:
+        del stop
+        path = _request_path(connection)
+        if not path.endswith(EVENTS_PATH):
+            _answer_the_door(connection, path)
+            return
+        _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME))
+        _waited_for(arrived.exists)
+        connection.setsockopt(
+            socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+        )
+        connection.close()
+
+    return speak
 
 
 def _request_path(connection: socket.socket) -> str:
@@ -1370,10 +1405,10 @@ def _request_path(connection: socket.socket) -> str:
     return target[1].decode() if len(target) > 1 else ""
 
 
-def _short_json_answer() -> bytes:
-    body = b"{}"
+def _json_answer(body: bytes) -> bytes:
     return (
-        f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n"
+        f"HTTP/1.1 200 OK\r\nContent-Type: {JSON_MEDIA_TYPE}\r\n"
+        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
     ).encode() + body
 
 
@@ -1383,10 +1418,47 @@ def _half_a_frame_after_a_whole_one(connection: socket.socket, stop: Event) -> N
     and it ends it while a frame is incomplete."""
 
     if not _request_path(connection).endswith(EVENTS_PATH):
-        _sent(connection, _short_json_answer())
+        _sent(connection, _json_answer(b"{}"))
         return
     _sent(connection, _stream_head() + _sse(_STREAM_FAILED_FRAME) + b"data: {half")
     stop.wait(_SERVER_JOIN_SECONDS)
+
+
+_HEALTHY_DOORS: dict[str, bytes] = {
+    HEALTH_PATH: _DEFAULT_HEALTH.encode(),
+    SEAT_PATH: _DEFAULT_SEAT_ALIVE.encode(),
+    RUN_PATH: b"{}",
+    WORKFLOW_REVISIONS_PATH: b"{}",
+}
+_SILENT_FEED_SECONDS = 2.0
+"""Longer than the sample's own read timeout in `_HEALTHY_READ_BUDGET`, so the
+feed's silence is what ends the sample rather than this server giving up."""
+
+
+def _answer_the_door(connection: socket.socket, path: str) -> None:
+    """Whichever fixed door this path is, answered with its own published
+    document."""
+
+    for door, body in _HEALTHY_DOORS.items():
+        if path.endswith(door):
+            _sent(connection, _json_answer(body))
+            return
+
+
+def _answer_every_door_healthily(connection: socket.socket, stop: Event) -> None:
+    """A whole healthy instance: each door its own published document, and a
+    feed that opens and then says nothing.
+
+    The one served shape whose report is empty, so any finding against it can
+    only be the reading's own doing.
+    """
+
+    path = _request_path(connection)
+    if path.endswith(EVENTS_PATH):
+        _sent(connection, _stream_head())
+        stop.wait(_SILENT_FEED_SECONDS)
+        return
+    _answer_the_door(connection, path)
 
 
 def _answer_a_body_that_fills_the_cap(connection: socket.socket, stop: Event) -> None:
@@ -1395,15 +1467,7 @@ def _answer_a_body_that_fills_the_cap(connection: socket.socket, stop: Event) ->
     so each record has to be written and reassembled in pieces."""
 
     del stop
-    body = _BODY_THAT_FILLS_THE_CAP
-    _sent(
-        connection,
-        (
-            f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-            f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
-        ).encode()
-        + body,
-    )
+    _sent(connection, _json_answer(_BODY_THAT_FILLS_THE_CAP))
 
 
 def _frame_then_more_bytes_than_the_cap(connection: socket.socket, stop: Event) -> None:
@@ -1449,53 +1513,18 @@ def _answer_with_a_talkative_status_line(
     )
 
 
-_DELIBERATE_DEATH_CODE = 3
-_UNENDING_SLEEP_SECONDS = 60.0
-_CHATTER_LOG_CHANNEL = "ATELIER2_TEST_CHATTER_LOG"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _exit_before_saying_anything(
-    connection: Connection, service_url: str, budget: ReadingBudget
-) -> None:
-    """A reading process that dies where a real one would read. `os._exit`
-    skips every handler on the way out, which is what a crashed reader looks
-    like from the outside."""
+@pytest.fixture(autouse=True)
+def _reader_entries_are_on_the_readers_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reading processes below are modules of this suite, and a fresh
+    interpreter finds them only if the repository root is on its path --
+    whatever directory this suite was started from."""
 
-    del connection, service_url, budget
-    os._exit(_DELIBERATE_DEATH_CODE)
-
-
-def _ignore_being_stopped(
-    connection: Connection, service_url: str, budget: ReadingBudget
-) -> None:
-    """A reading process that will not go when it is asked: only a kill ends
-    this one, and the stopping must not wait for it to change its mind."""
-
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    del connection, service_url, budget
-    time.sleep(_UNENDING_SLEEP_SECONDS)
-
-
-def _read_with_a_file_handler_on_httpcore(
-    connection: Connection, service_url: str, budget: ReadingBudget
-) -> None:
-    """A reading process that carries the worst case for silence: a handler
-    hung on `httpcore.http11` itself, at `DEBUG`, with that logger's own level
-    set -- so neither a level on its parents nor a filter on the root's
-    handlers could keep a reply's headers out of that file."""
-
-    logger = logging.getLogger("httpcore.http11")
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(logging.FileHandler(os.environ[_CHATTER_LOG_CHANNEL]))
-    read_into(connection, service_url, budget)
-
-
-def _reader_processes_alive() -> list[str]:
-    return [
-        child.name
-        for child in multiprocessing.active_children()
-        if child.name == READER_PROCESS_NAME
-    ]
+    inherited = os.environ.get("PYTHONPATH")
+    path = [str(_REPOSITORY_ROOT), *([inherited] if inherited else [])]
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(path))
 
 
 def test_a_deadline_ends_the_reading_and_leaves_no_process_and_no_socket_behind() -> (
@@ -1504,7 +1533,7 @@ def test_a_deadline_ends_the_reading_and_leaves_no_process_and_no_socket_behind(
     """A real server that accepts and then says nothing, with every read
     timeout set far past the deadline, so only the deadline can end this. It
     ends the reading process with it: the server sees that peer's own close,
-    no reader is left running, and the report says where the reading stood
+    the process was reaped, and the report says where the reading stood
     instead of calling the instance clean."""
 
     with _LoopbackServer(_stay_silent) as server:
@@ -1522,8 +1551,8 @@ def test_a_deadline_ends_the_reading_and_leaves_no_process_and_no_socket_behind(
     assert report.endpoints_read == ()
     assert watch_exit_code(report) != 0
     assert reading.deadline_passed
+    assert reading.reader_reaped
     assert reading.reader_exit_code is not None
-    assert _reader_processes_alive() == []
     assert (
         elapsed < _REAL_DEADLINE_BUDGET.deadline_seconds + _DEADLINE_TOLERANCE_SECONDS
     )
@@ -1539,7 +1568,6 @@ def test_a_deadline_that_has_already_passed_asks_the_instance_nothing() -> None:
 
     assert reading.deadline_passed
     assert reading.doors == []
-    assert _reader_processes_alive() == []
 
 
 def test_a_reading_process_that_dies_is_reported_rather_than_read_as_clean() -> None:
@@ -1548,18 +1576,17 @@ def test_a_reading_process_that_dies_is_reported_rather_than_read_as_clean() -> 
     own, named with the code it died with."""
 
     reading = supervised_reading(
-        _exit_before_saying_anything, SERVICE_URL, _REAL_READ_BUDGET
+        dies_before_saying_anything.__name__, SERVICE_URL, _REAL_READ_BUDGET
     )
 
-    assert reading.reader_exit_code == _DELIBERATE_DEATH_CODE
+    assert reading.reader_exit_code == dies_before_saying_anything.DEATH_CODE
     assert not reading.reader_ended
     assert not reading.deadline_passed
     report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.READER_DIED
-    assert str(_DELIBERATE_DEATH_CODE) in finding.detail
+    assert str(dies_before_saying_anything.DEATH_CODE) in finding.detail
     assert watch_exit_code(report) != 0
-    assert _reader_processes_alive() == []
 
 
 _REAL_ENDINGS: tuple[
@@ -1582,13 +1609,6 @@ _REAL_ENDINGS: tuple[
     (
         "a frame, then bytes that are not UTF-8 text",
         _frame_then_bytes_that_are_not_utf8,
-        {WatchFindingKind.STREAM_FAILED, WatchFindingKind.SERVICE_UNREACHABLE},
-        EventSampleOutcome.REFUSED,
-        1,
-    ),
-    (
-        "a frame, then a connection reset",
-        _frame_then_a_reset,
         {WatchFindingKind.STREAM_FAILED, WatchFindingKind.SERVICE_UNREACHABLE},
         EventSampleOutcome.REFUSED,
         1,
@@ -1642,24 +1662,170 @@ def test_every_way_a_real_feed_can_end_reaches_the_report(
     } == kinds
 
 
+def test_a_frame_read_before_a_reset_reaches_the_report_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feed that sends a frame and is then torn down under the reader: what
+    the sample had already read stands in the report next to how it ended.
+
+    The reading says when it has the frame, so the reset lands at that moment
+    rather than after a wait long enough to hope for it.
+    """
+
+    arrived = tmp_path / "first-frame"
+    monkeypatch.setenv(signals_its_first_frame.FIRST_FRAME_CHANNEL, str(arrived))
+
+    with _LoopbackServer(_frame_then_a_reset_once_it_was_read(arrived)) as server:
+        served_url = server.url
+        reading = supervised_reading(
+            signals_its_first_frame.__name__, served_url, _REAL_READ_BUDGET
+        )
+
+    report = watch_report(served_url, reading, _REAL_READ_BUDGET)
+    assert reading.reader_ended
+    assert report.attention_feed_sample.outcome is EventSampleOutcome.REFUSED
+    assert report.attention_feed_sample.frames_read == 1
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.STREAM_FAILED,
+        WatchFindingKind.SERVICE_UNREACHABLE,
+    }
+
+
 def test_a_reader_that_breaks_names_the_phase_and_leaves_cleanly() -> None:
     """Trouble the reading did not expect is a record, not a traceback nobody
     reads: the phase it happened in and a category from this repository's own
     table, and then a clean exit -- a reader that broke is not a reader that
     died."""
 
-    reading = supervised_reading(read_into, _UNUSABLE_ADDRESS, _REAL_READ_BUDGET)
+    reading = supervised_reading(READER_MODULE, _UNUSABLE_ADDRESS, _REAL_READ_BUDGET)
 
     assert reading.failure == ReaderFailure(
         ReaderPhase.SETUP, TransportFailureCategory.UNCLASSIFIED
     )
-    assert reading.reader_exit_code == 0
+    assert reading.reader_exit_code == _CLEAN_EXIT_CODE
     assert not reading.reader_ended
     report = watch_report(_UNUSABLE_ADDRESS, reading, _REAL_READ_BUDGET)
     (finding,) = report.findings
     assert finding.kind == WatchFindingKind.READER_FAILED
     assert ReaderPhase.SETUP.value in finding.detail
     assert watch_exit_code(report) != 0
+
+
+def test_a_reader_that_cannot_put_its_client_away_says_so_and_nothing_else() -> None:
+    """A healthy instance read to the end, and then a client that will not be
+    put away: the finding names the phase after every door was already read,
+    and a cleanup that failed leaves no report that reads as complete -- but a
+    reader that broke and then left cleanly is not a reader that died."""
+
+    with _LoopbackServer(_answer_every_door_healthily) as server:
+        served_url = server.url
+        reading = supervised_reading(
+            cannot_put_its_client_away.__name__, served_url, _HEALTHY_READ_BUDGET
+        )
+
+    report = watch_report(served_url, reading, _HEALTHY_READ_BUDGET)
+    assert len(reading.doors) == len(WATCH_ENDPOINTS) - 1
+    assert not reading.reader_ended
+    assert reading.reader_exit_code == _CLEAN_EXIT_CODE
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.READER_FAILED
+    assert ReaderPhase.CLEANUP.value in finding.detail
+
+
+def test_a_reader_that_names_its_trouble_and_dies_anyway_is_both_findings() -> None:
+    """A reader that broke and then left cleanly is one finding; one that
+    broke and died is two, because the code it ended with is not what it
+    reported and nothing in the report may pass that off as accounted for."""
+
+    reading = supervised_reading(
+        names_its_trouble_then_dies.__name__, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    assert reading.failure == names_its_trouble_then_dies.TROUBLE
+    assert reading.reader_exit_code == names_its_trouble_then_dies.DEATH_CODE
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.READER_FAILED,
+        WatchFindingKind.READER_DIED,
+    }
+
+
+def test_a_reading_that_stops_mid_record_keeps_what_arrived_whole() -> None:
+    """Half a record is never a record: the one that arrived whole before it
+    stands in the report, and the reading that stopped in the middle of the
+    next is named as one that died rather than one that finished."""
+
+    reading = supervised_reading(
+        stops_mid_record.__name__, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    assert reading.failure is None
+    assert not reading.reader_ended
+    assert report.attention_feed_sample.frames_read == 1
+    assert {finding.kind for finding in report.findings} == {
+        WatchFindingKind.STREAM_FAILED,
+        WatchFindingKind.READER_DIED,
+    }
+
+
+@pytest.mark.parametrize(
+    "promised",
+    [0, FRAME_LIMIT_BYTES + 1],
+    ids=["a length of nothing", "a length beyond any record"],
+)
+def test_a_length_no_record_could_have_ends_the_gathering_as_corrupt(
+    promised: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pipe that stops making sense is named, never waited on: neither a
+    length of nothing nor one beyond anything this reading writes may leave
+    the reporting side waiting for bytes that would complete it."""
+
+    monkeypatch.setenv(
+        writes_a_length_no_record_has.FRAME_LENGTH_CHANNEL, str(promised)
+    )
+
+    reading = supervised_reading(
+        writes_a_length_no_record_has.__name__, SERVICE_URL, _REAL_READ_BUDGET
+    )
+
+    assert reading.failure == ReaderFailure(
+        ReaderPhase.READING, TransportFailureCategory.IPC_CORRUPT
+    )
+    assert not reading.deadline_passed
+    report = watch_report(SERVICE_URL, reading, _REAL_READ_BUDGET)
+    (finding,) = report.findings
+    assert finding.kind == WatchFindingKind.READER_FAILED
+    assert TransportFailureCategory.IPC_CORRUPT.value in finding.detail
+
+
+def test_an_interrupted_wait_still_kills_the_reading_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every step of the stopping stands in the one before it's `finally`, so
+    an interruption while waiting for a reading to end on its own cannot leave
+    that process running: the one that ignores being stopped is killed anyway,
+    and what interrupted the wait is what comes out."""
+
+    waited_on: list[subprocess.Popen[bytes]] = []
+    wait_for_it = subprocess.Popen.wait
+
+    def wait_that_is_interrupted_once(
+        reader: subprocess.Popen[bytes], timeout: float | None = None
+    ) -> int:
+        waited_on.append(reader)
+        if len(waited_on) == 1:
+            raise KeyboardInterrupt
+        return wait_for_it(reader, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait_that_is_interrupted_once)
+
+    with pytest.raises(KeyboardInterrupt):
+        supervised_reading(
+            hangs_on_after_closing_the_pipe.__name__, SERVICE_URL, _REAL_READ_BUDGET
+        )
+
+    assert waited_on[0].returncode == -signal.SIGKILL
 
 
 def test_a_reader_that_will_not_be_stopped_is_killed_and_reported() -> None:
@@ -1669,14 +1835,13 @@ def test_a_reader_that_will_not_be_stopped_is_killed_and_reported() -> None:
 
     started = time.monotonic()
     reading = supervised_reading(
-        _ignore_being_stopped, SERVICE_URL, _STUBBORN_READER_BUDGET
+        ignores_being_stopped.__name__, SERVICE_URL, _STUBBORN_READER_BUDGET
     )
     elapsed = time.monotonic() - started
 
     assert reading.deadline_passed
     assert reading.reader_reaped
     assert reading.reader_exit_code == -signal.SIGKILL
-    assert _reader_processes_alive() == []
     assert elapsed < (
         _STUBBORN_READER_BUDGET.deadline_seconds
         + _STOP_BUDGET_SECONDS
@@ -1696,11 +1861,11 @@ def test_nothing_the_reading_process_touches_can_log_a_reply(
     logger that carries a reply's headers."""
 
     chatter = tmp_path / "chatter.log"
-    monkeypatch.setenv(_CHATTER_LOG_CHANNEL, str(chatter))
+    monkeypatch.setenv(logs_a_reply_to_a_file.CHATTER_LOG_CHANNEL, str(chatter))
 
     with _LoopbackServer(_answer_with_a_talkative_status_line) as server:
         reading = supervised_reading(
-            _read_with_a_file_handler_on_httpcore, server.url, _REAL_READ_BUDGET
+            logs_a_reply_to_a_file.__name__, server.url, _REAL_READ_BUDGET
         )
 
     assert reading.reader_ended
@@ -1725,7 +1890,7 @@ def test_a_deadline_during_half_a_frame_keeps_every_whole_record() -> None:
     assert {WatchFindingKind.STREAM_FAILED, WatchFindingKind.READING_CUT_SHORT} <= {
         finding.kind for finding in report.findings
     }
-    assert _reader_processes_alive() == []
+    assert reading.reader_reaped
 
 
 def test_an_answer_larger_than_one_read_of_the_pipe_arrives_whole() -> None:
