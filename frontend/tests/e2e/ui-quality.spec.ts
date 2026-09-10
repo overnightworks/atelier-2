@@ -718,7 +718,11 @@ const overflowMotionCases: readonly OverflowMotionCase[] = [
   }
 ];
 
-test.describe("proves(core-surfaces-stay-inside-their-viewport-and-settle-without-motion): core surfaces have no page overflow and settle without animation under reduced motion", () => {
+// No `proves(...)` marker: #1495's own acceptance line is "none, Prüfscheibe
+// ohne geregelten Operator-Satz" -- no acceptance/*.toml sentence names
+// overflow or reduced motion, and a test may not invent one the gate would
+// then have to treat as ruled.
+test.describe("core surfaces have no page overflow and settle without animation under reduced motion", () => {
   for (const overflowMotionCase of overflowMotionCases) {
     for (const viewport of overflowViewports) {
       test(`${overflowMotionCase.name} at ${viewport.width}px`, async ({ page }) => {
