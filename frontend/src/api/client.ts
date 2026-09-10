@@ -39,10 +39,13 @@ import {
 } from "./generated/authAgentAndQueue.zod";
 import {
   AgentBindingResourceV2,
+  AssistantTurnEventResource,
+  AttemptTranscriptResource,
   DefectiveRunRowResource,
   NodeDetailResource,
   NodeRailResource,
   NodeRefusalOutputResource,
+  ProviderTerminalRefusalEventResource,
   RunCancellabilityResource,
   RunForkOriginResource,
   RunForkSuccessorResource,
@@ -52,6 +55,13 @@ import {
   RunResourceV3,
   RunTerminalAnswerOmittedResource,
   RunTerminalAnswerValueResource,
+  ToolCalledEventResource,
+  ToolReturnedEventResource,
+  TranscriptBeforeMomentsResource,
+  TranscriptRecordedMomentResource,
+  TranscriptTruncatedEventResource,
+  UnrecognisedProviderOutputEventResource,
+  UsageEventResource,
   VersionedRunPageResource,
 } from "./generated/runsRailAndNodes.zod";
 import {
@@ -567,117 +577,79 @@ export const runV3Schema = RunResourceV3.extend({
 });
 
 /**
- * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`),
- * mirrored here as a plain number the way every other server-owned wire bound
- * already is on this side.
+ * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`)
+ * happens to bound every transcript step string field in the document, but
+ * each field carries its own generated bound rather than one shared named
+ * schema, so this stays the one hand-kept literal a fixture can build an
+ * at-cap step against.
+ *
+ * @public re-exported for `client.test.ts`'s boundary fixture; no schema in
+ * this file reads it, since every step field's own generated bound already
+ * enforces it.
  */
 export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
 
-const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
-
-const transcriptRecordedMomentSchema = z
-  .object({
-    recorded_at: recordedAtStamp,
-    origin: z.literal("recorded"),
-  })
-  .strict();
-
-const transcriptBeforeMomentsSchema = z
-  .object({
-    origin: z.literal("v1-before-moments"),
-  })
-  .strict();
-
+// The document states this as a two-branch `oneOf` with a discriminator,
+// which orval's zod generator lowers to a plain `zod.union` -- weaker than
+// the document intends, since a union does not route on `origin` the way a
+// discriminated union does. Assembled here from the generated branches.
 const transcriptEventMomentSchema = z.discriminatedUnion("origin", [
-  transcriptRecordedMomentSchema,
-  transcriptBeforeMomentsSchema,
+  TranscriptRecordedMomentResource,
+  TranscriptBeforeMomentsResource,
 ]);
 
-export const toolCalledEventSchema = z
-  .object({
-    event: z.literal("tool-called"),
-    name: transcriptStepTextSchema,
-    arguments: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const toolCalledEventSchema = ToolCalledEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const toolReturnedEventSchema = z
-  .object({
-    event: z.literal("tool-returned"),
-    name: transcriptStepTextSchema,
-    result: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const toolReturnedEventSchema = ToolReturnedEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const assistantTurnEventSchema = z
-  .object({
-    event: z.literal("assistant-turn"),
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const assistantTurnEventSchema = AssistantTurnEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const usageEventSchema = z
-  .object({
-    event: z.literal("usage"),
-    input_tokens: nonnegativeSafeInteger,
-    output_tokens: nonnegativeSafeInteger,
-    cache_read_input_tokens: nonnegativeSafeInteger,
-    cache_creation_input_tokens: nonnegativeSafeInteger,
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const usageEventSchema = UsageEventResource.extend({
+  input_tokens: nonnegativeSafeInteger,
+  output_tokens: nonnegativeSafeInteger,
+  cache_read_input_tokens: nonnegativeSafeInteger,
+  cache_creation_input_tokens: nonnegativeSafeInteger,
+  moment: transcriptEventMomentSchema,
+});
 
-export const providerTerminalRefusalEventSchema = z
-  .object({
-    event: z.literal("provider-terminal-refusal"),
-    terminal_reason: transcriptStepTextSchema,
-    api_error_status: transcriptStepTextSchema,
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const providerTerminalRefusalEventSchema = ProviderTerminalRefusalEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const unrecognisedProviderOutputEventSchema = z
-  .object({
-    event: z.literal("unrecognised-provider-output"),
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const unrecognisedProviderOutputEventSchema = UnrecognisedProviderOutputEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const transcriptTruncatedEventSchema = z
-  .object({
-    event: z.literal("transcript-truncated"),
-    dropped_events: positiveSafeInteger,
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const transcriptTruncatedEventSchema = TranscriptTruncatedEventResource.extend({
+  dropped_events: positiveSafeInteger,
+  moment: transcriptEventMomentSchema,
+});
 
-export const attemptTranscriptSchema = z
-  .object({
-    events: z
-      .array(
-        z.discriminatedUnion("event", [
-          toolCalledEventSchema,
-          toolReturnedEventSchema,
-          assistantTurnEventSchema,
-          usageEventSchema,
-          providerTerminalRefusalEventSchema,
-          unrecognisedProviderOutputEventSchema,
-          transcriptTruncatedEventSchema,
-        ]),
-      )
-      .min(1),
-  })
-  .strict();
+// The document states `AttemptTranscriptResource.events` items as a
+// discriminator-tagged `oneOf` over the same seven event kinds, which orval
+// again lowers to a plain `zod.union`; assembled here as a real
+// discriminated union over the event branches above.
+export const attemptTranscriptSchema = AttemptTranscriptResource.extend({
+  events: z
+    .array(
+      z.discriminatedUnion("event", [
+        toolCalledEventSchema,
+        toolReturnedEventSchema,
+        assistantTurnEventSchema,
+        usageEventSchema,
+        providerTerminalRefusalEventSchema,
+        unrecognisedProviderOutputEventSchema,
+        transcriptTruncatedEventSchema,
+      ]),
+    )
+    .min(1),
+});
 
 export type AttemptTranscript = z.infer<typeof attemptTranscriptSchema>;
 
