@@ -1010,6 +1010,35 @@ def test_first_request_reuses_schema_built_during_app_construction(
     assert generated == 1
 
 
+def test_the_document_route_answers_head_like_a_plain_get_route_would() -> None:
+    """FastAPI's own automatic `openapi_url` route is a plain Starlette
+    `Route`, which admits HEAD on a declared GET implicitly; the real
+    `APIRoute` this application installs instead so the document meets
+    #1501's guard does not do that on its own, so the route names HEAD
+    explicitly to keep answering it the way it always did.
+    """
+
+    response = TestClient(served_app()).head(API_PREFIX + "/openapi.json")
+
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+def test_the_document_route_names_its_root_path_as_a_server() -> None:
+    """Mirrors FastAPI's own automatic `openapi_url` route: a server this
+    app sits behind under a path prefix is named in the document it serves,
+    so a client resolving the document's own relative URLs resolves them
+    through the same prefix it reached this route by.
+    """
+
+    response = TestClient(served_app(), root_path="/prefix").get(
+        API_PREFIX + "/openapi.json"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["servers"] == [{"url": "/prefix"}]
+
+
 def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
     """The rail's attempt is where a reader meets the attempt vocabulary.
 

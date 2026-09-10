@@ -11641,6 +11641,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAdapterOperationUnknownField"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -12130,6 +12133,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAgentDefinitionDocumentTooLarge"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -12227,6 +12233,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -12311,6 +12331,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemArtifactTooLarge"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -12402,6 +12425,20 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemArtifactNotFound"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -12724,6 +12761,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemBudgetValueNotAPositiveInt64"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -13357,6 +13397,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -13408,6 +13462,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
           },
           "500": {
             "content": {
@@ -14136,6 +14204,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -14209,6 +14291,20 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemProjectUnknown"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -14306,6 +14402,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -14392,6 +14502,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemProjectModelDefaultsMissing"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -14790,6 +14914,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -15030,6 +15168,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -15113,6 +15265,20 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemProjectUnknown"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -15359,6 +15525,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemProjectSourceUnknown"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -16273,6 +16453,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -16935,6 +17129,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -17205,6 +17413,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemNodeNotFound"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -17528,6 +17750,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemSchemaNotASchema"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -17626,6 +17851,20 @@
             },
             "description": "RFC 9457 problem"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -17657,6 +17896,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
           },
           "500": {
             "content": {
@@ -17761,6 +18014,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemToolUnknownField"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -18000,6 +18256,9 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemInvalidWorkflowDocument"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
@@ -18089,6 +18348,20 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ProblemWorkflowRevisionNotFound"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "RFC 9457 problem"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProblemInvalidRequest"
                     }
                   ]
                 }
