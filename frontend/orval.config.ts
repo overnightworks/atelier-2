@@ -4,6 +4,12 @@ import {
   type OpenApiParameterObject,
 } from "orval";
 
+import {
+  collectSchemaNames,
+  findRefs,
+  synthesizeProblemUnion,
+} from "./orval.transform";
+
 /**
  * Orval's `input.filters` can only scope generation by OpenAPI tags, which
  * this document does not carry, so a transformer picks the roots instead:
@@ -183,30 +189,6 @@ const AUTH_AGENT_AND_QUEUE_ROOTS: readonly OperationRoot[] = [
   },
 ];
 
-function findRefs(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(findRefs);
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const ownRef = typeof record.$ref === "string" ? [record.$ref] : [];
-    return ownRef.concat(Object.values(record).flatMap(findRefs));
-  }
-  return [];
-}
-
-function collectSchemaNames(
-  refs: string[],
-  schemas: Record<string, unknown>,
-  collected = new Set<string>(),
-): Set<string> {
-  for (const ref of refs) {
-    const match = /^#\/components\/schemas\/(.+)$/.exec(ref);
-    if (!match || collected.has(match[1])) continue;
-    collected.add(match[1]);
-    collectSchemaNames(findRefs(schemas[match[1]]), schemas, collected);
-  }
-  return collected;
-}
-
 function restrictToOperations(roots: readonly OperationRoot[]) {
   return function restrict(spec: OpenApiDocument): OpenApiDocument {
     const schemas = spec.components?.schemas ?? {};
@@ -283,6 +265,14 @@ const ZOD_SCHEMAS_ONLY = {
   },
 } as const;
 
+// The synthesized problem root carries a `discriminator`, so this project
+// alone asks orval to lower it to `zod.discriminatedUnion` instead of a
+// plain `zod.union` (`@orval/zod`'s `generateDiscriminatedUnion` reads that
+// `discriminator.propertyName` and each member's literal `type`).
+const PROBLEM_SCHEMAS_ONLY = {
+  zod: { ...ZOD_SCHEMAS_ONLY.zod, generateDiscriminatedUnion: true },
+} as const;
+
 export default defineConfig({
   cockpit: {
     input: {
@@ -345,6 +335,18 @@ export default defineConfig({
       mode: "single",
       client: "zod",
       override: ZOD_SCHEMAS_ONLY,
+    },
+  },
+  problem: {
+    input: {
+      target: "../tests/api/openapi_frozen.json",
+      override: { transformer: synthesizeProblemUnion },
+    },
+    output: {
+      target: "./src/api/generated/problem.zod.ts",
+      mode: "single",
+      client: "zod",
+      override: PROBLEM_SCHEMAS_ONLY,
     },
   },
 });
