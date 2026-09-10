@@ -41,7 +41,6 @@ from atelier2.contracts.tool_grants_v3 import (
     read_tool_grant_document,
     redeems_as_platform_effect,
 )
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
@@ -210,7 +209,7 @@ def resolve_document_references(
     cache: ReferenceSettlementCache = {} if settlements is None else settlements
     resolutions: list[ResolvedReference] = []
     redeemed_grant_shapes: set[tuple[str, bool]] = set()
-    for declared in declared_through(graph, SubworkflowBinding()):
+    for declared in declared_through(graph):
         resolution, revision = _settled_resolution(declared, resolver, cache)
         match resolution:
             case ResolvedReference():
