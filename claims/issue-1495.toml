@@ -1,0 +1,7 @@
+claim_id = "14938284ce774e6281e22d58647eb565"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "31774fec09a8ede09af598eb881e41e32480244b"
+branch = "claude/issue-1495-ui-motion-overflow"
+scope = ["frontend/tests/e2e/ui-quality.spec.ts"]
+opened_commit = "8782f167ec3271f1c30998491e06b18e04090fdf"
