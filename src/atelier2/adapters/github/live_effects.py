@@ -56,7 +56,10 @@ import githubkit.exception
 import httpx
 from githubkit_schemas.latest.types import ReposOwnerRepoPullsPostBodyType
 
-from atelier2.adapters.git_transport.effects import TokenFileProblem, read_token_file
+from atelier2.adapters.git_transport.credentials import (
+    TokenFileProblem,
+    read_token_file,
+)
 from atelier2.adapters.github.effects import (
     GitHubEffectRefused,
     OpenPullRequestRequest,

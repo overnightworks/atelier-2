@@ -6,17 +6,20 @@ import hashlib
 import logging
 import os
 import re
-import shlex
 import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from atelier2.adapters.git_transport.credentials import (
+    TokenFileProblem,
+    credential_helper_arguments,
+    read_token_file,
+)
 from atelier2.adapters.project_source import isolated_git_environment
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
@@ -67,55 +70,22 @@ class GitCredentialUnresolvable(GitTransportRefused):
     """The remote's credential file holds no well-formed token (`platform-credential-unresolvable`)."""
 
 
-class TokenFileProblem(StrEnum):
-    """Why a credential file holds no token a request may carry, never quoting it."""
+def _checked_token(credential_file: Path | None) -> str | None:
+    """The remote's token, read and checked once for one remote call.
 
-    MISSING = "does not exist"
-    UNREADABLE = "is not readable"
-    EMPTY = "is empty"
-    MALFORMED = "does not hold exactly one token of visible ASCII characters"
-
-
-_VISIBLE_ASCII = range(0x21, 0x7F)
-
-
-def read_token_file(path: Path) -> str | TokenFileProblem:
-    """The one token a credential file holds, or why it holds none.
-
-    The owner of what a token file may hold, for every adapter that sends one:
-    visible ASCII once the edges are trimmed, since anything else can reach an
-    HTTP header or a git prompt where a protocol error or a log prints it.
-    """
-
-    try:
-        contents = path.read_bytes()
-    except FileNotFoundError:
-        return TokenFileProblem.MISSING
-    except OSError:
-        return TokenFileProblem.UNREADABLE
-    token = contents.strip()
-    if not token:
-        return TokenFileProblem.EMPTY
-    if any(byte not in _VISIBLE_ASCII for byte in token):
-        return TokenFileProblem.MALFORMED
-    return token.decode("ascii")
-
-
-def _require_a_readable_token(credential_file: Path | None) -> None:
-    """Refuse a remote call whose credential helper would not answer git with one token.
-
-    Checked per remote call, so a token set while the host serves counts; what
-    is read here is dropped at once, since the helper git invokes reads the file.
+    Checked per call, so a token set while the host serves counts; `None` where
+    the remote needs no credential.
     """
 
     if credential_file is None:
-        return
+        return None
     token = read_token_file(credential_file)
     if isinstance(token, TokenFileProblem):
         raise GitCredentialUnresolvable(
             f"platform-credential-unresolvable: git credential file "
             f"{credential_file} {token.value}"
         )
+    return token
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,32 +731,19 @@ class GitTransportEffectAdapter:
             return self._performed(request, expected)
         return _unknown(intent, observation)
 
-    def _credential_arguments(self) -> tuple[str, ...]:
-        credential_file = self._remote.credential_file
-        if credential_file is None:
-            return ()
-        path = shlex.quote(str(credential_file))
-        helper = (
-            '!f() { test "$1" = get || exit 0; '
-            "printf 'username=x-access-token\\npassword='; "
-            f"/bin/cat {path}; printf '\\n'; }}; f"
-        )
-        arguments = ["-c", f"credential.helper={helper}"]
-        return tuple(arguments)
-
     def _remote_git(
         self, arguments: tuple[str, ...], *, in_store: bool = False
     ) -> GitCommandResult:
-        _require_a_readable_token(self._remote.credential_file)
-        prefix = (*_HOOK_FREE_ARGUMENTS, *self._credential_arguments())
+        token = _checked_token(self._remote.credential_file)
         environment = isolated_git_environment()
         if in_store:
             environment["GIT_DIR"] = str(self._candidate_store)
-        return self._command_runner.run(
-            (*prefix, *arguments),
-            working_directory=self._candidate_store.parent,
-            environment=environment,
-        )
+        with credential_helper_arguments(token) as credential:
+            return self._command_runner.run(
+                (*_HOOK_FREE_ARGUMENTS, *credential, *arguments),
+                working_directory=self._candidate_store.parent,
+                environment=environment,
+            )
 
     def _store_git(
         self, arguments: tuple[str, ...], standard_input: bytes | None = None

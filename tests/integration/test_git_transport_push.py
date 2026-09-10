@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import re
+import shlex
 import subprocess
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +55,7 @@ from atelier2.ports.effects import (
     HeadBranchPullRequestsUnreadable,
     PullRequestOpenOnHeadBranch,
 )
+from tests.acceptance.test_p3_token_canary import GitHttpRemote
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 
 ATTEMPT_ID = "a1" * 32
@@ -138,7 +142,7 @@ def _intent(
 
 def _factory(
     store: Path,
-    remote: Path,
+    remote: Path | str,
     runner: GitCommandRunner | None = None,
     pull_requests: FakeHeadBranchPullRequests | None = None,
     credential_file: Path | None = None,
@@ -662,6 +666,172 @@ def test_a_token_set_after_the_adapter_opened_licenses_the_next_push(
     assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == (
         request.expected_commit_oid(intent.request.request_hash.value)
     )
+
+
+@dataclass
+class _RealGitAfterTheCheck:
+    """Real git, keeping all it printed; `swap` replaces a file only while each git process runs."""
+
+    swap: tuple[Path, bytes] | None = None
+    printed: list[bytes] = field(default_factory=list)
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        if self.swap is None:
+            return self._run_git(
+                arguments, working_directory, environment, standard_input
+            )
+        swapped_file, swapped_to = self.swap
+        checked = swapped_file.read_bytes()
+        swapped_file.write_bytes(swapped_to)
+        try:
+            return self._run_git(
+                arguments, working_directory, environment, standard_input
+            )
+        finally:
+            swapped_file.write_bytes(checked)
+
+    def _run_git(
+        self,
+        arguments: tuple[str, ...],
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None,
+    ) -> GitCommandResult:
+        result = self.delegate.run(
+            arguments,
+            working_directory=working_directory,
+            environment=environment,
+            standard_input=standard_input,
+        )
+        self.printed.extend((result.stdout, result.stderr))
+        return result
+
+
+def _basic_authorization_digest(token: str) -> bytes:
+    credentials = base64.b64encode(b"x-access-token:" + token.encode("ascii"))
+    return sha256(b"Basic " + credentials).digest()
+
+
+@pytest.mark.parametrize(
+    ("token_file", "swapped_to"),
+    [
+        pytest.param(b"\nsentinel+token/1504", None, id="leading-newline"),
+        pytest.param(b"sentinel+token/1504\n\n", None, id="trailing-blank-lines"),
+        pytest.param(
+            b"sentinel+token/1504",
+            b"swapped\nsentinel+token/1504",
+            id="swapped-after-the-check",
+        ),
+    ],
+)
+def test_git_is_answered_with_the_checked_token_and_prints_none_of_the_file(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    token_file: bytes,
+    swapped_to: bytes | None,
+) -> None:
+    token = "sentinel+token/1504"
+    store, remote, base, tree = _repositories(tmp_path)
+    _git(remote, "config", "http.receivepack", "true")
+    credential_file = tmp_path / "token"
+    credential_file.write_bytes(token_file)
+    runner = _RealGitAfterTheCheck(
+        None if swapped_to is None else (credential_file, swapped_to)
+    )
+    caplog.set_level(logging.DEBUG)
+    with GitHttpRemote(tmp_path, _basic_authorization_digest(token)) as http_remote:
+        factory = _factory(
+            store, http_remote.url, runner, credential_file=credential_file
+        )
+        intent, _request = _intent(factory, base, tree)
+        adapter = factory.open()
+        try:
+            performed = adapter.execute(intent)
+        finally:
+            adapter.close()
+
+    printed = b"\n".join(runner.printed)
+    assert isinstance(performed, PerformedEffect), performed
+    assert token.encode() not in printed
+    assert b"swapped" not in printed
+    assert token not in repr(performed)
+    assert token not in caplog.text
+
+
+@dataclass
+class _AnswerFileWitness:
+    """Looks at the file git's credential helper would read, then lets the git call fail."""
+
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+    answer_files: list[Path] = field(default_factory=list)
+    modes: list[tuple[int, int]] = field(default_factory=list)
+    exposed: list[str] = field(default_factory=list)
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        helper = next(
+            (argument for argument in arguments if "credential.helper=" in argument),
+            None,
+        )
+        if helper is None:
+            return self.delegate.run(
+                arguments,
+                working_directory=working_directory,
+                environment=environment,
+                standard_input=standard_input,
+            )
+        read = re.search(r"/bin/cat (\S+);", helper)
+        assert read is not None, helper
+        answer_file = Path(shlex.split(read.group(1))[0])
+        self.answer_files.append(answer_file)
+        self.modes.append(
+            (
+                answer_file.stat().st_mode & 0o777,
+                answer_file.parent.stat().st_mode & 0o777,
+            )
+        )
+        self.exposed.extend((*arguments, *environment.values()))
+        raise OSError("git vanished mid-call")
+
+
+def test_the_checked_token_waits_in_a_private_file_only_while_git_runs(
+    tmp_path: Path,
+) -> None:
+    token = "sentinel+token/1504"
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    credential_file.write_text(token, encoding="ascii")
+    witness = _AnswerFileWitness()
+    factory = _factory(store, remote, witness, credential_file=credential_file)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(OSError, match="git vanished mid-call"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert witness.modes == [(0o600, 0o700)]
+    assert all(not answer.parent.exists() for answer in witness.answer_files)
+    assert all(token not in exposed for exposed in witness.exposed)
 
 
 def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(
