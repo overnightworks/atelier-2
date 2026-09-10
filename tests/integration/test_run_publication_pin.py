@@ -17,11 +17,13 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from atelier2.adapters.dbos.advancer import prepared_effect_intent
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
+from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_publications import (
     NodeInRun,
     RunPublication,
@@ -32,11 +34,13 @@ from atelier2.adapters.dbos.run_publications import (
 from atelier2.adapters.dbos.run_transitions import load_graph
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.git_transport.effects import (
     GitRemote,
     GitTransportEffectAdapterFactory,
 )
 from atelier2.adapters.project_source import LocalGitProjectSource
+from atelier2.adapters.project_verification import declared_project
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
@@ -157,6 +161,17 @@ class PublishingRun:
                 encode_found(performed, ConfirmationSource.ADAPTER_EXECUTION),
             )
         return performed.effect_id.value
+
+    def binding_of(self, publisher: Publisher) -> EncodedAgentBindingV2:
+        """What the run's own binding step records for the node it stands on."""
+        encoded = _node_binding(
+            self.runtime.datasource,
+            RUN,
+            self.revision.revision_hash,
+            publisher.node_id,
+            declared_project(self.project, self.runtime.settings.database_path),
+        )
+        return cast(EncodedAgentBindingV2, encoded)
 
     def pin_of(self, publisher: Publisher) -> ProjectSourcePin:
         """What this node's binding would pin, asked exactly as the binding asks."""
@@ -363,6 +378,31 @@ def test_a_replaced_publisher_stands_where_its_original_attempt_stood(
         run.move_trunk({"later.txt": "what trunk gained after that\n"})
 
         assert run.pin_of(replaced) == started_on
+
+
+def test_the_binding_of_a_replaced_attempt_carries_its_own_publication(
+    tmp_path: Path,
+) -> None:
+    """The binding step itself, not the reader asked beside it, records the pin.
+
+    A replacement attempt is composed by the same step as the original, so the
+    node the run stands on is bound a second time after its push is confirmed
+    and trunk has moved. What it records is what the attempt works in.
+    """
+    with publishing_run(tmp_path, "Build alone", (BUILD,)) as run:
+        started_on = LocalGitProjectSource(run.project).head()
+        built = run.keep(BUILD, {"kept.txt": "what the builder made\n"})
+        run.forget_candidates()
+        run.publish(BUILD, built, started_on.commit)
+        moved_to = run.move_trunk({"trunk.txt": "what trunk gained beside the run\n"})
+
+        binding = run.binding_of(BUILD)
+
+        assert (binding.get("project_commit"), binding.get("project_tree")) == (
+            started_on.commit,
+            started_on.tree,
+        )
+        assert binding.get("project_commit") != moved_to.commit
 
 
 def test_publications_the_workflow_never_ordered_are_refused_rather_than_guessed() -> (

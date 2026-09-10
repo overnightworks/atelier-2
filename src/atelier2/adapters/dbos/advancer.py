@@ -25,6 +25,7 @@ from atelier2.adapters.dbos.effect_store import (
     load_intent,
 )
 from atelier2.adapters.dbos.run_publications import (
+    DISAGREES_WITH_OPEN_PR_HEAD,
     NodeInRun,
     RunPublicationRefused,
     confirmed_publication,
@@ -713,9 +714,7 @@ def _confirmed_push_branch(
         session, NodeInRun(run_id, revision_hash, predecessor.id, round_ordinal)
     )
     if publication.branch != _head_branch(session, run_id, project_id):
-        raise RunPublicationRefused(
-            "confirmed push receipt disagrees with the open-pr head"
-        )
+        raise RunPublicationRefused(DISAGREES_WITH_OPEN_PR_HEAD)
     return publication.branch
 
 

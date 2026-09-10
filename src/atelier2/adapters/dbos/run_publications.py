@@ -52,6 +52,13 @@ class RunPublicationRefused(RuntimeError):
     """A run's confirmed publications cannot answer, so nothing is pinned or opened."""
 
 
+_MISSING_FOR_OPEN_PR = (
+    "project open-pr Action requires its predecessor's confirmed push receipt"
+)
+DISAGREES_WITH_OPEN_PR_HEAD = "confirmed push receipt disagrees with the open-pr head"
+_DISAGREES_WITH_ITS_PUSH = "confirmed push receipt disagrees with the push it reports"
+
+
 @dataclass(frozen=True, slots=True)
 class NodeInRun:
     """One node's execution: which run, which revision of it, and which round.
@@ -77,7 +84,11 @@ class RunPublication:
 
 
 def confirmed_publication(session: Any, node: NodeInRun) -> RunPublication:
-    """The publication this exact node confirmed, or a refusal naming why not."""
+    """The publication this exact node confirmed, for the open-pr standing on it.
+
+    Its refusals name that open-pr, because the head a pull request would be
+    opened over is what the reader of such a refusal is holding.
+    """
     record = (
         session.execute(
             sa.select(effect_receipts).where(
@@ -88,10 +99,8 @@ def confirmed_publication(session: Any, node: NodeInRun) -> RunPublication:
         .one_or_none()
     )
     if record is None:
-        raise RunPublicationRefused(
-            "this node has no confirmed push receipt to publish over"
-        )
-    return _publication_from(record, node)
+        raise RunPublicationRefused(_MISSING_FOR_OPEN_PR)
+    return _publication_from(record, node, DISAGREES_WITH_OPEN_PR_HEAD)
 
 
 def pinned_source_for(
@@ -122,7 +131,7 @@ def last_in_workflow_order(
     decide by accident which tree the run goes on standing on.
     """
     for node_id, publication in published.items():
-        if set(published) - {node_id} <= _ordered_before(graph, node_id):
+        if set(published) - {node_id} <= graph.dependency_closure(node_id):
             return publication
     raise RunPublicationRefused(
         "the workflow orders none of the confirmed publications of "
@@ -147,11 +156,11 @@ def _publishers_up_to(
     session: Any, graph: WorkflowGraphV3, node_id: str
 ) -> frozenset[str]:
     """Every node holding a push grant that this node is, or that stands before it."""
-    ordered_before = _ordered_before(graph, node_id) | {node_id}
+    ordered_at_or_before = graph.dependency_closure(node_id) | {node_id}
     return frozenset(
         candidate.id
         for candidate in graph.nodes
-        if candidate.id in ordered_before and _publishes(session, candidate)
+        if candidate.id in ordered_at_or_before and _publishes(session, candidate)
     )
 
 
@@ -160,19 +169,6 @@ def _publishes(session: Any, node: WorkflowNodeV3) -> bool:
         return False
     grant = read_pinned_effect_tool_grant(session, node)
     return push_atelier_commit_capability_for(grant) is not None
-
-
-def _ordered_before(graph: WorkflowGraphV3, node_id: str) -> frozenset[str]:
-    """Every node the graph's dependency edges place before this one, however far."""
-    reached: set[str] = set()
-    pending = list(graph.node(node_id).depends_on)
-    while pending:
-        current = pending.pop()
-        if current in reached:
-            continue
-        reached.add(current)
-        pending.extend(graph.node(current).depends_on)
-    return frozenset(reached)
 
 
 def _confirmed_publications(
@@ -203,7 +199,7 @@ def _confirmed_publications(
     for record in records:
         publisher = publisher_of_key[str(record["logical_key"])]
         published[publisher] = _publication_from(
-            record, _execution_of(graph, node, publisher)
+            record, _execution_of(graph, node, publisher), _DISAGREES_WITH_ITS_PUSH
         )
     return published
 
@@ -223,7 +219,10 @@ def _logical_key(node: NodeInRun) -> str:
     ).value
 
 
-def _publication_from(record: Mapping[Any, Any], node: NodeInRun) -> RunPublication:
+def _publication_from(
+    record: Mapping[Any, Any], node: NodeInRun, disagreement: str
+) -> RunPublication:
+    """The publication one receipt describes, refused in the caller's own words."""
     try:
         receipt = receipt_from_record(record)
         request = PushAtelierCommit.from_canonical_bytes(receipt.intent.request.payload)
@@ -232,7 +231,7 @@ def _publication_from(record: Mapping[Any, Any], node: NodeInRun) -> RunPublicat
     except (TypeError, ValueError) as error:
         raise RunPublicationRefused("confirmed push receipt is corrupt") from error
     if _disagrees(receipt, request, result, node):
-        raise RunPublicationRefused("confirmed push receipt disagrees with itself")
+        raise RunPublicationRefused(disagreement)
     return RunPublication(branch, request.base_commit, request.candidate_tree)
 
 
