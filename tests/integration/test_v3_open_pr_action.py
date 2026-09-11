@@ -1153,6 +1153,7 @@ def test_a_project_open_pr_action_refuses_the_report_a_later_publisher_overtook(
     started_runtime, github, _listing, _atelier_sqlite = runtime
     workflow = _run_that_published_twice(started_runtime, "build")
     opened_before = len(github.recorded_pull_requests())
+    calls_before = (github.readback_calls, github.execute_calls)
 
     with (
         started_runtime.engine.begin() as connection,
@@ -1170,6 +1171,7 @@ def test_a_project_open_pr_action_refuses_the_report_a_later_publisher_overtook(
         )
 
     assert len(github.recorded_pull_requests()) == opened_before
+    assert calls_before == (github.readback_calls, github.execute_calls)
 
 
 def test_a_project_open_pr_action_opens_over_the_last_publication_of_its_run(
