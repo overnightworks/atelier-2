@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from atelier2.adapters.dbos.schema import attempt_instants, event_instants, run_instants
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.contracts.when import RecordedAt, recorded_instant
 
 
-def record_run_started(session: Any, run_id: str, at: RecordedAt | None = None) -> None:
+def record_run_started(
+    session: SqlExecutor, run_id: str, at: RecordedAt | None = None
+) -> None:
     session.execute(
         run_instants.insert().values(
             run_id=run_id,
@@ -18,7 +19,9 @@ def record_run_started(session: Any, run_id: str, at: RecordedAt | None = None) 
     )
 
 
-def record_run_ended(session: Any, run_id: str, at: RecordedAt | None = None) -> None:
+def record_run_ended(
+    session: SqlExecutor, run_id: str, at: RecordedAt | None = None
+) -> None:
     session.execute(
         run_instants.update()
         .where(run_instants.c.run_id == run_id, run_instants.c.ended_at.is_(None))
@@ -27,7 +30,7 @@ def record_run_ended(session: Any, run_id: str, at: RecordedAt | None = None) ->
 
 
 def record_attempt_started(
-    session: Any, attempt_id: str, at: RecordedAt | None = None
+    session: SqlExecutor, attempt_id: str, at: RecordedAt | None = None
 ) -> None:
     session.execute(
         attempt_instants.insert().values(
@@ -39,7 +42,7 @@ def record_attempt_started(
 
 
 def record_attempt_ended(
-    session: Any, attempt_id: str, at: RecordedAt | None = None
+    session: SqlExecutor, attempt_id: str, at: RecordedAt | None = None
 ) -> None:
     session.execute(
         attempt_instants.update()
@@ -52,7 +55,7 @@ def record_attempt_ended(
 
 
 def record_event_instant(
-    session: Any, run_id: str, event_sequence: int, at: RecordedAt | None = None
+    session: SqlExecutor, run_id: str, event_sequence: int, at: RecordedAt | None = None
 ) -> None:
     session.execute(
         event_instants.insert().values(

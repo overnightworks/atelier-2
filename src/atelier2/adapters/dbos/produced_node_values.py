@@ -18,10 +18,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
 
 from atelier2.adapters.dbos.run_store import load_published_schema_document
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
@@ -58,7 +58,7 @@ class NoProducibleValue:
 
 
 def declared_output_schema_document(
-    session: Any, node_id: str, declared: NodeOutput
+    session: SqlExecutor, node_id: str, declared: NodeOutput
 ) -> bytes:
     """The exact document this node's author pinned as its output's schema.
 
