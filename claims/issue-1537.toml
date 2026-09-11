@@ -1,0 +1,7 @@
+claim_id = "85f5cf5aaed64c95a747edc378267f14"
+agent = "claude-head"
+role = "builder"
+base = "324ee517cad8636406649a871edb6d5dc4cb55da"
+branch = "claude/issue-1537-run-store-session"
+scope = ["src/atelier2/adapters/dbos/run_store.py", "src/atelier2/adapters/dbos/sql_executor.py"]
+opened_commit = "0f425d97af32399ce7c54a557505536db02a1b52"
