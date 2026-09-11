@@ -1,0 +1,7 @@
+claim_id = "1f400c200dfc4ee1b8d8c17e439f7bef"
+agent = "claude-head"
+role = "builder"
+base = "19a053e34c4453b13999a936a4872fde6718d47a"
+branch = "claude/issue-1540-headless-canary-prompt"
+scope = ["workflows/provider-canary-headless.yaml", "tests/host/test_provider_canary.py", "src/atelier2/host/provider_canary.py"]
+opened_commit = "07056cfb7c3663d0f84ecfc0b859e2a61c3a44d7"
