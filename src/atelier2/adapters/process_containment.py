@@ -13,10 +13,12 @@ import errno
 import os
 import platform
 import subprocess
+from functools import cache
 from pathlib import Path
 from typing import NamedTuple
 
-_CGROUP_V2_MOUNT = Path("/sys/fs/cgroup")
+CGROUP_V2_MOUNT = Path("/sys/fs/cgroup")
+"""Where a host that supervises this way mounts the one cgroup v2 hierarchy."""
 
 
 class _PidfdSyscalls(NamedTuple):
@@ -36,7 +38,15 @@ _PIDFD_SYSCALLS_BY_MACHINE = {
 }
 
 
+@cache
 def _pidfd_syscalls() -> _PidfdSyscalls:
+    """The numbers this architecture answers the two pidfd calls on.
+
+    Asked where a pidfd is first needed rather than while this module loads,
+    because only a fenced launch signals through one: an architecture nobody
+    has checked still supervises its unfenced launches through `killpg`.
+    """
+
     machine = platform.machine()
     try:
         return _PIDFD_SYSCALLS_BY_MACHINE[machine]
@@ -47,7 +57,6 @@ def _pidfd_syscalls() -> _PidfdSyscalls:
         ) from None
 
 
-_PIDFD = _pidfd_syscalls()
 _LIBC = ctypes.CDLL(None, use_errno=True)
 
 
@@ -141,7 +150,7 @@ def _ask_one_member(pid: int, membership: bytes, signal_number: int) -> bool:
 def _membership_line(cgroup: Path) -> bytes:
     """The `/proc/<pid>/cgroup` line every process inside `cgroup` carries."""
 
-    return b"0::" + os.fsencode(f"/{cgroup.relative_to(_CGROUP_V2_MOUNT)}")
+    return b"0::" + os.fsencode(f"/{cgroup.relative_to(CGROUP_V2_MOUNT)}")
 
 
 def _stands_inside(pid: int, membership: bytes) -> bool:
@@ -155,7 +164,7 @@ def _stands_inside(pid: int, membership: bytes) -> bool:
 def _pinned_pidfd(pid: int) -> int | None:
     """A descriptor pinning what this number names now, or `None` once gone."""
 
-    descriptor = _LIBC.syscall(_PIDFD.open_by_pid, pid, 0)
+    descriptor = _LIBC.syscall(_pidfd_syscalls().open_by_pid, pid, 0)
     if descriptor != -1:
         return descriptor
     code = ctypes.get_errno()
@@ -165,7 +174,10 @@ def _pinned_pidfd(pid: int) -> int | None:
 
 
 def _asked_through_pidfd(descriptor: int, signal_number: int) -> bool:
-    if _LIBC.syscall(_PIDFD.send_signal, descriptor, signal_number, None, 0) == 0:
+    sent = _LIBC.syscall(
+        _pidfd_syscalls().send_signal, descriptor, signal_number, None, 0
+    )
+    if sent == 0:
         return True
     code = ctypes.get_errno()
     if code == errno.ESRCH:

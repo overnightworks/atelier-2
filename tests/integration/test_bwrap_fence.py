@@ -1,8 +1,10 @@
 """What the fence really does to a real child on this host.
 
-Every proof here starts a process. They are skipped where this machine cannot
-open a user namespace at all, because a deployment there is refused at serve
-start rather than served unfenced, and there is nothing left to observe.
+Every proof here starts a process. A developer machine that cannot open a user
+namespace at all skips them, because a deployment there is refused at serve
+start rather than served unfenced, and there is nothing left to observe. The
+pipeline gives its runner the enforcer these proofs need, so the same silence
+there is a failure: it would report a containment seam nobody observed.
 """
 
 from __future__ import annotations
@@ -48,7 +50,10 @@ from tests.integration.test_agent_attempts import attempt_request, attempt_runti
 from tests.integration.test_agent_process_supervisor import cancel_and_release
 from tests.integration.test_grok_subscription import (
     INTROSPECTING_GROK,
+    grok_named_deployment,
     grok_subscription_deployment,
+    parsing_grok,
+    workspace_tool_flags,
 )
 from tests.scenarios.agents import (
     NOTHING_IS_PERMITTED,
@@ -70,6 +75,10 @@ try:
     toolchain_sandbox(INTERPRETER, ENFORCER, Path.cwd())
 except SandboxUnavailable as refusal:
     _UNFENCEABLE = str(refusal)
+if _UNFENCEABLE is not None and os.environ.get("CI"):
+    raise RuntimeError(
+        f"the pipeline gives this runner an enforcer it cannot use: {_UNFENCEABLE}"
+    )
 pytestmark = pytest.mark.skipif(
     _UNFENCEABLE is not None, reason=f"this machine fences nothing: {_UNFENCEABLE}"
 )
@@ -368,6 +377,28 @@ def test_a_prompt_of_shell_metacharacters_is_carried_and_never_run(
 
     assert completion.standard_output.decode("utf-8") == prompt
     assert not marker.exists()
+
+
+def test_an_executable_that_reads_this_grok_invocation_is_attested_behind_the_fence(
+    tmp_path: Path,
+) -> None:
+    """The attestation's positive, made where the vector really starts.
+
+    Elsewhere a stand-in enforcer stands in for this host's, which proves the
+    argument vector but not that the vector survives being fenced. Here the
+    enforcer is the real one, so an attested executable is one this host can
+    both hold and start.
+    """
+
+    reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
+    settings = replace(
+        grok_named_deployment(
+            tmp_path, "deployment", parsing_grok(workspace_tool_flags(reference))
+        ),
+        sandbox_executable=ENFORCER,
+    )
+
+    assert attest_grok_workspace_tool_invocation(settings) is None
 
 
 def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(

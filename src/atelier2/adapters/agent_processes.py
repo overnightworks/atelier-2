@@ -24,6 +24,7 @@ from atelier2.adapters.agent_process_watchdog import (
     maximum_agent_wait_response_bytes,
 )
 from atelier2.adapters.bwrap_sandbox import sandbox_frame
+from atelier2.adapters.process_containment import CGROUP_V2_MOUNT, cgroup_populated
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptCancellationDisposition,
@@ -762,7 +763,7 @@ class AgentProcessSupervisor(AgentSession):
         if (
             not owned.endpoint.is_socket()
             or not (owned.cgroup / "cgroup.kill").is_file()
-            or _cgroup_populated(owned.cgroup)
+            or cgroup_populated(owned.cgroup)
         ):
             raise RuntimeError("watchdog readiness attestation disagrees")
 
@@ -959,17 +960,12 @@ def _completion_from_response(
     )
 
 
-def _cgroup_populated(cgroup: Path) -> bool:
-    events = (cgroup / "cgroup.events").read_text(encoding="ascii").splitlines()
-    return "populated 1" in events
-
-
 def _kill_cgroup_and_wait_empty(cgroup: Path, timeout_seconds: float) -> None:
     (cgroup / "cgroup.kill").write_text("1", encoding="ascii")
     deadline = time.monotonic() + timeout_seconds
-    while _cgroup_populated(cgroup) and time.monotonic() < deadline:
+    while cgroup_populated(cgroup) and time.monotonic() < deadline:
         time.sleep(0.01)
-    if _cgroup_populated(cgroup):
+    if cgroup_populated(cgroup):
         raise RuntimeError("agent cgroup did not become empty in bounds")
 
 
@@ -986,7 +982,7 @@ def delegated_cgroup_root() -> Path:
     )
     if relative is None:
         raise RuntimeError("agent supervision requires cgroup v2")
-    root = (Path("/sys/fs/cgroup") / relative).resolve()
+    root = (CGROUP_V2_MOUNT / relative).resolve()
     if not (root / "cgroup.procs").is_file() or not os.access(root, os.W_OK):
         raise RuntimeError("agent supervision requires a writable delegated cgroup")
     return root
