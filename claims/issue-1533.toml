@@ -1,8 +1,0 @@
-claim_id = "4e4321f8e1594b1ea213fe0340984144"
-agent = "claude-head"
-role = "builder"
-base = "b3a60004617a45cfaa28aed8e4cd0acef772cf48"
-branch = "claude/issue-1533-session-type-slice-2"
-scope = ["src/atelier2/adapters/dbos/agent_effect_grants.py", "src/atelier2/adapters/dbos/agent_attempt_store.py", "src/atelier2/adapters/dbos/work_item_claims.py", "src/atelier2/adapters/dbos/sql_executor.py"]
-opened_commit = "e48188bc332e39898ea389272ce2d8d0e580679c"
-whole_reason = "Drei Nutzer und der Owner des Protokolls, falls es eine gemeinsame Methode braucht"
