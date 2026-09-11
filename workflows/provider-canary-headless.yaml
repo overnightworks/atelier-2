@@ -12,7 +12,7 @@ nodes:
       ref: provider-canary
       revision: "85420b9dd963acda01cefc01139c9aaad290826fdac3a7c0537d4e51764dcf6f"
     instruction: >-
-      Answer with exactly the JSON string "canary-alive" and no other text.
+      Your answer is the text canary-alive.
     outputs:
       - name: result
         schema:
