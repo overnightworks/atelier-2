@@ -858,10 +858,9 @@ def _grok_subscription_settings(
         return _DeclaredSubscription(settings, start_refusal=str(error))
     tools_refusal = None
     if parsed.grok_workspace_tools:
-        # Startability, not a version answer: the tool-bearing invocation
-        # is the one whose flags decide what a node's process may touch, so
-        # the deployment starts that exact vector once, here, rather than
-        # discovering at the first bound node that it never spawns.
+        # Startability, not a version answer: the flags of the tool-bearing
+        # invocation decide what a node's process may touch, so the deployment
+        # starts that exact vector here rather than at the first bound node.
         try:
             attest_grok_workspace_tool_invocation(settings)
         except GrokExecutableUnsupported as error:
