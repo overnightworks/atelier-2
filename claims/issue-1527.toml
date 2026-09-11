@@ -1,0 +1,8 @@
+claim_id = "44229f5fae2a442488eeb0981d9aefe3"
+agent = "claude-head"
+role = "builder"
+base = "8391763734a3f143ea0abefb07792fdca70edd2f"
+branch = "claude/issue-1527-fix-builder-held-candidate"
+scope = ["src/atelier2/contracts/workflows_v3.py", "src/atelier2/contracts/workflow_executability.py", "src/atelier2/contracts/node_bindings.py", "src/atelier2/adapters/dbos/node_binding_codec.py", "src/atelier2/application/bind_node.py", "src/atelier2/adapters/dbos/workflow.py", "src/atelier2/ports/project_verification.py", "src/atelier2/ports/candidate_store.py", "src/atelier2/adapters/candidate_store.py", "src/atelier2/application/execute_agent_attempt.py", "docs/decisions/0006-node-vocabulary.md", "tests/integration", "tests/domain"]
+opened_commit = "a6a40e5870aa29b1798306808cc03055fe2f79c9"
+whole_reason = "Ein deklariertes Feld ohne Leser ist tot und der Leser ohne Feld liest nichts: Grammatik, Bindung, Codec, Versuch und Store landen zusammen"
