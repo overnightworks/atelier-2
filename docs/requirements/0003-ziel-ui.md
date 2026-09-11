@@ -6,9 +6,9 @@ Der Operator sieht jeden Lauf als lebenden Graphen — event-sourced, gestreamt 
 mit Attempts optional als ephemeren Kacheln, die mit dem Attempt entstehen und
 enden, nie als Dauersitze; Eingreifen nutzt die native Interaktivität der
 Provider-Konsole, nichts davon wird nachgebaut (Issue #9 body). Um diesen Kern
-sitzt die Ziel-UI nach Mockup v8: eine Werkstatt, geordnet durch eine Rail mit
-drei Räumen — Workbench, Catalog, History — und Settings am Fuß als Kontext
-darüber, mit dem Projekt-Umschalter im Kopf (ADR 0019). Mockup v8 ist der
+sitzt die Ziel-UI nach Mockup v9: eine Werkstatt, geordnet durch eine Rail mit
+vier Räumen — Home, Runs, Catalog, Settings — und dem Sitz als Mitte auf Home
+und Catalog (ADR 0019 samt seiner Ergänzung vom 11.09.2026). Mockup v9 ist der
 Gestalt-Owner.
 
 Der Maßstab des Operators, wörtlich (5301898411): „simple — ich kann alles
@@ -23,13 +23,19 @@ Features hinzufügen (5302788411).
 ## Rules
 
 ### REQ-UI-20: Die Werkstatt ordnet sich in eine Rail mit drei Räumen — Workbench, Catalog, History — und am Fuß dem Raum Settings, dem Kontext über den dreien, mit dem Projektnamen klein darunter: Projekt-Umschalter im Kopf, verbundene Quellen, Modell-Registry je Provider, Model defaults je Stufe. Ein Profile-Platz kommt mit der Entscheidung von #82 und #106 (REQ-UI-15), nie vorher.
-Quelle: OPERATOR — ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-01 ab
+Quelle: OPERATOR — ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-01 ab; superseded-by REQ-UI-26 (Operator-Segnung 11.09.2026, #1543)
+
+### REQ-UI-26: Die Werkstatt ordnet sich in eine Rail mit vier Räumen — Home · Runs · Catalog · Settings; der Sitz ist die Mitte auf Home und Catalog und sonst nicht da.
+Quelle: OPERATOR — Mockup v9, Ruling 3 und die Rail der Runde 4.2 (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-21: Jeder Bildschirm beantwortet genau eine Frage; warten mehrere Fragen, ist eine als Bühne OFFEN und die anderen sind darunter in einem kompakten Stapel erreichbar — nie hinter einer Zahl verborgen.
 Quelle: DESK — 5302788411 (Regel 2); Bühne und Stapel per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-02 ab
 
 ### REQ-UI-22: Workflows entstehen agentisch, nie in einem Baukasten oder Editor; ein neuer Entwurf erscheint als Karte im Catalog, und der Operator segnet ihn dort ab.
-Quelle: OPERATOR — Operator-Ruling 22.08.2026 (Epic #516); Catalog statt Board per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-03 ab
+Quelle: OPERATOR — Operator-Ruling 22.08.2026 (Epic #516); Catalog statt Board per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-03 ab; superseded-by REQ-UI-28 (Operator-Segnung 11.09.2026, #1543)
+
+### REQ-UI-28: Der Catalog ist Sicht und Bauplatz: drei Regale mit der Herkunft `repo@commit` aus verbundenen Catalog sources, ein Entwurf wächst am Sitz und wird durch die Push-Tür ins Catalog-Repository gespeichert; es gibt keinen Import.
+Quelle: OPERATOR — Mockup v9, Ruling 4 und die Löschung des Import-Wegs („ja löschen") (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-23: Woran die Flotte arbeitet, ist erstklassig: jeder Raum ist projekt-gescoped, und der Projekt-Umschalter im Kopf von Settings ist die eine Naht: derselbe Klick wechselt das Projekt und landet in dessen Settings.
 Quelle: DESK — 5301898411 §1; Naht in Settings per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-04 ab
@@ -65,16 +71,19 @@ Quelle: DESK — 5302066517 §4; Klartext-Ergebnis per Mockup v5 (Operator-Rulin
 Quelle: DESK — 5302066517 §5, geschärft durch Operator-Ruling 22.08.2026 (Epic #516, Token-Schicht)
 
 ### REQ-UI-15: Einstellungen sind eine professionelle Fläche ohne hartkodierte Provider-Zeilen.
-Quelle: DESK — 5302066517 §6, auf den Operator-Satz „wie sie aufgebaut ist mag ich noch nicht"
+Quelle: DESK — 5302066517 §6, auf den Operator-Satz „wie sie aufgebaut ist mag ich noch nicht"; die Fläche per Mockup v9: Settings › Sources in zwei Gruppen (Project sources, Catalog sources), Automation als Regel-Liste, Models nach Schwierigkeit (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-24: Die Werkstatt nimmt Arbeit weg: lehrende Leerzustände, das Receipt als Schmuckstück, Rückgängig statt Nachfragen; Puls-Kopfzeile und Posteingang gehen in der Workbench auf — die Bühne ist der Posteingang, die Ocker-Zahl in der Rail der Puls, die Queue eine aufklappbare Zeile.
-Quelle: DESK — 5302788411; Workbench statt Board per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-16 ab
+Quelle: DESK — 5302788411; Workbench statt Board per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-16 ab; superseded-by REQ-UI-27 (Operator-Segnung 11.09.2026, #1543)
+
+### REQ-UI-27: Ein menschliches Tor ist immer ein deklarierter `wait`-Knoten — dieselbe Zeile mit denselben Antworten auf Home und im Lauf; Home rechts trägt Asks und einen Block Runs mit Status-Chips, keine Queue-Knöpfe.
+Quelle: OPERATOR — Mockup v9, Ruling 1, Ruling 2 und die Runde-4.2-Sätze zu Asks und Runs (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-17: Authentifizierung erhöht die Komplexität keines Bildschirms.
 Quelle: DESK — 5302788411 (Regel 17)
 
-### REQ-UI-25: Gegen die gesegnete Vorlage wird gebaut, und ihre Tore werden gemessen statt behauptet; der aktuelle Stand ist [Mockup v8](0003-ziel-ui-mockup-v8.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner.
-Quelle: DESK — 5302769095, 5302066517 Schluss; Vorlage v8 gesegnet 25.08.2026 (ADR 0019, #711), löst REQ-UI-18 ab
+### REQ-UI-25: Gegen die gesegnete Vorlage wird gebaut, und ihre Tore werden gemessen statt behauptet; der aktuelle Stand ist [Mockup v9](0003-ziel-ui-mockup-v9.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner.
+Quelle: DESK — 5302769095, 5302066517 Schluss; Vorlage v9 gesegnet 11.09.2026 (ADR 0019, Ergänzung vom 11.09.2026, #1543), löst REQ-UI-18 ab
 
 ### REQ-UI-19: Atelier 1 wird als Konzepte und Lehren wiederverwendet, nie als portierter Code.
 Quelle: DESK — #9 body @ 36800d6ecd5d3e8922028425835b368b42d163098e5d32da930e40d25f49ce99 (Regel 19)
@@ -110,8 +119,8 @@ Quelle: OPERATOR — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699
 
 Kein Workflow-Editor und keine Baukasten-Tür — Workflows entstehen agentisch
 (Operator-Ruling 22.08.2026). Keine Dashboards, kein Board und kein
-Benachrichtigungszentrum: die Bühne auf der Workbench und die Ocker-Zahl in
-der Rail sind die Benachrichtigung (ADR 0019). Die ⌘K-Befehlspalette und die
+Benachrichtigungszentrum: die Asks auf Home sind die Benachrichtigung (ADR
+0019 samt seiner Ergänzung vom 11.09.2026). Die ⌘K-Befehlspalette und die
 Multi-Run-Kachelwand sind benannte Nachfolger, kein V1-Bau (5302132001).
 Remote-Attach ist ein eigenes Epic hinter einer Runner-Trust-Entscheidung;
 nichts backt localhost ein, aber V1 baut es nicht (Issue #9 body, Teil 3).

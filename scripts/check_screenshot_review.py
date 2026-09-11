@@ -57,7 +57,10 @@ ENTRY_FIELDS = frozenset(
 #   tokens      -- the one file every colour, length, weight, and beat is
 #                  declared in; editing it re-skins every surface.
 #   mockup      -- the frozen picture owner (ADR 0019) the surfaces are
-#                  judged against.
+#                  judged against, plus the frozen version before it: v8 is
+#                  still read by `frontend/tests/e2e/run-log.spec.ts`, whose
+#                  frame `#v8-14-run-log` is a judged surface's yardstick, so
+#                  editing either picture must reopen the verdict.
 _PAGES = (
     Path("frontend/src/pages/WorkbenchPage.svelte"),
     Path("frontend/src/pages/CatalogPage.svelte"),
@@ -122,7 +125,10 @@ _COPY = (
     Path("frontend/src/lib/workshop.ts"),
 )
 _TOKENS = (Path("frontend/src/styles.css"),)
-_MOCKUP = (Path("docs/requirements/0003-ziel-ui-mockup-v8.html"),)
+_MOCKUP = (
+    Path("docs/requirements/0003-ziel-ui-mockup-v8.html"),
+    Path("docs/requirements/0003-ziel-ui-mockup-v9.html"),
+)
 
 SCOPE: tuple[Path, ...] = tuple(
     sorted({*_PAGES, *_SHELL, *_COMPONENTS, *_COPY, *_TOKENS, *_MOCKUP})

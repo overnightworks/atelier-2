@@ -344,6 +344,44 @@ approval line has a field for neither, so this table is where both are named.
   mechanical step („ich poste nichts! also du kannst das freigeben!").
   The operator ruled; he did not type the record.
 
+**Requirement 0003 — identified rules: the successors of 11.09.2026**
+
+| Superseded (verbatim) | Successor |
+| --- | --- |
+| **REQ-UI-20**: „Die Werkstatt ordnet sich in eine Rail mit drei Räumen — Workbench, Catalog, History — und am Fuß dem Raum Settings, dem Kontext über den dreien, mit dem Projektnamen klein darunter: Projekt-Umschalter im Kopf, verbundene Quellen, Modell-Registry je Provider, Model defaults je Stufe. Ein Profile-Platz kommt mit der Entscheidung von #82 und #106 (REQ-UI-15), nie vorher." | **REQ-UI-26**: „Die Werkstatt ordnet sich in eine Rail mit vier Räumen — Home · Runs · Catalog · Settings; der Sitz ist die Mitte auf Home und Catalog und sonst nicht da." REQ-UI-20 superseded-by REQ-UI-26. |
+| **REQ-UI-24**: „Die Werkstatt nimmt Arbeit weg: lehrende Leerzustände, das Receipt als Schmuckstück, Rückgängig statt Nachfragen; Puls-Kopfzeile und Posteingang gehen in der Workbench auf — die Bühne ist der Posteingang, die Ocker-Zahl in der Rail der Puls, die Queue eine aufklappbare Zeile." | **REQ-UI-27**: „Ein menschliches Tor ist immer ein deklarierter `wait`-Knoten — dieselbe Zeile mit denselben Antworten auf Home und im Lauf; Home rechts trägt Asks und einen Block Runs mit Status-Chips, keine Queue-Knöpfe." REQ-UI-24 superseded-by REQ-UI-27. |
+| **REQ-UI-22**: „Workflows entstehen agentisch, nie in einem Baukasten oder Editor; ein neuer Entwurf erscheint als Karte im Catalog, und der Operator segnet ihn dort ab." | **REQ-UI-28**: „Der Catalog ist Sicht und Bauplatz: drei Regale mit der Herkunft `repo@commit` aus verbundenen Catalog sources, ein Entwurf wächst am Sitz und wird durch die Push-Tür ins Catalog-Repository gespeichert; es gibt keinen Import." REQ-UI-22 superseded-by REQ-UI-28. |
+
+REQ-UI-22's ban on an editor is not retracted: the draft still grows agentically
+at the seat, and REQ-UI-28 says where it is saved instead of where its card
+appears.
+
+Unlike the supersessions of §5, these three sentences stay in requirement 0003
+and carry their successor in their own `Quelle` line. Landed acceptance
+sentences still name REQ-UI-20 and REQ-UI-24 — they describe the house that
+stands today, which is the house the successors replace. They leave the
+document when the last sentence that names them does.
+
+**Requirement 0003 — unnumbered passages of the same revision**
+
+| Superseded (verbatim) | Successor text |
+| --- | --- |
+| Intent: „Um diesen Kern sitzt die Ziel-UI nach Mockup v8: eine Werkstatt, geordnet durch eine Rail mit drei Räumen — Workbench, Catalog, History — und Settings am Fuß als Kontext darüber, mit dem Projekt-Umschalter im Kopf (ADR 0019). Mockup v8 ist der Gestalt-Owner." | „Um diesen Kern sitzt die Ziel-UI nach Mockup v9: eine Werkstatt, geordnet durch eine Rail mit vier Räumen — Home, Runs, Catalog, Settings — und dem Sitz als Mitte auf Home und Catalog (ADR 0019 samt seiner Ergänzung vom 11.09.2026). Mockup v9 ist der Gestalt-Owner." |
+| Non-goals: „Keine Dashboards, kein Board und kein Benachrichtigungszentrum: die Bühne auf der Workbench und die Ocker-Zahl in der Rail sind die Benachrichtigung (ADR 0019)." | „Keine Dashboards, kein Board und kein Benachrichtigungszentrum: die Asks auf Home sind die Benachrichtigung (ADR 0019 samt seiner Ergänzung vom 11.09.2026)." |
+
+- Decision: the operator, 11.09.2026, blessing round 4.2 of the UI concept on
+  [#1543](https://github.com/overnightworks/atelier-2/issues/1543) — „das
+  Prinzip ist okay".
+- Why it could be ruled: REQ-UI-25 is the rule that a newer blessed version
+  becomes the owner, so the blessing itself moves the picture; the three
+  superseded sentences name rooms, blocks and a card the blessed picture no
+  longer draws, and a rule that describes a retired drawing binds nothing.
+- Execution: the builder of #1543 froze the picture, wrote the successor
+  revision, these rows and the amendment below, and computed the two approval
+  digests. The head hands the operator the exact approval lines — one for the
+  requirement revision, one for the screenshot review; neither is posted by the
+  builder.
+
 ## Consequences
 
 - The rail loses two rooms and gains none. Inside a page, **one door per
@@ -495,6 +533,45 @@ was built (06.09.2026, "Terminal geht nicht auf dem Phone? Das muss gehen"):
 there is no width at which the workbench refuses the terminal. On a phone the
 terminal takes the room's full width and asks its own client for smaller type;
 it is never replaced by a refusal for being narrow.
+
+## Amendment, 11.09.2026: Runde 4.2 wird Owner
+
+The record above stands as decided; this amendment names what the operator's
+blessing of round 4.2 changed about its rooms and blocks, so the two are read
+together rather than one silently rewriting the other. The rule that makes the
+move automatic is REQ-UI-25: the newest blessed version is the owner. The
+picture owner is therefore
+[`0003-ziel-ui-mockup-v9.html`](../requirements/0003-ziel-ui-mockup-v9.html);
+v8 stays in the tree as the frozen previous version, and §6 carries the three
+rule successors this blessing produced.
+
+What this amendment retracts from the record above: **Workbench as a room** —
+the rail's rooms are Home · Runs · Catalog · Settings, and what stood on the
+Workbench is split between Home and the Runs room; **the stage and the inbox**
+as the block a waiting question lives in — a question is a row on a declared
+`wait` node, the same row with the same two answers on Home and in the run;
+**the queue line with Admit, Plan and Start** — Home's right side carries Asks
+and one block named like the Runs room, with the chips `Live`, `Queued` and
+`Waiting`, and the rule that puts a run there lives in Settings › Automation;
+**the import doors** — what stands in the Catalog comes from a connected
+catalog source or is a draft that has not been saved yet; and **History as a
+room** — a finished run stands in the same one list as a moving one, found by
+the Runs room's state chips, its search and its `Filter`.
+
+What it keeps: the rail as the one door between rooms; state shown by shape,
+never restated in a sentence beside it — the six run states survive greyscale,
+colour only confirms them; the token layer as the one place colour, length,
+weight and beat are declared, though this picture declares its own palette and
+type, carried unchanged from the round it grew out of; and "you speak to the
+workshop, you do not visit a chat page" — the seat is the middle of Home and of
+Catalog, and nowhere else.
+
+The operator's rule for how this picture binds: **the frozen picture is the
+principle, not the pixel-exact specification of a screen.** An item that builds
+or changes a surface draws its own detail picture first, as an extension of
+this owner, and gets the blessing for it before it is built. The detail picture
+is then frozen the same way — that is what makes the next one an extension
+rather than a contradiction.
 
 ## Supersedes
 
