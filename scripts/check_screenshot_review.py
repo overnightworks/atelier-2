@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# REQ-UIQ-11 ("the surface may look great and be fun; the screenshot yardstick
-# is Mockup v8, and the operator has the last word") cannot be proven by a
+# REQ-UIQ-14 ("the surface may look great and be fun; the screenshot yardstick
+# is Mockup v9, and the operator has the last word") cannot be proven by a
 # test, so this gate proves the *freshness* of the operator's judgement
 # instead: it pins the operator's approval to an exact digest over the exact
 # source files that render the surfaces being judged. #994 owns the design;
@@ -18,7 +18,7 @@ from typing import Any
 # not a requirement document) with its own registry and its own scope.
 
 LEDGER_LOCATION = Path("docs/requirements/0003-ziel-ui-screenshot-reviews.toml")
-GOVERNED_REQUIREMENT = "REQ-UIQ-11"
+GOVERNED_REQUIREMENT = "REQ-UIQ-14"
 REQUIREMENT_IDENTIFIER = re.compile(r"^REQ-[A-Z0-9]+-[0-9]{2}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ROOT_FIELDS = frozenset({"schema_version"})

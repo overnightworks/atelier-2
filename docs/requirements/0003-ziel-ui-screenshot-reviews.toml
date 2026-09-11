@@ -1,11 +1,16 @@
 schema_version = 1
 
-# REQ-UIQ-11's freshness ledger (issue #994): each [[approval]] entry pins one
-# operator-approved screenshot review to the exact scope_sha256 that was
-# current when the operator looked, computed by
+# The screenshot-review freshness ledger (issue #994): each [[approval]] entry
+# pins one operator-approved screenshot review to the exact scope_sha256 that
+# was current when the operator looked, computed by
 # scripts/check_screenshot_review.py. The digest covers only the source files
 # that render REQ-UI-25's five core surfaces plus their mockup owner -- never
 # PNG bytes, which are not reproducible across machines.
+#
+# `requirement` names the rule whose verdict that entry carried; the gate's
+# GOVERNED_REQUIREMENT says which rule it asks for now, and an entry made
+# under a rule that has since been superseded keeps the identifier it was
+# approved under.
 #
 # This ledger ships empty. The first entry is a real operator approval on a
 # real pull request; scripts/check_screenshot_review.py names the exact

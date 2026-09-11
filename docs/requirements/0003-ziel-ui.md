@@ -29,7 +29,10 @@ Quelle: OPERATOR — ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-
 Quelle: OPERATOR — Mockup v9, Ruling 3 und die Rail der Runde 4.2 (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-21: Jeder Bildschirm beantwortet genau eine Frage; warten mehrere Fragen, ist eine als Bühne OFFEN und die anderen sind darunter in einem kompakten Stapel erreichbar — nie hinter einer Zahl verborgen.
-Quelle: DESK — 5302788411 (Regel 2); Bühne und Stapel per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-02 ab
+Quelle: DESK — 5302788411 (Regel 2); Bühne und Stapel per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-02 ab; superseded-by REQ-UI-29 (Operator-Segnung 11.09.2026, #1543)
+
+### REQ-UI-29: Warten ist als Zeile gestaltet, nicht als Bühne: der Kopf `workflow@rev · wait <node> ›` führt in den Lauf an genau diesen Knoten, darunter stehen die Frage und ihre Antworten; warten mehrere, stehen sie als gleichrangige Zeilen untereinander, und mobil öffnet die eine Zeile `N asks ›` dieselben Zeilen als Blatt.
+Quelle: OPERATOR — Mockup v9, Ruling 2 und der Runde-4.2-Satz zu Asks (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UI-22: Workflows entstehen agentisch, nie in einem Baukasten oder Editor; ein neuer Entwurf erscheint als Karte im Catalog, und der Operator segnet ihn dort ab.
 Quelle: OPERATOR — Operator-Ruling 22.08.2026 (Epic #516); Catalog statt Board per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UI-03 ab; superseded-by REQ-UI-28 (Operator-Segnung 11.09.2026, #1543)
@@ -101,7 +104,7 @@ Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 5
 
 ### REQ-UIQ-10: Leer, lädt, Fehler und wartet sind vier gestaltete Zustände — benannt heißt gestaltet, nicht beschriftet: Leer ist die Form ohne Inhalt, Laden ein stilles Skelett, Fehler Brick mit einem Satz und einem Zug, Warten die Bühne.
-Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 6; gestaltet statt benannt per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UIQ-06 ab
+Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 6; gestaltet statt benannt per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UIQ-06 ab; das vierte Wort (Warten) superseded-by REQ-UI-29 (Operator-Segnung 11.09.2026, #1543)
 
 ### REQ-UIQ-07: Eine Frage hat ein Muster, und das Muster ist eine wiederverwendete Komponente.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 7
@@ -113,7 +116,10 @@ Quelle: OPERATOR — 31.08.2026, wörtlich „neue Sachen sollen sich immer glei
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 8
 
 ### REQ-UIQ-11: Die Fläche darf geil aussehen und Spaß machen; der Screenshot-Maßstab ist Mockup v8, und das letzte Wort hat der Operator.
-Quelle: OPERATOR — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, wörtlich „es darf trotzdem geil aussehen und Spaß machen"; Maßstab v8 per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UIQ-09 ab
+Quelle: OPERATOR — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, wörtlich „es darf trotzdem geil aussehen und Spaß machen"; Maßstab v8 per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UIQ-09 ab; superseded-by REQ-UIQ-14 (Operator-Segnung 11.09.2026, #1543)
+
+### REQ-UIQ-14: Die Fläche darf geil aussehen und Spaß machen; der Screenshot-Maßstab ist Mockup v9, und das letzte Wort hat der Operator.
+Quelle: OPERATOR — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, wörtlich „es darf trotzdem geil aussehen und Spaß machen"; Maßstab v9 per Mockup v9 (Operator-Segnung 11.09.2026, #1543)
 
 ## Non-goals
 
