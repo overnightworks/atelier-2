@@ -553,14 +553,34 @@ def _existing_event(
     )
 
 
+def _cancellation_columns(
+    attempt_binding: RunEventAttemptBinding | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """The event's cancellation columns, in the order the insert wants them."""
+    if not isinstance(attempt_binding, RunEventCancellationBinding):
+        return None, None, None, None
+    return (
+        attempt_binding.command_id,
+        attempt_binding.replacement.value,
+        (
+            None
+            if attempt_binding.disposition is None
+            else attempt_binding.disposition.value
+        ),
+        (
+            None
+            if attempt_binding.replacement_attempt_id is None
+            else attempt_binding.replacement_attempt_id.value
+        ),
+    )
+
+
 def _insert_event(
     session: SqlExecutor, event: RunEvent, at: RecordedAt | None = None
 ) -> None:
     attempt_binding = event.attempt_binding
-    cancellation_binding = (
-        attempt_binding
-        if isinstance(attempt_binding, RunEventCancellationBinding)
-        else None
+    command_id, replacement, disposition, replacement_attempt_id = (
+        _cancellation_columns(attempt_binding)
     )
     insertion = run_events.insert().values(
         run_id=event.run_id.value,
@@ -588,25 +608,10 @@ def _insert_event(
         attempt_ordinal=(
             None if attempt_binding is None else attempt_binding.attempt_ordinal
         ),
-        cancellation_command_id=(
-            None if cancellation_binding is None else cancellation_binding.command_id
-        ),
-        replacement=(
-            None
-            if cancellation_binding is None
-            else cancellation_binding.replacement.value
-        ),
-        cancellation_disposition=(
-            None
-            if cancellation_binding is None or cancellation_binding.disposition is None
-            else cancellation_binding.disposition.value
-        ),
-        replacement_attempt_id=(
-            None
-            if cancellation_binding is None
-            or cancellation_binding.replacement_attempt_id is None
-            else cancellation_binding.replacement_attempt_id.value
-        ),
+        cancellation_command_id=command_id,
+        replacement=replacement,
+        cancellation_disposition=disposition,
+        replacement_attempt_id=replacement_attempt_id,
         agent_receipt_hash=(
             None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
         ),

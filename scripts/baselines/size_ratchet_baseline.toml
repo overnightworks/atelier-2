@@ -314,10 +314,6 @@ qualified_name = "atelier2.adapters.dbos.run_transitions._existing_event"
 lines = 63
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.run_transitions._insert_event"
-lines = 76
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.run_transitions.run_from_record_and_binding_rows"
 lines = 81
 
