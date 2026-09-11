@@ -1,7 +1,0 @@
-claim_id = "e777fd7e526e4e448bae5a151c6f538f"
-agent = "claude-head"
-role = "builder"
-base = "3c439dd15b8f52e5e49b0a94ad95db4561808ef8"
-branch = "claude/issue-1535-session-type-slice-3"
-scope = ["src/atelier2/adapters/dbos/run_transitions.py", "src/atelier2/adapters/dbos/sql_executor.py"]
-opened_commit = "ef71cfd1186829335117768e5015898082e55eb8"
