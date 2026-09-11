@@ -187,9 +187,9 @@ def _pinned_capabilities(
 
     Read out of the settlement cache rather than asked of the registry again:
     every reference of an executable document has just been resolved through
-    that cache, and a second lookup per node is the repeated read #937 removed.
-    A reference the cache does not hold is one that did not settle as a grant,
-    and it grants nothing here.
+    that cache, and a listing composing many documents pays for a second lookup
+    per node of every one of them. A reference the cache does not hold is one
+    that did not settle as a grant, and it grants nothing here.
     """
     capabilities: set[ToolGrantCapability] = set()
     for reference in node.tools:
