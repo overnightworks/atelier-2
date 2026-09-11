@@ -16,9 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import sqlalchemy as sa
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.agent_catalog import (
@@ -34,6 +35,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -104,7 +106,7 @@ class RunPosition:
 
 
 def load_graph(
-    session: Any, revision_hash: WorkflowRevisionHash
+    session: SqlExecutor, revision_hash: WorkflowRevisionHash
 ) -> AnyWorkflowDocument:
     document = session.scalar(
         sa.select(workflow_revisions.c.document).where(
@@ -192,7 +194,9 @@ def _agent_binding_select() -> sa.Select[Any]:
     )
 
 
-def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> AnyRun:
+def run_from_record_with_bindings(
+    session: SqlExecutor, record: Mapping[Any, Any]
+) -> AnyRun:
     """One run, reading the agent bindings it stands on."""
 
     if _binds_agent_roles(record):
@@ -216,7 +220,7 @@ def _binds_agent_roles(record: Mapping[Any, Any]) -> bool:
 
 
 def runs_from_records_with_bindings(
-    session: Any, records: Sequence[Mapping[Any, Any]]
+    session: SqlExecutor, records: Sequence[Mapping[Any, Any]]
 ) -> tuple[AnyRun, ...]:
     """Every run of a page, reading all their agent bindings in one statement.
 
@@ -326,7 +330,7 @@ def run_from_record_and_binding_rows(
     )
 
 
-def load_run(session: Any, run_id: RunId) -> AnyRun:
+def load_run(session: SqlExecutor, run_id: RunId) -> AnyRun:
     record = (
         session.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
         .mappings()
@@ -485,7 +489,7 @@ def _event_attempt_binding_from_record(
 
 
 def _existing_event(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -549,7 +553,9 @@ def _existing_event(
     )
 
 
-def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -> None:
+def _insert_event(
+    session: SqlExecutor, event: RunEvent, at: RecordedAt | None = None
+) -> None:
     attempt_binding = event.attempt_binding
     cancellation_binding = (
         attempt_binding
@@ -639,7 +645,7 @@ def _refuse_unfit_target(graph: AnyWorkflowDocument, target: RunPosition) -> Non
         raise RunTransitionConflict("terminal transition must finish the run's sink")
 
 
-def _event_hashes(session: Any, run_id: RunId) -> tuple[Sha256Hash, ...]:
+def _event_hashes(session: SqlExecutor, run_id: RunId) -> tuple[Sha256Hash, ...]:
     """Every event hash this run has written, in the order the terminal hash folds."""
     return tuple(
         Sha256Hash(str(value))
@@ -652,7 +658,7 @@ def _event_hashes(session: Any, run_id: RunId) -> tuple[Sha256Hash, ...]:
 
 
 def _commit_event(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     event_kind: RunEventKind,
@@ -714,25 +720,32 @@ def _commit_event(
     if target.ends_the_run:
         _insert_event(session, event, at=instant)
         terminal_hash = terminal_hash_for(revision_hash, _event_hashes(session, run_id))
-    updated = session.execute(
-        runs.update()
-        .where(
-            runs.c.run_id == run_id.value,
-            runs.c.revision_hash == revision_hash.value,
-            runs.c.current_node_id == source.node_id,
-            runs.c.current_round_ordinal == source.round_ordinal,
-            runs.c.state == source.state.value,
-            runs.c.state_version == current.state_version,
-            runs.c.last_event_sequence == current.last_event_sequence,
-        )
-        .values(
-            current_node_id=target.node_id,
-            current_round_ordinal=target.round_ordinal,
-            state=target.state.value,
-            state_version=current.state_version + 1,
-            last_event_sequence=sequence,
-            terminal_hash=None if terminal_hash is None else terminal_hash.value,
-        )
+    # `runs.update()` is Core DML: both a connection and a datasource session
+    # execute it as a `CursorResult`, but the executor protocol only promises
+    # the ORM-compatible `Result` its `Session` implementation can guarantee,
+    # so the cast makes the always-true richer type explicit for the checker.
+    updated = cast(
+        CursorResult[Any],
+        session.execute(
+            runs.update()
+            .where(
+                runs.c.run_id == run_id.value,
+                runs.c.revision_hash == revision_hash.value,
+                runs.c.current_node_id == source.node_id,
+                runs.c.current_round_ordinal == source.round_ordinal,
+                runs.c.state == source.state.value,
+                runs.c.state_version == current.state_version,
+                runs.c.last_event_sequence == current.last_event_sequence,
+            )
+            .values(
+                current_node_id=target.node_id,
+                current_round_ordinal=target.round_ordinal,
+                state=target.state.value,
+                state_version=current.state_version + 1,
+                last_event_sequence=sequence,
+                terminal_hash=None if terminal_hash is None else terminal_hash.value,
+            )
+        ),
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("run transition lost its state/version CAS")
@@ -753,7 +766,7 @@ def _commit_event(
 
 
 def commit_waiting_input(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -781,7 +794,7 @@ def commit_waiting_input(
 
 
 def commit_wait_cancelled(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -811,7 +824,7 @@ def commit_wait_cancelled(
 
 
 def commit_reconciliation_required(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -878,7 +891,7 @@ def lift_started_run(
 
 
 def commit_reconciliation_resolved(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
