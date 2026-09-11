@@ -1,0 +1,8 @@
+claim_id = "ec9d45764a364f26b2630f6c7653a1dd"
+agent = "claude-head"
+role = "builder"
+base = "af63d09ad38e3858a0ac98914f3466b72f35363d"
+branch = "claude/issue-1543-mockup-v9"
+scope = ["docs/requirements/0003-ziel-ui-mockup-v9.html", "docs/requirements/0003-ziel-ui.md", "docs/requirements/revisions.toml", "docs/decisions/0019-workshop-target-picture.md", "docs/requirements/0003-ziel-ui-screenshot-reviews.toml", "scripts/check_screenshot_review.py"]
+opened_commit = "cfb5fa67dcf7f1a576c5858c36a8c059c31f75e0"
+whole_reason = "Bild, Regelsaetze, Owner-Record, Ledger und Gate-Zeiger sind eine Einfrierung; getrennt waere der Owner einen Commit lang doppelt"
