@@ -1,8 +1,0 @@
-claim_id = "55315ebd7485432e886423d5a75b17a2"
-agent = "claude-head"
-role = "builder"
-base = "4317166deecc5b95fc8a3f339e53df3b3eeb4451"
-branch = "claude/issue-1522-second-publisher-base"
-scope = ["src/atelier2/adapters/dbos/run_publications.py", "src/atelier2/adapters/dbos/workflow.py", "src/atelier2/adapters/dbos/advancer.py", "src/atelier2/ports/project_source.py", "src/atelier2/adapters/project_source.py", "tests/integration", "tests/unit/adapters/dbos"]
-opened_commit = "9709995b8adc57224d316e444a7dc03fd1c5a288"
-whole_reason = "Der Leser der letzten Veröffentlichung braucht Port, Adapter und den Umzug aus advancer.py in einem Schnitt, sonst bleibt eine Port-Methode ohne Aufrufer"
