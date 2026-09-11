@@ -89,6 +89,7 @@ from this one retry contract instead of guessing an independent duration.
 """
 
 _CAPTURE_INDEX_NAME = "capture.index"
+_MATERIALIZED_INDEX_NAME = "materialize.index"
 _PACKED_PIN_BASE_NAME = "pinned-tree"
 _WANTED_OBJECTS_NAME = "wanted-objects"
 _GITLINK_MODE = "160000"
@@ -211,6 +212,50 @@ class GitCandidateTreeStore:
             )
         standing = self._standing(CANDIDATE_REF_PREFIX + attempt_id.value)
         return None if standing is None else CandidateTree(attempt_id, standing)
+
+    def attest(self, candidate: CandidateTree) -> None:
+        """Refuse this candidate unless the store still holds all of it.
+
+        Two questions, and the first is not enough on its own: the anchor says
+        this attempt's work is still claimed here, and the walk says every
+        object that work is made of is still readable. A ref alone would admit a
+        tree whose blobs a repack lost, and the loss would only surface once a
+        checkout had already begun writing into a lease.
+
+        The walk reads nothing back: it is asked for its exit alone, so the cost
+        of attesting a large tree is git's traversal and not a listing this
+        process holds.
+        """
+
+        kept = self.read(candidate.attempt_id)
+        if kept is None or kept.tree != candidate.tree:
+            raise CandidateStoreUnavailable(
+                f"attempt {candidate.attempt_id.value} keeps no tree "
+                f"{candidate.tree} in {self._store}, so the work this attempt "
+                "would go on in is not there to begin in"
+            )
+        self._in_store(("rev-list", "--objects", "--quiet", candidate.tree))
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        """Check this candidate out into the leased directory, whole and unfiltered.
+
+        The store is the filter-free repository a checkout of the project's own
+        would have to build first: this product made it bare, from no template,
+        and nothing outside it declares a driver its `.gitattributes` could point
+        a path at. So the tree that comes out here is byte for byte the tree that
+        went in, and an attempt that leaves it alone captures the same name again.
+        """
+
+        with tempfile.TemporaryDirectory() as staging:
+            index = Path(staging) / _MATERIALIZED_INDEX_NAME
+            with entered_leased_directory(
+                lease.working_directory, lease.device, lease.inode
+            ) as (entered, descriptor):
+                staged = LeasedIndex(entered, descriptor, index)
+                self._staged(("read-tree", candidate.tree), staged)
+                self._staged(("checkout-index", "--all", "--force"), staged)
 
     def _ensure_store(self) -> None:
         """Make the store exist and be one this project's objects can live in."""
@@ -414,14 +459,21 @@ class GitCandidateTreeStore:
             return _one_line(self._staged(("write-tree",), staging))
 
     def _staged(self, arguments: tuple[str, ...], staging: LeasedIndex) -> bytes:
+        """One git call between this store and a lease, staged in the lease's index.
+
+        Both directions go through it -- the work read out of a lease and a
+        candidate written back into one -- so the refusal names the pair rather
+        than either half's own errand.
+        """
+
         try:
             return answered_in_lease(
                 arguments, leased=staging, git_directory=str(self._store)
             )
         except GitRefused as error:
             raise CandidateStoreUnavailable(
-                f"the work standing in the leased workspace could not be staged: "
-                f"{error}"
+                f"the candidate store at {self._store} and the leased workspace "
+                f"could not be brought together: {error}"
             ) from error
 
     def _refuse_nested_repositories(

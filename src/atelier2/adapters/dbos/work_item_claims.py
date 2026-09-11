@@ -90,6 +90,7 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
+from atelier2.ports.candidate_store import CandidateNotKept
 from atelier2.ports.claim_checkouts import (
     ClaimCheckoutRefused,
     ClaimCheckouts,
@@ -465,20 +466,22 @@ def refuse_unattested_pin(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
 ) -> str | None:
-    """End the node when the pin it was bound to can no longer be answered for.
+    """End the node when what it was bound to begin in can no longer be answered for.
 
     Opening a claim for work this host cannot begin would hold a lane forever.
-    The source's own sentence travels as the refusal detail, through the same
+    The owner's own sentence travels as the refusal detail, through the same
     scrub and bound every ledger refusal uses; the closed word is the claim
-    door's generic refusal, not a new vocabulary.
+    door's generic refusal, not a new vocabulary. A continued publication whose
+    candidate is gone refuses here too, and loudly: falling back on the pin
+    would take the earlier publisher's work off the branch at the next push.
     """
 
     pinned = pinned_project(binding, project)
     if pinned is None:
         return None
     try:
-        pinned.source.attest(pinned.pin)
-    except ProjectSourceUnavailable as error:
+        pinned.attest()
+    except (ProjectSourceUnavailable, CandidateNotKept) as error:
         return _refuse_claim(
             datasource,
             run_id,

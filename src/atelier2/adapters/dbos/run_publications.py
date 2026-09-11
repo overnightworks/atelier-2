@@ -76,11 +76,17 @@ class NodeInRun:
 
 @dataclass(frozen=True, slots=True)
 class RunPublication:
-    """One confirmed push of a run: what it stood on and what it moved."""
+    """One confirmed push of a run: what it stood on, what it moved, and whose work.
+
+    `attempt_id` names the attempt whose candidate `candidate_tree` is, so a
+    later publisher continuing this publication can ask the candidate store for
+    exactly the work this push carried rather than for a tree by name alone.
+    """
 
     branch: HeadBranch
     base_commit: str
     candidate_tree: str
+    attempt_id: str
 
 
 def confirmed_publication(session: Any, node: NodeInRun) -> RunPublication:
@@ -232,7 +238,9 @@ def _publication_from(
         raise RunPublicationRefused("confirmed push receipt is corrupt") from error
     if _disagrees(receipt, request, result, node):
         raise RunPublicationRefused(disagreement)
-    return RunPublication(branch, request.base_commit, request.candidate_tree)
+    return RunPublication(
+        branch, request.base_commit, request.candidate_tree, request.attempt_id
+    )
 
 
 def _disagrees(

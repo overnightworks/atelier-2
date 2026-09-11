@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import CandidateTreeStore
@@ -166,6 +166,12 @@ class PinnedProjectSource:
     The store of candidates travels with them because what an attempt made is a
     change *to this pin*: the same value that says which tree the work started
     from says where the work it became is kept.
+
+    Where the attempt *begins* is a second question, and this value is its one
+    owner: a node continuing an earlier publication of its run begins in that
+    publication's candidate, everyone else in the tree the pin names. The pin
+    stays the comparison either way, so a continued attempt's patch is
+    cumulative and a continuation that changes nothing is no failure.
     """
 
     source: ProjectSourceRepository
@@ -173,6 +179,29 @@ class PinnedProjectSource:
     candidates: CandidateTreeStore
     pin: ProjectSourcePin
     grant: DeclaredToolGrant | None
+    start_candidate: CandidateTree | None = None
+
+    def attest(self) -> None:
+        """Refuse what this attempt could not begin in, unpacking nothing.
+
+        Asked before a work item is claimed, so a node that cannot begin never
+        holds a lane. A start candidate that cannot be read refuses here rather
+        than falling back on the pin: falling back would begin the continuation
+        on a tree the earlier publication has already moved past, and its push
+        would then take that earlier work off the branch.
+        """
+
+        self.source.attest(self.pin)
+        if self.start_candidate is not None:
+            self.candidates.attest(self.start_candidate)
+
+    def materialize(self, lease: AgentAttemptWorkspaceLease) -> None:
+        """Unpack what this attempt begins in into the directory it leased."""
+
+        if self.start_candidate is None:
+            self.source.materialize(self.pin, lease)
+            return
+        self.candidates.materialize(self.start_candidate, lease)
 
 
 @dataclass(frozen=True)
@@ -193,10 +222,18 @@ class DeclaredProject:
     candidates: CandidateTreeStore
 
     def pinned(
-        self, pin: ProjectSourcePin, grant: DeclaredToolGrant | None
+        self,
+        pin: ProjectSourcePin,
+        grant: DeclaredToolGrant | None,
+        start_candidate: CandidateTree | None = None,
     ) -> PinnedProjectSource:
         """What one attempt of this project works in, redeems in, and keeps."""
 
         return PinnedProjectSource(
-            self.source, self.verifications, self.candidates, pin, grant
+            self.source,
+            self.verifications,
+            self.candidates,
+            pin,
+            grant,
+            start_candidate,
         )

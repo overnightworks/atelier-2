@@ -161,6 +161,14 @@ class LostUnderTheCapture:
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         return self.kept.read(attempt_id)
 
+    def attest(self, candidate: CandidateTree) -> None:
+        self.kept.attest(candidate)
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        self.kept.materialize(candidate, lease)
+
     def written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> LeasedWorkingTree:
@@ -187,6 +195,17 @@ class RefusingCandidates:
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         del attempt_id
         return None
+
+    def attest(self, candidate: CandidateTree) -> None:
+        del candidate
+        raise self.refusal
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        del candidate
+        self.asked.append(lease.attempt_id)
+        raise self.refusal
 
     def written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease

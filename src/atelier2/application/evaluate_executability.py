@@ -42,6 +42,7 @@ from atelier2.contracts.tool_grants_v3 import (
     redeems_as_platform_effect,
 )
 from atelier2.contracts.workflow_executability import (
+    what_a_declared_start_refuses,
     what_a_v3_document_still_waits_for,
 )
 from atelier2.contracts.workflows_v3 import (
@@ -51,7 +52,6 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 from atelier2.ports.published_revisions import (
-    PublishedRevisionFound,
     PublishedRevisionResolver,
 )
 
@@ -127,12 +127,14 @@ def evaluate_executability(
     resolved = resolve_document_references(graph, resolver, cache)
     if not isinstance(resolved, ExecutableDocument):
         return resolved
-    refusal = _looped_platform_effect_grant_refusal(graph, resolver)
+    refusal = _looped_platform_effect_grant_refusal(
+        graph, cache
+    ) or what_a_declared_start_refuses(graph, _publishing_nodes(graph, cache))
     return resolved if refusal is None else DocumentNotExecutable(refusal)
 
 
 def _looped_platform_effect_grant_refusal(
-    graph: WorkflowGraphV3, resolver: PublishedRevisionResolver
+    graph: WorkflowGraphV3, settled: ReferenceSettlementCache
 ) -> str | None:
     """Name a loop member whose grant needs a round-aware external marker.
 
@@ -147,7 +149,7 @@ def _looped_platform_effect_grant_refusal(
         loop = graph.loop_of(node.id)
         if loop is None:
             continue
-        if _pins_a_platform_effect_grant(node, resolver):
+        if _pins_a_platform_effect_grant(node, settled):
             return (
                 f"node {node.id!r} is a member of loop {loop.id!r} and pins "
                 "an effect grant; this runtime has no round-aware external "
@@ -157,22 +159,51 @@ def _looped_platform_effect_grant_refusal(
 
 
 def _pins_a_platform_effect_grant(
-    node: AgentNodeV3, resolver: PublishedRevisionResolver
+    node: AgentNodeV3, settled: ReferenceSettlementCache
 ) -> bool:
+    return any(
+        redeems_as_platform_effect(capability)
+        for capability in _pinned_capabilities(node, settled)
+    )
+
+
+def _publishing_nodes(
+    graph: WorkflowGraphV3, settled: ReferenceSettlementCache
+) -> frozenset[str]:
+    """Every node this document lets push a commit of its own to the work item."""
+    return frozenset(
+        node.id
+        for node in graph.nodes
+        if isinstance(node, AgentNodeV3)
+        and ToolGrantCapability.PUSH_ATELIER_COMMIT
+        in _pinned_capabilities(node, settled)
+    )
+
+
+def _pinned_capabilities(
+    node: AgentNodeV3, settled: ReferenceSettlementCache
+) -> frozenset[ToolGrantCapability]:
+    """What the grants this node pins let it do, read from what just settled.
+
+    Read out of the settlement cache rather than asked of the registry again:
+    every reference of an executable document has just been resolved through
+    that cache, and a second lookup per node is the repeated read #937 removed.
+    A reference the cache does not hold is one that did not settle as a grant,
+    and it grants nothing here.
+    """
+    capabilities: set[ToolGrantCapability] = set()
     for reference in node.tools:
         try:
             revision_hash = PublishedRevisionHash(reference.revision)
         except ValueError:
             continue
-        resolved = resolver.resolve(RevisionKind.TOOL, revision_hash)
-        if not isinstance(resolved, PublishedRevisionFound):
+        resolution = settled.get((RevisionKind.TOOL, revision_hash))
+        if resolution is None or resolution[1] is None:
             continue
-        grant = read_tool_grant_document(resolved.revision.document)
-        if isinstance(grant, ToolGrantAccepted) and redeems_as_platform_effect(
-            grant.capability
-        ):
-            return True
-    return False
+        grant = read_tool_grant_document(resolution[1].document)
+        if isinstance(grant, ToolGrantAccepted):
+            capabilities.add(grant.capability)
+    return frozenset(capabilities)
 
 
 EFFECT_SHAPED_TOOL_RESOLUTION_FIELD = "tools:effect-shaped"

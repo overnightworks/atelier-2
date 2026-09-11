@@ -62,7 +62,12 @@ from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
     encode_node_binding,
 )
-from atelier2.adapters.dbos.run_publications import NodeInRun, pinned_source_for
+from atelier2.adapters.dbos.run_publications import (
+    NodeInRun,
+    RunPublicationRefused,
+    confirmed_publication,
+    pinned_source_for,
+)
 from atelier2.adapters.dbos.run_store import (
     bootstrap_node_for_snapshot,
     commit_subworkflow_completed,
@@ -141,7 +146,7 @@ from atelier2.contracts.node_bindings import (
     WaitNodeBinding,
 )
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
@@ -154,7 +159,7 @@ from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
 )
-from atelier2.contracts.workflows import RunCompletes, RunContinues
+from atelier2.contracts.workflows import RunCompletes, RunContinues, round_of
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
@@ -269,6 +274,7 @@ def _node_binding(
         orders, results = _node_material(
             session, run_id, revision_hash, graph, node, run.current_round_ordinal
         )
+        execution = NodeInRun(run_id, revision_hash, node_id, run.current_round_ordinal)
         return encode_node_binding(
             bind_node(
                 run,
@@ -280,14 +286,9 @@ def _node_binding(
                     session, node
                 ),
                 maximum_assistant_turns=_pinned_maximum_assistant_turns(session, node),
-                project_source=_pinned_source(
-                    session,
-                    graph,
-                    node,
-                    NodeInRun(
-                        run_id, revision_hash, node_id, run.current_round_ordinal
-                    ),
-                    project,
+                project_source=_pinned_source(session, graph, node, execution, project),
+                start_candidate=_declared_start_candidate(
+                    session, graph, node, execution, project
                 ),
             )
         )
@@ -340,6 +341,46 @@ def _pinned_source(
     if project is None or not isinstance(node, AgentNodeV3):
         return None
     return pinned_source_for(session, graph, execution, project.source)
+
+
+def _declared_start_candidate(
+    session: Any,
+    graph: AnyWorkflowDocument,
+    node: AnyWorkflowDocumentNode,
+    execution: NodeInRun,
+    project: DeclaredProject | None,
+) -> CandidateTree | None:
+    """The published work this node declared it goes on in, read once and here.
+
+    Read at binding time for the reason the pin is: the binding is what a
+    replacement replays, so both attempts of one node begin in the same work
+    rather than in whatever the run has published since. A node that declares no
+    continuation, and every node of a run with no project, begins in its pin.
+
+    A declared continuation whose publication cannot be read stops the node
+    here, before its work item is claimed, in the words of the binding rather
+    than in the words of whoever opens pull requests over publications.
+    """
+    if project is None or not isinstance(node, AgentNodeV3):
+        return None
+    if node.starts_from is None:
+        return None
+    published = NodeInRun(
+        execution.run_id,
+        execution.revision_hash,
+        node.starts_from.node,
+        round_of(graph, node.starts_from.node, execution.round_ordinal),
+    )
+    try:
+        publication = confirmed_publication(session, published)
+    except RunPublicationRefused as refusal:
+        raise RunBindingConflict(
+            f"node {node.id!r} goes on working in what {node.starts_from.node!r} "
+            "published, and that publication cannot be read"
+        ) from refusal
+    return CandidateTree(
+        AgentAttemptId(publication.attempt_id), publication.candidate_tree
+    )
 
 
 def _executor_key(binding: AgentNodeBindingV2) -> AgentExecutorKey:

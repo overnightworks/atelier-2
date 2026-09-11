@@ -22,7 +22,10 @@ its shape can exist.
 A Wait binding's optional `question` is different: absence is both the current
 no-input form and the form every earlier row wrote. Presence carries the exact
 question composed for one bound-input pause. Neither meaning depends on a schema
-hop because this codec is the DBOS step-output owner, not a product table.
+hop because this codec is the DBOS step-output owner, not a product table. An
+Agent binding's optional start candidate is the same kind of key: absent is a
+node beginning in the tree its pin names, present is one going on in the work an
+earlier publication of its run already made.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, NotRequired, TypedDict, assert_never
 
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
@@ -50,7 +54,7 @@ from atelier2.contracts.node_bindings import (
     SubworkflowNodeBinding,
     WaitNodeBinding,
 )
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
@@ -66,6 +70,8 @@ class EncodedAgentBindingV2(TypedDict):
     tool_capability: NotRequired[str]
     project_commit: NotRequired[str]
     project_tree: NotRequired[str]
+    start_candidate_attempt: NotRequired[str]
+    start_candidate_tree: NotRequired[str]
     configuration_hash: str
     auth_hash: str
     profile_id: str
@@ -128,6 +134,8 @@ _AGENT_V2_OPTIONAL_KEYS = frozenset(
         "tool_capability",
         "project_commit",
         "project_tree",
+        "start_candidate_attempt",
+        "start_candidate_tree",
         "revision_format_version",
         "requested_capability",
         "output_schema_document",
@@ -208,6 +216,9 @@ def _encode_agent_v2(binding: AgentNodeBindingV2) -> EncodedAgentBindingV2:
     if binding.project_source is not None:
         encoded["project_commit"] = binding.project_source.commit
         encoded["project_tree"] = binding.project_source.tree
+    if binding.start_candidate is not None:
+        encoded["start_candidate_attempt"] = binding.start_candidate.attempt_id.value
+        encoded["start_candidate_tree"] = binding.start_candidate.tree
     return encoded
 
 
@@ -232,6 +243,7 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
             _declared_output_schema_document(encoded),
             _whole_number(encoded, "round_ordinal"),
             _declared_maximum_assistant_turns(encoded),
+            _declared_start_candidate(encoded),
         )
     except ValueError as error:
         raise RunBindingConflict(
@@ -392,6 +404,25 @@ def _declared_source_pin(encoded: Mapping[str, object]) -> ProjectSourcePin | No
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(
             "a durable project source pin carries an unknown value"
+        ) from error
+
+
+def _declared_start_candidate(encoded: Mapping[str, object]) -> CandidateTree | None:
+    """The candidate a durable binding continues, or nothing where it continues none."""
+    has_attempt = "start_candidate_attempt" in encoded
+    has_tree = "start_candidate_tree" in encoded
+    if not has_attempt and not has_tree:
+        return None
+    if not has_attempt or not has_tree:
+        raise RunBindingConflict("a durable start candidate is only partly encoded")
+    try:
+        return CandidateTree(
+            AgentAttemptId(_text(encoded, "start_candidate_attempt")),
+            _text(encoded, "start_candidate_tree"),
+        )
+    except (TypeError, ValueError) as error:
+        raise RunBindingConflict(
+            "a durable start candidate carries an unknown value"
         ) from error
 
 
