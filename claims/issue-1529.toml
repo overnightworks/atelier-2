@@ -1,8 +1,0 @@
-claim_id = "ed492d3b406143e3b619454a5791a75e"
-agent = "claude-head"
-role = "builder"
-base = "8391763734a3f143ea0abefb07792fdca70edd2f"
-branch = "claude/issue-1529-session-type-slice-1"
-scope = ["src/atelier2/adapters/dbos/instants.py", "src/atelier2/adapters/dbos/work_item_intents.py", "src/atelier2/adapters/dbos/produced_node_values.py", "src/atelier2/adapters/dbos/sql_executor.py"]
-opened_commit = "af24fc8b34d74a1ecfa32d1bb10185bb86566b67"
-whole_reason = "Das Protokoll und seine drei ersten Nutzer landen zusammen, sonst steht ein Owner ohne Aufrufer"
