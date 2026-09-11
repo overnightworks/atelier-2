@@ -591,6 +591,7 @@ def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed(
                 CandidatesKeptInMemory(),
                 pin,
                 THE_GRANT,
+                None,
             )
         )
 
@@ -858,6 +859,7 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
             CandidatesKeptInMemory(),
             pin,
             THE_GRANT,
+            None,
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         clock=lambda: TRANSCRIPT_RECORDED_AT,
@@ -938,6 +940,7 @@ def _drive_through_a_real_failing_verification(
             candidates or CandidatesKeptInMemory(),
             pin,
             THE_GRANT,
+            None,
         ),
         artifacts,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
@@ -1123,6 +1126,7 @@ def test_a_zero_exit_verification_never_publishes_an_artifact(
             CandidatesKeptInMemory(),
             pin,
             THE_GRANT,
+            None,
         ),
         publisher,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
@@ -1216,6 +1220,7 @@ def test_a_provider_that_left_the_pinned_tree_alone_ends_before_any_check_runs(
             _a_real_candidate_store(tmp_path, root),
             pin,
             THE_GRANT,
+            None,
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
@@ -1299,6 +1304,7 @@ def test_a_credential_shape_in_the_rejected_patch_is_redacted_before_it_is_kept(
             _a_real_candidate_store(tmp_path, root),
             pin,
             THE_GRANT,
+            None,
         ),
         publisher,  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
@@ -1376,6 +1382,7 @@ def _drive_through_a_real_passing_verification(
             _a_real_candidate_store(tmp_path, root),
             pin,
             THE_GRANT,
+            None,
         ),
         _RecordingArtifactPublisher(),  # type: ignore[arg-type]
         permissions=GRANTS_NOTHING,
@@ -1479,6 +1486,7 @@ def test_a_pin_this_source_cannot_answer_for_refuses_before_the_attempt_is_claim
                 CandidatesKeptInMemory(),
                 A_PIN_NO_SOURCE_ANSWERS_FOR,
                 THE_GRANT,
+                None,
             )
         )
 

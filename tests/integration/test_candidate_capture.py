@@ -311,7 +311,7 @@ class Attempt:
             DbosAgentAttemptStore(self.runtime.engine),
             self.runtime.agent_process_supervisor,
             runtime_workspace_owner(self.runtime),
-            project.pinned(pin, grant),
+            project.pinned(pin, grant, None),
             artifacts,
             permissions=GRANTS_NOTHING,
             workspace_files=workspace_files_nobody_opens,

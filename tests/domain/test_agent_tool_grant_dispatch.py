@@ -317,6 +317,7 @@ def test_a_declared_capability_dispatches_to_its_own_redeemer(tmp_path: Path) ->
         CandidatesKeptInMemory(),
         pin,
         THE_GRANT,
+        None,
     )
 
     store, supervisor, workspaces = _drive(project, tmp_path)
@@ -341,6 +342,7 @@ def test_a_capability_no_redeemer_performs_is_refused_by_name(tmp_path: Path) ->
         CandidatesKeptInMemory(),
         pin,
         grant,
+        None,
     )
     store = _ClaimingStore()
     supervisor = _RecordingSupervisor()
@@ -388,6 +390,7 @@ def test_a_non_verification_grant_needs_no_artifact_publisher_to_reach_its_own_r
         CandidatesKeptInMemory(),
         pin,
         grant,
+        None,
     )
     store = _ClaimingStore()
     supervisor = _RecordingSupervisor()

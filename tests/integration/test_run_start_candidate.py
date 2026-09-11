@@ -27,6 +27,7 @@ from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_binding_codec import decode_node_binding
+from atelier2.adapters.dbos.work_item_claims import refuse_unattested_pin
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.application.bind_node import agent_execution_request_v2, pinned_project
 from atelier2.application.evaluate_executability import (
@@ -43,9 +44,10 @@ from atelier2.contracts.agents import (
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
 )
-from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.executions import AgentAttemptExecution, AgentExecutionRefusal
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.project_sources import CandidateTree
+from atelier2.contracts.runs import RunState
 from atelier2.ports.agent_attempts import (
     AgentAttemptExecutionOutcome,
     AgentAttemptSucceeded,
@@ -283,6 +285,33 @@ def test_a_start_candidate_the_store_lost_stops_the_attempt_before_it_is_claimed
         assert provider.found == []
         attempts = DbosAgentAttemptStore(run.runtime.engine)
         assert attempts.load(execution.attempt_id).state is AgentAttemptState.PREPARED
+
+
+def test_a_node_whose_start_candidate_is_gone_ends_instead_of_holding_its_lane(
+    tmp_path: Path,
+) -> None:
+    """The claim door reads the same loss, and answers it as this node's own end."""
+
+    with publishing_run(tmp_path, "Build, then fix", (BUILD, FIX)) as run:
+        built = published_build(run)
+        binding, _execution = attempt_of(run, FIX)
+        unanchored(run, built)
+
+        ended = refuse_unattested_pin(
+            run.runtime.datasource,
+            binding,
+            run.declared_project(),
+            RUN,
+            run.revision.revision_hash,
+            FIX.node_id,
+        )
+
+        assert ended == RunState.FAILED.value
+        assert run.claims_taken() == ()
+        refusal = run.refusal_of(FIX)
+        assert refusal is not None
+        assert refusal.refusal is AgentExecutionRefusal.WORK_ITEM_CLAIM_REFUSED
+        assert built.tree in refusal.detail
 
 
 def test_a_candidate_this_store_never_kept_writes_nothing_into_a_lease(

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import sqlalchemy as sa
+
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.advancer import prepared_effect_intent
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
@@ -23,6 +25,7 @@ from atelier2.adapters.dbos.run_publications import NodeInRun, pinned_source_for
 from atelier2.adapters.dbos.run_store import commit_confirmed_effect
 from atelier2.adapters.dbos.run_transitions import load_graph
 from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.schema import effect_intents, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import _node_binding
 from atelier2.adapters.git_transport.effects import (
@@ -48,7 +51,11 @@ from atelier2.contracts.effects import (
     EffectIntent,
     PerformedEffect,
 )
-from atelier2.contracts.executions import logical_effect_key_for_node
+from atelier2.contracts.executions import (
+    AgentNodeRefusalRecord,
+    RunEventKind,
+    logical_effect_key_for_node,
+)
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevision
@@ -230,6 +237,36 @@ class PublishingRun:
                 ),
                 LocalGitProjectSource(self.project),
             )
+
+    def refusal_of(self, publisher: Publisher) -> AgentNodeRefusalRecord | None:
+        """What this node's own end says it was refused for, or nothing where it ran."""
+        with self.runtime.engine.connect() as connection:
+            payload = connection.execute(
+                sa.select(run_events.c.payload).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.node_id == publisher.node_id,
+                    run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+                )
+            ).scalar_one_or_none()
+        return (
+            None if payload is None else AgentNodeRefusalRecord.decode(bytes(payload))
+        )
+
+    def claims_taken(self) -> tuple[str, ...]:
+        """Every work-item claim this run opened, by the intent that opens it.
+
+        No claim is asked of the ledger before its intent stands durably, so an
+        empty answer is the whole statement that no lane of this run is held.
+        """
+        with self.runtime.engine.connect() as connection:
+            opened = connection.execute(
+                sa.select(effect_intents.c.logical_key).where(
+                    effect_intents.c.run_id == RUN.value,
+                    effect_intents.c.operation_name
+                    == AdapterOperationName.CLAIM_WORK_ITEM.value,
+                )
+            ).scalars()
+            return tuple(str(logical_key) for logical_key in opened)
 
     def parent_of(self, commit: str) -> str:
         return run_git(self.remote, "rev-parse", f"{commit}^")

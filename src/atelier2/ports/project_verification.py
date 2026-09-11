@@ -179,7 +179,7 @@ class PinnedProjectSource:
     candidates: CandidateTreeStore
     pin: ProjectSourcePin
     grant: DeclaredToolGrant | None
-    start_candidate: CandidateTree | None = None
+    start_candidate: CandidateTree | None
 
     def attest(self) -> None:
         """Refuse what this attempt could not begin in, unpacking nothing.
@@ -225,7 +225,7 @@ class DeclaredProject:
         self,
         pin: ProjectSourcePin,
         grant: DeclaredToolGrant | None,
-        start_candidate: CandidateTree | None = None,
+        start_candidate: CandidateTree | None,
     ) -> PinnedProjectSource:
         """What one attempt of this project works in, redeems in, and keeps."""
 
