@@ -81,10 +81,12 @@ from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.host.atelier_api_client import (
+    EVENT_STREAM_MEDIA_TYPE,
     AtelierApi,
     AtelierApiAddressUnusable,
     AtelierApiTransportFailure,
     opened_api,
+    server_sent_data,
 )
 
 REQUEST_TIMEOUT_SECONDS = 30.0
@@ -102,7 +104,6 @@ PROBLEM_TYPE_PREFIX: Final = "urn:atelier2:problem:v1:"
 
 JSON_MEDIA_TYPE = "application/json"
 YAML_MEDIA_TYPE = "application/yaml"
-EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 
 RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
@@ -743,7 +744,7 @@ def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:
     outputs: list[AgentOutput] = []
     last_cursor: str | None = None
     try:
-        for data in _server_sent_data(
+        for data in server_sent_data(
             api.event_lines(path, accept=EVENT_STREAM_MEDIA_TYPE)
         ):
             carried = _carried_event(data)
@@ -853,21 +854,6 @@ def _carried_event(data: str) -> CarriedEvent:
 def _failed_stream(url: str, data: str) -> str:
     failure = decoded(_stream_failure_resource, data.encode(), "a stream failure")
     return _refusal_sentence(url, failure.problem)
-
-
-def _server_sent_data(lines: Iterator[str]) -> Iterator[str]:
-    data_lines: list[str] = []
-    for line in lines:
-        if not line:
-            if data_lines:
-                yield "\n".join(data_lines)
-            data_lines = []
-            continue
-        field, _, value = line.partition(":")
-        if field == "data":
-            data_lines.append(value.removeprefix(" "))
-    if data_lines:
-        yield "\n".join(data_lines)
 
 
 def _post(

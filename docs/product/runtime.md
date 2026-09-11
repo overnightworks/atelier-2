@@ -167,8 +167,16 @@ pinned project source and operation identities, the runtime derives one
 `atelier2/work-item/<id>` branch and one deterministic commit over the candidate
 tree, persists the operation with the intent and receipt, and admits success only
 when the configured remote reads back that exact commit; the PR uses the same
-branch as its head. A destination that answers and holds nothing, asked before
-anything was sent, has said so: a remote read that succeeds and advertises no
+branch as its head. The project source such a node is pinned to is the base of
+its run's last confirmed publication, not the project's head: the first
+publisher of a run takes the head, and every later one -- and every replaced
+attempt of one that already published -- stands where that publication stands,
+so the commit replacing the branch head keeps the same parent instead of
+dropping what trunk gained beside the run. Where a run's own graph orders two
+publications only beside each other, nothing is pinned and the node is refused
+by name rather than resolved by which receipt happens to be newer.
+A destination that answers and holds nothing, asked before anything was sent,
+has said so: a remote read that succeeds and advertises no
 such ref, and a pull request listing for that exact head branch answered with
 an empty list, are absences the send proceeds on, so a first publication no
 longer waits for a person to confirm what nobody sent. Read after a send, the

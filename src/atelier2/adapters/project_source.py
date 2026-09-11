@@ -363,7 +363,15 @@ class LocalGitProjectSource:
         self._project_root = project_root.resolve()
 
     def head(self) -> ProjectSourcePin:
-        """Pin what this repository stands on, refusing a root that is not one.
+        """Pin what this repository stands on right now."""
+        return self._pinned(_HEAD_REVISION)
+
+    def pin_at(self, commit: str) -> ProjectSourcePin:
+        """Pin the tree this commit carries, however far the head has moved since."""
+        return self._pinned(commit)
+
+    def _pinned(self, revision: str) -> ProjectSourcePin:
+        """Resolve one revision to the commit and tree a pin names, or refuse.
 
         A root below its repository's top level is refused rather than pinned:
         git answers for the whole repository, so a tree pinned there would carry
@@ -378,14 +386,14 @@ class LocalGitProjectSource:
                 f"the repository it lies in ({top_level}), so a tree pinned here "
                 "would carry that whole repository rather than this project"
             )
-        commit = self._object_name(_HEAD_REVISION)
+        commit = self._object_name(revision)
         tree = self._object_name(_tree_of(commit))
         try:
             return ProjectSourcePin(commit, tree)
         except ValueError as error:
             raise ProjectSourceUnavailable(
                 f"the source at {self._project_root} answered {commit!r} and "
-                f"{tree!r} for what it stands on, which name no commit and tree"
+                f"{tree!r} for {revision}, which name no commit and tree"
             ) from error
 
     def attest(self, pin: ProjectSourcePin) -> None:
