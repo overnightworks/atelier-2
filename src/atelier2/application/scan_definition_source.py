@@ -6,10 +6,11 @@ already holds those bytes. That is the whole of it: the operator sees a newer
 version exists and decides, and no commit ever enters the catalog because
 somebody looked (`#660` ruled lines 2 and 12).
 
-Every selected file is put through `read_publishable_workflow`, the same door
-an intake would use, so a scan already says what an intake would refuse instead
-of discovering it halfway through the batch. The refusal is repeated in the
-publication door's own words rather than renamed here.
+Every selected file is put through the reader of the kind its selection
+configured -- the workflow publication door, or the schema or budget reader --
+the same reader an intake would use, so a scan already says what an intake
+would refuse instead of discovering it halfway through the batch. The refusal
+is repeated in that reader's own words rather than renamed here.
 
 That it writes nothing is the shape of what it is handed: the durable side it
 takes is `DefinitionSourceRegistry`, which has no door that writes.
@@ -22,7 +23,7 @@ was shown.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
@@ -34,6 +35,11 @@ from atelier2.application.publish_workflow_revision import (
     read_publishable_workflow,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.contracts.budgets_v3 import (
+    BudgetRevisionRefused,
+    BudgetRevisionVerdict,
+    read_budget_revision_document,
+)
 from atelier2.contracts.definition_sources import (
     DefinitionSourceId,
     DefinitionSourceRefusal,
@@ -42,7 +48,16 @@ from atelier2.contracts.definition_sources import (
     SourceCommit,
     SourceIntake,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
+from atelier2.contracts.schemas_v3 import (
+    SchemaDocumentVerdict,
+    SchemaRefused,
+    read_schema_document,
+)
 from atelier2.contracts.workflow_refusals import WorkflowRefusal
 from atelier2.ports.definition_sources import (
     DefinitionSourceFound,
@@ -57,6 +72,17 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.workflow_revisions import WorkflowDocumentParser
+
+type CarriedDocument = PublishableWorkflow | PublishedRevision
+"""What a scan validated for one path: a workflow the publication door accepted,
+or a hash-named document its own kind's reader accepted."""
+
+_DOCUMENT_READERS: Mapping[
+    RevisionKind, Callable[[bytes], SchemaDocumentVerdict | BudgetRevisionVerdict]
+] = {
+    RevisionKind.SCHEMA: read_schema_document,
+    RevisionKind.BUDGET_POLICY: read_budget_revision_document,
+}
 
 
 class PathFreshness(StrEnum):
@@ -95,7 +121,7 @@ class DefinitionSourceScanned:
     revision: DefinitionSourceRevision
     commit: SourceCommit
     paths: tuple[ScannedPath, ...]
-    carried: Mapping[RepositoryPath, PublishableWorkflow]
+    carried: Mapping[RepositoryPath, CarriedDocument]
 
 
 @dataclass(frozen=True)
@@ -157,14 +183,17 @@ def scan_definition_source(
         scanned = reader.scan(revision.configuration)
     except DefinitionSourceUnreadable as refused:
         return ScanRefused(refused.refusal, refused.detail)
-    carried = _validated(scanned.files, parser, limits)
-    if isinstance(carried, ScannedDocumentInvalid):
-        return carried
     intaken = sources.latest_intakes(source_id)
     if isinstance(intaken, DurableWriteUnavailable):
         return ReadUnavailable()
     if isinstance(intaken, PortDurableStateCorrupt):
         return DurableStateCorrupt()
+    changed = _kind_changed(scanned.files, intaken)
+    if changed is not None:
+        return changed
+    carried = _validated(scanned.files, parser, limits)
+    if isinstance(carried, ScannedDocumentInvalid):
+        return carried
     return DefinitionSourceScanned(
         revision,
         scanned.commit,
@@ -173,11 +202,39 @@ def scan_definition_source(
     )
 
 
+def _kind_changed(
+    files: tuple[SelectedFile, ...], intaken: Mapping[RepositoryPath, SourceIntake]
+) -> ScanRefused | None:
+    """The first path the source now claims as another kind than it was taken in as.
+
+    A path's continuity has one kind: a workflow path's history is a lineage, a
+    schema's or a budget's is none, and taking the path in as another kind
+    would graft onto it a history it does not have. Asked before any document
+    is read, because the changed selection is the cause and a reader's refusal
+    would only name a symptom of it.
+    """
+
+    for selected in files:
+        previous = intaken.get(selected.path)
+        if previous is not None and previous.revision_kind is not (
+            selected.selection.kind
+        ):
+            return ScanRefused(
+                DefinitionSourceRefusal.KIND_CHANGED,
+                f"{selected.path.value} was taken in as "
+                f"{previous.revision_kind.value} and is now selected as "
+                f"{selected.selection.kind.value}; a path keeps the kind it was "
+                "first taken in as, so move the file to a new path or select it "
+                f"as {previous.revision_kind.value} again",
+            )
+    return None
+
+
 def _validated(
     files: tuple[SelectedFile, ...],
     parser: WorkflowDocumentParser,
     limits: WorkflowPublicationLimits,
-) -> Mapping[RepositoryPath, PublishableWorkflow] | ScannedDocumentInvalid:
+) -> Mapping[RepositoryPath, CarriedDocument] | ScannedDocumentInvalid:
     """Every selected file put through the intake door, or the first refusal.
 
     The whole scan stops at one refused file rather than reporting the rest:
@@ -186,30 +243,55 @@ def _validated(
     will not do.
     """
 
-    read: dict[RepositoryPath, PublishableWorkflow] = {}
+    read: dict[RepositoryPath, CarriedDocument] = {}
     for selected in files:
+        carried = _read(selected, parser, limits)
+        if isinstance(carried, ScannedDocumentInvalid):
+            return carried
+        read[selected.path] = carried
+    return read
+
+
+def _read(
+    selected: SelectedFile,
+    parser: WorkflowDocumentParser,
+    limits: WorkflowPublicationLimits,
+) -> CarriedDocument | ScannedDocumentInvalid:
+    """One file through the reader of the kind its selection configured.
+
+    A schema or budget refusal carries no workflow refusal: its reader's own
+    sentence is the whole of what it says.
+    """
+
+    kind = selected.selection.kind
+    if kind is RevisionKind.WORKFLOW:
         publishable = read_publishable_workflow(selected.document, parser, limits)
         if isinstance(publishable, PublicationInvalid):
             return ScannedDocumentInvalid(
                 selected.path, publishable.detail, publishable.refusal
             )
-        read[selected.path] = publishable
-    return read
+        return publishable
+    verdict = _DOCUMENT_READERS[kind](selected.document)
+    if isinstance(verdict, (SchemaRefused, BudgetRevisionRefused)):
+        return ScannedDocumentInvalid(selected.path, str(verdict), None)
+    return PublishedRevision(kind, selected.document)
 
 
-def published_hash(publishable: PublishableWorkflow) -> PublishedRevisionHash:
-    """The catalog identity of bytes the workflow door already accepted.
+def published_hash(carried: CarriedDocument) -> PublishedRevisionHash:
+    """The catalog identity of bytes their reader already accepted.
 
-    One derivation for the scan that compares it and the intake that admits
-    under it, so the two can never name one file by two hashes.
+    One derivation for every kind a scan compares, so one file can never be
+    named by two hashes.
     """
 
-    return PublishedRevisionHash(publishable.revision.revision_hash.value)
+    if isinstance(carried, PublishedRevision):
+        return carried.revision_hash
+    return PublishedRevisionHash(carried.revision.revision_hash.value)
 
 
 def _compared(
     files: tuple[SelectedFile, ...],
-    carried: Mapping[RepositoryPath, PublishableWorkflow],
+    carried: Mapping[RepositoryPath, CarriedDocument],
     intaken: Mapping[RepositoryPath, SourceIntake],
 ) -> tuple[ScannedPath, ...]:
     """Every path the source carries, then every path only the catalog holds.
@@ -224,7 +306,9 @@ def _compared(
             selected.path,
             selected.selection.kind,
             _freshness(
-                published_hash(carried[selected.path]), intaken.get(selected.path)
+                selected.selection.kind,
+                published_hash(carried[selected.path]),
+                intaken.get(selected.path),
             ),
             published_hash(carried[selected.path]),
         )
@@ -239,8 +323,18 @@ def _compared(
 
 
 def _freshness(
-    published: PublishedRevisionHash, intake: SourceIntake | None
+    kind: RevisionKind, published: PublishedRevisionHash, intake: SourceIntake | None
 ) -> PathFreshness:
-    if intake is None or intake.revision_hash != published:
+    """In sync only when the path last delivered these bytes as this same kind.
+
+    A published revision is its bytes under one kind, so the same bytes last
+    taken in as another kind are not yet in the catalog as what the source
+    now says they are.
+    """
+
+    if intake is None or (intake.revision_kind, intake.revision_hash) != (
+        kind,
+        published,
+    ):
         return PathFreshness.SOURCE_AHEAD
     return PathFreshness.IN_SYNC

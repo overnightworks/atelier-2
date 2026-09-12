@@ -28,7 +28,9 @@ def closed_vocabulary_sql(column: str, vocabulary: type[StrEnum]) -> str:
     by hand is how a column quietly stops admitting a word its contract owns.
     """
 
-    admitted = ", ".join(f"'{member.value}'" for member in vocabulary)
+    admitted = ", ".join(
+        f"'{member.value}'" for member in vocabulary.__members__.values()
+    )
     return f"{column} IN ({admitted})"
 
 

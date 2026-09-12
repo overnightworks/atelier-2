@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, assert_never
+from typing import Any, assert_never, cast
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
-from sqlalchemy.engine import Connection, Engine, Row, RowMapping
+from sqlalchemy.engine import Connection, CursorResult, Engine, Row, RowMapping
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.node_records import (
     node_receipt_from_record,
 )
 from atelier2.adapters.dbos.run_transitions import (
+    RunPosition,
     RunTransitionConflict,
     _commit_event,
     event_from_record,
@@ -45,6 +46,7 @@ from atelier2.adapters.dbos.schema import (
     wait_answers,
     workflow_revisions,
 )
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
@@ -149,7 +151,7 @@ class ToolRedemptionConflict(RunTransitionConflict):
     """One stable node execution contradicts its durable tool redemption."""
 
 
-def _records(session: Any, statement: sa.Select[Any]) -> tuple[RowMapping, ...]:
+def _records(session: SqlExecutor, statement: sa.Select[Any]) -> tuple[RowMapping, ...]:
     return tuple(session.execute(statement).mappings())
 
 
@@ -161,28 +163,20 @@ def _run_input_from_record(record: Row[Any]) -> RunInput:
     )
 
 
-@dataclass(frozen=True)
-class _Continuation:
-    state: RunState
-    node_id: str
-    round_ordinal: int
-    terminal: bool
-
-
 def _continuation_after(
     graph: AnyWorkflowDocument, node_id: str, round_ordinal: int
-) -> _Continuation:
+) -> RunPosition:
     match completion_after_node(graph, node_id, round_ordinal):
         case RunContinues(successor, successor_round):
-            return _Continuation(RunState.STARTED, successor, successor_round, False)
+            return RunPosition(RunState.STARTED, successor, successor_round)
         case RunCompletes():
-            return _Continuation(RunState.COMPLETED, node_id, round_ordinal, True)
+            return RunPosition(RunState.COMPLETED, node_id, round_ordinal)
         case _ as unreachable:
             assert_never(unreachable)
 
 
 def load_run_inputs(
-    session: Any, run_id: RunId, node: AgentNodeV3 | WaitNodeV3
+    session: SqlExecutor, run_id: RunId, node: AgentNodeV3 | WaitNodeV3
 ) -> tuple[RunInput, ...]:
     """The orders this node declared it reads, as the start stored them.
 
@@ -226,7 +220,7 @@ def load_run_inputs(
 
 
 def load_run_orders(
-    session: Any, run_ids: Sequence[str]
+    session: SqlExecutor, run_ids: Sequence[str]
 ) -> dict[str, tuple[RunInput, ...]]:
     """Every order each of these runs was started with, one query for the page.
 
@@ -268,7 +262,7 @@ class NodeOutputSchemaRefused(RunTransitionConflict):
 
 
 def bootstrap_node_for_snapshot(
-    session: Any, run: AnyRun, graph: AnyWorkflowDocument
+    session: SqlExecutor, run: AnyRun, graph: AnyWorkflowDocument
 ) -> str:
     """Validate the one pristine snapshot an ordinary start or fork may drive."""
 
@@ -314,7 +308,7 @@ def bootstrap_node_for_snapshot(
 
 
 def load_node_output_payload(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     graph: WorkflowGraphV3,
@@ -444,7 +438,7 @@ def event_carrying_the_output_of(node: WorkflowNodeV3) -> RunEventKind:
 
 
 def load_node_outputs(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     graph: AnyWorkflowDocument,
@@ -522,7 +516,7 @@ def load_node_outputs(
     return tuple(delivered)
 
 
-def load_kept_value(session: Any, node_execution_id: NodeExecutionId) -> bytes:
+def load_kept_value(session: SqlExecutor, node_execution_id: NodeExecutionId) -> bytes:
     """The exact value one finished node execution kept, as its artifact holds it.
 
     A driver that recovers after a round has already succeeded has to reach the
@@ -544,7 +538,7 @@ def load_kept_value(session: Any, node_execution_id: NodeExecutionId) -> bytes:
 
 
 def refuse_an_output_its_schema_does_not_admit(
-    session: Any,
+    session: SqlExecutor,
     node_id: str,
     declared: NodeOutput,
     payload: bytes,
@@ -577,7 +571,7 @@ def refuse_an_output_its_schema_does_not_admit(
         )
 
 
-def load_published_schema_document(session: Any, revision: str) -> bytes | None:
+def load_published_schema_document(session: SqlExecutor, revision: str) -> bytes | None:
     """The exact published schema document this revision stores, or nothing.
 
     This is the one read the output seam and the provider flag share. Callers
@@ -593,7 +587,7 @@ def load_published_schema_document(session: Any, revision: str) -> bytes | None:
 
 
 def _pinned_schema_or_conflict(
-    session: Any, node_id: str, declared: NodeOutput
+    session: SqlExecutor, node_id: str, declared: NodeOutput
 ) -> SchemaAccepted:
     """The schema `declared`'s pinned revision reads as, or a raised transition conflict.
 
@@ -623,7 +617,7 @@ def _pinned_schema_or_conflict(
 
 
 def why_a_value_its_declared_schema_refuses(
-    session: Any,
+    session: SqlExecutor,
     node_id: str,
     declared: NodeOutput,
     payload: bytes,
@@ -782,7 +776,9 @@ def _tool_redemption_from_record(record: Mapping[Any, Any]) -> ToolRedemptionRec
 
 
 def commit_confirmed_effect(
-    session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
+    session: SqlExecutor,
+    logical_key: LogicalEffectKey,
+    revision_hash: WorkflowRevisionHash,
 ) -> TransitionSnapshot:
     intent_record = one_record(
         session,
@@ -835,28 +831,27 @@ def commit_confirmed_effect(
         session,
         run_id,
         revision_hash,
-        node.id,
         RunEventKind.ACTION_COMPLETED,
         receipt.result.payload,
-        RunState.STARTED,
-        continuation.state,
-        continuation.node_id,
+        RunPosition(RunState.STARTED, node.id, run.current_round_ordinal),
+        continuation,
         logical_key,
         receipt.result.payload_hash,
-        terminal=continuation.terminal,
-        round_ordinal=run.current_round_ordinal,
-        target_round_ordinal=continuation.round_ordinal,
     )
 
 
 def commit_action_completed(
-    session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
+    session: SqlExecutor,
+    logical_key: LogicalEffectKey,
+    revision_hash: WorkflowRevisionHash,
 ) -> TransitionSnapshot:
     """Commit a confirmed Action effect through the shared continuation."""
     return commit_confirmed_effect(session, logical_key, revision_hash)
 
 
-def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot:
+def commit_wait_answered(
+    session: SqlExecutor, answer: WaitAnswer
+) -> TransitionSnapshot:
     durable = _wait_answer_snapshot_at(session, answer.node_execution_id)
     if durable is None:
         raise RunTransitionConflict("answer workflow has no durable answer")
@@ -890,35 +885,44 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         session,
         answer.run_id,
         answer.revision_hash,
-        answer.node_id,
         RunEventKind.WAIT_ANSWERED,
         answer.answer_bytes,
-        RunState.WAITING_INPUT,
-        continuation.state,
-        continuation.node_id,
-        terminal=continuation.terminal,
-        round_ordinal=answer.round_ordinal,
-        target_round_ordinal=continuation.round_ordinal,
+        RunPosition(RunState.WAITING_INPUT, answer.node_id, answer.round_ordinal),
+        continuation,
     )
     if durable.state is WaitAnswerState.PENDING:
-        updated = session.execute(
-            wait_answers.update()
-            .where(
-                wait_answers.c.node_execution_id == answer.node_execution_id.value,
-                wait_answers.c.state == WaitAnswerState.PENDING.value,
-                wait_answers.c.state_version == 0,
-            )
-            .values(state=WaitAnswerState.APPLIED.value, state_version=1)
-        )
-        if updated.rowcount != 1:
-            raise RunTransitionConflict("answer apply lost its state CAS")
+        _apply_pending_wait_answer(session, answer.node_execution_id)
     elif transition.event.event_kind is not RunEventKind.WAIT_ANSWERED:
         raise RunTransitionConflict("applied answer has no exact event")
     return transition
 
 
+def _apply_pending_wait_answer(
+    session: SqlExecutor, node_execution_id: NodeExecutionId
+) -> None:
+    # `wait_answers.update()` is Core DML: both a connection and a datasource
+    # session execute it as a `CursorResult`, but the executor protocol only
+    # promises the ORM-compatible `Result` its `Session` implementation can
+    # guarantee, so the cast makes the always-true richer type explicit for
+    # the checker.
+    updated = cast(
+        CursorResult[Any],
+        session.execute(
+            wait_answers.update()
+            .where(
+                wait_answers.c.node_execution_id == node_execution_id.value,
+                wait_answers.c.state == WaitAnswerState.PENDING.value,
+                wait_answers.c.state_version == 0,
+            )
+            .values(state=WaitAnswerState.APPLIED.value, state_version=1)
+        ),
+    )
+    if updated.rowcount != 1:
+        raise RunTransitionConflict("answer apply lost its state CAS")
+
+
 def commit_subworkflow_completed(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -929,18 +933,15 @@ def commit_subworkflow_completed(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.SUBWORKFLOW_COMPLETED,
         payload,
-        RunState.STARTED,
-        RunState.COMPLETED,
-        node_id,
-        terminal=True,
+        RunPosition(RunState.STARTED, node_id, FIRST_ROUND_ORDINAL),
+        RunPosition(RunState.COMPLETED, node_id, FIRST_ROUND_ORDINAL),
     )
 
 
 def why_a_wait_node_does_not_admit_an_answer(
-    session: Any, node: WaitNodeV3, answer_bytes: bytes
+    session: SqlExecutor, node: WaitNodeV3, answer_bytes: bytes
 ) -> str | None:
     """Why these bytes are no answer to this waiting node, or nothing where they are.
 
@@ -1009,7 +1010,7 @@ class WaitAnswerStateCorrupt(RuntimeError):
 
 
 def _wait_answer_snapshot_at(
-    session: Any, node_execution_id: NodeExecutionId
+    session: SqlExecutor, node_execution_id: NodeExecutionId
 ) -> WaitAnswerSnapshot | None:
     """The one stored answer of this exact execution, or nothing where none is.
 
@@ -1029,7 +1030,7 @@ def _wait_answer_snapshot_at(
 
 
 def load_wait_answer(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -1045,7 +1046,7 @@ def load_wait_answer(
 
 
 def _events_for_wait_execution(
-    session: Any, node_execution_id: NodeExecutionId
+    session: SqlExecutor, node_execution_id: NodeExecutionId
 ) -> tuple[RunEvent, ...]:
     records = _records(
         session,
@@ -1155,7 +1156,7 @@ class _AnsweredRun:
 
 
 def _revision_document(
-    session: Any, revision_hash: WorkflowRevisionHash
+    session: SqlExecutor, revision_hash: WorkflowRevisionHash
 ) -> bytes | None:
     document = session.scalar(
         sa.select(workflow_revisions.c.document).where(
@@ -1166,7 +1167,7 @@ def _revision_document(
 
 
 def _head_event_of(
-    session: Any, run: AnyRun, graph: AnyWorkflowDocument
+    session: SqlExecutor, run: AnyRun, graph: AnyWorkflowDocument
 ) -> RunEvent | DurableStateCorrupt:
     head_records = _records(
         session,
@@ -1204,7 +1205,7 @@ def _pause_agrees_with_answer(
 
 
 def _run_standing_at(
-    session: Any,
+    session: SqlExecutor,
     request: SubmitWaitAnswerRequest,
     prepared: _PreparedRevision | None,
 ) -> (
@@ -1272,7 +1273,7 @@ def _event_belongs_to_request(
 
 
 def _events_of_requested_execution(
-    session: Any,
+    session: SqlExecutor,
     request: SubmitWaitAnswerRequest,
     answer: WaitAnswerSnapshot | None,
 ) -> tuple[RunEvent, ...] | DurableStateCorrupt:

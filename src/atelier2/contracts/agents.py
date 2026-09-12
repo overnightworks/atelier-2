@@ -564,7 +564,13 @@ class AgentOutputLimitExceeded(ValueError):
 
 
 @dataclass(frozen=True)
-class AgentReceiptV2:
+class AgentReceiptBody:
+    """Every value one V2 receipt hash commits to, in the order it frames them.
+
+    A receipt is this body sealed with its hash; a verifier holding only the
+    presented fields folds the same fingerprint out of the body alone.
+    """
+
     request_hash: AgentExecutionRequestHash
     node_execution_id: NodeExecutionId
     run_id: RunId
@@ -583,6 +589,35 @@ class AgentReceiptV2:
     executor_operational_identity: AgentExecutorOperationalIdentity
     output_bytes: bytes
     output_hash: AgentOutputHash
+
+    def fingerprint(self) -> AgentReceiptHash:
+        return AgentReceiptHash.of(
+            frame(
+                "agent-receipt/v2",
+                self.request_hash.value.encode("ascii"),
+                self.node_execution_id.value.encode("ascii"),
+                self.run_id.value.encode("utf-8"),
+                self.workflow_revision_hash.value.encode("ascii"),
+                self.node_id.encode("utf-8"),
+                self.role.value.encode("utf-8"),
+                self.binding_set_hash.value.encode("ascii"),
+                self.agent_configuration_revision_hash.value.encode("ascii"),
+                self.auth_profile_revision_hash.value.encode("ascii"),
+                self.profile_id.encode("utf-8"),
+                struct.pack(">Q", self.revision_number),
+                self.provider_id.value.encode("ascii"),
+                self.auth_mode.value.encode("ascii"),
+                self.model.encode("utf-8"),
+                self.executor_revision.value.encode("utf-8"),
+                self.executor_operational_identity.value.encode("utf-8"),
+                self.output_bytes,
+                self.output_hash.value.encode("ascii"),
+            )
+        )
+
+
+@dataclass(frozen=True)
+class AgentReceiptV2(AgentReceiptBody):
     receipt_hash: AgentReceiptHash
     round_ordinal: int = FIRST_ROUND_ORDINAL
 
@@ -602,73 +637,8 @@ class AgentReceiptV2:
             )
         if self.output_hash != AgentOutputHash.of(self.output_bytes):
             raise ValueError("agent receipt output hash differs from its bytes")
-        expected = self.hash_for(
-            self.request_hash,
-            self.node_execution_id,
-            self.run_id,
-            self.workflow_revision_hash,
-            self.node_id,
-            self.role,
-            self.binding_set_hash,
-            self.agent_configuration_revision_hash,
-            self.auth_profile_revision_hash,
-            self.profile_id,
-            self.revision_number,
-            self.provider_id,
-            self.auth_mode,
-            self.model,
-            self.executor_revision,
-            self.executor_operational_identity,
-            self.output_bytes,
-            self.output_hash,
-        )
-        if self.receipt_hash != expected:
+        if self.receipt_hash != self.fingerprint():
             raise ValueError("agent receipt hash differs from its exact binding")
-
-    @staticmethod
-    def hash_for(
-        request_hash: AgentExecutionRequestHash,
-        node_execution_id: NodeExecutionId,
-        run_id: RunId,
-        workflow_revision_hash: WorkflowRevisionHash,
-        node_id: str,
-        role: AgentRole,
-        binding_set_hash: AgentBindingSetHash,
-        configuration_hash: AgentConfigurationRevisionHash,
-        auth_hash: AuthProfileRevisionHash,
-        profile_id: str,
-        revision_number: int,
-        provider_id: ProviderId,
-        auth_mode: AuthMode,
-        model: str,
-        executor_revision: AgentExecutorRevision,
-        operational_identity: AgentExecutorOperationalIdentity,
-        output_bytes: bytes,
-        output_hash: AgentOutputHash,
-    ) -> AgentReceiptHash:
-        return AgentReceiptHash.of(
-            frame(
-                "agent-receipt/v2",
-                request_hash.value.encode("ascii"),
-                node_execution_id.value.encode("ascii"),
-                run_id.value.encode("utf-8"),
-                workflow_revision_hash.value.encode("ascii"),
-                node_id.encode("utf-8"),
-                role.value.encode("utf-8"),
-                binding_set_hash.value.encode("ascii"),
-                configuration_hash.value.encode("ascii"),
-                auth_hash.value.encode("ascii"),
-                profile_id.encode("utf-8"),
-                struct.pack(">Q", revision_number),
-                provider_id.value.encode("ascii"),
-                auth_mode.value.encode("ascii"),
-                model.encode("utf-8"),
-                executor_revision.value.encode("utf-8"),
-                operational_identity.value.encode("utf-8"),
-                output_bytes,
-                output_hash.value.encode("ascii"),
-            )
-        )
 
     @classmethod
     def for_execution(
@@ -684,8 +654,7 @@ class AgentReceiptV2:
         binding = request.resolved_binding
         configuration = binding.configuration
         auth = binding.auth_profile
-        output_hash = AgentOutputHash.of(result.output_bytes)
-        receipt_hash = cls.hash_for(
+        body = AgentReceiptBody(
             request.request_hash,
             request.node_execution_id,
             request.run_id,
@@ -703,27 +672,27 @@ class AgentReceiptV2:
             configuration.executor_revision,
             request.executor_operational_identity,
             result.output_bytes,
-            output_hash,
+            AgentOutputHash.of(result.output_bytes),
         )
         return cls(
-            request.request_hash,
-            request.node_execution_id,
-            request.run_id,
-            request.workflow_revision_hash,
-            request.node_id,
-            binding.role,
-            binding_set_hash,
-            configuration.revision_hash,
-            auth.revision_hash,
-            auth.profile_id,
-            auth.revision_number,
-            auth.provider_id,
-            auth.auth_mode,
-            configuration.model,
-            configuration.executor_revision,
-            request.executor_operational_identity,
-            result.output_bytes,
-            output_hash,
-            receipt_hash,
+            body.request_hash,
+            body.node_execution_id,
+            body.run_id,
+            body.workflow_revision_hash,
+            body.node_id,
+            body.role,
+            body.binding_set_hash,
+            body.agent_configuration_revision_hash,
+            body.auth_profile_revision_hash,
+            body.profile_id,
+            body.revision_number,
+            body.provider_id,
+            body.auth_mode,
+            body.model,
+            body.executor_revision,
+            body.executor_operational_identity,
+            body.output_bytes,
+            body.output_hash,
+            body.fingerprint(),
             request.round_ordinal,
         )

@@ -171,7 +171,7 @@ an *external* side effect — a PR reopened, a message resent — once per round
 That repetition has its own idempotency question the round dimension does not
 answer by itself: an external effect needs its own per-round idempotency key
 before "run it again" is safe, and no domain need has asked for one. Extending
-`_unrepeatable_loop_forms` (`contracts/workflows_v3.py`) to admit Action nodes
+`_unrepeatable_loop_forms` (`contracts/workflow_executability.py`) to admit Action nodes
 without that key would let a published document declare a shape the runtime
 cannot honestly repeat. The refusal therefore stays exactly where #706 left
 it — enforced by `_unrepeatable_loop_forms` and `parse_executable_workflow_document`

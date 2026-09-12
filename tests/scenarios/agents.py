@@ -408,6 +408,21 @@ def claude_subscription_runtime(
     )
 
 
+def declaring_mode_of(
+    document: bytes, requested_capability: AgentExecutionCapability
+) -> bytes:
+    """This scenario document with its `headless` node asking for what is bound.
+
+    A start binds a node only to a configuration of the node's own mode, so a
+    scenario binding a tool-bearing configuration authors a tool-bearing node.
+    Any other demand keeps the headless node: an executor that cannot serve it
+    refuses the start before the mode is ever compared.
+    """
+    if requested_capability is not AgentExecutionCapability.HEADLESS_WITH_TOOLS:
+        return document
+    return document.replace(b"mode: headless", b"mode: headless_with_tools")
+
+
 def claude_subscription_publication(
     runtime: DbosRuntime,
     model: str = "claude-haiku-4-5",
@@ -441,7 +456,9 @@ def claude_subscription_publication(
         runtime.engine, ProviderId("anthropic"), (configuration,)
     )
     DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
-    workflow = WorkflowRevision(CLAUDE_SUBSCRIPTION_WORKFLOW)
+    workflow = WorkflowRevision(
+        declaring_mode_of(CLAUDE_SUBSCRIPTION_WORKFLOW, requested_capability)
+    )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return configuration, workflow
 

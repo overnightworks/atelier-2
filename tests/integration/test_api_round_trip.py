@@ -556,6 +556,52 @@ def test_model_registry_refuses_missing_or_mismatched_configuration_without_a_wr
     assert model_configuration_revision_counts(runtime) == before
 
 
+def test_a_registry_holds_one_model_under_two_configurations_but_not_one_twice(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    client, _project_reference, headless = configured_model_api(runtime, tmp_path)
+    tooled = answered(
+        client.post(
+            AGENT_CONFIGURATION_PATH,
+            json={
+                **carried(
+                    headless, "model", "executor_revision", "auth_profile_revision_hash"
+                ),
+                "requested_capability": "headless_with_tools",
+            },
+        ),
+        201,
+    )
+    registry_path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
+    both = [
+        {
+            "model_id": "opus",
+            **carried(configuration, "agent_configuration_revision_hash"),
+        }
+        for configuration in (tooled, headless)
+    ]
+
+    registered = answered(
+        client.put(registry_path, json={"revision_number": 1, "entries": both}),
+        201,
+    )
+    before = model_configuration_revision_counts(runtime)
+    repeated = client.put(
+        registry_path, json={"revision_number": 2, "entries": [*both, both[0]]}
+    )
+
+    assert [
+        (entry["model_id"], entry["agent_configuration_revision_hash"])
+        for entry in registered["entries"]
+    ] == sorted(
+        (entry["model_id"], entry["agent_configuration_revision_hash"])
+        for entry in both
+    )
+    assert repeated.status_code == 422
+    assert repeated.json()["type"].endswith(":invalid-request")
+    assert model_configuration_revision_counts(runtime) == before
+
+
 @pytest.mark.parametrize(
     ("validation", "expected_check", "defaults_status"),
     (

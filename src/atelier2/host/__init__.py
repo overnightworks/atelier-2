@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import assert_never, cast
@@ -75,6 +75,7 @@ from atelier2.host.definition_source_command import (
     add_definition_source_parser,
     execute_definition_source,
 )
+from atelier2.host.instance_watch import add_watch_parser, execute_watch
 from atelier2.host.mcp_command import execute_mcp
 from atelier2.host.migrate_command import describe_migration, execute_migrate
 from atelier2.host.provider_canary import (
@@ -268,25 +269,25 @@ class _DeclaredSubscription[SettingsT]:
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = _argument_parser()
     parsed = parser.parse_args(arguments)
-    if parsed.command == "serve":
-        return _serve(parser, parsed)
-    if parsed.command == "run":
-        return _run(parser, parsed)
-    if parsed.command == "resolve":
-        return _resolve(parser, parsed)
-    if parsed.command == "migrate":
-        return _migrate(parsed)
-    if parsed.command == "connect":
-        return _connect(parsed)
-    if parsed.command == "definition-source":
-        return execute_definition_source(parsed)
-    if parsed.command == "mcp":
-        return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
-    if parsed.command == "seat":
-        return execute_seat(parsed)
-    if parsed.command == "provider-canary":
-        return _provider_canary(parser, parsed)
-    parser.error("a command is required")
+    # One entry per declared subcommand, each closing over this call's own
+    # `parser`/`parsed` -- the table a tenth command joins without growing
+    # this function by an if/return pair of its own.
+    handlers: dict[str, Callable[[], int]] = {
+        "serve": lambda: _serve(parser, parsed),
+        "run": lambda: _run(parser, parsed),
+        "resolve": lambda: _resolve(parser, parsed),
+        "migrate": lambda: _migrate(parsed),
+        "connect": lambda: _connect(parsed),
+        "definition-source": lambda: execute_definition_source(parsed),
+        "mcp": lambda: execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer),
+        "seat": lambda: execute_seat(parsed),
+        "provider-canary": lambda: _provider_canary(parser, parsed),
+        "watch": lambda: execute_watch(parsed),
+    }
+    handler = handlers.get(parsed.command)
+    if handler is None:
+        parser.error("a command is required")
+    return handler()
 
 
 def _given[ValueT](**flags: ValueT | None) -> dict[str, ValueT]:
@@ -1040,6 +1041,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     )
     add_definition_source_parser(commands)
     add_seat_parser(commands)
+    add_watch_parser(commands)
     resolve_parser = commands.add_parser(
         "resolve",
         help="ask a served Atelier which revision a workflow name holds",

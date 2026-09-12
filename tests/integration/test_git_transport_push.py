@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import re
+import signal
 import subprocess
+import sys
+import tempfile
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -16,6 +21,7 @@ import pytest
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitCommandRunner,
+    GitCredentialUnresolvable,
     GitRemote,
     GitTransportEffectAdapterFactory,
     SubprocessGitCommandRunner,
@@ -51,6 +57,7 @@ from atelier2.ports.effects import (
     HeadBranchPullRequestsUnreadable,
     PullRequestOpenOnHeadBranch,
 )
+from tests.acceptance.test_p3_token_canary import GitHttpRemote
 from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
 
 ATTEMPT_ID = "a1" * 32
@@ -137,13 +144,14 @@ def _intent(
 
 def _factory(
     store: Path,
-    remote: Path,
+    remote: Path | str,
     runner: GitCommandRunner | None = None,
     pull_requests: FakeHeadBranchPullRequests | None = None,
+    credential_file: Path | None = None,
 ) -> GitTransportEffectAdapterFactory:
     arguments = (
         store,
-        GitRemote("local-test", str(remote)),
+        GitRemote("local-test", str(remote), credential_file),
         AdapterRevision("git-push-v1"),
         EffectDestination("git"),
         pull_requests or FakeHeadBranchPullRequests(),
@@ -455,29 +463,30 @@ def test_inconclusive_read_after_send_reconciles_and_retry_sends_no_second_push(
         assert outcome.reason.detail == inconclusive.stderr.decode()
 
 
-def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
-    tmp_path: Path,
-) -> None:
-    store, remote, base, _tree = _repositories(tmp_path)
-    runner = _ScriptedRemoteReadRunner([None] * 8)
-    factory = _factory(store, remote, runner)
+def _reviewed_documentation_request(base: str) -> ReviewedDocumentationPullRequest:
     replacement = ReviewedDocumentReplacement(
         "kept.txt", sha256(b"base\n").hexdigest(), b"reviewed exact bytes\n"
     )
     title = "Reviewed documentation"
     body = "The approved replacement."
-    candidate_digest = reviewed_documentation_candidate_digest(
-        base, (replacement,), title, body
-    )
-    request = ReviewedDocumentationPullRequest(
+    return ReviewedDocumentationPullRequest(
         base,
-        candidate_digest,
+        reviewed_documentation_candidate_digest(base, (replacement,), title, body),
         "d" * 64,
         (replacement,),
         title,
         body,
         HEAD_BRANCH,
     )
+
+
+def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, _tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([None] * 8)
+    factory = _factory(store, remote, runner)
+    request = _reviewed_documentation_request(base)
     outer_intent, _push_request = _intent(factory, base, _tree)
     adapter = factory.open()
     try:
@@ -598,6 +607,281 @@ def test_a_credential_git_printed_never_reaches_the_kept_reason(
     assert result.reason is not None
     assert token not in result.reason.detail
     assert REDACTION_MARKER in result.reason.detail
+
+
+@pytest.mark.parametrize(
+    ("operation", "token_file"),
+    [
+        pytest.param("readback", None, id="missing-readback"),
+        pytest.param("execute", None, id="missing-execute"),
+        pytest.param("reviewed-publish", None, id="missing-reviewed-publish"),
+        pytest.param("execute", b"", id="empty"),
+        pytest.param("execute", b" \n", id="whitespace"),
+        pytest.param("execute", b"\xc2\xa0\n", id="unicode-space-only"),
+        pytest.param("execute", b"ghp_token\xff", id="invalid-utf8"),
+        pytest.param("execute", b"ghp_one\nghp_two", id="embedded-newline"),
+    ],
+)
+def test_without_one_well_formed_token_no_git_process_reaches_the_remote(
+    tmp_path: Path, operation: str, token_file: bytes | None
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    if token_file is not None:
+        credential_file.write_bytes(token_file)
+    runner = _ScriptedRemoteReadRunner([])
+    factory = _factory(store, remote, runner, credential_file=credential_file)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    reaching_the_remote = {
+        "readback": lambda: adapter.readback(intent, ReadbackPhase.BEFORE_SEND),
+        "execute": lambda: adapter.execute(intent),
+        "reviewed-publish": lambda: adapter.publish(
+            intent, _reviewed_documentation_request(base)
+        ),
+    }
+    try:
+        with pytest.raises(GitCredentialUnresolvable):
+            reaching_the_remote[operation]()
+    finally:
+        adapter.close()
+
+    assert runner.remote_arguments == []
+    assert runner.push_arguments == []
+
+
+def test_a_token_set_after_the_adapter_opened_licenses_the_next_push(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    factory = _factory(store, remote, credential_file=credential_file)
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        credential_file.write_text("gho_scenario_token", encoding="utf-8")
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(performed, PerformedEffect)
+    assert _git(remote, "rev-parse", HEAD_BRANCH.full_ref) == (
+        request.expected_commit_oid(intent.request.request_hash.value)
+    )
+
+
+@dataclass
+class _RealGitAfterTheCheck:
+    """Real git, keeping all it printed; `swap` replaces a file only while each git process runs."""
+
+    swap: tuple[Path, bytes] | None = None
+    printed: list[bytes] = field(default_factory=list)
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        if self.swap is None:
+            return self._run_git(
+                arguments, working_directory, environment, standard_input
+            )
+        swapped_file, swapped_to = self.swap
+        checked = swapped_file.read_bytes()
+        swapped_file.write_bytes(swapped_to)
+        try:
+            return self._run_git(
+                arguments, working_directory, environment, standard_input
+            )
+        finally:
+            swapped_file.write_bytes(checked)
+
+    def _run_git(
+        self,
+        arguments: tuple[str, ...],
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None,
+    ) -> GitCommandResult:
+        result = self.delegate.run(
+            arguments,
+            working_directory=working_directory,
+            environment=environment,
+            standard_input=standard_input,
+        )
+        self.printed.extend((result.stdout, result.stderr))
+        return result
+
+
+def _basic_authorization_digest(token: str) -> bytes:
+    credentials = base64.b64encode(b"x-access-token:" + token.encode("ascii"))
+    return sha256(b"Basic " + credentials).digest()
+
+
+@pytest.mark.parametrize(
+    ("token_file", "swapped_to"),
+    [
+        pytest.param(b"\nsentinel+token/1504", None, id="leading-newline"),
+        pytest.param(b"sentinel+token/1504\n\n", None, id="trailing-blank-lines"),
+        pytest.param(
+            b"sentinel+token/1504",
+            b"swapped\nsentinel+token/1504",
+            id="swapped-after-the-check",
+        ),
+    ],
+)
+def test_git_is_answered_with_the_checked_token_and_prints_none_of_the_file(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    token_file: bytes,
+    swapped_to: bytes | None,
+) -> None:
+    token = "sentinel+token/1504"
+    store, remote, base, tree = _repositories(tmp_path)
+    _git(remote, "config", "http.receivepack", "true")
+    credential_file = tmp_path / "token"
+    credential_file.write_bytes(token_file)
+    runner = _RealGitAfterTheCheck(
+        None if swapped_to is None else (credential_file, swapped_to)
+    )
+    caplog.set_level(logging.DEBUG)
+    with GitHttpRemote(tmp_path, _basic_authorization_digest(token)) as http_remote:
+        factory = _factory(
+            store, http_remote.url, runner, credential_file=credential_file
+        )
+        intent, _request = _intent(factory, base, tree)
+        adapter = factory.open()
+        try:
+            performed = adapter.execute(intent)
+        finally:
+            adapter.close()
+
+    printed = b"\n".join(runner.printed)
+    assert isinstance(performed, PerformedEffect), performed
+    assert token.encode() not in printed
+    assert b"swapped" not in printed
+    assert token not in repr(performed)
+    assert token not in caplog.text
+
+
+@dataclass
+class _CredentialPromptWitness:
+    """Asks the configured credential helper the way git does, then lets the git call fail."""
+
+    private_temporary_directory: Path
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+    helpers: list[str] = field(default_factory=list)
+    answers: list[bytes] = field(default_factory=list)
+    temporary_entries: list[list[str]] = field(default_factory=list)
+    exposed: list[str] = field(default_factory=list)
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        helper = next(
+            (
+                argument.removeprefix("credential.helper=!")
+                for argument in arguments
+                if argument.startswith("credential.helper=")
+            ),
+            None,
+        )
+        if helper is None:
+            return self.delegate.run(
+                arguments,
+                working_directory=working_directory,
+                environment=environment,
+                standard_input=standard_input,
+            )
+        asked = subprocess.run(
+            ("/bin/sh", "-c", f"{helper} get"),
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        self.helpers.append(helper)
+        self.answers.append(asked.stdout)
+        self.temporary_entries.append(
+            sorted(os.listdir(self.private_temporary_directory))
+        )
+        self.exposed.extend((*arguments, *environment.values()))
+        raise OSError("git vanished mid-call")
+
+
+@pytest.fixture
+def private_temporary_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    directory = tmp_path / "private-temporary"
+    directory.mkdir()
+    monkeypatch.setenv("TMPDIR", str(directory))
+    monkeypatch.setattr(tempfile, "tempdir", str(directory))
+    return directory
+
+
+def test_git_s_credential_prompt_is_answered_exactly_with_no_file_in_tmpdir(
+    tmp_path: Path, private_temporary_directory: Path
+) -> None:
+    token = "sentinel+token/1504"
+    store, remote, base, tree = _repositories(tmp_path)
+    credential_file = tmp_path / "token"
+    credential_file.write_text(token, encoding="ascii")
+    witness = _CredentialPromptWitness(private_temporary_directory)
+    factory = _factory(store, remote, witness, credential_file=credential_file)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        with pytest.raises(OSError, match="git vanished mid-call"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    named_paths = {
+        path for helper in witness.helpers for path in re.findall(r"/[^\s;']+", helper)
+    }
+    assert witness.answers == [f"username=x-access-token\npassword={token}\n".encode()]
+    assert witness.temporary_entries == [[]]
+    assert list(private_temporary_directory.iterdir()) == []
+    assert all(
+        path == "/bin/cat" or path.startswith(f"/proc/{os.getpid()}/fd/")
+        for path in named_paths
+    ), named_paths
+    assert all(token not in exposed for exposed in witness.exposed)
+
+
+def test_no_copy_of_the_token_is_left_in_tmpdir_when_the_process_is_killed(
+    private_temporary_directory: Path,
+) -> None:
+    dies_holding_the_token = (
+        "import os, signal, sys\n"
+        "from atelier2.adapters.git_transport.credentials import "
+        "credential_helper_arguments\n"
+        "with credential_helper_arguments(sys.argv[1]):\n"
+        "    os.kill(os.getpid(), signal.SIGKILL)\n"
+    )
+    killed = subprocess.run(
+        (sys.executable, "-c", dies_holding_the_token, "sentinel+token/1504"),
+        env={**os.environ, "TMPDIR": str(private_temporary_directory)},
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    assert list(private_temporary_directory.iterdir()) == []
 
 
 def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(

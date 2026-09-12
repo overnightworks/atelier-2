@@ -15,6 +15,7 @@ including the material a V3 node was given and the source its runtime pinned.
 from __future__ import annotations
 
 from atelier2.application.compose_node_job import node_job
+from atelier2.contracts.agent_modes import AgentModeMismatch, node_mode_mismatch
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
@@ -166,3 +167,16 @@ def pinned_project(
             "project, and this runtime was given none"
         )
     return project.pinned(binding.project_source, binding.tool_grant)
+
+
+def bound_outside_its_mode(
+    binding: AgentNodeBindingV2, node: AgentNodeV3
+) -> AgentModeMismatch | None:
+    """Whether this durable binding would run its node in a mode it never declared.
+
+    The start refuses such a binding before its run exists, but an attempt
+    replays the binding its run recorded, and a run recorded before that check
+    carries it still; so every attempt asks again before anything of it is
+    written.
+    """
+    return node_mode_mismatch(node, binding.resolved.configuration.requested_capability)

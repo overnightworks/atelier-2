@@ -128,6 +128,7 @@ from atelier2.ports.durable_runs import (
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
+    declaring_mode_of,
     leased_directory_identity,
     publish_checked_model_registry,
     runtime_workspace_owner,
@@ -1692,7 +1693,10 @@ def grok_subscription_start(
     publish_checked_model_registry(runtime.engine, ProviderId("xai"), (configuration,))
     DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
     workflow = WorkflowRevision(
-        HOST_DOCUMENT.replace(b"instruction: build", b"instruction: " + job)
+        declaring_mode_of(
+            HOST_DOCUMENT.replace(b"instruction: build", b"instruction: " + job),
+            requested_capability,
+        )
     )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
@@ -2128,7 +2132,8 @@ def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_laun
         )
         DbosCatalogStore(runtime.engine).publish_revision(ANY_JSON_SCHEMA)
         workflow = WorkflowRevision(
-            f"""format_version: 3
+            declaring_mode_of(
+                f"""format_version: 3
 name: Grok subscription prelaunch-bound document
 graph_inputs:
   - name: {order_name}
@@ -2145,7 +2150,9 @@ nodes:
     outputs:
       - name: result
         schema: {{ref: result-schema, revision: {ANY_JSON_SCHEMA.revision_hash.value}}}
-""".encode()
+""".encode(),
+                requested_capability,
+            )
         )
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         run_name = f"grok/prelaunch-bound/{requested_capability.value}"

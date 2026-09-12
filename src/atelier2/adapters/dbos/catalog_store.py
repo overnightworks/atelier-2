@@ -448,7 +448,8 @@ def persist_workflow_publication(
     agrees with what was handed in is `_record_publication`'s check, and it runs
     on this connection right after.
 
-    Public with `found_lineage_in`, `admit_member_in`, `revision_owner` and
+    Public with `persist_published_revision`, `found_lineage_in`,
+    `admit_member_in`, `revision_owner` and
     `current_display_name`: they are the catalog's writes and reads as a
     caller that already owns a transaction sees them, so a second door into
     the catalog -- a source intake admitting many files at once -- composes
@@ -464,6 +465,29 @@ def persist_workflow_publication(
             document=revision.document,
         )
     )
+
+
+def persist_published_revision(
+    connection: sa.Connection, revision: PublishedRevision
+) -> PublishedRevisionCreated | PublishedRevisionExisting | PublishedRevisionCollision:
+    """Publish one revision of any kind on a transaction the caller owns.
+
+    A collision is answered, not raised: only the caller knows whether it ends
+    one publication or must take a whole batch back with it.
+    """
+    durable = _published(connection, revision)
+    if durable is None:
+        connection.execute(
+            published_revisions.insert().values(
+                kind=revision.kind.value,
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+        return PublishedRevisionCreated(revision)
+    if durable == revision:
+        return PublishedRevisionExisting(durable)
+    return PublishedRevisionCollision()
 
 
 def found_lineage_in(
@@ -733,30 +757,7 @@ class DbosCatalogStore:
     def publish_revision(self, revision: PublishedRevision) -> PublishRevisionResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                existing = (
-                    connection.execute(
-                        sa.select(published_revisions).where(
-                            published_revisions.c.kind == revision.kind.value,
-                            published_revisions.c.revision_hash
-                            == revision.revision_hash.value,
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if existing is not None:
-                    durable = published_revision_from_record(existing)
-                    if durable == revision:
-                        return PublishedRevisionExisting(durable)
-                    return PublishedRevisionCollision()
-                connection.execute(
-                    published_revisions.insert().values(
-                        kind=revision.kind.value,
-                        revision_hash=revision.revision_hash.value,
-                        document=revision.document,
-                    )
-                )
-                return PublishedRevisionCreated(revision)
+                return persist_published_revision(connection, revision)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

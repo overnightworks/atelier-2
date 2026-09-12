@@ -39,10 +39,13 @@ import {
 } from "./generated/authAgentAndQueue.zod";
 import {
   AgentBindingResourceV2,
+  AssistantTurnEventResource,
+  AttemptTranscriptResource,
   DefectiveRunRowResource,
   NodeDetailResource,
   NodeRailResource,
   NodeRefusalOutputResource,
+  ProviderTerminalRefusalEventResource,
   RunCancellabilityResource,
   RunForkOriginResource,
   RunForkSuccessorResource,
@@ -52,8 +55,16 @@ import {
   RunResourceV3,
   RunTerminalAnswerOmittedResource,
   RunTerminalAnswerValueResource,
+  ToolCalledEventResource,
+  ToolReturnedEventResource,
+  TranscriptBeforeMomentsResource,
+  TranscriptRecordedMomentResource,
+  TranscriptTruncatedEventResource,
+  UnrecognisedProviderOutputEventResource,
+  UsageEventResource,
   VersionedRunPageResource,
 } from "./generated/runsRailAndNodes.zod";
+import { AnyProblem, ProblemDurableStateCorrupt } from "./generated/problem.zod";
 import {
   reportConnectionLost,
   reportConnectionRestored,
@@ -92,9 +103,6 @@ const safeInteger = z
   .refine(Number.isSafeInteger, "integer must be exactly representable");
 const nonnegativeSafeInteger = safeInteger.refine((value) => value >= 0);
 const positiveSafeInteger = safeInteger.refine((value) => value > 0);
-const invalidFieldSchema = z
-  .object({ path: z.string().min(1), reason: z.string().min(1) })
-  .strict();
 
 /**
  * The published bytes a `schema` revision pins, read only far enough to
@@ -567,117 +575,79 @@ export const runV3Schema = RunResourceV3.extend({
 });
 
 /**
- * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`),
- * mirrored here as a plain number the way every other server-owned wire bound
- * already is on this side.
+ * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`)
+ * happens to bound every transcript step string field in the document, but
+ * each field carries its own generated bound rather than one shared named
+ * schema, so this stays the one hand-kept literal a fixture can build an
+ * at-cap step against.
+ *
+ * @public re-exported for `client.test.ts`'s boundary fixture; no schema in
+ * this file reads it, since every step field's own generated bound already
+ * enforces it.
  */
 export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
 
-const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
-
-const transcriptRecordedMomentSchema = z
-  .object({
-    recorded_at: recordedAtStamp,
-    origin: z.literal("recorded"),
-  })
-  .strict();
-
-const transcriptBeforeMomentsSchema = z
-  .object({
-    origin: z.literal("v1-before-moments"),
-  })
-  .strict();
-
+// The document states this as a two-branch `oneOf` with a discriminator,
+// which orval's zod generator lowers to a plain `zod.union` -- weaker than
+// the document intends, since a union does not route on `origin` the way a
+// discriminated union does. Assembled here from the generated branches.
 const transcriptEventMomentSchema = z.discriminatedUnion("origin", [
-  transcriptRecordedMomentSchema,
-  transcriptBeforeMomentsSchema,
+  TranscriptRecordedMomentResource,
+  TranscriptBeforeMomentsResource,
 ]);
 
-export const toolCalledEventSchema = z
-  .object({
-    event: z.literal("tool-called"),
-    name: transcriptStepTextSchema,
-    arguments: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const toolCalledEventSchema = ToolCalledEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const toolReturnedEventSchema = z
-  .object({
-    event: z.literal("tool-returned"),
-    name: transcriptStepTextSchema,
-    result: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const toolReturnedEventSchema = ToolReturnedEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const assistantTurnEventSchema = z
-  .object({
-    event: z.literal("assistant-turn"),
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const assistantTurnEventSchema = AssistantTurnEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const usageEventSchema = z
-  .object({
-    event: z.literal("usage"),
-    input_tokens: nonnegativeSafeInteger,
-    output_tokens: nonnegativeSafeInteger,
-    cache_read_input_tokens: nonnegativeSafeInteger,
-    cache_creation_input_tokens: nonnegativeSafeInteger,
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const usageEventSchema = UsageEventResource.extend({
+  input_tokens: nonnegativeSafeInteger,
+  output_tokens: nonnegativeSafeInteger,
+  cache_read_input_tokens: nonnegativeSafeInteger,
+  cache_creation_input_tokens: nonnegativeSafeInteger,
+  moment: transcriptEventMomentSchema,
+});
 
-export const providerTerminalRefusalEventSchema = z
-  .object({
-    event: z.literal("provider-terminal-refusal"),
-    terminal_reason: transcriptStepTextSchema,
-    api_error_status: transcriptStepTextSchema,
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const providerTerminalRefusalEventSchema = ProviderTerminalRefusalEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const unrecognisedProviderOutputEventSchema = z
-  .object({
-    event: z.literal("unrecognised-provider-output"),
-    text: transcriptStepTextSchema,
-    redacted: z.boolean(),
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const unrecognisedProviderOutputEventSchema = UnrecognisedProviderOutputEventResource.extend({
+  moment: transcriptEventMomentSchema,
+});
 
-export const transcriptTruncatedEventSchema = z
-  .object({
-    event: z.literal("transcript-truncated"),
-    dropped_events: positiveSafeInteger,
-    moment: transcriptEventMomentSchema,
-  })
-  .strict();
+export const transcriptTruncatedEventSchema = TranscriptTruncatedEventResource.extend({
+  dropped_events: positiveSafeInteger,
+  moment: transcriptEventMomentSchema,
+});
 
-export const attemptTranscriptSchema = z
-  .object({
-    events: z
-      .array(
-        z.discriminatedUnion("event", [
-          toolCalledEventSchema,
-          toolReturnedEventSchema,
-          assistantTurnEventSchema,
-          usageEventSchema,
-          providerTerminalRefusalEventSchema,
-          unrecognisedProviderOutputEventSchema,
-          transcriptTruncatedEventSchema,
-        ]),
-      )
-      .min(1),
-  })
-  .strict();
+// The document states `AttemptTranscriptResource.events` items as a
+// discriminator-tagged `oneOf` over the same seven event kinds, which orval
+// again lowers to a plain `zod.union`; assembled here as a real
+// discriminated union over the event branches above.
+export const attemptTranscriptSchema = AttemptTranscriptResource.extend({
+  events: z
+    .array(
+      z.discriminatedUnion("event", [
+        toolCalledEventSchema,
+        toolReturnedEventSchema,
+        assistantTurnEventSchema,
+        usageEventSchema,
+        providerTerminalRefusalEventSchema,
+        unrecognisedProviderOutputEventSchema,
+        transcriptTruncatedEventSchema,
+      ]),
+    )
+    .min(1),
+});
 
 export type AttemptTranscript = z.infer<typeof attemptTranscriptSchema>;
 
@@ -819,6 +789,7 @@ const runEventSchema = z
         event: z.literal("AGENT_FAILED"),
         reason: z.enum([
           "agent-executor-binding-unavailable",
+          "agent-mode-mismatch",
           "work-item-claim-unconfigured",
           "work-item-names-no-scope",
           "work-item-claim-refused-by-priority",
@@ -912,1029 +883,24 @@ function validateEventCursor(
   }
 }
 
-export const problemDefinitions = {
-  "auth-profile-revision-conflict": {
-    status: 409,
-    title: "Auth profile revision conflict",
-  },
-  "auth-profile-revision-collision": {
-    status: 409,
-    title: "Auth profile revision collision",
-  },
-  "auth-profile-revision-not-found": {
-    status: 404,
-    title: "Auth profile revision not found",
-  },
-  "agent-executor-binding-unavailable": {
-    status: 409,
-    title: "Agent executor binding unavailable",
-  },
-  "agent-configuration-revision-collision": {
-    status: 409,
-    title: "Agent configuration revision collision",
-  },
-  "agent-configuration-revision-not-found": {
-    status: 404,
-    title: "Agent configuration revision not found",
-  },
-  "invalid-agent-bindings": { status: 422, title: "Invalid agent bindings" },
-  "uncast-agent-roles": { status: 422, title: "Agent roles need models" },
-  "binding-constraint-refused": {
-    status: 422,
-    title: "Binding constraint refused",
-  },
-  "invalid-agent-attempt-id": {
-    status: 400,
-    title: "Invalid agent attempt id",
-  },
-  "agent-attempt-not-found": { status: 404, title: "Agent attempt not found" },
-  "agent-attempt-not-current": {
-    status: 409,
-    title: "Agent attempt is not current",
-  },
-  "agent-attempt-cancellation-stale": {
-    status: 409,
-    title: "Agent attempt cancellation is stale",
-  },
-  "agent-attempt-terminal": { status: 409, title: "Agent attempt is terminal" },
-  "cancellation-command-conflict": {
-    status: 409,
-    title: "Cancellation command conflict",
-  },
-  "replacement-not-allowed": {
-    status: 409,
-    title: "Replacement is not allowed",
-  },
-  "invalid-public-run-reference": {
-    status: 400,
-    title: "Invalid public run reference",
-  },
-  "invalid-public-project-reference": {
-    status: 400,
-    title: "Invalid public project reference",
-  },
-  "invalid-public-source-reference": {
-    status: 400,
-    title: "Invalid public source reference",
-  },
-  "invalid-event-cursor": { status: 400, title: "Invalid event cursor" },
-  "invalid-revision-hash": { status: 400, title: "Invalid revision hash" },
-  "event-cursor-run-mismatch": {
-    status: 409,
-    title: "Event cursor belongs to another run",
-  },
-  "event-cursor-ahead": {
-    status: 409,
-    title: "Event cursor is ahead of durable history",
-  },
-  "invalid-request": { status: 422, title: "Invalid request" },
-  "invalid-base64": { status: 422, title: "Invalid base64" },
-  "invalid-workflow-document": {
-    status: 422,
-    title: "Invalid workflow document",
-  },
-  "artifact-empty": { status: 422, title: "Artifact refused" },
-  "artifact-too-large": { status: 422, title: "Artifact refused" },
-  "invalid-artifact-hash": { status: 400, title: "Invalid artifact hash" },
-  "artifact-not-found": { status: 404, title: "Artifact not found" },
-  "adapter-operation-document-too-large": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-document-not-utf8": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-not-an-operation-object": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-unknown-field": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-missing-operation": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-unknown-operation": {
-    status: 422,
-    title: "Invalid adapter operation document",
-  },
-  "adapter-operation-revision-collision": {
-    status: 409,
-    title: "Adapter operation revision collision",
-  },
-  "schema-document-too-large": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-document-not-utf8": { status: 422, title: "Invalid schema document" },
-  "schema-document-carries-byte-order-mark": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-document-not-json": { status: 422, title: "Invalid schema document" },
-  "schema-non-canonical-number": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-duplicate-object-key": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-document-too-deep": { status: 422, title: "Invalid schema document" },
-  "schema-too-many-values": { status: 422, title: "Invalid schema document" },
-  "schema-forbidden-keyword": { status: 422, title: "Invalid schema document" },
-  "schema-nonlocal-reference": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-unresolvable-reference": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-non-terminating-reference-cycle": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-unsupported-dialect": {
-    status: 422,
-    title: "Invalid schema document",
-  },
-  "schema-not-a-schema": { status: 422, title: "Invalid schema document" },
-  "schema-revision-collision": {
-    status: 409,
-    title: "Schema revision collision",
-  },
-  "schema-revision-not-found": {
-    status: 404,
-    title: "Schema revision not found",
-  },
-  "budget-document-too-large": {
-    status: 422,
-    title: "Invalid budget document",
-  },
-  "budget-document-not-utf8": { status: 422, title: "Invalid budget document" },
-  "budget-not-a-budget-object": {
-    status: 422,
-    title: "Invalid budget document",
-  },
-  "budget-unknown-field": { status: 422, title: "Invalid budget document" },
-  "budget-missing-attempt-deadline": {
-    status: 422,
-    title: "Invalid budget document",
-  },
-  "budget-value-not-a-positive-int64": {
-    status: 422,
-    title: "Invalid budget document",
-  },
-  "budget-revision-collision": {
-    status: 409,
-    title: "Budget revision collision",
-  },
-  "tool-document-too-large": {
-    status: 422,
-    title: "Invalid tool grant document",
-  },
-  "tool-document-not-utf8": {
-    status: 422,
-    title: "Invalid tool grant document",
-  },
-  "tool-not-a-grant-object": {
-    status: 422,
-    title: "Invalid tool grant document",
-  },
-  "tool-missing-capability": {
-    status: 422,
-    title: "Invalid tool grant document",
-  },
-  "tool-unknown-capability": {
-    status: 422,
-    title: "Invalid tool grant document",
-  },
-  "tool-unknown-field": { status: 422, title: "Invalid tool grant document" },
-  "tool-grant-revision-collision": {
-    status: 409,
-    title: "Tool grant revision collision",
-  },
-  "agent-definition-document-not-utf8": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-frontmatter-missing": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-frontmatter-unterminated": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-frontmatter-unparsable": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-frontmatter-not-a-mapping": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-field-missing": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-field-duplicated": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-field-type-unexpected": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-field-empty": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-tool-duplicated": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-too-many-tools": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-system-prompt-missing": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-document-too-large": {
-    status: 422,
-    title: "Invalid agent definition document",
-  },
-  "agent-definition-revision-collision": {
-    status: 409,
-    title: "Agent definition revision collision",
-  },
-  "agent-definition-revision-not-found": {
-    status: 404,
-    title: "Agent definition revision not found",
-  },
-  "library-document-ambiguous": {
-    status: 422,
-    title: "Document matches more than one library kind",
-  },
-  "unsupported-media-type": { status: 415, title: "Unsupported media type" },
-  "not-acceptable": { status: 406, title: "Not acceptable" },
-  "catalog-revision-unpublished": {
-    status: 409,
-    title: "Catalog revision is unpublished",
-  },
-  "catalog-name-held": { status: 409, title: "Catalog name is held" },
-  "catalog-revision-owned": { status: 409, title: "Catalog revision is owned" },
-  "project-unknown": { status: 404, title: "Project unknown" },
-  "model-registry-missing": { status: 404, title: "Model registry not found" },
-  "model-registry-revision-conflict": {
-    status: 409,
-    title: "Model registry revision conflict",
-  },
-  "model-registry-revision-collision": {
-    status: 409,
-    title: "Model registry revision collision",
-  },
-  "project-model-defaults-missing": {
-    status: 404,
-    title: "Project model defaults not found",
-  },
-  "project-model-defaults-revision-conflict": {
-    status: 409,
-    title: "Project model defaults revision conflict",
-  },
-  "project-model-defaults-revision-collision": {
-    status: 409,
-    title: "Project model defaults revision collision",
-  },
-  "catalog-lineage-missing": {
-    status: 404,
-    title: "Catalog lineage not found",
-  },
-  "catalog-name-not-found": { status: 404, title: "Catalog name not found" },
-  "catalog-lineage-retired": { status: 410, title: "Catalog lineage retired" },
-  "catalog-revision-not-a-member": {
-    status: 409,
-    title: "Catalog revision is not a member",
-  },
-  "invalid-catalog-position": {
-    status: 400,
-    title: "Invalid catalog position",
-  },
-  "workflow-revision-not-found": {
-    status: 404,
-    title: "Workflow revision not found",
-  },
-  "run-not-found": { status: 404, title: "Run not found" },
-  "node-not-found": { status: 404, title: "Node not found" },
-  "revision-collision": { status: 409, title: "Workflow revision collision" },
-  "workflow-format-not-executable": {
-    status: 409,
-    title: "Workflow format is not executable",
-  },
-  "run-input-refused": { status: 422, title: "Run input refused" },
-  "run-identity-conflict": { status: 409, title: "Run identity conflict" },
-  "run-fork-origin-not-terminal": {
-    status: 409,
-    title: "Run fork origin is not terminal",
-  },
-  "run-fork-node-missing": {
-    status: 409,
-    title: "Run fork node is missing",
-  },
-  "run-fork-loop-unsupported": {
-    status: 409,
-    title: "Run fork loop is unsupported",
-  },
-  "run-fork-prefix-not-reusable": {
-    status: 409,
-    title: "Run fork prefix is not reusable",
-  },
-  "run-fork-command-conflict": {
-    status: 409,
-    title: "Run fork command conflict",
-  },
-  "answer-revision-conflict": {
-    status: 409,
-    title: "Answer revision conflict",
-  },
-  "answer-state-conflict": { status: 409, title: "Answer state conflict" },
-  "reconciliation-target-missing": {
-    status: 409,
-    title: "Reconciliation target missing",
-  },
-  "reconciliation-stale": { status: 409, title: "Reconciliation is stale" },
-  "reconciliation-command-conflict": {
-    status: 409,
-    title: "Reconciliation command conflict",
-  },
-  "reconciliation-determination-conflict": {
-    status: 409,
-    title: "Reconciliation determination conflict",
-  },
-  "reconciliation-rejected": {
-    status: 409,
-    title: "Reconciliation was rejected",
-  },
-  "run-not-cancellable": { status: 409, title: "Run is not cancellable" },
-  "run-cancellation-command-conflict": {
-    status: 409,
-    title: "Run cancellation command conflict",
-  },
-  "run-cancellation-overtaken-by-success": {
-    status: 409,
-    title: "Run cancellation overtaken by success",
-  },
-  "project-source-not-connected": {
-    status: 409,
-    title: "Project source not connected",
-  },
-  "project-source-already-connected": {
-    status: 409,
-    title: "Project source already connected",
-  },
-  "project-source-unknown": {
-    status: 404,
-    title: "Project source unknown",
-  },
-  "project-source-disconnected": {
-    status: 409,
-    title: "Project source disconnected",
-  },
-  "project-source-invalid": {
-    status: 422,
-    title: "Project source invalid",
-  },
-  "project-source-token-refused": {
-    status: 422,
-    title: "Project source token refused",
-  },
-  "project-source-unavailable": {
-    status: 503,
-    title: "Project source unavailable",
-  },
-  "project-source-payload-malformed": {
-    status: 502,
-    title: "Project source payload malformed",
-  },
-  "queue-admission-revision-conflict": {
-    status: 409,
-    title: "Queue admission revision conflict",
-  },
-  "queue-admission-already-decided": {
-    status: 409,
-    title: "Queue item is already admitted",
-  },
-  "queue-admission-authority-refused": {
-    status: 409,
-    title: "Queue admission authority refused",
-  },
-  "queue-admission-proposal-required": {
-    status: 409,
-    title: "Queue admission requires a proposal",
-  },
-  "queue-policy-not-set": {
-    status: 404,
-    title: "Queue project policy not found",
-  },
-  "queue-policy-revision-conflict": {
-    status: 409,
-    title: "Queue policy revision conflict",
-  },
-  "queue-proposal-revision-conflict": {
-    status: 409,
-    title: "Queue proposal revision conflict",
-  },
-  "queue-proposal-already-decided": {
-    status: 409,
-    title: "Queue proposal already decided",
-  },
-  "queue-proposal-refused": {
-    status: 422,
-    title: "Queue proposal refused",
-  },
-  "route-not-found": { status: 404, title: "Route not found" },
-  "method-not-allowed": { status: 405, title: "Method not allowed" },
-  "temporarily-unavailable": { status: 503, title: "Temporarily unavailable" },
-  "durable-projection-unrepresentable": {
-    status: 500,
-    title: "Durable projection cannot be represented",
-  },
-  "durable-state-corrupt": { status: 500, title: "Durable state is corrupt" },
-  "answer-execution-stale": { status: 409, title: "Answer execution is stale" },
-  "internal-error": { status: 500, title: "Internal error" },
-} as const;
-
-const problemSchema = z.discriminatedUnion("type", [
-  problemVariant(
-    "auth-profile-revision-conflict",
-    problemDefinitions["auth-profile-revision-conflict"],
-  ),
-  problemVariant(
-    "auth-profile-revision-collision",
-    problemDefinitions["auth-profile-revision-collision"],
-  ),
-  problemVariant(
-    "auth-profile-revision-not-found",
-    problemDefinitions["auth-profile-revision-not-found"],
-  ),
-  problemVariant(
-    "agent-executor-binding-unavailable",
-    problemDefinitions["agent-executor-binding-unavailable"],
-  ),
-  problemVariant(
-    "agent-configuration-revision-collision",
-    problemDefinitions["agent-configuration-revision-collision"],
-  ),
-  problemVariant(
-    "agent-configuration-revision-not-found",
-    problemDefinitions["agent-configuration-revision-not-found"],
-  ),
-  problemVariant(
-    "invalid-agent-bindings",
-    problemDefinitions["invalid-agent-bindings"],
-  ),
-  problemVariant(
-    "uncast-agent-roles",
-    problemDefinitions["uncast-agent-roles"],
-  ),
-  problemVariant(
-    "binding-constraint-refused",
-    problemDefinitions["binding-constraint-refused"],
-  ),
-  problemVariant(
-    "invalid-agent-attempt-id",
-    problemDefinitions["invalid-agent-attempt-id"],
-  ),
-  problemVariant(
-    "agent-attempt-not-found",
-    problemDefinitions["agent-attempt-not-found"],
-  ),
-  problemVariant(
-    "agent-attempt-not-current",
-    problemDefinitions["agent-attempt-not-current"],
-  ),
-  problemVariant(
-    "agent-attempt-cancellation-stale",
-    problemDefinitions["agent-attempt-cancellation-stale"],
-  ),
-  problemVariant(
-    "agent-attempt-terminal",
-    problemDefinitions["agent-attempt-terminal"],
-  ),
-  problemVariant(
-    "cancellation-command-conflict",
-    problemDefinitions["cancellation-command-conflict"],
-  ),
-  problemVariant(
-    "replacement-not-allowed",
-    problemDefinitions["replacement-not-allowed"],
-  ),
-  problemVariant(
-    "invalid-public-run-reference",
-    problemDefinitions["invalid-public-run-reference"],
-  ),
-  problemVariant(
-    "invalid-public-project-reference",
-    problemDefinitions["invalid-public-project-reference"],
-  ),
-  problemVariant(
-    "invalid-public-source-reference",
-    problemDefinitions["invalid-public-source-reference"],
-  ),
-  problemVariant(
-    "invalid-event-cursor",
-    problemDefinitions["invalid-event-cursor"],
-  ),
-  problemVariant(
-    "invalid-revision-hash",
-    problemDefinitions["invalid-revision-hash"],
-  ),
-  problemVariant(
-    "event-cursor-run-mismatch",
-    problemDefinitions["event-cursor-run-mismatch"],
-  ),
-  problemVariant(
-    "event-cursor-ahead",
-    problemDefinitions["event-cursor-ahead"],
-  ),
-  problemVariant("invalid-request", problemDefinitions["invalid-request"]),
-  problemVariant("invalid-base64", problemDefinitions["invalid-base64"]),
-  problemVariant(
-    "invalid-workflow-document",
-    problemDefinitions["invalid-workflow-document"],
-  ),
-  problemVariant("artifact-empty", problemDefinitions["artifact-empty"]),
-  problemVariant(
-    "artifact-too-large",
-    problemDefinitions["artifact-too-large"],
-  ),
-  problemVariant(
-    "invalid-artifact-hash",
-    problemDefinitions["invalid-artifact-hash"],
-  ),
-  problemVariant("artifact-not-found", problemDefinitions["artifact-not-found"]),
-  problemVariant(
-    "adapter-operation-document-too-large",
-    problemDefinitions["adapter-operation-document-too-large"],
-  ),
-  problemVariant(
-    "adapter-operation-document-not-utf8",
-    problemDefinitions["adapter-operation-document-not-utf8"],
-  ),
-  problemVariant(
-    "adapter-operation-not-an-operation-object",
-    problemDefinitions["adapter-operation-not-an-operation-object"],
-  ),
-  problemVariant(
-    "adapter-operation-unknown-field",
-    problemDefinitions["adapter-operation-unknown-field"],
-  ),
-  problemVariant(
-    "adapter-operation-missing-operation",
-    problemDefinitions["adapter-operation-missing-operation"],
-  ),
-  problemVariant(
-    "adapter-operation-unknown-operation",
-    problemDefinitions["adapter-operation-unknown-operation"],
-  ),
-  problemVariant(
-    "adapter-operation-revision-collision",
-    problemDefinitions["adapter-operation-revision-collision"],
-  ),
-  problemVariant(
-    "schema-document-too-large",
-    problemDefinitions["schema-document-too-large"],
-  ),
-  problemVariant(
-    "schema-document-not-utf8",
-    problemDefinitions["schema-document-not-utf8"],
-  ),
-  problemVariant(
-    "schema-document-carries-byte-order-mark",
-    problemDefinitions["schema-document-carries-byte-order-mark"],
-  ),
-  problemVariant(
-    "schema-document-not-json",
-    problemDefinitions["schema-document-not-json"],
-  ),
-  problemVariant(
-    "schema-non-canonical-number",
-    problemDefinitions["schema-non-canonical-number"],
-  ),
-  problemVariant(
-    "schema-duplicate-object-key",
-    problemDefinitions["schema-duplicate-object-key"],
-  ),
-  problemVariant(
-    "schema-document-too-deep",
-    problemDefinitions["schema-document-too-deep"],
-  ),
-  problemVariant(
-    "schema-too-many-values",
-    problemDefinitions["schema-too-many-values"],
-  ),
-  problemVariant(
-    "schema-forbidden-keyword",
-    problemDefinitions["schema-forbidden-keyword"],
-  ),
-  problemVariant(
-    "schema-nonlocal-reference",
-    problemDefinitions["schema-nonlocal-reference"],
-  ),
-  problemVariant(
-    "schema-unresolvable-reference",
-    problemDefinitions["schema-unresolvable-reference"],
-  ),
-  problemVariant(
-    "schema-non-terminating-reference-cycle",
-    problemDefinitions["schema-non-terminating-reference-cycle"],
-  ),
-  problemVariant(
-    "schema-unsupported-dialect",
-    problemDefinitions["schema-unsupported-dialect"],
-  ),
-  problemVariant(
-    "schema-not-a-schema",
-    problemDefinitions["schema-not-a-schema"],
-  ),
-  problemVariant(
-    "schema-revision-collision",
-    problemDefinitions["schema-revision-collision"],
-  ),
-  problemVariant(
-    "schema-revision-not-found",
-    problemDefinitions["schema-revision-not-found"],
-  ),
-  problemVariant(
-    "budget-document-too-large",
-    problemDefinitions["budget-document-too-large"],
-  ),
-  problemVariant(
-    "budget-document-not-utf8",
-    problemDefinitions["budget-document-not-utf8"],
-  ),
-  problemVariant(
-    "budget-not-a-budget-object",
-    problemDefinitions["budget-not-a-budget-object"],
-  ),
-  problemVariant(
-    "budget-unknown-field",
-    problemDefinitions["budget-unknown-field"],
-  ),
-  problemVariant(
-    "budget-missing-attempt-deadline",
-    problemDefinitions["budget-missing-attempt-deadline"],
-  ),
-  problemVariant(
-    "budget-value-not-a-positive-int64",
-    problemDefinitions["budget-value-not-a-positive-int64"],
-  ),
-  problemVariant(
-    "budget-revision-collision",
-    problemDefinitions["budget-revision-collision"],
-  ),
-  problemVariant(
-    "tool-document-too-large",
-    problemDefinitions["tool-document-too-large"],
-  ),
-  problemVariant(
-    "tool-document-not-utf8",
-    problemDefinitions["tool-document-not-utf8"],
-  ),
-  problemVariant(
-    "tool-not-a-grant-object",
-    problemDefinitions["tool-not-a-grant-object"],
-  ),
-  problemVariant(
-    "tool-missing-capability",
-    problemDefinitions["tool-missing-capability"],
-  ),
-  problemVariant(
-    "tool-unknown-capability",
-    problemDefinitions["tool-unknown-capability"],
-  ),
-  problemVariant(
-    "tool-unknown-field",
-    problemDefinitions["tool-unknown-field"],
-  ),
-  problemVariant(
-    "tool-grant-revision-collision",
-    problemDefinitions["tool-grant-revision-collision"],
-  ),
-  problemVariant(
-    "agent-definition-document-not-utf8",
-    problemDefinitions["agent-definition-document-not-utf8"],
-  ),
-  problemVariant(
-    "agent-definition-frontmatter-missing",
-    problemDefinitions["agent-definition-frontmatter-missing"],
-  ),
-  problemVariant(
-    "agent-definition-frontmatter-unterminated",
-    problemDefinitions["agent-definition-frontmatter-unterminated"],
-  ),
-  problemVariant(
-    "agent-definition-frontmatter-unparsable",
-    problemDefinitions["agent-definition-frontmatter-unparsable"],
-  ),
-  problemVariant(
-    "agent-definition-frontmatter-not-a-mapping",
-    problemDefinitions["agent-definition-frontmatter-not-a-mapping"],
-  ),
-  problemVariant(
-    "agent-definition-field-missing",
-    problemDefinitions["agent-definition-field-missing"],
-  ),
-  problemVariant(
-    "agent-definition-field-duplicated",
-    problemDefinitions["agent-definition-field-duplicated"],
-  ),
-  problemVariant(
-    "agent-definition-field-type-unexpected",
-    problemDefinitions["agent-definition-field-type-unexpected"],
-  ),
-  problemVariant(
-    "agent-definition-field-empty",
-    problemDefinitions["agent-definition-field-empty"],
-  ),
-  problemVariant(
-    "agent-definition-tool-duplicated",
-    problemDefinitions["agent-definition-tool-duplicated"],
-  ),
-  problemVariant(
-    "agent-definition-too-many-tools",
-    problemDefinitions["agent-definition-too-many-tools"],
-  ),
-  problemVariant(
-    "agent-definition-system-prompt-missing",
-    problemDefinitions["agent-definition-system-prompt-missing"],
-  ),
-  problemVariant(
-    "agent-definition-document-too-large",
-    problemDefinitions["agent-definition-document-too-large"],
-  ),
-  problemVariant(
-    "agent-definition-revision-collision",
-    problemDefinitions["agent-definition-revision-collision"],
-  ),
-  problemVariant(
-    "agent-definition-revision-not-found",
-    problemDefinitions["agent-definition-revision-not-found"],
-  ),
-  problemVariant(
-    "library-document-ambiguous",
-    problemDefinitions["library-document-ambiguous"],
-  ),
-  problemVariant(
-    "unsupported-media-type",
-    problemDefinitions["unsupported-media-type"],
-  ),
-  problemVariant("not-acceptable", problemDefinitions["not-acceptable"]),
-  problemVariant(
-    "catalog-revision-unpublished",
-    problemDefinitions["catalog-revision-unpublished"],
-  ),
-  problemVariant("catalog-name-held", problemDefinitions["catalog-name-held"]),
-  problemVariant(
-    "catalog-revision-owned",
-    problemDefinitions["catalog-revision-owned"],
-  ),
-  problemVariant("project-unknown", problemDefinitions["project-unknown"]),
-  problemVariant(
-    "model-registry-missing",
-    problemDefinitions["model-registry-missing"],
-  ),
-  problemVariant(
-    "model-registry-revision-conflict",
-    problemDefinitions["model-registry-revision-conflict"],
-  ),
-  problemVariant(
-    "model-registry-revision-collision",
-    problemDefinitions["model-registry-revision-collision"],
-  ),
-  problemVariant(
-    "project-model-defaults-missing",
-    problemDefinitions["project-model-defaults-missing"],
-  ),
-  problemVariant(
-    "project-model-defaults-revision-conflict",
-    problemDefinitions["project-model-defaults-revision-conflict"],
-  ),
-  problemVariant(
-    "project-model-defaults-revision-collision",
-    problemDefinitions["project-model-defaults-revision-collision"],
-  ),
-  problemVariant(
-    "catalog-lineage-missing",
-    problemDefinitions["catalog-lineage-missing"],
-  ),
-  problemVariant(
-    "catalog-name-not-found",
-    problemDefinitions["catalog-name-not-found"],
-  ),
-  problemVariant(
-    "catalog-lineage-retired",
-    problemDefinitions["catalog-lineage-retired"],
-  ),
-  problemVariant(
-    "catalog-revision-not-a-member",
-    problemDefinitions["catalog-revision-not-a-member"],
-  ),
-  problemVariant(
-    "invalid-catalog-position",
-    problemDefinitions["invalid-catalog-position"],
-  ),
-  problemVariant(
-    "workflow-revision-not-found",
-    problemDefinitions["workflow-revision-not-found"],
-  ),
-  problemVariant("run-not-found", problemDefinitions["run-not-found"]),
-  problemVariant("node-not-found", problemDefinitions["node-not-found"]),
-  problemVariant(
-    "revision-collision",
-    problemDefinitions["revision-collision"],
-  ),
-  problemVariant(
-    "workflow-format-not-executable",
-    problemDefinitions["workflow-format-not-executable"],
-  ),
-  problemVariant("run-input-refused", problemDefinitions["run-input-refused"]),
-  problemVariant(
-    "run-identity-conflict",
-    problemDefinitions["run-identity-conflict"],
-  ),
-  problemVariant(
-    "run-fork-origin-not-terminal",
-    problemDefinitions["run-fork-origin-not-terminal"],
-  ),
-  problemVariant(
-    "run-fork-node-missing",
-    problemDefinitions["run-fork-node-missing"],
-  ),
-  problemVariant(
-    "run-fork-loop-unsupported",
-    problemDefinitions["run-fork-loop-unsupported"],
-  ),
-  problemVariant(
-    "run-fork-prefix-not-reusable",
-    problemDefinitions["run-fork-prefix-not-reusable"],
-  ),
-  problemVariant(
-    "run-fork-command-conflict",
-    problemDefinitions["run-fork-command-conflict"],
-  ),
-  problemVariant(
-    "answer-revision-conflict",
-    problemDefinitions["answer-revision-conflict"],
-  ),
-  problemVariant(
-    "answer-state-conflict",
-    problemDefinitions["answer-state-conflict"],
-  ),
-  problemVariant(
-    "reconciliation-target-missing",
-    problemDefinitions["reconciliation-target-missing"],
-  ),
-  problemVariant(
-    "reconciliation-stale",
-    problemDefinitions["reconciliation-stale"],
-  ),
-  problemVariant(
-    "reconciliation-command-conflict",
-    problemDefinitions["reconciliation-command-conflict"],
-  ),
-  problemVariant(
-    "reconciliation-determination-conflict",
-    problemDefinitions["reconciliation-determination-conflict"],
-  ),
-  problemVariant(
-    "reconciliation-rejected",
-    problemDefinitions["reconciliation-rejected"],
-  ),
-  problemVariant(
-    "run-not-cancellable",
-    problemDefinitions["run-not-cancellable"],
-  ),
-  problemVariant(
-    "run-cancellation-command-conflict",
-    problemDefinitions["run-cancellation-command-conflict"],
-  ),
-  problemVariant(
-    "run-cancellation-overtaken-by-success",
-    problemDefinitions["run-cancellation-overtaken-by-success"],
-  ),
-  problemVariant(
-    "project-source-not-connected",
-    problemDefinitions["project-source-not-connected"],
-  ),
-  problemVariant(
-    "project-source-already-connected",
-    problemDefinitions["project-source-already-connected"],
-  ),
-  problemVariant(
-    "project-source-unknown",
-    problemDefinitions["project-source-unknown"],
-  ),
-  problemVariant(
-    "project-source-disconnected",
-    problemDefinitions["project-source-disconnected"],
-  ),
-  problemVariant(
-    "project-source-invalid",
-    problemDefinitions["project-source-invalid"],
-  ),
-  problemVariant(
-    "project-source-token-refused",
-    problemDefinitions["project-source-token-refused"],
-  ),
-  problemVariant(
-    "project-source-unavailable",
-    problemDefinitions["project-source-unavailable"],
-  ),
-  problemVariant(
-    "project-source-payload-malformed",
-    problemDefinitions["project-source-payload-malformed"],
-  ),
-  problemVariant(
-    "queue-admission-revision-conflict",
-    problemDefinitions["queue-admission-revision-conflict"],
-  ),
-  problemVariant(
-    "queue-admission-already-decided",
-    problemDefinitions["queue-admission-already-decided"],
-  ),
-  problemVariant(
-    "queue-admission-authority-refused",
-    problemDefinitions["queue-admission-authority-refused"],
-  ),
-  problemVariant(
-    "queue-admission-proposal-required",
-    problemDefinitions["queue-admission-proposal-required"],
-  ),
-  problemVariant(
-    "queue-policy-not-set",
-    problemDefinitions["queue-policy-not-set"],
-  ),
-  problemVariant(
-    "queue-policy-revision-conflict",
-    problemDefinitions["queue-policy-revision-conflict"],
-  ),
-  problemVariant(
-    "queue-proposal-revision-conflict",
-    problemDefinitions["queue-proposal-revision-conflict"],
-  ),
-  problemVariant(
-    "queue-proposal-already-decided",
-    problemDefinitions["queue-proposal-already-decided"],
-  ),
-  problemVariant(
-    "queue-proposal-refused",
-    problemDefinitions["queue-proposal-refused"],
-  ),
-  problemVariant("route-not-found", problemDefinitions["route-not-found"]),
-  problemVariant(
-    "method-not-allowed",
-    problemDefinitions["method-not-allowed"],
-  ),
-  problemVariant(
-    "temporarily-unavailable",
-    problemDefinitions["temporarily-unavailable"],
-  ),
-  problemVariant(
-    "durable-projection-unrepresentable",
-    problemDefinitions["durable-projection-unrepresentable"],
-  ),
-  problemVariant(
-    "durable-state-corrupt",
-    problemDefinitions["durable-state-corrupt"],
-  ),
-  problemVariant(
-    "answer-execution-stale",
-    problemDefinitions["answer-execution-stale"],
-  ),
-  problemVariant("internal-error", problemDefinitions["internal-error"]),
-]);
+/**
+ * The document's own `Problem*` components are already self-contained RFC
+ * 9457 bodies (const `type`/`title`/`status`, each field's real shape) --
+ * `orval.transform.ts` synthesizes their union, discriminated on `type`,
+ * from the document itself, so a new server-side problem publishes here
+ * without a hand-maintained aggregate.
+ */
+const problemSchema = AnyProblem;
 
 const streamFailureSchema = z
   .object({ event: z.literal("STREAM_FAILED"), problem: problemSchema })
   .strict();
 
-const durableStateCorruptProblemSchema = problemVariant(
-  "durable-state-corrupt",
-  problemDefinitions["durable-state-corrupt"],
-);
-
 const runProjectionCorruptSchema = z
   .object({
     event: z.literal("RUN_PROJECTION_CORRUPT"),
     public_run_reference: publicRunReference,
-    problem: durableStateCorruptProblemSchema,
+    problem: ProblemDurableStateCorrupt,
   })
   .strict();
 
@@ -2988,57 +1954,6 @@ function exactBody(bodyBase64: string): ArrayBuffer {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The API request failed.";
-}
-
-function problemVariant<
-  const Code extends keyof typeof problemDefinitions,
-  const Title extends (typeof problemDefinitions)[Code]["title"],
-  const Status extends (typeof problemDefinitions)[Code]["status"],
->(code: Code, definition: { readonly title: Title; readonly status: Status }) {
-  const fields = {
-    type: z.literal(`urn:atelier2:problem:v1:${code}` as const),
-    title: z.literal(definition.title),
-    status: z.literal(definition.status),
-    detail: z.string(),
-  };
-  if (code === "invalid-request" || code === "run-input-refused") {
-    return z
-      .object({
-        ...fields,
-        invalid_fields: z.array(invalidFieldSchema).optional(),
-      })
-      .strict();
-  }
-  if (code === "uncast-agent-roles") {
-    return z
-      .object({
-        ...fields,
-        uncast_roles: z
-          .array(
-            z
-              .object({
-                role: z.string().min(1).max(1_024),
-                reason: z.enum([
-                  "override-not-registered",
-                  "workflow-model-not-registered",
-                  "workflow-model-ambiguous",
-                  "no-project-default",
-                  "family-difference-unavailable",
-                ]),
-                family_differs_from: z
-                  .string()
-                  .min(1)
-                  .max(1_024)
-                  .nullable()
-                  .optional(),
-              })
-              .strict(),
-          )
-          .min(1),
-      })
-      .strict();
-  }
-  return z.object(fields).strict();
 }
 
 function isCanonicalStandardBase64(value: string): boolean {

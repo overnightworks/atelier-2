@@ -117,6 +117,7 @@ class AgentExecutionRefusal(StrEnum):
     """
 
     EXECUTOR_BINDING_UNAVAILABLE = "agent-executor-binding-unavailable"
+    AGENT_MODE_MISMATCH = "agent-mode-mismatch"
     WORK_ITEM_CLAIM_UNCONFIGURED = "work-item-claim-unconfigured"
     WORK_ITEM_NAMES_NO_SCOPE = "work-item-names-no-scope"
     WORK_ITEM_CLAIM_REFUSED_BY_PRIORITY = "work-item-claim-refused-by-priority"

@@ -251,7 +251,7 @@ hashes — and records its own admission. Trust is a project's decision and does
 not travel with a hash.
 
 Two constraints already bind and must not be quietly widened:
-`MAXIMUM_REDEEMED_TOOL_GRANTS = 1` (`contracts/workflows_v3.py`) — one node pins
+`MAXIMUM_REDEEMED_TOOL_GRANTS = 1` (`contracts/workflow_executability.py`) — one node pins
 one grant — and Claude Code's `mcp__<server>__<tool>` allowlist grammar, which is
 how an admitted server's tools are named and bounded.
 

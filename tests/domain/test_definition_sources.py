@@ -115,6 +115,16 @@ def test_a_registration_without_a_selection_is_refused() -> None:
         registration(patterns=())
 
 
+@pytest.mark.parametrize(
+    "readable",
+    [RevisionKind.WORKFLOW, RevisionKind.SCHEMA, RevisionKind.BUDGET_POLICY],
+)
+def test_a_selection_may_declare_every_kind_an_intake_reads(
+    readable: RevisionKind,
+) -> None:
+    assert DefinitionSourceSelection(WORKFLOWS, readable).kind is readable
+
+
 def test_a_selection_declares_a_kind_this_build_can_read() -> None:
     with pytest.raises(ValueError, match="no reader in this build"):
         DefinitionSourceSelection(WORKFLOWS, RevisionKind.SKILL)

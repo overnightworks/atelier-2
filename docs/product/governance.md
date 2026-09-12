@@ -312,7 +312,11 @@ different schema -- is material the sweep has no way to fill; that one pass
 answers `REQUIRED_ORDER_UNAVAILABLE` for the item and moves on to the rest of
 the sweep -- the same transient, per-sweep answer an unreachable or
 unconnected tracker already gets, not a durable state the item carries
-between sweeps. Nothing renders that answer to the operator yet. An admitted
+between sweeps. Nothing renders that answer to the operator yet. Every fresh
+launch is judged before it is reserved -- the start's own decision, made over a
+store that keeps none of its writes -- so a start the sweep would see refused
+never holds a place under the project's cap: that pass answers the refusal's
+blocker, and the next sweep judges the item again. An admitted
 item naming a project other than the one this process serves -- reachable
 through `PUT /queue-proposals`, or left behind by a changed served project --
 is never this instance's item either: the sweep leaves it untouched and moves

@@ -513,7 +513,10 @@ class RoleModelResolutionResource(ApiModel):
             "override-not-registered",
             "workflow-model-not-registered",
             "workflow-model-ambiguous",
+            "model-not-in-node-mode",
             "no-project-default",
+            "project-default-model-ambiguous",
+            "role-modes-conflict",
             "family-difference-unavailable",
         ]
         | None
@@ -1286,6 +1289,7 @@ class NodeDetailResource(ApiModel):
 # `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift`.
 AgentNodeRefusalName = Literal[
     "agent-executor-binding-unavailable",
+    "agent-mode-mismatch",
     "work-item-claim-unconfigured",
     "work-item-names-no-scope",
     "work-item-claim-refused-by-priority",
@@ -1600,7 +1604,10 @@ class UncastRoleResource(ApiModel):
         "override-not-registered",
         "workflow-model-not-registered",
         "workflow-model-ambiguous",
+        "model-not-in-node-mode",
         "no-project-default",
+        "project-default-model-ambiguous",
+        "role-modes-conflict",
         "family-difference-unavailable",
     ]
     family_differs_from: str | None = Field(

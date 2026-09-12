@@ -29,6 +29,7 @@ from atelier2.contracts.workflow_documents import (
     WORKFLOW_DOCUMENT_FORMATS,
     WorkflowDocumentFormat,
 )
+from atelier2.contracts.workflow_executability import what_a_v3_document_still_waits_for
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_refusals import (
     WorkflowDocumentInvalid,
@@ -39,7 +40,6 @@ from atelier2.contracts.workflow_refusals import (
 from atelier2.contracts.workflows_v3 import (
     AnyWorkflowDocument,
     WorkflowGraphV3,
-    what_a_v3_document_still_waits_for,
 )
 
 FORMAT_V3_NOT_EXECUTABLE = (

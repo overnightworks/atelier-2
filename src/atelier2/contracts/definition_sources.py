@@ -21,8 +21,9 @@ Four identities stay separate on purpose (ADR 0007):
   scan resolved is provenance beside it, never identity.
 
 A selection names its kind rather than deriving one from the layout: ADR 0018
-rules that the kind is configured, never inferred. This slice carries workflow
-selections only; another kind joins when a reader for it exists.
+rules that the kind is configured, never inferred. Workflows, schemas and
+budget policies are the kinds with a reader; another kind joins when a reader
+for it exists.
 """
 
 from __future__ import annotations
@@ -57,8 +58,10 @@ MAXIMUM_GIT_OBJECT_NAME_CHARACTERS = 64
 _HEXADECIMAL = re.compile(r"[0-9a-f]+")
 _WILDCARD = "*"
 _PATTERN_WILDCARD = re.compile(r"(\*)")
-_SELECTION_KINDS = frozenset({RevisionKind.WORKFLOW})
-"""The kinds a selection may declare while only the workflow door has a reader.
+_SELECTION_KINDS = frozenset(
+    {RevisionKind.WORKFLOW, RevisionKind.SCHEMA, RevisionKind.BUDGET_POLICY}
+)
+"""The kinds a selection may declare: exactly those an intake can read.
 
 ADR 0018 keeps the kind configured rather than inferred, so widening this set
 is what admits agents, skills or MCP servers -- not a new layout heuristic.
@@ -97,6 +100,7 @@ class DefinitionSourceRefusal(StrEnum):
     NO_SELECTED_FILES = "definition_source_no_selected_files"
     SYMLINK_SELECTED = "definition_source_symlink_selected"
     GITLINK_SELECTED = "definition_source_gitlink_selected"
+    KIND_CHANGED = "definition_source_kind_changed"
 
 
 class AmbiguousSelection(ValueError):

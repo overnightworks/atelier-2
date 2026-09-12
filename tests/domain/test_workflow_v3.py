@@ -15,9 +15,9 @@ from atelier2.adapters.yaml_workflows import (
 )
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
+from atelier2.contracts.workflow_executability import AGENT_OUTPUT_SHAPE_UNAVAILABLE
 from atelier2.contracts.workflow_refusals import WorkflowRefusal, WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
-    AGENT_OUTPUT_SHAPE_UNAVAILABLE,
     DEFAULT_ROLE_DIFFICULTY,
     DEFAULT_ROLE_KIND,
     MAXIMUM_DOCUMENT_DESCRIPTION_BYTES,

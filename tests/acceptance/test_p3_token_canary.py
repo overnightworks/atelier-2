@@ -20,9 +20,9 @@ from types import TracebackType
 from typing import Self, cast
 from urllib.parse import quote, urlsplit
 
+import pytest
 import sqlalchemy as sa
 from dbos import DBOS
-from pytest import LogCaptureFixture
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
@@ -386,7 +386,7 @@ def _assert_canary_absent_from_sinks(
 
 
 def test_token_canary_is_absent_from_durable_and_process_surfaces(
-    tmp_path: Path, caplog: LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     canary = "p3-token+canary/never=copy"
     canary_encodings = _canary_encodings(canary)

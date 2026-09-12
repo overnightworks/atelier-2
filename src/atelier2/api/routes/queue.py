@@ -86,6 +86,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemProposed,
     QueueItemSnapshot,
     QueueItemState,
+    QueueLaunchBinding,
     QueuePriorityRank,
     QueueProjectionRevision,
     QueueProjectPolicyDefaults,
@@ -442,31 +443,48 @@ def _admission_resource(admission: QueueAdmission) -> QueueAdmissionResource:
     )
 
 
-def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
-    proposal = snapshot.proposal
-    admission = snapshot.admission
-    binding = snapshot.launch_binding
-    observation = snapshot.observation
-    if proposal is None:
-        legal_without_proposal = (
-            snapshot.state is QueueItemState.OBSERVED
-            and admission is None
-            and binding is None
-        ) or (
-            snapshot.state is QueueItemState.ADMITTED
-            and admission is not None
+def _legal_admission_without_proposal(
+    state: QueueItemState,
+    admission: QueueAdmission | None,
+    binding: QueueLaunchBinding | None,
+) -> bool:
+    """Whether an item with no proposal is legally in this state and shape --
+    freshly observed, or admitted the way a proposal-less item predates
+    proposals: no proposal revision, no authority, no launch binding."""
+
+    if state is QueueItemState.OBSERVED:
+        return admission is None and binding is None
+    if state is QueueItemState.ADMITTED:
+        return (
+            admission is not None
             and admission.proposal_revision is None
             and admission.authority is None
             and binding is None
         )
-        if not legal_without_proposal:
+    return False
+
+
+def _legal_proposal_revision(
+    snapshot: QueueItemSnapshot,
+) -> QueueProjectionRevision | None:
+    """The revision the durable proposal this snapshot answers with was made
+    at, once the snapshot's own shape agrees with its state -- `None` for a
+    snapshot that carries no proposal at all. Refuses as durable-state-corrupt
+    a shape that does not agree with its own declared state.
+    """
+
+    proposal = snapshot.proposal
+    admission = snapshot.admission
+    binding = snapshot.launch_binding
+    if proposal is None:
+        if not _legal_admission_without_proposal(snapshot.state, admission, binding):
             raise ApiProblem("durable-state-corrupt")
-        proposal_revision = None
-    elif snapshot.state is QueueItemState.PROPOSED:
+        return None
+    if snapshot.state is QueueItemState.PROPOSED:
         if admission is not None or binding is not None:
             raise ApiProblem("durable-state-corrupt")
-        proposal_revision = snapshot.revision
-    elif snapshot.state is QueueItemState.ADMITTED:
+        return snapshot.revision
+    if snapshot.state is QueueItemState.ADMITTED:
         if (
             admission is None
             or admission.proposal_revision is None
@@ -475,30 +493,44 @@ def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
             or snapshot.revision.value != admission.proposal_revision.value + 1
         ):
             raise ApiProblem("durable-state-corrupt")
-        proposal_revision = admission.proposal_revision
-    else:
-        raise ApiProblem("durable-state-corrupt")
+        return admission.proposal_revision
+    raise ApiProblem("durable-state-corrupt")
+
+
+def _proposal_field(
+    proposal: QueueProposal | None,
+    proposal_revision: QueueProjectionRevision | None,
+) -> QueueProposalResource | None:
+    if proposal is None or proposal_revision is None:
+        return None
+    return _proposal_resource(proposal, proposal_revision)
+
+
+def _launch_binding_field(
+    binding: QueueLaunchBinding | None,
+) -> QueueLaunchBindingResource | None:
+    if binding is None:
+        return None
+    return QueueLaunchBindingResource(
+        proposal_revision=binding.proposal_revision.value,
+        run_id=binding.run_id.value,
+        workflow_revision_hash=binding.workflow_revision_hash.value,
+    )
+
+
+def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
+    admission = snapshot.admission
+    observation = snapshot.observation
+    proposal_revision = _legal_proposal_revision(snapshot)
     return QueueItemResource(
         project_id=snapshot.item_reference.project.value,
         tracker_item_reference=snapshot.item_reference.tracker_item.value,
         item_id=snapshot.item_reference.item_id.value,
         state=snapshot.state,
         revision=snapshot.revision.value,
-        proposal=(
-            None
-            if proposal is None or proposal_revision is None
-            else _proposal_resource(proposal, proposal_revision)
-        ),
+        proposal=_proposal_field(snapshot.proposal, proposal_revision),
         admission=None if admission is None else _admission_resource(admission),
-        launch_binding=(
-            None
-            if binding is None
-            else QueueLaunchBindingResource(
-                proposal_revision=binding.proposal_revision.value,
-                run_id=binding.run_id.value,
-                workflow_revision_hash=binding.workflow_revision_hash.value,
-            )
-        ),
+        launch_binding=_launch_binding_field(snapshot.launch_binding),
         blockers=snapshot.blockers,
         tracker_enrichment="ENRICHMENT_UNAVAILABLE",
         title=None if observation is None else observation.title,
