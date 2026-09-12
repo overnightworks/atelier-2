@@ -346,7 +346,11 @@ Its network stays,
 because the call reaches its own API, so what a credential may send is bounded
 by trust and not by the fence, and this host's own loopback and abstract unix
 sockets stay in reach with it until a network boundary owns them. A deployment whose host cannot draw the boundary
-refuses this executor at serve start instead of serving it open. The executor
+refuses this executor at serve start instead of serving it open, and whether it
+can is decided by a start rather than by a version: the enforcer is handed one
+directory as a descriptor and asked to read a file inside it and a file outside
+every grant, and only a host that hands back the first alone, on a start that
+failed over the second, is attested. The executor
 does not use `--always-approve` and does not pretend parse-time ID validation.
 What a real answer may reach with those tools is still the half a billed
 secret-file probe has to establish under the operator's gate, which is why

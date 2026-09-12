@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from atelier2.adapters.bounded_processes import (
@@ -56,11 +57,11 @@ _PROBE_PREFIX = "atelier2-fence-probe-"
 _PROBE_MARKER_NAME = "grant"
 _PROBE_MARKER_TEXT = "one directory, handed over as its descriptor\n"
 _PROBE_READER = Path("/bin/cat")
-"""What the host probe runs behind the fence: coreutils reading one file.
+"""What the host probe runs behind the fence: coreutils reading two files.
 
 The probe needs a command that proves the bind really happened rather than one
-that merely started, and it reads its answer out of the same system roots every
-fenced child is granted.
+that merely started, and one that says as plainly what it could not reach. It
+reads its answer out of the same system roots every fenced child is granted.
 """
 
 _UNSHARE_EVERY_NAMESPACE = "--unshare-all"
@@ -81,6 +82,8 @@ _END_OF_FLAGS = "--"
 _PROCESS_TABLE_PATH = Path("/proc")
 _DEVICE_PATH = Path("/dev")
 _TEMPORARY_PATH = Path("/tmp")
+"""Where a fenced start gets a filesystem of its own, so that nothing this host
+keeps there has a name inside the fence unless a grant names it."""
 
 SYSTEM_READ_ONLY_ROOTS = (
     Path("/usr"),
@@ -280,8 +283,20 @@ def toolchain_sandbox(
     """
 
     verified_sandbox_host(enforcer)
+    return SandboxedLaunch(enforcer, toolchain_grants(executable, state_directory))
+
+
+def toolchain_grants(executable: Path, state_directory: Path) -> SandboxGrants:
+    """What one command-line toolchain may reach, whatever enforcer holds it to it.
+
+    The reach is derived from names alone, so it is the same sentence on a host
+    that can fence and on one that is refused: the toolchain's own executable
+    and the system roots any program needs to read, the private state directory
+    to write, and nothing beside them.
+    """
+
     readable = _narrowed((executable, *SYSTEM_READ_ONLY_ROOTS, *SYSTEM_READ_ONLY_FILES))
-    return SandboxedLaunch(enforcer, SandboxGrants((state_directory,), readable))
+    return SandboxGrants((state_directory,), readable)
 
 
 def resolved_sandbox_executable(search_path: str) -> Path:
@@ -309,6 +324,14 @@ def verified_sandbox_host(enforcer: Path) -> None:
     may still open a user namespace, that every option a launch uses parses,
     and that a directory handed over as a descriptor really arrives -- because
     it is that start, composed by the same function a job's is.
+
+    The start has to answer a negative too, or it attests nothing: every file
+    a probe may reach behind a true fence this account can also read without
+    one, so a positive alone is as true of a binary that merely runs what
+    stands behind `--`. So the probe reads two files of the same account in
+    one command -- one inside the directory it handed over, one outside every
+    grant -- and a host is attested only when the first came back alone and
+    the start failed over the second.
     """
 
     if not enforcer.is_absolute():
@@ -322,27 +345,92 @@ def verified_sandbox_host(enforcer: Path) -> None:
 
 
 def _attest_enforcer(enforcer: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix=_PROBE_PREFIX) as probe_root:
-        directory = Path(probe_root)
-        marker = directory / _PROBE_MARKER_NAME
-        marker.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
-        standing = directory.stat()
-        grants = SandboxGrants(
-            readable_and_executable=_narrowed((_PROBE_READER, *SYSTEM_READ_ONLY_ROOTS))
-        )
-        with entered_fence(
-            (str(_PROBE_READER), str(marker)),
-            directory,
-            standing.st_dev,
-            standing.st_ino,
-            SandboxedLaunch(enforcer, grants),
-        ) as (arguments, entered, inherited):
-            answered = _answered(arguments, entered, inherited, enforcer)
-    if answered != _PROBE_MARKER_TEXT:
+    answer = _probed_fence(enforcer)
+    if not answer.output.startswith(_PROBE_MARKER_TEXT):
         raise SandboxUnavailable(
             f"{enforcer} did not hand a directory it was given as a descriptor to a "
-            f"command behind the fence: that command answered {answered!r}"
+            f"command behind the fence: that command answered {answer.output!r} and "
+            f"ended with {answer.return_code}{answer.said}"
         )
+    if answer.output != _PROBE_MARKER_TEXT or answer.return_code == 0:
+        raise SandboxUnavailable(
+            f"{enforcer} read a file this start granted no name at all, so what it "
+            f"runs stands in no fence: that command answered {answer.output!r} and "
+            f"ended with {answer.return_code}"
+        )
+
+
+def _probed_fence(enforcer: Path) -> _ProbeAnswer:
+    """Lay down the two markers one start is judged by, and run that start.
+
+    Both stand under the directory this transformation covers with a
+    filesystem of its own, because that is what makes the second one ungranted
+    at all: under that cover the handed-over directory has a name only through
+    the descriptor the enforcer binds, and its sibling has none. Laid down
+    where this host happens to point its temporary files instead, both could
+    stand inside a granted root -- a temporary directory under `/usr` is
+    readable behind any true fence -- and the start would read both and refuse
+    an enforcer that works.
+
+    A filesystem that refuses those files, or their removal, refuses this
+    enforcer: what it would have proven is unproven. It is not an error the
+    deployment composing this executor has to survive, because that deployment
+    composes other executors whose startability this says nothing about.
+    """
+
+    try:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix=_PROBE_PREFIX, dir=_TEMPORARY_PATH
+            ) as granted_root,
+            tempfile.TemporaryDirectory(
+                prefix=_PROBE_PREFIX, dir=_TEMPORARY_PATH
+            ) as ungranted_root,
+        ):
+            granted = Path(granted_root)
+            marker = granted / _PROBE_MARKER_NAME
+            marker.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
+            beyond = Path(ungranted_root) / _PROBE_MARKER_NAME
+            beyond.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
+            standing = granted.stat()
+            grants = SandboxGrants(
+                readable_and_executable=_narrowed(
+                    (_PROBE_READER, *SYSTEM_READ_ONLY_ROOTS)
+                )
+            )
+            with entered_fence(
+                (str(_PROBE_READER), str(marker), str(beyond)),
+                granted,
+                standing.st_dev,
+                standing.st_ino,
+                SandboxedLaunch(enforcer, grants),
+            ) as (arguments, entered, inherited):
+                return _answered(arguments, entered, inherited, enforcer)
+    except OSError as error:
+        raise SandboxUnavailable(
+            f"this host could not lay down the files that attest {enforcer}: {error}"
+        ) from error
+
+
+@dataclass(frozen=True)
+class _ProbeAnswer:
+    """What one probe start wrote, and how it ended.
+
+    Both halves are evidence here: the fence is attested by what the start
+    could read and by the reading it could not do, so the return code is
+    carried back rather than turned into a refusal on the way.
+    """
+
+    return_code: int
+    output: str
+    diagnostics: str
+
+    @property
+    def said(self) -> str:
+        """Whatever the start put on its diagnostic stream, ready to quote."""
+
+        spoken = self.diagnostics.strip()
+        return f", saying {spoken!r}" if spoken else ""
 
 
 def _answered(
@@ -350,10 +438,9 @@ def _answered(
     entered: str,
     inherited: tuple[int, ...],
     enforcer: Path,
-) -> str:
-    """What one probe start wrote, under a byte bound and a deadline of its own."""
+) -> _ProbeAnswer:
+    """Run one probe start, under a byte bound and a deadline of its own."""
 
-    refusal = f"{enforcer} could not start the fence this deployment needs"
     try:
         process = subprocess.Popen(
             arguments,
@@ -368,12 +455,14 @@ def _answered(
             process, _HOST_PROBE_TIMEOUT_SECONDS, _PROBE_OUTPUT_BYTES
         )
     except (OSError, subprocess.SubprocessError, BoundedProcessFailure) as error:
-        raise SandboxUnavailable(f"{refusal}: {error}") from error
-    if return_code != 0:
         raise SandboxUnavailable(
-            f"{refusal}: {diagnostics.decode('utf-8', 'replace').strip()}"
-        )
-    return answer.decode("utf-8", "replace")
+            f"{enforcer} could not start the fence this deployment needs: {error}"
+        ) from error
+    return _ProbeAnswer(
+        return_code,
+        answer.decode("utf-8", "replace"),
+        diagnostics.decode("utf-8", "replace"),
+    )
 
 
 def _narrowed(paths: tuple[Path, ...]) -> tuple[Path, ...]:
