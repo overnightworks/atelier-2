@@ -1,7 +1,0 @@
-claim_id = "f71c7db790b94550a8c6b0ad61b0f3e7"
-agent = "claude-head"
-role = "builder"
-base = "8391763734a3f143ea0abefb07792fdca70edd2f"
-branch = "claude/issue-1528-open-pr-last-publication"
-scope = ["src/atelier2/adapters/dbos/run_publications.py", "src/atelier2/adapters/dbos/advancer.py", "tests/integration/test_v3_open_pr_action.py"]
-opened_commit = "811a7cad997bcf6c27e1c62c9cd50dc485a19336"
