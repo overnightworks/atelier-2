@@ -15,9 +15,11 @@ owns that row. What belongs here is the run's own state.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 import sqlalchemy as sa
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.agent_catalog import (
@@ -33,6 +35,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -86,8 +89,24 @@ class RunTransitionConflict(RuntimeError):
     """A retry or transition contradicts the exact durable graph/run/event binding."""
 
 
+@dataclass(frozen=True, slots=True)
+class RunPosition:
+    """Where a run stands: in which state, at which node, in which round.
+
+    A transition moves from one exact source position to one target position.
+    """
+
+    state: RunState
+    node_id: str
+    round_ordinal: int
+
+    @property
+    def ends_the_run(self) -> bool:
+        return self.state in TERMINAL_RUN_STATES
+
+
 def load_graph(
-    session: Any, revision_hash: WorkflowRevisionHash
+    session: SqlExecutor, revision_hash: WorkflowRevisionHash
 ) -> AnyWorkflowDocument:
     document = session.scalar(
         sa.select(workflow_revisions.c.document).where(
@@ -175,7 +194,9 @@ def _agent_binding_select() -> sa.Select[Any]:
     )
 
 
-def run_from_record_with_bindings(session: Any, record: Mapping[Any, Any]) -> AnyRun:
+def run_from_record_with_bindings(
+    session: SqlExecutor, record: Mapping[Any, Any]
+) -> AnyRun:
     """One run, reading the agent bindings it stands on."""
 
     if _binds_agent_roles(record):
@@ -199,7 +220,7 @@ def _binds_agent_roles(record: Mapping[Any, Any]) -> bool:
 
 
 def runs_from_records_with_bindings(
-    session: Any, records: Sequence[Mapping[Any, Any]]
+    session: SqlExecutor, records: Sequence[Mapping[Any, Any]]
 ) -> tuple[AnyRun, ...]:
     """Every run of a page, reading all their agent bindings in one statement.
 
@@ -309,7 +330,7 @@ def run_from_record_and_binding_rows(
     )
 
 
-def load_run(session: Any, run_id: RunId) -> AnyRun:
+def load_run(session: SqlExecutor, run_id: RunId) -> AnyRun:
     record = (
         session.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
         .mappings()
@@ -468,7 +489,7 @@ def _event_attempt_binding_from_record(
 
 
 def _existing_event(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -532,12 +553,34 @@ def _existing_event(
     )
 
 
-def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -> None:
+def _cancellation_columns(
+    attempt_binding: RunEventAttemptBinding | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """The event's cancellation columns, in the order the insert wants them."""
+    if not isinstance(attempt_binding, RunEventCancellationBinding):
+        return None, None, None, None
+    return (
+        attempt_binding.command_id,
+        attempt_binding.replacement.value,
+        (
+            None
+            if attempt_binding.disposition is None
+            else attempt_binding.disposition.value
+        ),
+        (
+            None
+            if attempt_binding.replacement_attempt_id is None
+            else attempt_binding.replacement_attempt_id.value
+        ),
+    )
+
+
+def _insert_event(
+    session: SqlExecutor, event: RunEvent, at: RecordedAt | None = None
+) -> None:
     attempt_binding = event.attempt_binding
-    cancellation_binding = (
-        attempt_binding
-        if isinstance(attempt_binding, RunEventCancellationBinding)
-        else None
+    command_id, replacement, disposition, replacement_attempt_id = (
+        _cancellation_columns(attempt_binding)
     )
     insertion = run_events.insert().values(
         run_id=event.run_id.value,
@@ -565,25 +608,10 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
         attempt_ordinal=(
             None if attempt_binding is None else attempt_binding.attempt_ordinal
         ),
-        cancellation_command_id=(
-            None if cancellation_binding is None else cancellation_binding.command_id
-        ),
-        replacement=(
-            None
-            if cancellation_binding is None
-            else cancellation_binding.replacement.value
-        ),
-        cancellation_disposition=(
-            None
-            if cancellation_binding is None or cancellation_binding.disposition is None
-            else cancellation_binding.disposition.value
-        ),
-        replacement_attempt_id=(
-            None
-            if cancellation_binding is None
-            or cancellation_binding.replacement_attempt_id is None
-            else cancellation_binding.replacement_attempt_id.value
-        ),
+        cancellation_command_id=command_id,
+        replacement=replacement,
+        cancellation_disposition=disposition,
+        replacement_attempt_id=replacement_attempt_id,
         agent_receipt_hash=(
             None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
         ),
@@ -608,32 +636,21 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
-def _refuse_unfit_target(
-    graph: AnyWorkflowDocument, target_state: RunState, node_id: str, terminal: bool
-) -> None:
-    node = graph.node(node_id)
-    if target_state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
+def _refuse_unfit_target(graph: AnyWorkflowDocument, target: RunPosition) -> None:
+    node = graph.node(target.node_id)
+    if target.state is RunState.WAITING_INPUT and not isinstance(node, WaitNodeV3):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
-    if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
+    if target.state is RunState.WAITING_RECONCILIATION and not isinstance(
         node, (ActionNodeV3, AgentNodeV3)
     ):
         raise RunTransitionConflict(
             "WAITING_RECONCILIATION target is not an effect-owning node"
         )
-    # Which words end a run has one owner, and CANCELLED is one of them: a run
-    # resting at a pause ends here, under its own attestation, rather than
-    # standing WAITING_INPUT forever because no attempt existed to stop.
-    if terminal != (target_state in TERMINAL_RUN_STATES):
-        raise RunTransitionConflict("terminal transition shape disagrees")
-    if (
-        terminal
-        and target_state is RunState.COMPLETED
-        and not is_sink_node(graph, node_id)
-    ):
+    if target.state is RunState.COMPLETED and not is_sink_node(graph, target.node_id):
         raise RunTransitionConflict("terminal transition must finish the run's sink")
 
 
-def _event_hashes(session: Any, run_id: RunId) -> tuple[Sha256Hash, ...]:
+def _event_hashes(session: SqlExecutor, run_id: RunId) -> tuple[Sha256Hash, ...]:
     """Every event hash this run has written, in the order the terminal hash folds."""
     return tuple(
         Sha256Hash(str(value))
@@ -646,36 +663,30 @@ def _event_hashes(session: Any, run_id: RunId) -> tuple[Sha256Hash, ...]:
 
 
 def _commit_event(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
-    node_id: str,
     event_kind: RunEventKind,
     payload: bytes,
-    expected_state: RunState,
-    target_state: RunState,
-    target_node_id: str,
+    source: RunPosition,
+    target: RunPosition,
     receipt_logical_key: LogicalEffectKey | None = None,
     receipt_result_hash: Sha256Hash | None = None,
-    terminal: bool = False,
-    agent_attempt_id: AgentAttemptId | None = None,
-    attempt_ordinal: int | None = None,
+    attempt_binding: RunEventAgentAttemptBinding | None = None,
     agent_receipt_hash: AgentReceiptHash | None = None,
-    round_ordinal: int = FIRST_ROUND_ORDINAL,
-    target_round_ordinal: int = FIRST_ROUND_ORDINAL,
     wait_answer_actor: WaitAnswerActor | None = None,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
         run_id,
         revision_hash,
-        node_id,
-        round_ordinal,
+        source.node_id,
+        source.round_ordinal,
         event_kind,
         payload,
         receipt_logical_key,
         receipt_result_hash,
-        agent_attempt_id,
+        None if attempt_binding is None else attempt_binding.attempt_id,
         agent_receipt_hash,
         wait_answer_actor,
     )
@@ -684,81 +695,83 @@ def _commit_event(
     current = load_run(session, run_id)
     if (
         current.revision_hash != revision_hash
-        or current.current_node_id != node_id
-        or current.current_round_ordinal != round_ordinal
-        or current.state is not expected_state
+        or current.current_node_id != source.node_id
+        or current.current_round_ordinal != source.round_ordinal
+        or current.state is not source.state
     ):
         raise RunTransitionConflict("run is not at the transition's exact source")
     graph = load_graph(session, revision_hash)
-    _refuse_unfit_target(graph, target_state, target_node_id, terminal)
+    _refuse_unfit_target(graph, target)
     instant = recorded_instant()
     sequence = current.last_event_sequence + 1
-    if (agent_attempt_id is None) != (attempt_ordinal is None):
-        raise RunTransitionConflict("agent event attempt binding is incomplete")
-    attempt_binding = (
-        None
-        if agent_attempt_id is None or attempt_ordinal is None
-        else RunEventAgentAttemptBinding(agent_attempt_id, attempt_ordinal)
-    )
     event = RunEvent(
         run_id,
         revision_hash,
         sequence,
-        node_id,
-        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
+        source.node_id,
+        NodeExecutionId.for_node(
+            run_id, revision_hash, source.node_id, source.round_ordinal
+        ),
         event_kind,
         payload,
         receipt_logical_key,
         receipt_result_hash,
         attempt_binding,
         agent_receipt_hash=agent_receipt_hash,
-        round_ordinal=round_ordinal,
+        round_ordinal=source.round_ordinal,
         wait_answer_actor=wait_answer_actor,
     )
     terminal_hash: Sha256Hash | None = None
-    if terminal:
+    if target.ends_the_run:
         _insert_event(session, event, at=instant)
         terminal_hash = terminal_hash_for(revision_hash, _event_hashes(session, run_id))
-    updated = session.execute(
-        runs.update()
-        .where(
-            runs.c.run_id == run_id.value,
-            runs.c.revision_hash == revision_hash.value,
-            runs.c.current_node_id == node_id,
-            runs.c.current_round_ordinal == round_ordinal,
-            runs.c.state == expected_state.value,
-            runs.c.state_version == current.state_version,
-            runs.c.last_event_sequence == current.last_event_sequence,
-        )
-        .values(
-            current_node_id=target_node_id,
-            current_round_ordinal=target_round_ordinal,
-            state=target_state.value,
-            state_version=current.state_version + 1,
-            last_event_sequence=sequence,
-            terminal_hash=None if terminal_hash is None else terminal_hash.value,
-        )
+    # `runs.update()` is Core DML: both a connection and a datasource session
+    # execute it as a `CursorResult`, but the executor protocol only promises
+    # the ORM-compatible `Result` its `Session` implementation can guarantee,
+    # so the cast makes the always-true richer type explicit for the checker.
+    updated = cast(
+        CursorResult[Any],
+        session.execute(
+            runs.update()
+            .where(
+                runs.c.run_id == run_id.value,
+                runs.c.revision_hash == revision_hash.value,
+                runs.c.current_node_id == source.node_id,
+                runs.c.current_round_ordinal == source.round_ordinal,
+                runs.c.state == source.state.value,
+                runs.c.state_version == current.state_version,
+                runs.c.last_event_sequence == current.last_event_sequence,
+            )
+            .values(
+                current_node_id=target.node_id,
+                current_round_ordinal=target.round_ordinal,
+                state=target.state.value,
+                state_version=current.state_version + 1,
+                last_event_sequence=sequence,
+                terminal_hash=None if terminal_hash is None else terminal_hash.value,
+            )
+        ),
     )
     if updated.rowcount != 1:
         raise RunTransitionConflict("run transition lost its state/version CAS")
-    if terminal:
+    if target.ends_the_run:
         record_run_ended(session, run_id.value, at=instant)
     else:
         _insert_event(session, event, at=instant)
     return TransitionSnapshot(
         run_id,
         revision_hash,
-        target_node_id,
-        target_state,
+        target.node_id,
+        target.state,
         current.state_version + 1,
         sequence,
         event,
-        target_round_ordinal,
+        target.round_ordinal,
     )
 
 
 def commit_waiting_input(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -777,20 +790,16 @@ def commit_waiting_input(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.WAITING_INPUT,
         payload,
-        RunState.STARTED,
-        RunState.WAITING_INPUT,
-        node_id,
-        round_ordinal=round_ordinal,
-        target_round_ordinal=round_ordinal,
+        RunPosition(RunState.STARTED, node_id, round_ordinal),
+        RunPosition(RunState.WAITING_INPUT, node_id, round_ordinal),
         wait_answer_actor=WaitAnswerActor.OPERATOR,
     )
 
 
 def commit_wait_cancelled(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -812,20 +821,15 @@ def commit_wait_cancelled(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.WAIT_CANCELLED,
         command_id.encode("utf-8"),
-        RunState.WAITING_INPUT,
-        RunState.CANCELLED,
-        node_id,
-        terminal=True,
-        round_ordinal=round_ordinal,
-        target_round_ordinal=round_ordinal,
+        RunPosition(RunState.WAITING_INPUT, node_id, round_ordinal),
+        RunPosition(RunState.CANCELLED, node_id, round_ordinal),
     )
 
 
 def commit_reconciliation_required(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -836,14 +840,10 @@ def commit_reconciliation_required(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.ACTION_RECONCILIATION_REQUIRED,
         request,
-        RunState.STARTED,
-        RunState.WAITING_RECONCILIATION,
-        node_id,
-        round_ordinal=current_round_ordinal,
-        target_round_ordinal=current_round_ordinal,
+        RunPosition(RunState.STARTED, node_id, current_round_ordinal),
+        RunPosition(RunState.WAITING_RECONCILIATION, node_id, current_round_ordinal),
     )
 
 
@@ -896,7 +896,7 @@ def lift_started_run(
 
 
 def commit_reconciliation_resolved(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -909,14 +909,10 @@ def commit_reconciliation_resolved(
         session,
         run_id,
         revision_hash,
-        node_id,
         RunEventKind.ACTION_RECONCILIATION_RESOLVED,
         result,
-        RunState.WAITING_RECONCILIATION,
-        RunState.STARTED,
-        node_id,
+        RunPosition(RunState.WAITING_RECONCILIATION, node_id, current_round_ordinal),
+        RunPosition(RunState.STARTED, node_id, current_round_ordinal),
         logical_key,
         result_hash,
-        round_ordinal=current_round_ordinal,
-        target_round_ordinal=current_round_ordinal,
     )

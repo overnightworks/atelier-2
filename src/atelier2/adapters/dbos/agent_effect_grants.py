@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.schema import published_revisions
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.tool_grants_v3 import (
@@ -21,14 +20,14 @@ from atelier2.contracts.workflows_v3 import AgentNodeV3, VersionedReference
 
 
 def read_pinned_tool_grants(
-    session: Any, node: AgentNodeV3
+    session: SqlExecutor, node: AgentNodeV3
 ) -> tuple[DeclaredToolGrant, ...]:
     """Every grant this node pinned, read from the revisions it names by hash."""
     return tuple(_read_one_pinned_grant(session, pinned) for pinned in node.tools)
 
 
 def _read_one_pinned_grant(
-    session: Any, pinned: VersionedReference
+    session: SqlExecutor, pinned: VersionedReference
 ) -> DeclaredToolGrant:
     document = session.scalar(
         sa.select(published_revisions.c.document).where(
@@ -68,7 +67,7 @@ def _one_grant_of_shape(
 
 
 def read_pinned_exec_tool_grant(
-    session: Any, node: AgentNodeV3
+    session: SqlExecutor, node: AgentNodeV3
 ) -> DeclaredToolGrant | None:
     """The one exec-shaped grant this node pinned, redeemed inside its own attempt."""
     return _one_grant_of_shape(
@@ -77,7 +76,7 @@ def read_pinned_exec_tool_grant(
 
 
 def read_pinned_effect_tool_grant(
-    session: Any, node: AgentNodeV3
+    session: SqlExecutor, node: AgentNodeV3
 ) -> DeclaredToolGrant | None:
     """The one effect-shaped grant this node pinned, redeemed after it succeeds."""
     return _one_grant_of_shape(
@@ -111,5 +110,5 @@ def push_atelier_commit_capability_for(
     return grant.capability
 
 
-def agent_node_redeems_platform_effect(session: Any, node: AgentNodeV3) -> bool:
+def agent_node_redeems_platform_effect(session: SqlExecutor, node: AgentNodeV3) -> bool:
     return read_pinned_effect_tool_grant(session, node) is not None

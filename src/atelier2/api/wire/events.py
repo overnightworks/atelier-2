@@ -70,8 +70,9 @@ class AgentExecutorBindingUnavailableEventResourceV3(RunEventBaseResourceV3):
     """An Agent node stopped before any provider attempt could be claimed.
 
     `reason` is `AgentExecutionRefusal`'s closed set -- an executor nothing can
-    bind, and the lane claim a node must hold before it works -- written out
-    here because a wire schema may name no contract enum inline;
+    bind, a node whose binding runs outside its declared mode, and the lane
+    claim a node must hold before it works -- written out here because a wire
+    schema may name no contract enum inline;
     `test_the_wire_refusal_literal_and_the_refusal_enum_cannot_drift` pins the
     two spellings to set equality. `detail` is the sentence the refusing
     boundary gave, the claim ledger's own line, and none where it gave none.

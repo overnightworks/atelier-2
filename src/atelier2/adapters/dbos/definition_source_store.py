@@ -18,12 +18,14 @@ selected path are written on a single connection, so a batch that stops at its
 last file leaves nothing of the ones before it. It composes the catalog's own
 connection-bound writes (`catalog_store`) rather than repeating them -- a second
 publication writer would be a second answer to what a published revision is.
+A schema or a budget policy is hash-named: it is published and its provenance
+recorded on that same transaction, with no lineage and no name to admit.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, assert_never
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
@@ -35,6 +37,7 @@ from atelier2.adapters.dbos.catalog_store import (
     current_display_name,
     current_head_revision_hash,
     found_lineage_in,
+    persist_published_revision,
     persist_workflow_publication,
     revision_owner,
 )
@@ -89,11 +92,18 @@ from atelier2.ports.definition_sources import (
     RecordedPath,
     RecordSourceIntakesResult,
     RegisterDefinitionSourceResult,
+    SelectedDocument,
     SelectedIntake,
+    SelectedWorkflow,
     SourceIntakeRecorded,
     SourceIntakeRefused,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
+from atelier2.ports.published_revisions import (
+    PublishedRevisionCollision,
+    PublishedRevisionCreated,
+    PublishedRevisionExisting,
+)
 
 _FIRST_REVISION_NUMBER = 1
 _FIRST_SELECTION_ORDINAL = 1
@@ -161,9 +171,26 @@ class DbosDefinitionSources:
                 standing = self._latest_intakes(connection, source_id)
                 recorded: list[RecordedPath] = []
                 for one in selected:
-                    entered = self._take_in(
-                        connection, source_id, commit, one, standing, actor, intaken_at
-                    )
+                    if isinstance(one, SelectedDocument):
+                        entered = _take_in_document(
+                            connection,
+                            source_id,
+                            commit,
+                            one,
+                            standing.get(one.path),
+                            actor,
+                            intaken_at,
+                        )
+                    else:
+                        entered = self._take_in(
+                            connection,
+                            source_id,
+                            commit,
+                            one,
+                            standing,
+                            actor,
+                            intaken_at,
+                        )
                     if isinstance(entered, SourceIntakeRefused):
                         # One refused path makes the whole commit refused: the
                         # operator was promised a pull that lands whole or not
@@ -182,7 +209,7 @@ class DbosDefinitionSources:
         connection: Connection,
         source_id: DefinitionSourceId,
         commit: SourceCommit,
-        selected: SelectedIntake,
+        selected: SelectedWorkflow,
         standing: Mapping[RepositoryPath, SourceIntake],
         actor: CatalogActor,
         intaken_at: CatalogActivatedAt,
@@ -226,9 +253,7 @@ class DbosDefinitionSources:
                 intake = SourceIntake(
                     source_id,
                     selected.path,
-                    _FIRST_INTAKE_NUMBER
-                    if previous is None
-                    else previous.intake_number + 1,
+                    _next_intake_number(previous),
                     RevisionKind.WORKFLOW,
                     published.revision_hash,
                     commit,
@@ -468,10 +493,62 @@ def _lineage_holding(
     return owner
 
 
+def _take_in_document(
+    connection: Connection,
+    source_id: DefinitionSourceId,
+    commit: SourceCommit,
+    selected: SelectedDocument,
+    previous: SourceIntake | None,
+    actor: CatalogActor,
+    intaken_at: CatalogActivatedAt,
+) -> PathIntaken | PathAlreadyInCatalog:
+    """Publish one hash-named document on the batch's transaction and record its origin.
+
+    It joins no lineage and holds no name, so the catalog has nothing to refuse
+    it for. The one answer that stops it is bytes disagreeing with those already
+    published under their hash: that is corrupt state, raised so the batch's
+    transaction takes every path written before it back as well.
+    """
+
+    revision = selected.revision
+    match persist_published_revision(connection, revision):
+        case PublishedRevisionCreated():
+            newly_published = True
+        case PublishedRevisionExisting():
+            newly_published = False
+        case PublishedRevisionCollision():
+            raise ValueError(
+                f"{selected.path.value} collides with the {revision.kind.value} "
+                f"already published as {revision.revision_hash.value}"
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    present = PathAlreadyInCatalog(selected.path, revision.kind, revision.revision_hash)
+    if previous is not None and (previous.revision_kind, previous.revision_hash) == (
+        revision.kind,
+        revision.revision_hash,
+    ):
+        return present
+    intake = SourceIntake(
+        source_id,
+        selected.path,
+        _next_intake_number(previous),
+        revision.kind,
+        revision.revision_hash,
+        commit,
+    )
+    _insert_intake(connection, intake, actor, intaken_at)
+    return PathIntaken(intake) if newly_published else present
+
+
+def _next_intake_number(previous: SourceIntake | None) -> int:
+    return _FIRST_INTAKE_NUMBER if previous is None else previous.intake_number + 1
+
+
 def _existing_revision_outcome(
     connection: Connection,
     source_id: DefinitionSourceId,
-    selected: SelectedIntake,
+    selected: SelectedWorkflow,
     commit: SourceCommit,
     published: PublishedRevision,
     previous: SourceIntake | None,
@@ -531,7 +608,7 @@ def _existing_revision_outcome(
 
 def _founding_intake(
     source_id: DefinitionSourceId,
-    selected: SelectedIntake,
+    selected: SelectedWorkflow,
     commit: SourceCommit,
     revision_hash: PublishedRevisionHash,
 ) -> SourceIntake:

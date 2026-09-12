@@ -26,10 +26,6 @@ path = "src/atelier2/adapters/claude_subscription.py"
 lines = 2166
 
 [[file]]
-path = "src/atelier2/adapters/dbos/advancer.py"
-lines = 812
-
-[[file]]
 path = "src/atelier2/adapters/dbos/agent_attempt_store.py"
 lines = 3527
 
@@ -115,7 +111,7 @@ lines = 888
 
 [[file]]
 path = "src/atelier2/contracts/workflows_v3.py"
-lines = 1865
+lines = 1464
 
 [[file]]
 path = "src/atelier2/host/__init__.py"
@@ -192,10 +188,6 @@ lines = 138
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.claim"
 lines = 71
-
-[[function]]
-qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.refuse_unavailable_executor"
-lines = 61
 
 [[function]]
 qualified_name = "atelier2.adapters.dbos.agent_attempt_store.DbosAgentAttemptStore.request_run_cancellation"
@@ -322,10 +314,6 @@ qualified_name = "atelier2.adapters.dbos.run_transitions._existing_event"
 lines = 63
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.run_transitions._insert_event"
-lines = 74
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.run_transitions.run_from_record_and_binding_rows"
 lines = 81
 
@@ -402,10 +390,6 @@ qualified_name = "atelier2.api.projection.runs.run_resource"
 lines = 95
 
 [[function]]
-qualified_name = "atelier2.api.routes.queue._snapshot_resource"
-lines = 65
-
-[[function]]
 qualified_name = "atelier2.api.routes.runs.cancel_agent_attempt_route"
 lines = 63
 
@@ -438,16 +422,12 @@ qualified_name = "atelier2.application.model_configuration.get_project_model_res
 lines = 78
 
 [[function]]
-qualified_name = "atelier2.application.model_configuration.publish_model_registry"
-lines = 105
-
-[[function]]
 qualified_name = "atelier2.application.model_configuration.publish_project_model_defaults"
 lines = 61
 
 [[function]]
 qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
-lines = 86
+lines = 74
 
 [[function]]
 qualified_name = "atelier2.application.project_connections.connect_managed_project_source"
@@ -558,20 +538,8 @@ qualified_name = "atelier2.api.routes.runs.start_run_route"
 complexity = 19
 
 [[complexity]]
-qualified_name = "atelier2.application.advance_queue._advance_one"
-complexity = 21
-
-[[complexity]]
 qualified_name = "atelier2.application.model_configuration.get_project_model_resolution"
 complexity = 18
-
-[[complexity]]
-qualified_name = "atelier2.application.model_configuration.publish_model_registry"
-complexity = 22
-
-[[complexity]]
-qualified_name = "atelier2.application.model_configuration.validate_model_registry_entry"
-complexity = 21
 
 [[complexity]]
 qualified_name = "atelier2.application.start_published_run.start_published_run"

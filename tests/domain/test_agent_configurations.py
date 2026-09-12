@@ -20,6 +20,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentOutputLimitExceeded,
+    AgentReceiptHash,
     AgentReceiptV2,
     AgentRole,
     AuthMode,
@@ -32,7 +33,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 from atelier2.contracts.provider_probe_receipts import ProviderProbeProblemCode
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.contracts.when import RecordedAt
 
 
@@ -530,6 +531,154 @@ def test_every_v2_receipt_field_is_tamper_evident(field: str) -> None:
 
     with pytest.raises(ValueError):
         _tamper_receipt(receipt, field)
+
+
+def _stored_receipt(
+    *,
+    resolved: ResolvedAgentBinding | None = None,
+    run_id: str = "run/v2",
+    node_id: str = "agent",
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+    operational_identity: str = "operation",
+    output: bytes = b"output",
+    also_bound_roles: tuple[str, ...] = (),
+    declared_output_schema: bytes | None = None,
+    maximum_assistant_turns: int | None = None,
+) -> AgentReceiptV2:
+    binding = _resolved() if resolved is None else resolved
+    run = RunId(run_id)
+    revision_hash = WorkflowRevisionHash("1" * 64)
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run, revision_hash, node_id, round_ordinal),
+        run,
+        revision_hash,
+        node_id,
+        binding,
+        AgentExecutorOperationalIdentity(operational_identity),
+        b"job",
+        declared_output_schema,
+        round_ordinal,
+        maximum_assistant_turns,
+    )
+    binding_set = AgentBindingSet(
+        (
+            AgentBinding(binding.role, binding.configuration.revision_hash),
+            *(
+                AgentBinding(AgentRole(role), binding.configuration.revision_hash)
+                for role in also_bound_roles
+            ),
+        )
+    )
+    return AgentReceiptV2.for_execution(
+        request, binding_set.binding_set_hash, AgentExecutionResult(output)
+    )
+
+
+def _unicode_binding() -> ResolvedAgentBinding:
+    auth = _auth(profile_id="max-primär")
+    return ResolvedAgentBinding(
+        AgentRole("Reviewér"),
+        _configuration(auth, model="modèle-ü", executor_revision="cli/ünï"),
+        auth,
+    )
+
+
+def _largest_api_key_binding() -> ResolvedAgentBinding:
+    auth = _auth(
+        revision_number=agent_contracts.MAXIMUM_SIGNED_INT64,
+        provider_id="openai",
+        auth_mode=AuthMode.API_KEY,
+    )
+    return ResolvedAgentBinding(AgentRole("builder"), _configuration(auth), auth)
+
+
+def _tool_capability_binding() -> ResolvedAgentBinding:
+    auth = _auth()
+    return ResolvedAgentBinding(
+        AgentRole("builder"),
+        _configuration(
+            auth,
+            requested_capability=(
+                agent_contracts.AgentExecutionCapability.HEADLESS_WITH_TOOLS
+            ),
+            revision_format_version=(
+                agent_contracts.AgentConfigurationRevisionFormatVersion.V2
+            ),
+        ),
+        auth,
+    )
+
+
+@pytest.mark.parametrize(
+    ("receipt", "stored_hash"),
+    (
+        pytest.param(
+            _stored_receipt(),
+            "9fda9e136e3e0531d06d91f66a85188e56490260367780b7d0e8ba484afbee88",
+            id="ascii-first-round",
+        ),
+        pytest.param(
+            _stored_receipt(
+                resolved=_unicode_binding(),
+                run_id="lauf/größe",
+                node_id="prüfer-knoten",
+                operational_identity="prozeß-17",
+            ),
+            "66d95d5cdb667aba2edd51c12c7af7407901d581dd477cf175afc732ae58dc6e",
+            id="unicode-text",
+        ),
+        pytest.param(
+            _stored_receipt(output=b""),
+            "401de598ece0ec1e7bc54474969d458a0faf15e402321bad9d4799d1f83b8122",
+            id="empty-output",
+        ),
+        pytest.param(
+            _stored_receipt(output=b"\xff" * MAXIMUM_AGENT_OUTPUT_BYTES_V2),
+            "22c05f0e5760178160f3be14f2a0dfa1ea1298173d9a71378097861ba75e9bfd",
+            id="largest-output",
+        ),
+        pytest.param(
+            _stored_receipt(resolved=_largest_api_key_binding()),
+            "88fcde353fb06fda2a77286169ca004560bff52dd3e63f4dad31c7369e1d6e50",
+            id="largest-revision-api-key",
+        ),
+        pytest.param(
+            _stored_receipt(round_ordinal=3),
+            "5bd659ee11962c277d5874e77f4271505752af614a192191e9e9855fbcfefcc7",
+            id="later-round",
+        ),
+        pytest.param(
+            _stored_receipt(resolved=_tool_capability_binding()),
+            "4cabf48be4777148598cd1d93a6971deed25f863a3b91a67373e6755d951e541",
+            id="tool-capability-configuration",
+        ),
+        pytest.param(
+            _stored_receipt(also_bound_roles=("reviewer",)),
+            "7791361a1548a7d9eb837a255d2f254e6be71f1b44e779e09997737fe57a5a2c",
+            id="two-role-binding-set",
+        ),
+        pytest.param(
+            _stored_receipt(
+                declared_output_schema=b'{"type": "string"}',
+                maximum_assistant_turns=8,
+            ),
+            "9fda9e136e3e0531d06d91f66a85188e56490260367780b7d0e8ba484afbee88",
+            id="optional-request-fields-stay-outside",
+        ),
+    ),
+)
+def test_every_stored_receipt_shape_keeps_its_exact_hash(
+    receipt: AgentReceiptV2, stored_hash: str
+) -> None:
+    """A receipt hash is durable identity, so every stored value must still verify.
+
+    Each literal was computed by the production derivation, never rebuilt here:
+    a different value would rename a receipt the store already holds. Both doors
+    must reach it -- the one an execution seals a receipt through, and the one a
+    stored row is read back through, which recomputes the hash from its fields.
+    """
+    assert receipt.receipt_hash.value == stored_hash
+    assert replace(receipt, receipt_hash=AgentReceiptHash(stored_hash)) == receipt
 
 
 def test_v2_output_bound_accepts_49152_and_rejects_49153_before_receipt() -> None:

@@ -20,11 +20,14 @@ from atelier2.application.resolve_start_bindings import (
     cast_unbound_roles,
     undeclared_agent_role_refusal,
 )
+from atelier2.application.role_candidates import registered_configurations
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
+    AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
     AgentRole,
+    AuthProfileRevision,
     AuthProfileRevisionHash,
     ProviderId,
 )
@@ -250,6 +253,144 @@ def get_model_registry(
             assert_never(unreachable)
 
 
+@dataclass(frozen=True)
+class _CarriedModelRegistryEntries:
+    """The registry entries a new revision may still reuse, keyed the same
+    way the requested entries are, because their revision either did not
+    change or changed to exactly this set."""
+
+    by_model_and_configuration: dict[
+        tuple[str, AgentConfigurationRevisionHash], ModelRegistryEntry
+    ]
+
+
+def _carried_model_registry_entries(
+    provider: ProviderId,
+    revision_number: int,
+    requested: tuple[tuple[str, AgentConfigurationRevisionHash], ...],
+    channel: HostConfigurationChannel,
+) -> (
+    _CarriedModelRegistryEntries
+    | ModelRegistryUnchanged
+    | WriteUnavailable
+    | DurableStateCorrupt
+):
+    match channel.latest_model_registry_revision(provider):
+        case ModelRegistryRevision() as latest:
+            latest_entries = {
+                (entry.model_id, entry.agent_configuration_revision_hash): entry
+                for entry in latest.entries
+            }
+            if (
+                latest.revision_number == revision_number
+                and len(latest_entries) == len(requested)
+                and frozenset(latest_entries) == frozenset(requested)
+            ):
+                return ModelRegistryUnchanged(latest)
+            return _CarriedModelRegistryEntries(latest_entries)
+        case None:
+            return _CarriedModelRegistryEntries({})
+        case HostConfigurationReadUnavailable(detail):
+            return WriteUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _discovered_model(
+    configuration: AgentConfigurationRevision,
+    auth_profile: AuthProfileRevision,
+    discoverer: ProviderModelDiscoverer | None,
+    discovery_by_auth_profile: dict[
+        AuthProfileRevisionHash, ProviderModelDiscoveryResult
+    ],
+) -> ProviderModelDiscoveryResult:
+    """The one discovery answer this auth profile already asked for, or a
+    fresh answer -- cached so a provider a role shares many models with is
+    asked once, not once per requested model."""
+
+    discovery = discovery_by_auth_profile.get(auth_profile.revision_hash)
+    if discovery is None:
+        discovery = (
+            ProviderModelDiscoveryUnsupported()
+            if discoverer is None
+            else discoverer.discover_models(configuration, auth_profile)
+        )
+        discovery_by_auth_profile[auth_profile.revision_hash] = discovery
+    return discovery
+
+
+def _model_registry_entry_provenance(
+    model_id: str, model_ids: frozenset[str]
+) -> tuple[ModelRegistryEntrySource, ProviderModelCheck]:
+    if model_id in model_ids:
+        return ModelRegistryEntrySource.DISCOVERED, ProviderModelCheck.CHECKED
+    return ModelRegistryEntrySource.OPERATOR, ProviderModelCheck.UNKNOWN_AT_PROVIDER
+
+
+def _inspected_model_registry_entry(
+    provider: ProviderId,
+    model_id: str,
+    configuration_hash: AgentConfigurationRevisionHash,
+    carried: _CarriedModelRegistryEntries,
+    discovery_by_auth_profile: dict[
+        AuthProfileRevisionHash, ProviderModelDiscoveryResult
+    ],
+    catalog: AgentConfigurationCatalog,
+    discoverer: ProviderModelDiscoverer | None,
+) -> ModelRegistryEntry | ModelRegistryInvalid | WriteUnavailable:
+    """What one requested model_id/configuration pair contributes to the
+    published revision: the carried entry it already had, or a freshly
+    inspected one."""
+
+    found = catalog.agent_configuration_revision(configuration_hash)
+    if found is None:
+        return ModelRegistryInvalid()
+    configuration, auth_profile = found
+    if configuration.model != model_id or auth_profile.provider_id != provider:
+        return ModelRegistryInvalid()
+    entry = carried.by_model_and_configuration.get((model_id, configuration_hash))
+    if entry is not None:
+        return entry
+    discovery = _discovered_model(
+        configuration, auth_profile, discoverer, discovery_by_auth_profile
+    )
+    match discovery:
+        case ProviderModelDiscovery(model_ids):
+            source, provider_check = _model_registry_entry_provenance(
+                model_id, model_ids
+            )
+        case ProviderModelDiscoveryUnsupported():
+            source = ModelRegistryEntrySource.OPERATOR
+            provider_check = ProviderModelCheck.NOT_CHECKED
+        case ProviderModelInspectionUnavailable(detail):
+            return WriteUnavailable(detail)
+        case _ as unreachable:
+            assert_never(unreachable)
+    return ModelRegistryEntry(model_id, configuration_hash, source, provider_check)
+
+
+def _stored_model_registry_revision(
+    channel: HostConfigurationChannel, revision: ModelRegistryRevision
+) -> PublishModelRegistryUseCaseResult:
+    match channel.publish_model_registry_revision(revision):
+        case ModelRegistryRevisionCreated(stored):
+            return ModelRegistryPublished(stored)
+        case ModelRegistryRevisionExisting(stored):
+            return ModelRegistryUnchanged(stored)
+        case PortModelRegistryRevisionConflict():
+            return ModelRegistryConflict()
+        case PortModelRegistryRevisionCollision():
+            return ModelRegistryCollision()
+        case DurableWriteUnavailable():
+            return WriteUnavailable()
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def publish_model_registry(
     provider_id: str,
     revision_number: int,
@@ -266,24 +407,14 @@ def publish_model_registry(
         )
     except (TypeError, ValueError):
         return ModelRegistryInvalid()
-    match channel.latest_model_registry_revision(provider):
-        case ModelRegistryRevision() as latest:
-            latest_entries = {
-                (entry.model_id, entry.agent_configuration_revision_hash): entry
-                for entry in latest.entries
-            }
-            if (
-                latest.revision_number == revision_number
-                and len(latest_entries) == len(requested)
-                and frozenset(latest_entries) == frozenset(requested)
-            ):
-                return ModelRegistryUnchanged(latest)
-        case None:
-            latest_entries = {}
-        case HostConfigurationReadUnavailable(detail):
-            return WriteUnavailable(detail)
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
+    carried = _carried_model_registry_entries(
+        provider, revision_number, requested, channel
+    )
+    match carried:
+        case ModelRegistryUnchanged() | WriteUnavailable() | DurableStateCorrupt():
+            return carried
+        case _CarriedModelRegistryEntries():
+            pass
         case _ as unreachable:
             assert_never(unreachable)
     inspected: list[ModelRegistryEntry] = []
@@ -291,70 +422,27 @@ def publish_model_registry(
         AuthProfileRevisionHash, ProviderModelDiscoveryResult
     ] = {}
     for model_id, configuration_hash in requested:
-        found = catalog.agent_configuration_revision(configuration_hash)
-        if found is None:
-            return ModelRegistryInvalid()
-        configuration, auth_profile = found
-        if configuration.model != model_id or auth_profile.provider_id != provider:
-            return ModelRegistryInvalid()
-        carried = latest_entries.get((model_id, configuration_hash))
-        if carried is not None:
-            inspected.append(carried)
-            continue
-        discovery = discovery_by_auth_profile.get(auth_profile.revision_hash)
-        if discovery is None:
-            discovery = (
-                ProviderModelDiscoveryUnsupported()
-                if discoverer is None
-                else discoverer.discover_models(configuration, auth_profile)
-            )
-            discovery_by_auth_profile[auth_profile.revision_hash] = discovery
-        match discovery:
-            case ProviderModelDiscovery(model_ids):
-                source = (
-                    ModelRegistryEntrySource.DISCOVERED
-                    if model_id in model_ids
-                    else ModelRegistryEntrySource.OPERATOR
-                )
-                provider_check = (
-                    ProviderModelCheck.CHECKED
-                    if model_id in model_ids
-                    else ProviderModelCheck.UNKNOWN_AT_PROVIDER
-                )
-            case ProviderModelDiscoveryUnsupported():
-                source = ModelRegistryEntrySource.OPERATOR
-                provider_check = ProviderModelCheck.NOT_CHECKED
-            case ProviderModelInspectionUnavailable(detail):
-                return WriteUnavailable(detail)
+        entry_result = _inspected_model_registry_entry(
+            provider,
+            model_id,
+            configuration_hash,
+            carried,
+            discovery_by_auth_profile,
+            catalog,
+            discoverer,
+        )
+        match entry_result:
+            case ModelRegistryEntry():
+                inspected.append(entry_result)
+            case ModelRegistryInvalid() | WriteUnavailable():
+                return entry_result
             case _ as unreachable:
                 assert_never(unreachable)
-        inspected.append(
-            ModelRegistryEntry(
-                model_id,
-                configuration_hash,
-                source,
-                provider_check,
-            )
-        )
     try:
         revision = ModelRegistryRevision(provider, revision_number, tuple(inspected))
     except (TypeError, ValueError):
         return ModelRegistryInvalid()
-    match channel.publish_model_registry_revision(revision):
-        case ModelRegistryRevisionCreated(stored):
-            return ModelRegistryPublished(stored)
-        case ModelRegistryRevisionExisting(stored):
-            return ModelRegistryUnchanged(stored)
-        case PortModelRegistryRevisionConflict():
-            return ModelRegistryConflict()
-        case PortModelRegistryRevisionCollision():
-            return ModelRegistryCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return _stored_model_registry_revision(channel, revision)
 
 
 def validate_model_registry_entry(
@@ -428,21 +516,7 @@ def validate_model_registry_entry(
         )
     except (TypeError, ValueError):
         return ModelRegistryInvalid()
-    match channel.publish_model_registry_revision(revised):
-        case ModelRegistryRevisionCreated(stored):
-            return ModelRegistryPublished(stored)
-        case ModelRegistryRevisionExisting(stored):
-            return ModelRegistryUnchanged(stored)
-        case PortModelRegistryRevisionConflict():
-            return ModelRegistryConflict()
-        case PortModelRegistryRevisionCollision():
-            return ModelRegistryCollision()
-        case DurableWriteUnavailable():
-            return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
+    return _stored_model_registry_revision(channel, revised)
 
 
 def _project(project_id: str) -> ProjectId | None:
@@ -599,24 +673,13 @@ def get_project_model_resolution(
         return ModelResolutionInvalidAgentBindings()
     match channel.model_configuration_snapshot(project):
         case HostModelConfigurationSnapshot(registries, defaults):
-            override_models = {}
-            for binding in requested_bindings.bindings:
-                found = catalog.agent_configuration_revision(
-                    binding.agent_configuration_revision_hash
-                )
-                if found is not None:
-                    configuration, auth_profile = found
-                    override_models[binding.agent_configuration_revision_hash] = (
-                        auth_profile.provider_id.value,
-                        configuration.model,
-                    )
             return ProjectModelResolutionRead(
                 cast_unbound_roles(
                     graph,
                     requested_bindings,
                     defaults,
                     registries,
-                    override_models,
+                    registered_configurations(registries, requested_bindings, catalog),
                 )
             )
         case HostConfigurationReadUnavailable(detail):

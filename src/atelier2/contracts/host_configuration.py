@@ -214,7 +214,10 @@ class ModelResolutionUncastReason(StrEnum):
     OVERRIDE_NOT_REGISTERED = "override-not-registered"
     WORKFLOW_MODEL_NOT_REGISTERED = "workflow-model-not-registered"
     WORKFLOW_MODEL_AMBIGUOUS = "workflow-model-ambiguous"
+    MODEL_NOT_IN_NODE_MODE = "model-not-in-node-mode"
     NO_PROJECT_DEFAULT = "no-project-default"
+    PROJECT_DEFAULT_MODEL_AMBIGUOUS = "project-default-model-ambiguous"
+    ROLE_MODES_CONFLICT = "role-modes-conflict"
     FAMILY_DIFFERENCE_UNAVAILABLE = "family-difference-unavailable"
 
 
@@ -237,16 +240,20 @@ class UncastRole:
             raise ValueError("an uncast family reference must name a role")
 
 
+def _invalid_model_id_error() -> ValueError:
+    return ValueError(
+        "a model id must contain 1.."
+        f"{MAXIMUM_EXACT_MODEL_ID_CHARACTERS} exact non-whitespace characters"
+    )
+
+
 def _exact_model_id(value: object) -> str:
-    if (
-        type(value) is not str
-        or not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS
-        or any(character.isspace() for character in value)
+    if not isinstance(value, str):
+        raise _invalid_model_id_error()
+    if not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS or any(
+        character.isspace() for character in value
     ):
-        raise ValueError(
-            "a model id must contain 1.."
-            f"{MAXIMUM_EXACT_MODEL_ID_CHARACTERS} exact non-whitespace characters"
-        )
+        raise _invalid_model_id_error()
     return value
 
 
@@ -271,6 +278,33 @@ class ModelRegistryEntry:
             raise TypeError("model registry provider check must use its typed contract")
 
 
+def _canonical_registry_entries(
+    entries: tuple[ModelRegistryEntry, ...],
+) -> tuple[ModelRegistryEntry, ...]:
+    """The entries in hash order, refusing one model twice under one configuration.
+
+    The configuration only breaks a tie, so a revision holding each model once
+    keeps the hash it was published under.
+    """
+    ordered = tuple(
+        sorted(
+            entries,
+            key=lambda entry: (
+                entry.model_id.encode("utf-8"),
+                entry.agent_configuration_revision_hash.value,
+            ),
+        )
+    )
+    pairs = {
+        (entry.model_id, entry.agent_configuration_revision_hash) for entry in ordered
+    }
+    if len(pairs) != len(ordered):
+        raise ValueError(
+            "model registry entries must be unique per model and configuration"
+        )
+    return ordered
+
+
 @dataclass(frozen=True)
 class ModelRegistryRevision:
     provider_id: ProviderId
@@ -292,11 +326,7 @@ class ModelRegistryRevision:
             not isinstance(entry, ModelRegistryEntry) for entry in self.entries
         ):
             raise TypeError("model registry entries must use their typed contract")
-        ordered = tuple(
-            sorted(self.entries, key=lambda entry: entry.model_id.encode("utf-8"))
-        )
-        if len({entry.model_id for entry in ordered}) != len(ordered):
-            raise ValueError("model registry model ids must be unique per provider")
+        ordered = _canonical_registry_entries(self.entries)
         if len(ordered) > MAXIMUM_MODEL_REGISTRY_ENTRIES:
             raise ValueError(
                 "model registry revisions must contain at most "

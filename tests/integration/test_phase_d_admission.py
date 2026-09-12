@@ -72,6 +72,8 @@ from atelier2.application.refusals import (
 )
 from atelier2.application.refusals import WriteUnavailable
 from atelier2.application.start_published_run import RunCreated
+from atelier2.contracts.agent_modes import AgentModeMismatch
+from atelier2.contracts.agents import AgentExecutionCapability
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -173,7 +175,7 @@ from tests.scenarios.catalog_lineages import (
     found_lineage,
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
-from tests.scenarios.runs import publish_revision
+from tests.scenarios.runs import AdmittingStartJudge, publish_revision
 from tests.scenarios.runtime import wait_for_sweep
 
 PROJECT = ProjectId("project1")
@@ -550,6 +552,7 @@ def test_a_retired_item_stays_visible_and_is_never_started(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
         == ()
@@ -817,6 +820,57 @@ def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
     assert QueueBlockerKind.CAP_REACHED in blocked.item.blockers
 
 
+def test_a_start_the_judge_refuses_leaves_its_place_under_the_cap_to_the_next_item(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    for number in (81, 82):
+        _prepare_admitted(queue, lineage_id, f"gh:{number}")
+    refused_run_ids: list[RunId] = []
+
+    def refused_first(
+        run_id: RunId,
+        workflow_revision_hash: WorkflowRevisionHash,
+        _bindings: object,
+        _starter: object,
+        **_kwargs: object,
+    ) -> RunCreated | AgentModeMismatch:
+        if not refused_run_ids:
+            refused_run_ids.append(run_id)
+        if run_id in refused_run_ids:
+            return AgentModeMismatch(
+                "review", "headless", AgentExecutionCapability.HEADLESS_WITH_TOOLS
+            )
+        return RunCreated(
+            Run(run_id, workflow_revision_hash, RunState.STARTED, "final", 0, 0)
+        )
+
+    monkeypatch.setattr(advance_queue_module, "start_published_run", refused_first)
+
+    outcomes = advance_queue_module.advance_queue(
+        queue,
+        DbosCatalogStore(engine),
+        cast(DurablePublishedRunStarter, object()),
+        start_judge=AdmittingStartJudge(),
+        workflow_document_parser=parse_workflow_document,
+    )
+
+    started = [outcome for outcome in outcomes if isinstance(outcome, QueueRunStarted)]
+    blocked = [outcome for outcome in outcomes if isinstance(outcome, QueueItemBlocked)]
+    assert len(started) == 1
+    assert [outcome.blockers for outcome in blocked] == [
+        (QueueBlockerKind.START_REFUSED,)
+    ]
+    assert {
+        snapshot.item_reference.item_id
+        for snapshot in _snapshots_by_reference(queue).values()
+        if snapshot.launch_binding is not None
+    } == {started[0].item_id}
+
+
 def test_a_policy_less_project_reserves_and_launches_its_admitted_item(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
@@ -962,6 +1016,7 @@ def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
         queue,
         DbosCatalogStore(engine),
         cast(DurablePublishedRunStarter, object()),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
     )
     started_items = [
@@ -1031,6 +1086,7 @@ def test_list_items_pages_seek_by_the_start_order_key_not_by_item_id(
         queue,
         DbosCatalogStore(engine),
         cast(DurablePublishedRunStarter, object()),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
     )
     started_items = [
@@ -1387,6 +1443,15 @@ def _restore_v43(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         connection.execute("BEGIN IMMEDIATE")
+        # V56 keyed a registry entry by its configuration; a V43 store predates it.
+        schema_module._rebuild_product_table(
+            connection,
+            schema_module.host_model_registry_entries,
+            "host_model_registry_entries_v56",
+            schema_module._MODEL_REGISTRY_ENTRIES_TRIGGERS,
+            schema_module.SCHEMA_VERSION,
+            55,
+        )
         # V51 added the permission ledger; a V43 store predates it.
         for trigger in schema_module._PERMISSION_RECEIPT_TRIGGERS:
             connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
@@ -1521,7 +1586,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 55
+    assert report.target_version == SCHEMA_VERSION == 56
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
@@ -1538,6 +1603,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
             DbosQueueProjectionStore(reopened),
             DbosCatalogStore(reopened),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
         assert isinstance(outcome, QueueItemBlocked)
@@ -1966,6 +2032,7 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
         catalog: CatalogResolver,
         starter: DurablePublishedRunStarter,
         *,
+        start_judge: DurablePublishedRunStarter,
         workflow_document_parser: WorkflowDocumentParser | None,
         served_project: ProjectId | None = None,
         tracker: TrackerItemSource | None = None,
@@ -1975,6 +2042,7 @@ def test_a_queue_sweep_tick_imports_a_newly_labelled_item_and_a_repeat_tick_chan
             queue,
             catalog,
             starter,
+            start_judge=start_judge,
             workflow_document_parser=workflow_document_parser,
             served_project=served_project,
             tracker=tracker,
@@ -2114,6 +2182,7 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
         cast(Any, BoundQueue()),
         DbosCatalogStore(engine),
         cast(DurablePublishedRunStarter, object()),
+        start_judge=AdmittingStartJudge(),
         workflow_document_parser=parse_workflow_document,
     )
 
@@ -2142,6 +2211,7 @@ def test_advance_classifies_queue_read_failures(
             cast(Any, ReadAnswerQueue()),
             cast(Any, object()),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -2202,6 +2272,7 @@ def test_advance_refuses_incomplete_phase_d_projection_before_blockers(
             cast(Any, MalformedProjection()),
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -2238,6 +2309,7 @@ def test_advance_classifies_launch_reservation_failures(
             cast(Any, ReservationAnswerQueue()),
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -2269,6 +2341,7 @@ def test_advance_classifies_catalog_resolution_failures(
             queue,
             cast(Any, CatalogAnswer()),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -2313,6 +2386,7 @@ def test_advance_classifies_reserved_run_start_failures(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -2674,6 +2748,7 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
         )
 
@@ -3008,6 +3083,7 @@ def test_two_concurrent_sweeps_restart_only_what_the_tracker_still_authorizes(
             queue,
             DbosCatalogStore(engine),
             cast(DurablePublishedRunStarter, object()),
+            start_judge=AdmittingStartJudge(),
             workflow_document_parser=parse_workflow_document,
             served_project=PROJECT,
             tracker=tracker,

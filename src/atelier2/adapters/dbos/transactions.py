@@ -5,6 +5,18 @@ from contextlib import contextmanager
 
 from sqlalchemy.engine import Connection, Engine
 
+_KEEP_NOTHING = "atelier2_keep_nothing"
+
+
+def keeping_nothing(engine: Engine) -> Engine:
+    """The same database, where every canonical write transaction is rolled back.
+
+    A queue start is judged before its launch is reserved, and the judge is the
+    start itself over this engine: its answer comes from the one decision the
+    real start makes, and nothing that decision wrote is kept.
+    """
+    return engine.execution_options(**{_KEEP_NOTHING: True})
+
 
 @contextmanager
 def canonical_write_transaction(engine: Engine) -> Iterator[Connection]:
@@ -18,4 +30,7 @@ def canonical_write_transaction(engine: Engine) -> Iterator[Connection]:
             connection.rollback()
             raise
         else:
-            connection.commit()
+            if engine.get_execution_options().get(_KEEP_NOTHING, False):
+                connection.rollback()
+            else:
+                connection.commit()

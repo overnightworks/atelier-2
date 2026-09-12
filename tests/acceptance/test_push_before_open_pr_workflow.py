@@ -10,10 +10,11 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
-from atelier2.adapters.dbos.advancer import RunEffectConflict, graph_action_intent
+from atelier2.adapters.dbos.advancer import graph_action_intent
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.run_publications import RunPublicationRefused
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
 from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
@@ -385,7 +386,7 @@ def test_repository_workflow_binds_open_pr_to_its_confirmed_push_receipt(
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         with (
             runtime.engine.begin() as connection,
-            pytest.raises(RunEffectConflict, match="confirmed push receipt"),
+            pytest.raises(RunPublicationRefused, match="confirmed push receipt"),
         ):
             graph_action_intent(
                 connection,

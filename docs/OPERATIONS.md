@@ -165,8 +165,8 @@ installation above. The host-process installation runs as the systemd user unit
 `atelier2-serve.service`. From its clean `main` deploy checkout, one hand
 command fast-forwards, installs the locked Python and frontend dependencies,
 builds the frontend, stops the unit, backs up the live store, migrates it,
-takes the checkout's own workflows into the live catalog, starts the unit, and
-verifies that health serves the new commit:
+takes the checkout's own workflows, schemas and budgets into the live catalog,
+starts the unit, and verifies that health serves the new commit:
 
 ```bash
 bash scripts/serve_live_update.sh
@@ -185,9 +185,12 @@ atelier2-serve.service -e` before acting.
 
 After migration and before the unit restarts -- the Serve is still stopped, so
 nothing else writes the store at the same time -- the command connects the
-deploy checkout itself as a definition source (`workflows/*.yaml`, ref
-`refs/heads/main`; connecting the same checkout and ref again is the same
-source, so this step is idempotent across runs) and takes its workflows in.
+deploy checkout itself as a definition source (`workflows/*.yaml` as
+`workflow`, `workflows/schemas/*.json` as `schema`, `workflows/budgets/*.json`
+as `budget_policy`, ref `refs/heads/main`; connecting the same checkout and ref
+again is the same source, so this step is idempotent across runs) and takes all
+three in, in one transaction: a workflow that pins a new schema or budget is
+executable once the deploy that carries both has run, with no hand publication.
 Each path gets its own word in the log: `published` for bytes the catalog
 gained, `present` for bytes it already held, or `refused` for the one path
 that stopped that intake. A name already held by a manually imported lineage
@@ -209,6 +212,26 @@ serving its previous catalog state until the next successful deploy or a hand
 connect (an unreadable checkout or an unresolved ref, not a per-file refusal)
 is treated like a migration failure instead: it rolls back to the previously
 served commit and restarts that, and does count as an ordinary failure tick.
+
+**Before reverting the schema and budget intake.** A rollback restores code,
+not the store. A build from before schemas and budgets joined the intake cannot
+read the stored `schema` and `budget_policy` selections, so its connect refuses
+with `the store holds a definition source it cannot read back`; the deploy then
+restarts the commit it served before, and every later tick repeats that, so the
+revert never serves. Reconnect the source with the workflow selection alone
+first, from the deploy checkout, naming the same location the deploy connects
+-- the journal's `connected git source '…'` or `… is already connected to '…'`
+line prints it, and a different spelling is a different source:
+
+```bash
+uv run --locked atelier2 definition-source connect \
+    --database "${XDG_DATA_HOME:-$HOME/.local/share}/atelier2/live-store/atelier.sqlite" \
+    --location /path/to/deploy-checkout --ref refs/heads/main \
+    --select 'workflows/*.yaml=workflow' --actor atelier2-deploy
+```
+
+That appends a revision of the same source; the schemas and budgets already
+taken in stay published, and the older build reads the source again.
 
 Install the clean-stop classification once beside the unit, as the same user:
 
@@ -512,16 +535,11 @@ systemctl --user start atelier2-provider-canary.service
 journalctl --user -u atelier2-provider-canary.service -e
 ```
 
-The canary workflows are admitted only after their budget revision exists on
-the live instance. This is a landing operation, in this order:
+The canary workflows pin `workflows/budgets/provider-canary.json`, which the
+deploy's Git-source intake publishes together with them. The rest is a landing
+operation, in this order:
 
-1. Publish `workflows/budgets/provider-canary.json` with
-   `POST /atelier/api/v1/budget-revisions` and retain the returned
-   `budget_revision_hash`.
-2. Replace the TODO head in each `workflows/provider-canary-*.yaml` with a node
-   budget reference named `provider-canary` and that exact returned hash. The
-   budget file's local SHA-256 is not a publication receipt.
-3. Publish each resulting YAML document through
+1. Publish each `workflows/provider-canary-*.yaml` document through
    `POST /atelier/api/v1/workflow-revisions`. Admit each returned workflow hash
    through `POST /atelier/api/v1/catalog-lineages` with
    `{"kind": "workflow", "catalog_revision_hash": "<hash>", …}`; when its
@@ -529,13 +547,13 @@ the live instance. This is a landing operation, in this order:
    `GET /atelier/api/v1/catalog-revisions/by-name/workflow/<name>` and append
    through `POST /atelier/api/v1/catalog-lineages/<lineage-id>/members`
    instead.
-4. Only after all three admissions answer with their exact workflow hashes,
+2. Only after all three admissions answer with their exact workflow hashes,
    activate the deployed revision and start the canary oneshot. A partial
    publication is not activation authority.
 
 Every publication and admission above targets the same loopback base URL the
 installed `atelier2-serve.service` serves (normally
-`http://127.0.0.1:8422`). The landing records the four returned revision hashes
+`http://127.0.0.1:8422`). The landing records the three returned workflow hashes
 in its own evidence; this runbook does not copy live hashes that change with
 the published documents.
 
@@ -583,44 +601,201 @@ workflow that owns it is still open: an open workflow must finish or be
 reconciled first, but once it has ended, history under the old address never
 blocks the restart, whatever that intent's own recorded state.
 
+### `atelier2 watch`: read a served instance without touching it (#1502)
+
+`atelier2 watch --service URL` is a read-only observer, not a client of any
+one feature: it GETs a fixed list of paths -- `/health`, `/seat`, `/runs`,
+`/workflow-revisions`, and a bounded sample of `/events`, in that order --
+and prints one JSON report of typed findings to stdout. A problem document is
+a finding wherever it appears, independent of the status that carried it and
+of whether it arrived as SSE framing or as a bare problem body: a 200 that is
+secretly one of this API's own problem documents is exactly as real as a
+non-2xx one carrying no problem document at all. Its wording never repeats
+what the answer wrote, only this repository's own problem vocabulary: `type`
+is matched against the known problem types, the title comes from that
+vocabulary, and an unrecognized type says only "unknown problem type" --
+never the free text a served document does not have to keep honest. Every
+finding is one of: that; a `STREAM_FAILED` frame on the attention feed; a
+`RUN_PROJECTION_CORRUPT` frame; a seat that is not `ALIVE`;
+`health.redeploy` present (its absence is clean); the service unreachable;
+an attention feed that told the read nothing usable; the reading having been
+cut short; or the process that read having died or broken. A limit reached
+after a real frame is named in the report without being raised as a finding.
+Exit is 0 with an empty report, non-zero otherwise. This slice reads only what
+a test double or a test server serves it; reading the live instance waits on
+the operator's ruling on the observer contract that #1046 opens.
+
+One call is two halves in two processes. The reading runs in a child process
+the deadline ends; the report is built from what arrived. The child
+(`instance_reader`) makes every network call and streams what it saw back over
+a pipe as it reads -- one record per door, one per frame, and a last word when
+it has read everything; the process that reports opens no socket and only
+classifies those records. A deadline ends the reading, never the report:
+whatever arrived is reported, and the reading having been cut short is itself
+a finding naming where it stood, so an instance the observer could not finish
+reading is never called clean. The same is true of a reader that died: a
+process that ended without its last word is a finding of its own, named with
+the code it died with, because silence from a dead reader must never pass for
+an instance with nothing to say. Trouble the reading did not expect is its own
+finding as well -- the phase it happened in (`setup`, `reading`, or `cleanup`)
+and a category, never a message -- and a cleanup that failed after every door
+was already reported says exactly that instead of reading as a reading that
+never finished. A reader that named its trouble and then left cleanly broke;
+it did not die, and the report says one thing. One that named its trouble and
+died anyway says both, because what ended that process is not what it
+reported.
+
+The last word decides all of that, except over a process that is still
+running. A reader the watch could not get rid of is always a finding, whatever
+it had said: the watch started that process, and a report that left one behind
+unnamed would be lying about what it did to the machine. Past that, once the
+last word has arrived the reading is complete and nothing the reading process
+then does on its way out is a finding: a process slow to leave is stopped by
+the watch itself, and the code that stop produces belongs to the observer's own
+machine, not to the instance that had answered every door. Only a reading that
+never got to say it can be cut short, gone, or dead.
+
+A process rather than a timer, because a deadline that has to interrupt a
+blocking read from inside can only do it by throwing into somebody else's
+code: an exception landing in httpx's connection pool leaves that lock held
+and deadlocks the observer before it can report. A child cannot do that. Past
+the deadline it is terminated, killed if it does not go, and reaped, and the
+operating system reclaims every socket and lock it held; nothing but records
+ever crosses into the process that reports. The waits before the kill are
+short, because a process that may still change its mind must not spend the
+deadline -- measured against a reader that ignores being told to stop, a 4 s
+deadline gave the whole call 4.5 s. The wait after the kill is wide instead: a
+killed process is reaped as soon as the kernel is done with it, so "still
+running" names a reader nothing can end rather than a loaded machine, and such
+a survivor is reported rather than waited for further. It cannot
+outlive the watch either: it asks the kernel to kill it once the process that
+reads its report is gone, and it leaves without a word if that process was
+already gone by the time it asked.
+
+That child is a fresh interpreter started as an ordinary subprocess
+(`subprocess.Popen` on `atelier2.host.instance_reader_main`, the entry that
+reads the reading's arguments; its standard streams at the null device, its
+records on a pipe of their own), never a `multiprocessing.Process`: that one
+registers every child it starts and joins the survivors without a timeout as
+the process exits, so a reader that outlived its kill would hang the very
+command that had already reported it. An interrupt arriving between that
+process existing and this one holding its handle is held off until the handle
+is bound, because it would otherwise leave a reading nobody stops. Nothing of
+the reporting process is inherited -- no lock, logger, socket, or open file --
+which costs that interpreter's start, measured at about 1.4 s with the bulk of
+it importing `atelier2.host`, counted inside the deadline rather than added to
+it. The report names the budget it ran on (`budget`:
+`deadline_seconds`, `door_read_timeout_seconds`,
+`event_sample_read_timeout_seconds`); the per-read timeouts bound one read
+within the deadline, which is what tells a feed that went quiet from one that
+hangs.
+
+Both ends frame that pipe themselves, a length and then the record. What is
+readable at the reporting end is whatever the reading has written so far, not
+necessarily a whole record: reading it as one would block past the deadline
+waiting for the rest, and a reader dying mid-record would raise instead of
+reporting. So the reporting process reads without blocking against the time
+the reading has left, keeps what arrives, and decodes only complete frames --
+a half-written record is simply never a record, and everything before it
+stands. A length no record of this reading could have -- none at all, or more
+than any record carries -- is not a frame still arriving but a pipe that has
+stopped making sense: the gathering ends there and the report carries that as
+the reading's own failure (`ipc-corrupt`), instead of waiting for bytes that
+would complete it.
+
+The attention feed never ends on its own, so it is sampled, not followed, and
+it is sampled last, because it is the one read that can spend the whole
+deadline. The report always names how the sample ended
+(`attention_feed_sample.outcome`): `unread`, `interrupted`, `silent`,
+`frame-limit`, `byte-limit`, `closed-early`, `refused`, or `unreachable`,
+alongside `frames_read` and `bytes_read`. Frames the sample already read are
+classified whichever way it ended, so a `STREAM_FAILED` frame reaches the
+report even when the deadline, a transport failure, or a byte the sample
+could not read as UTF-8 ended the read that followed it. Whether the reply is
+a stream at all is decided from `Content-Type` before one body byte is read:
+anything but `text/event-stream` is refused there and then, and only this
+API's own `application/problem+json` still has its body read (capped), because
+that body is what says which problem it is. Draining an unknown body to find
+out what it was is what let an error page trickling under every read timeout
+pass for a stream that merely sent no frame. For the same reason, a sample
+that ends with bytes read but no frame completed is a finding, never a clean
+report.
+
+Every bounded read -- the plain GETs and the event sample alike -- asks for
+`Accept-Encoding: identity` and refuses a reply that answers
+`Content-Encoding` anyway before reading a single byte of its body (a
+compressed reply decoded transparently could otherwise outgrow the byte cap
+before the cap ever saw it).
+
+The standing rule is the principle, not a per-field patch: no character from
+an answer reaches the report, an exception, or a log -- only values from a
+fixed vocabulary (an enum, a known problem type, a known seat or redeploy
+state) or a number (a status, a count, a byte, a second). No finding names a
+run: the reference is a free string the API's own field pattern would let an
+answer dress up as one, so a `RUN_PROJECTION_CORRUPT` finding names the class
+of defect and where to look ("open the Workbench: the run this frame names is
+marked there") instead. A validation diagnosis carries only the field path and
+the error kind, never a value: pydantic's own `ValidationError` embeds the
+offending input (and, for a missing field, every sibling value) in its
+message, which a naive `str(error)` would hand back out. That field path is
+checked against an allowlist built from this module's own decoded models
+(`_KNOWN_FIELD_NAMES`); an unrecognized one -- the document's own key, once
+`extra="forbid"` names it in a `ValidationError`'s `loc` -- reads `<unknown
+field>`. The report never carries the seat's own terminal address (it holds
+the terminal's access token, `served_seat.py`), only its state. A refused
+`Content-Encoding`, `Content-Type`, or HTTP reason phrase is never echoed,
+only a fixed sentence naming that it was refused. A library's own transport
+exception is translated without chaining it, so no traceback carries its text
+either, and what the failure says instead is one word from a fixed category
+table -- `dns`, `tls`, `refused`, `reset`, `timeout`, `protocol`, or
+`unclassified` -- read from the exception's class and its `__cause__` chain,
+because one `ConnectError` covers a name that does not resolve, a certificate
+that does not verify, and a port that says no.
+
+httpx logs every request's status line -- the far side's reason phrase
+included -- at `INFO`, and httpcore logs a reply's headers at `DEBUG`. All of
+that happens in the reading process, and that process writes nowhere: before
+its first request it points its own standard output and error at the null
+device, silences both library families at their own loggers, and leaves its
+root logging with a handler that drops whatever else it might say. The process
+that reports never calls httpx at all, so what `atelier2 watch` prints is one
+JSON document and nothing besides.
+
 ### Publish the issue-to-pr catalog
 
-`serve_live_update.sh`'s Git-source intake admits only `workflows/*.yaml`; a
-schema, budget, grant, or adapter operation a shipped workflow pins is never
-picked up by that intake and must be published by hand before the workflow
-that pins it can start. For `workflows/issue-to-pr.yaml`, this is a landing
-operation, in this order:
+`serve_live_update.sh`'s Git-source intake takes in `workflows/*.yaml`,
+`workflows/schemas/*.json` and `workflows/budgets/*.json`; a grant or adapter
+operation a shipped workflow pins is never picked up by that intake and must be
+published by hand before the workflow that pins it can start. For
+`workflows/issue-to-pr.yaml`, this is a landing operation, in this order:
 
-1. Publish its three schemas --
-   `workflows/schemas/issue_to_pr_candidate_report.json`,
-   `workflows/schemas/code_review_result.json`, and
-   `workflows/schemas/issue_to_pr_release_decision.json` -- through
-   `POST /atelier/api/v1/schema-revisions`, one call per document.
-2. Publish `workflows/budgets/push-implement.json` through
-   `POST /atelier/api/v1/budget-revisions` if the live catalog does not
-   already carry it (`push-before-open-pr` publishes the same budget).
-3. Publish the two adapter operations through
+1. Publish the two adapter operations through
    `POST /atelier/api/v1/adapter-operation-revisions`: `open-pr` is exactly
    the bytes `{"operation":"open-pr"}`; `push-atelier-commit` carries this
    deployment's own author and committer identity, so it has no canonical
    bytes here.
-4. Publish the two tool grants through
-   `POST /atelier/api/v1/tool-grant-revisions`, after step 3: the
+2. Publish the two tool grants through
+   `POST /atelier/api/v1/tool-grant-revisions`, after step 1: the
    `run-project-verification` grant is exactly the bytes
    `{"capability":"run-project-verification"}`; the `push-atelier-commit`
-   grant names step 3's operation by its own returned hash, so it cannot be
+   grant names step 1's operation by its own returned hash, so it cannot be
    published first.
 
 The Git-source intake admits `workflows/issue-to-pr.yaml` regardless of this
 order; it does not refuse the document for an unresolved pin. The admitted
 revision reads `executable: false`, with `not_executable_reason` naming the
-first pin still missing, until every schema, budget, grant, and operation
+first pin still missing, until every grant and operation
 above is published -- publishing the missing ones then turns the same
 revision `executable: true` in place, with no new intake. The order above
-still matters: the `push-atelier-commit` grant names step 3's operation by
+still matters: the `push-atelier-commit` grant names step 1's operation by
 its own returned hash, so it cannot be published first. The live hashes are
 the landing's own evidence; this runbook does not copy them, for the same
-reason the canary's four hashes above are not copied either.
+reason the canary's three hashes above are not copied either.
+
+`workflows/head-loop.yaml` pins exactly these two grants and two operations,
+so once they are published it needs nothing of its own: the Git-source intake
+carries the document and its two schemas into the catalog with the next
+deploy.
 
 ### Publish a queue policy with its cap and its automation label
 
@@ -851,7 +1026,8 @@ and the selections,
 and prints the source id every later command names. A selection is
 `PATTERN=KIND`; the kind is configured, never guessed from the repository's
 layout
-([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)). The one
+([ADR 0018](decisions/0018-plugin-intake-and-neutral-roles.md)), and is one of
+`workflow`, `schema` and `budget_policy`. The one
 wildcard is `*`, matching inside a single path segment. Connecting the same
 repository at the same ref again is the same source, not a second one.
 
@@ -872,8 +1048,11 @@ reading it would read a repository the operator never named. All three
 commands refuse before writing anything, in one closed vocabulary:
 `definition_source_unreachable`, `_ref_unresolved`, `_layout_unrecognized`,
 `_selection_ambiguous`, `_path_escapes_repository`, `_no_selected_files`,
-`_symlink_selected`, `_gitlink_selected`. A selected file the publication door
-would refuse is reported in that door's own words, and stops the scan.
+`_symlink_selected`, `_gitlink_selected`, `_kind_changed`. The last names a path
+a selection now claims as another kind than it was taken in as: a path keeps
+its first kind, so move the file to a new path or restore the selection. A
+selected file the publication door would refuse is reported in that door's own
+words, and stops the scan.
 
 ```bash
 atelier2 definition-source intake --database /path/to/atelier.sqlite \
@@ -883,8 +1062,11 @@ atelier2 definition-source intake --database /path/to/atelier.sqlite \
 `intake` takes one commit of the source into the catalog. It reads the same
 files `scan` reads, then publishes every one of them, admits it under the name
 its document authored, and records where it came from -- source, commit and
-path -- in one transaction. A refusal anywhere in the batch writes nothing at
-all, so a failed intake leaves the catalog exactly as it was.
+path -- in one transaction. A schema or a budget policy is named by its hash
+alone: it is published and its origin recorded, with no name to admit, so two
+paths carrying the same bytes are one publication with two origins. A refusal
+anywhere in the batch writes nothing at all, so a failed intake leaves the
+catalog exactly as it was.
 
 It prints the commit followed by one word per path: `published` when the bytes
 entered the catalog, and `present` when the catalog already held them under the

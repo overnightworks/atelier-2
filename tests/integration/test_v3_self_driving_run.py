@@ -54,6 +54,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutorRevision,
+    AgentReceiptBody,
     AgentReceiptHash,
     AgentReceiptV2,
     AgentRole,
@@ -350,7 +351,7 @@ def _receipt_hash_a_verifier_recomputes(
     caller states -- that is the one binding this test tampers with to see
     whether the chain notices.
     """
-    return AgentReceiptV2.hash_for(
+    return AgentReceiptBody(
         receipt.request_hash,
         receipt.node_execution_id,
         receipt.run_id,
@@ -369,7 +370,7 @@ def _receipt_hash_a_verifier_recomputes(
         receipt.executor_operational_identity,
         receipt.output_bytes,
         receipt.output_hash,
-    )
+    ).fingerprint()
 
 
 def _terminal_hash_a_verifier_recomputes(

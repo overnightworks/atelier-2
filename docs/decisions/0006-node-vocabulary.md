@@ -370,11 +370,20 @@ belongs in `required_context`, `available_context` and `inputs`, where it is
 revision-bound, hashed and provenance-carrying; an instruction that pastes
 requirement text instead is legal YAML and a review finding, not a format error.
 
-`mode` is `headless` or `interactive` and is **always explicit**, because mode
-decides whether a human could influence a result and whether downstream outputs
-count as operator-influenced (#9 part 2); nothing that consequential may be true
-by omission. Per #9 Rev. 4 the node declares the requirement and the bound agent
-configuration declares the capability. An `interactive` node either declares no
+`mode` is `headless`, `headless_with_tools` or `interactive` and is **always
+explicit**, because mode decides what the invocation may touch and whether a human
+could influence a result: `headless` is one text-in/text-out call,
+`headless_with_tools` is a call whose process may also use the tools its bound
+executor grants, and `interactive` puts an operator at the terminal, so its
+downstream outputs count as operator-influenced (#9 part 2). Nothing that
+consequential may be true by omission. Per #9 Rev. 4 the node declares the
+requirement and the bound agent configuration declares the capability, and the two
+must be equal: a run start, and a fork of a finished run, is refused before any
+durable write when an agent node's declared mode is not exactly the capability its
+bound agent-configuration revision declares, naming the node, its mode and that
+capability. Every attempt asks the same question again before it is written,
+because an attempt replays the binding its run recorded; a disagreeing binding
+ends the node with the same refusal. An `interactive` node either declares no
 outputs, or declares every output `confirmed_by: operator`; an interactive output
 mapped downstream without that confirmation is refused.
 
@@ -761,11 +770,12 @@ only a resolver can enforce a grant and mint an access receipt; gating both behi
 it would make every document unexecutable during exactly the bootstrap #1 planned
 for.
 
-`mode: interactive` is absent from the table for the opposite reason: #9 Rev. 4 gave
-it a declarer already, the bound agent-configuration revision. One capability has
+`mode` is absent from the table for the opposite reason: #9 Rev. 4 gave every mode
+a declarer already, the bound agent-configuration revision. One capability has
 exactly one declarer, so mode is compared against that binding where the node's role
-resolves to its configuration, and a node whose declared mode is not the capability
-that configuration declares refuses with the same loud, node-naming shape.
+resolves to its configuration, and a node whose declared mode is not exactly the
+capability that configuration declares refuses with the same loud, node-naming
+shape, whichever of the three modes it declares.
 
 Every subject a capability enumerates carries the identity space it lives in — the
 registry kind beside the revision hash, the agent-configuration revision, or the
@@ -882,8 +892,9 @@ exactly; or a deterministic or Action output the bound operation revision does n
 declare, or declares under a different schema revision.
 
 Refused at run start: an ungranted adapter operation; a role without exactly one
-bound agent-configuration revision; an unbound `graph_input`; an `interactive`
-node whose bound agent-configuration revision does not declare interactive; and
+bound agent-configuration revision; an unbound `graph_input`; an agent node whose
+declared mode is not exactly the capability its bound agent-configuration revision
+declares; and
 any root requirement the bound runtime capability revision does not attest, naming
 node, reference and capability.
 

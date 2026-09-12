@@ -14,9 +14,9 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agent_permissions import PermissionReceipt
 from atelier2.contracts.agent_transcripts import AttemptTranscript
-from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.artifacts import ArtifactHash
-from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.executions import AgentAttemptExecution, AgentExecutionRefusal
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import AnyRun
@@ -282,8 +282,8 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
 
-    def refuse_unavailable_executor(
-        self, request: AgentExecutionRequestV2
+    def refuse_unstartable_node(
+        self, execution: AgentAttemptExecution, refusal: AgentExecutionRefusal
     ) -> AgentExecutorBindingRefusalResult: ...
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...

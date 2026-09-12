@@ -4,11 +4,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Lifespan
 
+from atelier2.api._support import (
+    reject_unknown_query_params,
+    reject_unsupported_query_contract,
+)
 from atelier2.api.context import (
     AgentCatalogUseCases,
     ApiContext,
@@ -31,7 +35,7 @@ from atelier2.api.limits import (
     RequestBodyLimitMiddleware,
     durable_projection_limit,
 )
-from atelier2.api.openapi import API_PREFIX, install_custom_openapi
+from atelier2.api.openapi import API_PREFIX, install_openapi_document_route
 from atelier2.api.problems import install_problem_handlers
 from atelier2.api.routes import (
     agents,
@@ -594,18 +598,24 @@ def bound_use_cases(
 # The order of these router includes is the order of the published document's
 # `paths` keys, which the frozen artefact pins byte for byte.
 def _install_routers(app: FastAPI) -> None:
-    app.include_router(health.router)
-    app.include_router(seat.router)
-    app.include_router(agents.router)
-    app.include_router(artifacts.router)
-    app.include_router(revisions.router)
-    app.include_router(catalog_lineage.router)
-    app.include_router(projects.router)
-    app.include_router(models.router)
-    app.include_router(project_source_connection.router)
-    app.include_router(runs.router)
-    app.include_router(events.router)
-    app.include_router(queue.router)
+    # One guard for every route these routers carry, rather than one per route:
+    # each route's own dependant already names the query parameters it reads,
+    # so nothing below this line needs to declare its own copy.
+    unknown_query_guard = (Depends(reject_unknown_query_params),)
+    app.include_router(health.router, dependencies=unknown_query_guard)
+    app.include_router(seat.router, dependencies=unknown_query_guard)
+    app.include_router(agents.router, dependencies=unknown_query_guard)
+    app.include_router(artifacts.router, dependencies=unknown_query_guard)
+    app.include_router(revisions.router, dependencies=unknown_query_guard)
+    app.include_router(catalog_lineage.router, dependencies=unknown_query_guard)
+    app.include_router(projects.router, dependencies=unknown_query_guard)
+    app.include_router(models.router, dependencies=unknown_query_guard)
+    app.include_router(
+        project_source_connection.router, dependencies=unknown_query_guard
+    )
+    app.include_router(runs.router, dependencies=unknown_query_guard)
+    app.include_router(events.router, dependencies=unknown_query_guard)
+    app.include_router(queue.router, dependencies=unknown_query_guard)
 
 
 def create_app(
@@ -631,8 +641,12 @@ def create_app(
     openapi_document_path = API_PREFIX + "/openapi.json"
     app = FastAPI(
         title="Atelier 2 durable workflow API",
+        # `install_openapi_document_route` below takes over serving this path
+        # instead, because the unknown-query-parameter guard needs a real
+        # `APIRoute`, not the plain Starlette one FastAPI would otherwise add
+        # here.
         version="1",
-        openapi_url=openapi_document_path,
+        openapi_url=None,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -695,8 +709,8 @@ def create_app(
     )
 
     _install_routers(app)
-
-    install_custom_openapi(app, limits)
+    install_openapi_document_route(app, openapi_document_path, limits)
+    reject_unsupported_query_contract(app)
     return app
 
 

@@ -120,6 +120,7 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
     },
     {
         "names": (
+            "adapters/dbos/node_binding_codec.py:auth_hash",
             "adapters/dbos/node_binding_codec.py:tool_capability",
             "adapters/dbos/node_binding_codec.py:project_commit",
             "adapters/dbos/node_binding_codec.py:project_tree",
@@ -143,10 +144,6 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
             "The TypeChecker jsonschema passes to a registered type check "
             "(contracts/schemas_v3.py); the library owns the signature."
         ),
-    },
-    {
-        "names": ("api/openapi.py:openapi",),
-        "why": "FastAPI reads `app.openapi` when it serves the document.",
     },
     {
         "names": ("host/logging.py:disabled",),

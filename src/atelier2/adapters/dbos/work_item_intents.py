@@ -10,11 +10,10 @@ reading the durable input rows itself.
 
 from __future__ import annotations
 
-from typing import Any
-
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.schema import run_inputs_v3
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.contracts.effect_requests import HeadBranch, head_branch_for_queue_item
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
@@ -32,7 +31,7 @@ class WorkItemOrderConflict(RuntimeError):
     pass
 
 
-def issue_work_item_order(session: Any, run_id: RunId) -> WorkItemOrderDocument:
+def issue_work_item_order(session: SqlExecutor, run_id: RunId) -> WorkItemOrderDocument:
     """The one issue work-item order this run was bound to."""
     rows = session.execute(
         sa.select(

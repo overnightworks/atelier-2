@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from atelier2.contracts.agent_modes import AgentModeMismatch
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import (
     SubmitWaitAnswerRequest,
@@ -140,6 +141,7 @@ type DurablePublishedRunResult = (
     | DurableAgentExecutorCapabilityUnavailable
     | DurableAgentExecutorWithoutWorkspaceFileTools
     | DurableBindingConstraintRefused
+    | AgentModeMismatch
     | DurableWriteUnavailable
     | DurableStateCorrupt
     | DurableV3StartInputRefused

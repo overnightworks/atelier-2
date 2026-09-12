@@ -16,8 +16,8 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
-    configuration_registered,
 )
+from atelier2.application.role_candidates import configuration_registered
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
