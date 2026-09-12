@@ -1,0 +1,8 @@
+claim_id = "ef6f4d1b59f5466aa7c9d549e75966a2"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "b5b7dfdb2ed920d6a16d113456f26ef22c019b2d"
+branch = "claude/issue-1500-disabled-reasons"
+scope = ["frontend/src/components/WorkflowStartSheet.svelte", "frontend/src/components/CatalogImportSheet.svelte", "frontend/src/lib/catalogPageCopy.ts", "frontend/src/lib/project.ts", "frontend/tests/e2e/vision-shots.spec.ts"]
+opened_commit = "64800c740cc64fce262832098d9577193b3c2813"
+whole_reason = "Die zwei fehlenden Aufnahmen beweisen genau die Saetze, die diese Scheibe behauptet; Bild und Satz landen zusammen."
