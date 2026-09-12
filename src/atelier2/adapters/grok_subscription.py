@@ -43,13 +43,19 @@ import stat
 import subprocess
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from atelier2.adapters.bounded_processes import (
     bounded_process_answer,
     bounded_process_streams,
+)
+from atelier2.adapters.bwrap_sandbox import entered_fence, toolchain_sandbox
+from atelier2.adapters.grok_capability import (
+    GROK_PROBE_TIMEOUT_SECONDS,
+    GrokExecutableUnsupported,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -73,6 +79,7 @@ from atelier2.contracts.agents import (
     AuthMode,
     ProviderId,
 )
+from atelier2.contracts.sandbox_grants import SandboxedLaunch, SandboxUnavailable
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutionPreflightRefusal,
@@ -110,12 +117,6 @@ GROK_SUBSCRIPTION_ENVELOPE_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 GROK_SUBSCRIPTION_FRAME_BYTES = (
     GROK_SUBSCRIPTION_ENVELOPE_BYTES + MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
 )
-
-CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 5)})
-
-_VERSION_FLAG = "--version"
-_VERSION_PROBE_TIMEOUT_SECONDS = 30.0
-_VERSION_PROBE_OUTPUT_BYTES = 4_096
 
 _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
@@ -326,10 +327,6 @@ class GrokSubscriptionAuthModeUnsupported(ValueError):
     """A published configuration bound a non-subscription profile to this executor."""
 
 
-class GrokExecutableUnsupported(ValueError):
-    """The named executable is not a Grok CLI this executor was measured against."""
-
-
 class GrokContainmentUnattested(ValueError):
     """The composed profile discovers a surface this executor never granted."""
 
@@ -373,87 +370,21 @@ class GrokProviderEndedWithoutToolUse(AgentExecutionFailure):
     )
 
 
-def _parsed_version(reported: str) -> tuple[int, int, int] | None:
-    """Read `grok 1.0.5 (...)` as the version."""
-
-    tokens = reported.strip().split()
-    if not tokens:
-        return None
-    leading = (
-        tokens[1] if tokens[0].lower() == "grok" and len(tokens) > 1 else tokens[0]
-    )
-    parts = leading.split(".")
-    if len(parts) != 3 or not all(part.isdigit() for part in parts):
-        return None
-    return int(parts[0]), int(parts[1]), int(parts[2])
-
-
-def read_grok_version(
-    executable: Path, timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS
-) -> tuple[int, int, int]:
-    """Ask one executable which Grok it is. Runs it with `--version`."""
-
-    with tempfile.TemporaryDirectory(prefix="atelier2-grok-version-") as probe_root:
-        try:
-            process = subprocess.Popen(
-                (str(executable), _VERSION_FLAG),
-                cwd=probe_root,
-                env={},
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise GrokExecutableUnsupported(
-                f"the Grok executable did not answer {_VERSION_FLAG}: {error}"
-            ) from error
-        try:
-            return_code, answer = bounded_process_answer(
-                process, timeout_seconds, _VERSION_PROBE_OUTPUT_BYTES
-            )
-        except OSError as error:
-            raise GrokExecutableUnsupported(
-                f"the Grok executable did not answer {_VERSION_FLAG}: {error}"
-            ) from error
-    if return_code != 0:
-        raise GrokExecutableUnsupported(
-            f"the Grok executable refused {_VERSION_FLAG} with exit code {return_code}"
-        )
-    version = _parsed_version(answer.decode("utf-8", "replace"))
-    if version is None:
-        raise GrokExecutableUnsupported(
-            f"the Grok executable did not report a version at {_VERSION_FLAG}"
-        )
-    return version
-
-
-def verify_grok_capability(
-    executable: Path, timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS
-) -> tuple[int, int, int]:
-    """Refuse an executable outside the reviewed conformance set."""
-
-    version = read_grok_version(executable, timeout_seconds)
-    if version not in CONFORMANT_GROK_VERSIONS:
-        reported = ".".join(str(part) for part in version)
-        conformant = ", ".join(
-            ".".join(str(part) for part in candidate)
-            for candidate in sorted(CONFORMANT_GROK_VERSIONS)
-        )
-        raise GrokExecutableUnsupported(
-            f"serving Grok subscription agents requires Grok {conformant}, "
-            f"not {reported}: this executor's invocation semantics were measured "
-            "against that exact release"
-        )
-    return version
-
-
 @dataclass(frozen=True)
 class GrokSubscriptionSettings:
     executable: Path
     workspace: Path
     credential_directory: Path
     search_path: str
+    sandbox_executable: Path
+    """The enforcer this deployment fences its tool-bearing calls with.
+
+    It is configured rather than looked up per launch: a name resolved again on
+    a search path is whatever stands first on that path when the launch runs.
+    Whether the path is absolute and whether the binary can really fence a
+    start is the enforcer's own boundary to answer, and `verified_sandbox_host`
+    answers it before every start rather than once at composition.
+    """
 
     def __post_init__(self) -> None:
         executable = self.executable.resolve()
@@ -611,36 +542,36 @@ def _agent_discovery(agent: object) -> str | None:
 def attest_grok_containment(
     settings: GrokSubscriptionSettings,
     state_directory: Path,
-    timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS,
+    timeout_seconds: float = GROK_PROBE_TIMEOUT_SECONDS,
+    sandbox: SandboxedLaunch | None = None,
 ) -> None:
     """Refuse to serve when the composed profile discovers a trusted surface.
 
     `--tools=` removes built-ins; it says nothing about the plugins, hooks, MCP
     servers and agent definitions the CLI loads from the workspace and from
     `GROK_HOME`. Trusted hook or MCP code would run with the server's own
-    privileges, so this asks the CLI what it would load, with exactly the
-    environment and working directory a job would get, and refuses on anything.
+    privileges, so this asks the CLI what it would load -- with exactly the
+    environment, working directory and file grant a job would get, because a
+    profile read outside the fence is not the profile a fenced job loads.
     """
 
+    inspecting = (str(settings.executable), _INSPECT_COMMAND, _INSPECT_JSON_FLAG)
     try:
-        process = subprocess.Popen(
-            (
-                str(settings.executable),
-                _INSPECT_COMMAND,
-                _INSPECT_JSON_FLAG,
-            ),
-            cwd=state_directory,
-            env=dict(_child_environment(settings, state_directory)),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-    except OSError as error:
-        raise GrokContainmentUnattested(
-            f"the Grok executable did not answer {_INSPECT_COMMAND}: {error}"
-        ) from error
-    try:
+        with _entered_probe_directory(inspecting, state_directory, sandbox) as (
+            arguments,
+            entered,
+            inherited,
+        ):
+            process = subprocess.Popen(
+                arguments,
+                cwd=entered,
+                pass_fds=inherited,
+                env=dict(_child_environment(settings, state_directory)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
         return_code, answer = bounded_process_answer(
             process, timeout_seconds, _INSPECT_OUTPUT_BYTES
         )
@@ -672,6 +603,15 @@ def attest_grok_containment(
             "or non-built-in agent; this exact invocation discovers "
             f"{', '.join(discovered)}"
         )
+
+
+def _remove_directory(directory: Path) -> None:
+    """Take back one private directory, tolerating one that is already gone."""
+
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        pass
 
 
 def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
@@ -731,10 +671,7 @@ def _open_job_directory(settings: GrokSubscriptionSettings) -> Path:
         return directory
     finally:
         if not prepared:
-            try:
-                shutil.rmtree(directory)
-            except FileNotFoundError:
-                pass
+            _remove_directory(directory)
 
 
 def _validated_inline_prompt(job_bytes: bytes) -> str:
@@ -1156,6 +1093,12 @@ class GrokSubscriptionExecutor(PrintModeExecutor):
 
         return _validated_inline_prompt(request.job_bytes)
 
+    def _invocation_sandbox(self, state_directory: Path) -> SandboxedLaunch | None:
+        """No file boundary: a call granted no tool reaches no file to begin with."""
+
+        del state_directory
+        return None
+
     def _invocation_arguments(
         self,
         model: str,
@@ -1184,7 +1127,8 @@ class GrokSubscriptionExecutor(PrintModeExecutor):
         state_directory = _open_job_directory(settings)
         registered = False
         try:
-            attest_grok_containment(settings, state_directory)
+            sandbox = self._invocation_sandbox(state_directory)
+            attest_grok_containment(settings, state_directory, sandbox=sandbox)
             command = GrokSubscriptionProcessCommand(
                 self._invocation_arguments(
                     binding.configuration.model,
@@ -1196,6 +1140,7 @@ class GrokSubscriptionExecutor(PrintModeExecutor):
                 b"",
                 standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
                 declared_output_schema_bytes=request.declared_output_schema_bytes,
+                sandbox=sandbox,
             )
             with self._lifecycle_lock:
                 if self._closed.is_set():
@@ -1279,10 +1224,7 @@ class GrokSubscriptionExecutor(PrintModeExecutor):
         with self._lifecycle_lock:
             if directory not in self._invocation_directories:
                 return
-            try:
-                shutil.rmtree(directory)
-            except FileNotFoundError:
-                pass
+            _remove_directory(directory)
             self._invocation_directories.remove(directory)
 
     def close(self) -> None:
@@ -1384,9 +1326,9 @@ _WORKSPACE_TOOL_LIST = ",".join(WORKSPACE_TOOLS)
 # refused.
 WORKSPACE_ALLOW_RULES = ("Read", "Edit", "Write", "Grep", "Bash")
 # Docs: MCP meta-tools stay visible unless denied. `--deny MCPTool` parses
-# and stays effective under `bypassPermissions`. Combined with private HOME
-# and the inert compat config, that is the MCP containment; the executor
-# does not claim OS isolation.
+# and stays effective under `bypassPermissions`. Combined with private HOME,
+# the inert compat config and the file boundary this vector starts behind,
+# that is the MCP containment.
 _MCP_TOOL_DENY_RULE = "MCPTool"
 # The protected-edit surfaces grok's own classifier confirms before an edit
 # (its `strings` name `.git/hooks`, `.ssh`, shell startup files, `/etc`, grok
@@ -1498,11 +1440,50 @@ def _workspace_tool_arguments(
     )
 
 
+@contextmanager
+def _entered_probe_directory(
+    arguments: tuple[str, ...],
+    state_directory: Path,
+    sandbox: SandboxedLaunch | None,
+) -> Iterator[tuple[tuple[str, ...], str, tuple[int, ...]]]:
+    """Enter a probe's own directory exactly as a supervised launch enters a lease.
+
+    A probe that opened its working directory its own way would attest a start
+    nobody makes: the identity check, the descriptor handover and the set of
+    descriptors a child may inherit are what the fence is made of, so they are
+    the same call here as under supervision.
+    """
+
+    standing = state_directory.stat()
+    with entered_fence(
+        arguments, state_directory, standing.st_dev, standing.st_ino, sandbox
+    ) as entered:
+        yield entered
+
+
+def _workspace_tool_sandbox(
+    settings: GrokSubscriptionSettings, state_directory: Path
+) -> SandboxedLaunch:
+    """The file boundary every start of this vector runs behind (ADR 0009 §1).
+
+    Its own executable and the system roots any program needs to read, its
+    private home to write, and nothing else this account owns: not the
+    operator's keys, not the live store, not another checkout, and not what
+    happens to stand on a search path. The attempt's workspace joins as the
+    descriptor its launcher verified, so it is granted without being named.
+    """
+
+    return toolchain_sandbox(
+        settings.executable, settings.sandbox_executable, state_directory
+    )
+
+
 def _jobless_invocation_answer(
     settings: GrokSubscriptionSettings,
     arguments: tuple[str, ...],
     state_directory: Path,
     timeout_seconds: float,
+    sandbox: SandboxedLaunch,
 ) -> str:
     """Start this exact invocation with no credentials, and read back how it refused.
 
@@ -1514,15 +1495,21 @@ def _jobless_invocation_answer(
     """
 
     try:
-        process = subprocess.Popen(
-            arguments,
-            cwd=state_directory,
-            env=dict(_child_environment(settings, state_directory)),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        with _entered_probe_directory(arguments, state_directory, sandbox) as (
+            fenced,
+            entered,
+            inherited,
+        ):
+            process = subprocess.Popen(
+                fenced,
+                cwd=entered,
+                pass_fds=inherited,
+                env=dict(_child_environment(settings, state_directory)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
     except OSError as error:
         raise GrokExecutableUnsupported(
             f"the Grok executable could not start this executor's invocation: {error}"
@@ -1547,17 +1534,18 @@ def _jobless_invocation_answer(
 
 def attest_grok_workspace_tool_invocation(
     settings: GrokSubscriptionSettings,
-    timeout_seconds: float = _VERSION_PROBE_TIMEOUT_SECONDS,
+    timeout_seconds: float = GROK_PROBE_TIMEOUT_SECONDS,
 ) -> None:
     """Refuse an executable that cannot start this executor's exact invocation.
 
     A version answer is not startability. So this launches the argument vector
-    the workspace-tool executor really prepares -- every flag, a private HOME
-    -- and hands it no credentials: a CLI that read the whole vector reaches
-    its own unsigned-in refusal, and a CLI that did not stops at the argument
-    it could not read. Neither reaches a model, so the attestation is free
-    and runs at every composition rather than at the first run that binds a
-    node.
+    the workspace-tool executor really prepares -- every flag, a private HOME,
+    and the file grant it runs behind -- and hands it no credentials: a CLI
+    that read the whole vector reaches its own unsigned-in refusal, and a CLI
+    that did not stops at the argument it could not read. Neither reaches a
+    model, so the attestation is free and runs at every composition rather
+    than at the first run that binds a node. A deployment whose host cannot
+    fence the vector is refused here, before any of it is served.
 
     The negative observation only means something if this executable can still
     make the positive one, so the control runs beside it: the same vector with
@@ -1576,11 +1564,12 @@ def attest_grok_workspace_tool_invocation(
             _configuration_bytes(),
             _CONFIG_FILE_MODE,
         )
+        sandbox = _workspace_tool_sandbox(settings, state_directory)
         arguments = _workspace_tool_arguments(
             settings.executable, _INVOCATION_PROBE_MODEL, ""
         )
         started = _jobless_invocation_answer(
-            settings, arguments, state_directory, timeout_seconds
+            settings, arguments, state_directory, timeout_seconds, sandbox
         )
         if _ARGUMENT_REFUSAL_MARKER in started:
             raise GrokExecutableUnsupported(
@@ -1589,11 +1578,9 @@ def attest_grok_workspace_tool_invocation(
                 "needs every flag of that vector to exist and parse, because "
                 "each one is a containment decision this executor states"
             )
+        control_arguments = (*arguments, _UNKNOWN_FLAG_CONTROL)
         control = _jobless_invocation_answer(
-            settings,
-            (*arguments, _UNKNOWN_FLAG_CONTROL),
-            state_directory,
-            timeout_seconds,
+            settings, control_arguments, state_directory, timeout_seconds, sandbox
         )
         if _ARGUMENT_REFUSAL_MARKER not in control:
             raise GrokExecutableUnsupported(
@@ -1602,11 +1589,10 @@ def attest_grok_workspace_tool_invocation(
                 "reads a missing flag out of exactly that refusal, so an "
                 "executable that never states one cannot be attested by it"
             )
+    except SandboxUnavailable as refusal:
+        raise GrokExecutableUnsupported(str(refusal)) from refusal
     finally:
-        try:
-            shutil.rmtree(state_directory)
-        except FileNotFoundError:
-            pass
+        _remove_directory(state_directory)
 
 
 @dataclass(frozen=True)
@@ -1653,16 +1639,16 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     `GrokProviderEndedWithoutToolUse` rather than answered -- see that class
     for the measurement, and `#1165` for the live pass that found it.
 
-    WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
-    the serving user, and the named tools reach every path that user reaches
-    -- including the credential directory this invocation hands it. The
-    attempt's workspace is where the process is *started*, not a boundary it
-    is held inside. `bypassPermissions` does not widen `--tools`: a tool this
-    vector did not name still cannot be used, and `--deny MCPTool` stays
-    effective per xAI's docs. `--always-approve` and `--yolo` exist and are
-    not used -- `--permission-mode bypassPermissions` is the measured one.
-    `--sandbox` exists and is not claimed; where a named tool may reach is
-    the CLI's own business and no promise of this module's.
+    WHAT HOLDS IT. A file boundary the operating system enforces, not the
+    CLI's own promise: every start of this vector is composed by
+    `_workspace_tool_sandbox` and refused where the host cannot draw it. The
+    permission flags stay as the CLI's own layer above it -- `bypassPermissions`
+    does not widen `--tools`, and `--deny MCPTool` stays effective per xAI's
+    docs. `--always-approve`, `--yolo` and `--sandbox` exist and are not used.
+
+    WHAT IT DOES NOT CLAIM. No network boundary: the child keeps this host's
+    network and the credential copy it needs, so what it may send is bounded by
+    trust, not by the fence (ADR 0011).
 
     WHAT IS NOT MEASURED, said here rather than discovered later. The
     tool-free executor rests on a measured envelope against a real
@@ -1693,6 +1679,9 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
                 request.job_bytes, request.declared_output_schema_bytes
             )
         )
+
+    def _invocation_sandbox(self, state_directory: Path) -> SandboxedLaunch | None:
+        return _workspace_tool_sandbox(self.settings, state_directory)
 
     def _invocation_arguments(
         self,

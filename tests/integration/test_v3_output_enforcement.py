@@ -171,6 +171,7 @@ from tests.scenarios.agents import (
     failing_agent_executor_factory,
     process_invocation,
     publish_checked_model_registry,
+    stand_in_bubblewrap,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.durable_state import (
@@ -2021,6 +2022,7 @@ def _decoded_by_grok(directory: Path, payload: bytes) -> AgentExecutionResult:
                 workspace,
                 credentials,
                 os.environ.get("PATH", "/usr/bin"),
+                stand_in_bubblewrap(directory),
             )
         )
         .open()

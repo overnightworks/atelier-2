@@ -121,6 +121,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     claude_subscription_deployment,
     publish_checked_model_registry,
+    stand_in_bubblewrap,
 )
 from tests.scenarios.issue_observation import FakeTrackerItemSource
 from tests.scenarios.runs import publish_revision
@@ -489,7 +490,11 @@ def _grok_serving_settings(tmp_path: Path) -> HostSettings:
         provider_probe_receipt_directory=tmp_path / "provider-probes",
         agent_scratch_root=agent_scratch_root(tmp_path),
         grok_subscription=GrokSubscriptionSettings(
-            executable, workspace, credentials, os.environ["PATH"]
+            executable,
+            workspace,
+            credentials,
+            os.environ["PATH"],
+            stand_in_bubblewrap(tmp_path),
         ),
     )
 

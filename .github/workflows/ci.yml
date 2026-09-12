@@ -448,6 +448,21 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-groups
 
+      - name: Give this runner the fence enforcer
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          # This image confines unprivileged user namespaces through AppArmor,
+          # and the fence proofs open one as the account the tests run as.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          restriction="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          if [ "${restriction}" != 0 ]; then
+            echo "this runner still confines unprivileged user namespaces:" \
+              "${restriction}" >&2
+            exit 1
+          fi
+
       - name: Test non-crash behavior
         run: |
           set -euo pipefail

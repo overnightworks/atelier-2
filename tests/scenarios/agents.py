@@ -86,6 +86,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
@@ -266,6 +267,7 @@ def process_invocation(
     *,
     standard_output_frame_bytes: int = SCENARIO_PROVIDER_FRAME_BYTES,
     conversation: ProviderConversationBinding | None = None,
+    sandbox: SandboxedLaunch | None = None,
 ) -> AgentProcessInvocation:
     """One invocation for a test that supervises a process it houses itself.
 
@@ -280,6 +282,7 @@ def process_invocation(
             environment,
             standard_input,
             standard_output_frame_bytes=standard_output_frame_bytes,
+            sandbox=sandbox,
         ),
         leased_directory_identity(attempt_id, working_directory),
         conversation,
@@ -308,6 +311,33 @@ def _version_answering(program: str, version: str | None) -> str:
     ) + program
 
 
+def stand_in_bubblewrap(directory: Path) -> Path:
+    """An executable named `bwrap` that runs what it is handed, fencing nothing.
+
+    A deployment fake has to name the enforcer its launches would start, and a
+    machine without bubblewrap still has to prove everything that is not the
+    fence: which vector a provider is started with, and what it answers. So
+    this stand-in reads that vector the way the enforcer does -- its own
+    options, then the command behind `--` -- and runs the command where the
+    launch already stands. Every proof about the fence itself names this
+    host's own bubblewrap instead, in `tests/integration/test_bwrap_fence.py`.
+    """
+
+    tools = directory / "tools"
+    tools.mkdir(exist_ok=True)
+    bubblewrap = tools / "bwrap"
+    bubblewrap.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import sys\n"
+        'command = sys.argv[sys.argv.index("--") + 1 :]\n'
+        "os.execvp(command[0], command)\n",
+        encoding="utf-8",
+    )
+    bubblewrap.chmod(0o755)
+    return bubblewrap
+
+
 def claude_search_path(directory: Path) -> str:
     """A search path carrying the bubblewrap the scrubbing CLI insists on.
 
@@ -316,12 +346,7 @@ def claude_search_path(directory: Path) -> str:
     deployment this executor accepts.
     """
 
-    tools = directory / "tools"
-    tools.mkdir(exist_ok=True)
-    bubblewrap = tools / "bwrap"
-    bubblewrap.write_text(f"#!{sys.executable}\n", encoding="utf-8")
-    bubblewrap.chmod(0o755)
-    return str(tools)
+    return str(stand_in_bubblewrap(directory).parent)
 
 
 PERSONAL_SUBSCRIPTION_TYPE = "max"

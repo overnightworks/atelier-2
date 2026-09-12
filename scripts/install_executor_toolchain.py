@@ -26,10 +26,12 @@ from atelier2.adapters.codex_subscription import (
     CodexExecutableUnsupported,
     verify_codex_capability,
 )
-from atelier2.adapters.grok_subscription import (
+from atelier2.adapters.grok_capability import (
     CONFORMANT_GROK_VERSIONS,
-    GrokExecutableUnsupported,
     verify_grok_capability,
+)
+from atelier2.adapters.grok_subscription import (
+    GrokExecutableUnsupported,
 )
 
 Release = tuple[int, int, int]

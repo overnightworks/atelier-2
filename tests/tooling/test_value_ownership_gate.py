@@ -223,8 +223,14 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/codex_subscription.py::_VERSION_PROBE_TIMEOUT_SECONDS": SpelledValue(
         1, "second spelling of the shared probe patience; see the claude entry"
     ),
-    "adapters/grok_subscription.py::_VERSION_PROBE_TIMEOUT_SECONDS": SpelledValue(
+    "adapters/grok_capability.py::GROK_PROBE_TIMEOUT_SECONDS": SpelledValue(
         1, "third spelling of the shared probe patience; see the claude entry"
+    ),
+    "adapters/bwrap_sandbox.py::_HOST_PROBE_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "how long one throwaway bubblewrap start may take before this host "
+        "counts as unable to fence: a fact about starting a local binary, not "
+        "an operator's patience with a provider",
     ),
     "adapters/dbos/queries.py::busy_timeout_seconds": SpelledValue(
         1,

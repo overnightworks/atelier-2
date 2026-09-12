@@ -9,7 +9,6 @@ import selectors
 import signal
 import socket
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -17,8 +16,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.adapters.agent_process_exec_guard import guarded_arguments
+from atelier2.adapters.bwrap_sandbox import entered_fence, sandbox_from_frame
+from atelier2.adapters.process_containment import (
+    ask_provider_to_end,
+    cgroup_populated,
+    killpg,
+)
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
+from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
@@ -189,6 +195,7 @@ class Watchdog:
         self._termination_escalated = False
         self._termination_disposition: str | None = None
         self._termination_owner: str | None = None
+        self._enforcer_pid: int | None = None
         self._owner_dead = False
 
     def serve(self, announce_ready: Callable[[], None]) -> None:
@@ -450,37 +457,24 @@ class Watchdog:
                 standard_input,
                 standard_output_frame_bytes,
                 duplex,
+                sandbox,
             ) = _decode_launch_request(request)
             self._standard_output_frame_bytes = standard_output_frame_bytes
             self._duplex = duplex
-            guarded = (
-                sys.executable,
-                "-m",
-                "atelier2.adapters.agent_process_exec_guard",
-                "--cgroup",
-                str(self._cgroup),
-                "--watchdog-pid",
-                str(os.getpid()),
-                "--",
-                *arguments,
-            )
             device, inode = working_directory_identity
-            child_environment = {
-                **os.environ,
-                "ATELIER2_AGENT_ENVIRONMENT_B64": base64.b64encode(
-                    json.dumps(
-                        sorted(environment.items()), separators=(",", ":")
-                    ).encode("utf-8")
-                ).decode("ascii"),
-            }
-            with entered_leased_directory(Path(working_directory), device, inode) as (
-                leased_cwd,
-                leased_descriptor,
-            ):
+            with entered_fence(
+                arguments, Path(working_directory), device, inode, sandbox
+            ) as (fenced, leased_cwd, inherited):
+                guarded, child_environment = guarded_arguments(
+                    self._cgroup,
+                    os.getpid(),
+                    fenced,
+                    tuple(sorted(environment.items())),
+                )
                 process = subprocess.Popen(
                     guarded,
                     cwd=leased_cwd,
-                    pass_fds=(leased_descriptor,),
+                    pass_fds=inherited,
                     env=child_environment,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -488,6 +482,7 @@ class Watchdog:
                     start_new_session=True,
                 )
             self._process = process
+            self._enforcer_pid = process.pid if sandbox is not None else None
             self._standard_input = standard_input
             launch_response = encode_control_frame({"type": "STARTED"})
             try:
@@ -706,7 +701,7 @@ class Watchdog:
             if (
                 return_code is not None
                 and self._provider_output_closed()
-                and not _cgroup_populated(self._cgroup)
+                and not cgroup_populated(self._cgroup)
             ):
                 process.wait()
                 self._publish_process_completion(now)
@@ -715,7 +710,7 @@ class Watchdog:
             return
         if (
             process.poll() is not None
-            and not _cgroup_populated(self._cgroup)
+            and not cgroup_populated(self._cgroup)
             and self._provider_output_closed()
         ):
             process.wait()
@@ -744,13 +739,15 @@ class Watchdog:
             "SUPERVISION": _CoordinatorState.SUPERVISION_TERMINATING,
             "OWNER_DEATH": _CoordinatorState.OWNER_DEATH_TERMINATING,
         }[owner]
-        if self._process.poll() is not None and not _cgroup_populated(self._cgroup):
+        if self._process.poll() is not None and not cgroup_populated(self._cgroup):
             self._termination_disposition = "EXITED_BEFORE_SIGNAL"
             if self._provider_output_closed():
                 self._process.wait()
                 self._finish_termination(now)
                 return
-        elif self._process.poll() is None and _killpg(self._process, signal.SIGTERM):
+        elif self._process.poll() is None and ask_provider_to_end(
+            self._process, self._cgroup, self._enforcer_pid, signal.SIGTERM
+        ):
             self._termination_disposition = "REAPED_AFTER_TERM"
         self._termination_deadline = now + self._grace
 
@@ -772,11 +769,11 @@ class Watchdog:
             return
         self._termination_escalated = True
         self._termination_deadline = None
-        if _cgroup_populated(self._cgroup):
+        if cgroup_populated(self._cgroup):
             (self._cgroup / "cgroup.kill").write_text("1", encoding="ascii")
             self._termination_disposition = "REAPED_AFTER_KILL"
         if self._process is not None and self._process.poll() is None:
-            _killpg(self._process, signal.SIGKILL)
+            killpg(self._process, signal.SIGKILL)
         self._termination_deadline = now + max(1.0, self._grace)
 
     def _finish_termination(self, now: float) -> None:
@@ -1039,14 +1036,27 @@ class Watchdog:
             self._close_provider_stream(role)
 
 
-def _decode_launch_request(
-    request: dict[str, Any],
-) -> tuple[tuple[str, ...], str, tuple[int, int], dict[str, str], bytes, int, bool]:
+_LaunchRequest = tuple[
+    tuple[str, ...],
+    str,
+    tuple[int, int],
+    dict[str, str],
+    bytes,
+    int,
+    bool,
+    SandboxedLaunch | None,
+]
+"""What one launch frame says: argv, where, whose identity, environment, input,
+frame bound, whether a conversation follows, and the grant it runs behind."""
+
+
+def _decode_launch_request(request: dict[str, Any]) -> _LaunchRequest:
     # `duplex` names only a conversation launch, so print-mode stays as given.
     if set(request) - {"duplex"} != {
         "arguments",
         "environment",
         "operation",
+        "sandbox",
         "standard_input",
         "standard_output_frame_bytes",
         "working_directory",
@@ -1092,6 +1102,7 @@ def _decode_launch_request(
         standard_input,
         standard_output_frame_bytes,
         duplex,
+        sandbox_from_frame(request["sandbox"]),
     )
 
 
@@ -1157,19 +1168,6 @@ def _decode_exchange_request(
         cancellation_frame,
         close_input,
     )
-
-
-def _killpg(process: subprocess.Popen[bytes], signal_number: int) -> bool:
-    try:
-        os.killpg(process.pid, signal_number)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def _cgroup_populated(cgroup: Path) -> bool:
-    events = (cgroup / "cgroup.events").read_text(encoding="ascii").splitlines()
-    return "populated 1" in events
 
 
 def main(arguments: Sequence[str] | None = None) -> None:
