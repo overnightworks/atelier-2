@@ -13,6 +13,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -23,10 +24,13 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters import agent_processes as process_module
+from atelier2.adapters import bwrap_sandbox
 from atelier2.adapters import process_containment as containment
 from atelier2.adapters.bwrap_sandbox import (
+    SYSTEM_READ_ONLY_ROOTS,
     entered_fence,
     toolchain_sandbox,
+    verified_sandbox_host,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.grok_capability import (
@@ -385,6 +389,28 @@ def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
 
     with pytest.raises(GrokExecutableUnsupported, match="No such file or directory"):
         attest_grok_workspace_tool_invocation(settings)
+
+
+def test_a_host_keeping_its_temporary_files_inside_a_grant_still_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where this host puts a temporary directory is not the probe's to assume.
+
+    Staged as a host does it: the temporary root this process resolved stands
+    inside a granted system root -- `/usr/local/atelier-tmp` is the real shape
+    of it -- so a probe laying its markers where that root points would have
+    both read behind a true fence, and would refuse the working enforcer this
+    machine carries. The markers stand under the directory the fence covers
+    with a filesystem of its own instead, so the answer is the enforcer's and
+    not the host's temporary layout.
+    """
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(
+        bwrap_sandbox, "SYSTEM_READ_ONLY_ROOTS", (*SYSTEM_READ_ONLY_ROOTS, tmp_path)
+    )
+
+    verified_sandbox_host(HOST_ENFORCER)
 
 
 def test_a_fenced_child_holds_no_descriptor_of_this_host(tmp_path: Path) -> None:

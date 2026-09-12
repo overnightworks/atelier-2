@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import stat
 from collections.abc import Callable
 from pathlib import Path
@@ -267,6 +268,29 @@ def test_an_enforcer_that_only_runs_what_stands_behind_the_flags_is_refused(
 
     with pytest.raises(SandboxUnavailable, match="granted no name at all"):
         verified_sandbox_host(_fake_enforcer(tmp_path))
+
+
+def test_a_filesystem_that_refuses_the_probe_files_refuses_this_enforcer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host out of space cannot attest a fence, and says so as a refusal.
+
+    The probe writes before it starts anything, and a failure there is about
+    this enforcer alone: what it would have proven is unproven. Raised as
+    itself it would instead end the composition that was asking, taking down
+    every other executor of that deployment -- none of which this probe says
+    anything about.
+    """
+
+    enforcer = _fake_enforcer(tmp_path)
+
+    def _out_of_space(*_arguments: object, **_named: object) -> int:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", _out_of_space)
+
+    with pytest.raises(SandboxUnavailable, match="could not lay down"):
+        verified_sandbox_host(enforcer)
 
 
 def test_a_grant_survives_the_launch_frame_it_travels_in() -> None:

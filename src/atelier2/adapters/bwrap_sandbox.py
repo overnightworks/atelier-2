@@ -82,6 +82,8 @@ _END_OF_FLAGS = "--"
 _PROCESS_TABLE_PATH = Path("/proc")
 _DEVICE_PATH = Path("/dev")
 _TEMPORARY_PATH = Path("/tmp")
+"""Where a fenced start gets a filesystem of its own, so that nothing this host
+keeps there has a name inside the fence unless a grant names it."""
 
 SYSTEM_READ_ONLY_ROOTS = (
     Path("/usr"),
@@ -328,7 +330,8 @@ def verified_sandbox_host(enforcer: Path) -> None:
     one, so a positive alone is as true of a binary that merely runs what
     stands behind `--`. So the probe reads two files of the same account in
     one command -- one inside the directory it handed over, one outside every
-    grant -- and a host is attested only when the second was not there.
+    grant -- and a host is attested only when the first came back alone and
+    the start failed over the second.
     """
 
     if not enforcer.is_absolute():
@@ -342,27 +345,7 @@ def verified_sandbox_host(enforcer: Path) -> None:
 
 
 def _attest_enforcer(enforcer: Path) -> None:
-    with (
-        tempfile.TemporaryDirectory(prefix=_PROBE_PREFIX) as granted_root,
-        tempfile.TemporaryDirectory(prefix=_PROBE_PREFIX) as ungranted_root,
-    ):
-        granted = Path(granted_root)
-        marker = granted / _PROBE_MARKER_NAME
-        marker.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
-        beyond = Path(ungranted_root) / _PROBE_MARKER_NAME
-        beyond.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
-        standing = granted.stat()
-        grants = SandboxGrants(
-            readable_and_executable=_narrowed((_PROBE_READER, *SYSTEM_READ_ONLY_ROOTS))
-        )
-        with entered_fence(
-            (str(_PROBE_READER), str(marker), str(beyond)),
-            granted,
-            standing.st_dev,
-            standing.st_ino,
-            SandboxedLaunch(enforcer, grants),
-        ) as (arguments, entered, inherited):
-            answer = _answered(arguments, entered, inherited, enforcer)
+    answer = _probed_fence(enforcer)
     if not answer.output.startswith(_PROBE_MARKER_TEXT):
         raise SandboxUnavailable(
             f"{enforcer} did not hand a directory it was given as a descriptor to a "
@@ -375,6 +358,58 @@ def _attest_enforcer(enforcer: Path) -> None:
             f"runs stands in no fence: that command answered {answer.output!r} and "
             f"ended with {answer.return_code}"
         )
+
+
+def _probed_fence(enforcer: Path) -> _ProbeAnswer:
+    """Lay down the two markers one start is judged by, and run that start.
+
+    Both stand under the directory this transformation covers with a
+    filesystem of its own, because that is what makes the second one ungranted
+    at all: under that cover the handed-over directory has a name only through
+    the descriptor the enforcer binds, and its sibling has none. Laid down
+    where this host happens to point its temporary files instead, both could
+    stand inside a granted root -- a temporary directory under `/usr` is
+    readable behind any true fence -- and the start would read both and refuse
+    an enforcer that works.
+
+    A filesystem that refuses those files, or their removal, refuses this
+    enforcer: what it would have proven is unproven. It is not an error the
+    deployment composing this executor has to survive, because that deployment
+    composes other executors whose startability this says nothing about.
+    """
+
+    try:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix=_PROBE_PREFIX, dir=_TEMPORARY_PATH
+            ) as granted_root,
+            tempfile.TemporaryDirectory(
+                prefix=_PROBE_PREFIX, dir=_TEMPORARY_PATH
+            ) as ungranted_root,
+        ):
+            granted = Path(granted_root)
+            marker = granted / _PROBE_MARKER_NAME
+            marker.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
+            beyond = Path(ungranted_root) / _PROBE_MARKER_NAME
+            beyond.write_text(_PROBE_MARKER_TEXT, encoding="utf-8")
+            standing = granted.stat()
+            grants = SandboxGrants(
+                readable_and_executable=_narrowed(
+                    (_PROBE_READER, *SYSTEM_READ_ONLY_ROOTS)
+                )
+            )
+            with entered_fence(
+                (str(_PROBE_READER), str(marker), str(beyond)),
+                granted,
+                standing.st_dev,
+                standing.st_ino,
+                SandboxedLaunch(enforcer, grants),
+            ) as (arguments, entered, inherited):
+                return _answered(arguments, entered, inherited, enforcer)
+    except OSError as error:
+        raise SandboxUnavailable(
+            f"this host could not lay down the files that attest {enforcer}: {error}"
+        ) from error
 
 
 @dataclass(frozen=True)
