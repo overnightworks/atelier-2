@@ -17,7 +17,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,6 @@ from atelier2.adapters import agent_processes as process_module
 from atelier2.adapters import process_containment as containment
 from atelier2.adapters.bwrap_sandbox import (
     entered_fence,
-    resolved_sandbox_executable,
     toolchain_sandbox,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -40,7 +39,6 @@ from atelier2.adapters.grok_subscription import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptCancellationDisposition
 from atelier2.contracts.executions import AgentAttemptExecution
-from atelier2.contracts.sandbox_grants import SandboxUnavailable
 from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
@@ -50,13 +48,12 @@ from tests.integration.test_agent_attempts import attempt_request, attempt_runti
 from tests.integration.test_agent_process_supervisor import cancel_and_release
 from tests.integration.test_grok_subscription import (
     INTROSPECTING_GROK,
-    grok_named_deployment,
     grok_subscription_deployment,
-    parsing_grok,
-    workspace_tool_flags,
 )
 from tests.scenarios.agents import (
+    HOST_ENFORCER,
     NOTHING_IS_PERMITTED,
+    UNFENCEABLE,
     agent_attempt_execution,
     process_invocation,
 )
@@ -69,18 +66,8 @@ child reaches nothing that is not granted -- which is the whole point, so the
 fake toolchain is one that stands where a real one does.
 """
 
-ENFORCER = resolved_sandbox_executable(os.environ.get("PATH", "/usr/bin"))
-_UNFENCEABLE = None
-try:
-    toolchain_sandbox(INTERPRETER, ENFORCER, Path.cwd())
-except SandboxUnavailable as refusal:
-    _UNFENCEABLE = str(refusal)
-if _UNFENCEABLE is not None and os.environ.get("CI"):
-    raise RuntimeError(
-        f"the pipeline gives this runner an enforcer it cannot use: {_UNFENCEABLE}"
-    )
 pytestmark = pytest.mark.skipif(
-    _UNFENCEABLE is not None, reason=f"this machine fences nothing: {_UNFENCEABLE}"
+    UNFENCEABLE is not None, reason=f"this machine fences nothing: {UNFENCEABLE}"
 )
 
 _WRITES_TWO_VALUES_AND_FAILS = """
@@ -238,7 +225,7 @@ def _fenced_attempt(
                 provider,
                 workspace,
                 environment,
-                sandbox=toolchain_sandbox(INTERPRETER, ENFORCER, state_directory),
+                sandbox=toolchain_sandbox(INTERPRETER, HOST_ENFORCER, state_directory),
             ),
             workspace,
         )
@@ -327,7 +314,7 @@ def test_a_fenced_child_sees_public_certificate_material_and_no_private_key(
     )
 
     granted = toolchain_sandbox(
-        INTERPRETER, ENFORCER, tmp_path
+        INTERPRETER, HOST_ENFORCER, tmp_path
     ).grants.readable_and_executable
     seen = json.loads(completion.standard_output)
     assert seen == sorted(
@@ -379,28 +366,6 @@ def test_a_prompt_of_shell_metacharacters_is_carried_and_never_run(
     assert not marker.exists()
 
 
-def test_an_executable_that_reads_this_grok_invocation_is_attested_behind_the_fence(
-    tmp_path: Path,
-) -> None:
-    """The attestation's positive, made where the vector really starts.
-
-    Elsewhere a stand-in enforcer stands in for this host's, which proves the
-    argument vector but not that the vector survives being fenced. Here the
-    enforcer is the real one, so an attested executable is one this host can
-    both hold and start.
-    """
-
-    reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
-    settings = replace(
-        grok_named_deployment(
-            tmp_path, "deployment", parsing_grok(workspace_tool_flags(reference))
-        ),
-        sandbox_executable=ENFORCER,
-    )
-
-    assert attest_grok_workspace_tool_invocation(settings) is None
-
-
 def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -408,14 +373,10 @@ def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
 
     The refusal quotes whatever the failed start said, and inside the fence
     that sentence is the enforcer's: it is the process that got as far as
-    trying to run this executable. So the proof stands here, where the
-    enforcer is this host's own rather than a stand-in.
+    trying to run this executable.
     """
 
-    settings = replace(
-        grok_subscription_deployment(tmp_path, INTROSPECTING_GROK),
-        sandbox_executable=ENFORCER,
-    )
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     assert verify_grok_capability(settings.executable) in CONFORMANT_GROK_VERSIONS
     settings.executable.write_text(
         "#!/atelier2/no/such/interpreter\n", encoding="utf-8"
@@ -469,7 +430,7 @@ def test_a_descriptor_passed_beside_the_grant_is_a_door_this_probe_sees(
             workspace,
             standing.st_dev,
             standing.st_ino,
-            toolchain_sandbox(INTERPRETER, ENFORCER, tmp_path),
+            toolchain_sandbox(INTERPRETER, HOST_ENFORCER, tmp_path),
         ) as (arguments, entered, inherited):
             answered = subprocess.run(
                 arguments,
@@ -538,7 +499,7 @@ def test_the_kill_cgroup_ends_the_enforcer_and_the_child_inside_it(
         tmp_path,
         standing.st_dev,
         standing.st_ino,
-        toolchain_sandbox(INTERPRETER, ENFORCER, tmp_path),
+        toolchain_sandbox(INTERPRETER, HOST_ENFORCER, tmp_path),
     ) as (fenced, entered, inherited):
         process = subprocess.Popen((*joining, *fenced), cwd=entered, pass_fds=inherited)
     try:

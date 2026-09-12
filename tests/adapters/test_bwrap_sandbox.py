@@ -14,7 +14,7 @@ from atelier2.adapters.bwrap_sandbox import (
     sandbox_frame,
     sandbox_from_frame,
     sandboxed_arguments,
-    toolchain_sandbox,
+    toolchain_grants,
     verified_sandbox_host,
 )
 from atelier2.contracts.sandbox_grants import (
@@ -153,7 +153,7 @@ def test_a_prompt_of_shell_metacharacters_stays_one_argument() -> None:
 
 
 def _granted(tmp_path: Path) -> SandboxGrants:
-    """What one toolchain standing beside its enforcer is granted."""
+    """What one toolchain standing in its own directory is granted."""
 
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -161,7 +161,7 @@ def _granted(tmp_path: Path) -> SandboxGrants:
     toolchain.touch()
     state = tmp_path / "state"
     state.mkdir()
-    return toolchain_sandbox(toolchain, _fake_enforcer(tools), state).grants
+    return toolchain_grants(toolchain, state)
 
 
 def test_a_grant_names_the_toolchain_and_the_system_and_nothing_around_them(
@@ -240,7 +240,7 @@ def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_that_option(
     releases through different distributions, and a build without it would
     leave the leased directory to be found by name."""
 
-    with pytest.raises(SandboxUnavailable, match="could not start the fence"):
+    with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
         verified_sandbox_host(_fake_enforcer(tmp_path, refuses="--bind-fd"))
 
 
@@ -251,6 +251,22 @@ def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
 
     with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
         verified_sandbox_host(_fake_enforcer(tmp_path, answers=""))
+
+
+def test_an_enforcer_that_only_runs_what_stands_behind_the_flags_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The half a positive answer cannot carry.
+
+    Every file the probe reads behind a true fence this account also reads
+    without one, so a binary that merely executes the command behind `--`
+    hands the marker back exactly as bubblewrap does. What tells them apart is
+    the file outside every grant: the fence has no name for it, and an
+    executable that answers with it fences nothing.
+    """
+
+    with pytest.raises(SandboxUnavailable, match="granted no name at all"):
+        verified_sandbox_host(_fake_enforcer(tmp_path))
 
 
 def test_a_grant_survives_the_launch_frame_it_travels_in() -> None:

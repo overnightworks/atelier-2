@@ -48,6 +48,7 @@ from atelier2.adapters.grok_subscription import (
     GrokProviderEndedWithoutFinalMessage,
     GrokProviderEndedWithoutToolUse,
     GrokSubscriptionAuthModeUnsupported,
+    GrokSubscriptionExecutor,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
     GrokSubscriptionSettings,
@@ -129,12 +130,13 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV3,
 )
 from tests.scenarios.agents import (
+    HOST_ENFORCER,
+    UNFENCEABLE,
     agent_attempt_execution,
     declaring_mode_of,
     leased_directory_identity,
     publish_checked_model_registry,
     runtime_workspace_owner,
-    stand_in_bubblewrap,
     workspace_files_nobody_opens,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
@@ -311,16 +313,37 @@ def grok_subscription_deployment(
     authentication = credentials / "auth.json"
     authentication.write_bytes(b"{}")
     authentication.chmod(0o600)
-    bubblewrap = stand_in_bubblewrap(tmp_path)
     return GrokSubscriptionSettings(
         executable,
         workspace,
         credentials,
-        # Ahead of this host's own, so a deployment fake names the enforcer its
-        # search path really carries wherever this suite runs.
-        os.pathsep.join((str(bubblewrap.parent), os.environ.get("PATH", "/usr/bin"))),
-        bubblewrap,
+        os.environ.get("PATH", "/usr/bin"),
+        HOST_ENFORCER,
     )
+
+
+def skip_where_this_host_fences_nothing() -> None:
+    """Leave the tool-bearing proofs unrun where nothing can hold that vector.
+
+    Its every start is composed behind this host's own bubblewrap and refused
+    where there is none, so a machine carrying no enforcer serves no such
+    executor at all -- there is nothing left to observe. The pipeline's runner
+    carries one, where the same silence would be a failure.
+    """
+
+    if UNFENCEABLE is not None:
+        pytest.skip(f"this machine fences nothing: {UNFENCEABLE}")
+
+
+def opened_grok_executor(
+    factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
+    settings: GrokSubscriptionSettings,
+) -> GrokSubscriptionExecutor:
+    """One opened Grok executor, if this host can hold the vector it serves."""
+
+    if factory is GrokWorkspaceToolExecutorFactory:
+        skip_where_this_host_fences_nothing()
+    return factory(settings).open()
 
 
 def subscription_request(
@@ -521,7 +544,7 @@ def test_a_measured_size_job_reaches_grok_inline(
     factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INLINE_PROMPT_GROK)
-    executor = factory(settings).open()
+    executor = opened_grok_executor(factory, settings)
     job = b"x" * 30_000
     command = executor.prepare_process(subscription_request(job=job))
     invocation = leased(command, leased_workspace(tmp_path))
@@ -562,7 +585,7 @@ def test_non_utf8_job_bytes_are_agent_refused_before_any_grok_invocation(
     factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = factory(settings).open()
+    executor = opened_grok_executor(factory, settings)
 
     with pytest.raises(AgentExecutionPreflightRefusal, match="UTF-8") as refused:
         executor.prepare_process(subscription_request(job=b"\xff"))
@@ -1766,7 +1789,7 @@ def argument_after(arguments: Sequence[str], flag: str) -> str:
 def workspace_tool_flags(settings: GrokSubscriptionSettings) -> tuple[str, ...]:
     """Every flag the real workspace-tool invocation carries, read off that invocation."""
 
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     try:
         command = executor.prepare_process(subscription_request())
         seen: list[str] = []
@@ -1840,7 +1863,7 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     tool_free = GrokSubscriptionExecutorFactory(settings).open()
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     request = subscription_request(model="grok-4", job=b"draw the owl")
 
     command = executor.prepare_process(request)
@@ -1904,6 +1927,38 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     executor.close()
 
 
+def test_the_tool_vector_carries_its_grant_and_the_tool_free_one_carries_none(
+    tmp_path: Path,
+) -> None:
+    """Which start is held is said by the command, not by whoever launches it.
+
+    Every seam that starts a command owes the grant that command names, so the
+    tool-bearing vector names one -- this deployment's enforcer, and the job's
+    own private home to write -- while the call that reaches no file at all
+    declares none and runs where its account runs.
+    """
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
+    tool_free = opened_grok_executor(GrokSubscriptionExecutorFactory, settings)
+    request = subscription_request()
+
+    command = executor.prepare_process(request)
+    tool_free_command = tool_free.prepare_process(request)
+
+    assert command.sandbox is not None
+    assert command.sandbox.enforcer == settings.sandbox_executable
+    assert command.sandbox.grants.writable == (
+        Path(dict(command.environment)["GROK_HOME"]),
+    )
+    assert settings.executable in command.sandbox.grants.readable_and_executable
+    assert tool_free_command.sandbox is None
+    executor.release_credential_channel(command)
+    tool_free.release_credential_channel(tool_free_command)
+    tool_free.close()
+    executor.close()
+
+
 @pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")
 def test_a_workspace_tool_call_takes_the_pinned_turn_bound(
     tmp_path: Path,
@@ -1916,7 +1971,7 @@ def test_a_workspace_tool_call_takes_the_pinned_turn_bound(
     """
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     tool_free = GrokSubscriptionExecutorFactory(settings).open()
 
     default_command = executor.prepare_process(subscription_request())
@@ -1941,7 +1996,7 @@ def test_a_non_subscription_profile_reaches_no_tool_bearing_process(
     tmp_path: Path,
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
 
     with pytest.raises(GrokSubscriptionAuthModeUnsupported, match="workspace-tool"):
         executor.prepare_process(subscription_request(auth_mode=AuthMode.API_KEY))
@@ -2216,9 +2271,9 @@ nodes:
             )
         )
         executor = (
-            GrokWorkspaceToolExecutorFactory(settings).open()
+            opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
             if workspace_tools
-            else GrokSubscriptionExecutorFactory(settings).open()
+            else opened_grok_executor(GrokSubscriptionExecutorFactory, settings)
         )
         outcome = execute_agent_attempt(
             execution,
@@ -2262,7 +2317,7 @@ def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wro
         leased_directory = workspaces.scratch_root / execution.attempt_id.value
         outcome = execute_agent_attempt(
             execution,
-            GrokWorkspaceToolExecutorFactory(settings).open(),
+            opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings),
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             workspaces,
@@ -2414,7 +2469,7 @@ def decoded_workspace_tool_stream(
     """One workspace-tool call decoded from exactly these recorded stream bytes."""
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     try:
         command = executor.prepare_process(
             subscription_request(declared_output_schema=declared_output_schema)
@@ -2437,7 +2492,7 @@ def test_the_tool_vector_asks_for_the_stream_the_tool_free_one_does_not(
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     tool_free = GrokSubscriptionExecutorFactory(settings).open()
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     request = subscription_request()
 
     command = executor.prepare_process(request)
@@ -2474,7 +2529,7 @@ def test_the_tool_vector_carries_its_declared_schema_in_the_job_not_in_a_flag(
     job = b"Append one line to README.md"
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     tool_free = GrokSubscriptionExecutorFactory(settings).open()
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
     request = subscription_request(job=job, declared_output_schema=schema)
 
     command = executor.prepare_process(request)
@@ -2500,7 +2555,7 @@ def test_a_tool_vector_job_without_a_declared_schema_carries_the_job_alone(
 
     job = b"Append one line to README.md"
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
 
     command = executor.prepare_process(subscription_request(job=job))
 
@@ -2524,7 +2579,7 @@ def test_a_job_the_declared_schema_pushes_past_the_transport_bound_is_refused(
     schema = b'{"type":"object","required":["summary"]}'
     job = b"j" * (measured_inline_prompt_bytes - len(schema))
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
+    executor = opened_grok_executor(GrokWorkspaceToolExecutorFactory, settings)
 
     fitting = executor.prepare_process(subscription_request(job=job))
     with pytest.raises(AgentExecutionPreflightRefusal, match="30,000") as refused:
@@ -2887,6 +2942,10 @@ def test_an_answer_past_the_durable_output_bound_fails_the_attempt(
 def test_an_executable_that_starts_this_exact_grok_invocation_is_attested(
     tmp_path: Path,
 ) -> None:
+    """The attestation's positive, made where the vector really starts: this
+    host's own enforcer holds the probe, so an attested executable is one this
+    host can both fence and start."""
+
     reference = grok_named_deployment(tmp_path, "reference", INTROSPECTING_GROK)
     settings = grok_named_deployment(
         tmp_path, "deployment", parsing_grok(workspace_tool_flags(reference))

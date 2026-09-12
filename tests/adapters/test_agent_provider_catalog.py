@@ -49,7 +49,7 @@ from atelier2.ports.host_configuration import (
     ProviderModelDiscoveryUnsupported,
     ProviderModelInspectionUnavailable,
 )
-from tests.scenarios.agents import claude_subscription_deployment, stand_in_bubblewrap
+from tests.scenarios.agents import HOST_ENFORCER, claude_subscription_deployment
 
 pytestmark = pytest.mark.usefixtures("provider_runtime_per_test")
 
@@ -88,7 +88,7 @@ def _grok_deployment(directory: Path, program: str) -> GrokSubscriptionSettings:
         workspace,
         credentials,
         os.environ["PATH"],
-        stand_in_bubblewrap(directory),
+        HOST_ENFORCER,
     )
 
 
