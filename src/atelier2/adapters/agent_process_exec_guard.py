@@ -5,12 +5,53 @@ import base64
 import ctypes
 import json
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 _PR_SET_PDEATHSIG = 1
 _SIGKILL = 9
 _ENVIRONMENT_CHANNEL = "ATELIER2_AGENT_ENVIRONMENT_B64"
+
+
+GUARD_MODULE = "atelier2.adapters.agent_process_exec_guard"
+
+
+def guarded_arguments(
+    cgroup: Path,
+    watchdog_pid: int,
+    arguments: tuple[str, ...],
+    environment: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    """How one command is started under this guard: its argv and its environment.
+
+    The guard's own invocation and the channel its child's environment travels
+    on are one protocol, so they are composed here rather than restated by the
+    supervision that spawns it. The environment a launch declares is complete,
+    which is why it travels encoded beside the controller's own rather than as
+    an overlay on it.
+    """
+
+    guarded = (
+        sys.executable,
+        # Isolated, because this interpreter starts in the directory a provider
+        # writes: without it Python would import this module through whatever
+        # `atelier2` package that directory happens to hold, before the guard
+        # has joined containment or the fence exists.
+        "-I",
+        "-m",
+        GUARD_MODULE,
+        "--cgroup",
+        str(cgroup),
+        "--watchdog-pid",
+        str(watchdog_pid),
+        "--",
+        *arguments,
+    )
+    channel = base64.b64encode(
+        json.dumps(sorted(environment), separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return guarded, {**os.environ, _ENVIRONMENT_CHANNEL: channel}
 
 
 def guarded_exec(

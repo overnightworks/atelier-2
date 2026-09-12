@@ -62,6 +62,7 @@ from atelier2.adapters.dbos.schema import (
     tool_redemptions,
     wait_answers,
 )
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
 from atelier2.adapters.dbos.verification_failure_words import (
@@ -404,7 +405,7 @@ def _prepared_attempt(execution: AgentAttemptExecution) -> AgentAttempt:
     )
 
 
-def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
+def _load_attempt(session: SqlExecutor, attempt_id: AgentAttemptId) -> AgentAttempt:
     record = (
         session.execute(
             sa.select(agent_attempts).where(
@@ -584,7 +585,7 @@ def compose_agent_node_job_for_attempt(
 
 
 def _validate_request(
-    session: Any,
+    session: SqlExecutor,
     request: AgentExecutionRequestV2,
     target_attempt_id: AgentAttemptId,
     target_attempt_ordinal: int,
@@ -1074,7 +1075,7 @@ def _store_output_schema_refusal_receipt(
 
 
 def _kept_verdict(
-    session: Any,
+    session: SqlExecutor,
     graph: WorkflowGraphV3,
     request: AgentExecutionRequestV2,
 ) -> Verdict | None:

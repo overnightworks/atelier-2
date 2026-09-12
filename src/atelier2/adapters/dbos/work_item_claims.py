@@ -17,11 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import cast
 
 import sqlalchemy as sa
 from dbos import SQLAlchemyDatasource
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.advancer import (
     effect_receipt_exists,
@@ -49,6 +50,7 @@ from atelier2.adapters.dbos.run_transitions import (
     load_graph,
 )
 from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.sql_executor import SqlExecutor
 from atelier2.adapters.dbos.work_item_intents import (
     head_branch_for_work_item,
     issue_work_item_order,
@@ -202,7 +204,7 @@ type WorkItemClaimOutcome = WorkItemClaimHeld | WorkItemClaimRefused
 
 
 def prepare_work_item_claim(
-    session: Any,
+    session: Session,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
@@ -254,7 +256,7 @@ def prepare_work_item_claim(
 
 
 def _requested_claim(
-    session: Any, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
+    session: Session, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
 ) -> ClaimWorkItem | AgentExecutionRefusal:
     """The claim this run's own work-item order asks for, or why it asks none."""
 
@@ -276,7 +278,7 @@ def _requested_claim(
 
 
 def _admission_reason(
-    session: Any, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
+    session: Session, run_id: RunId, project_id: ProjectId, queue: QueuePolicyReader
 ) -> str | None:
     """The out-of-order reason a queue admission gives this run, or none.
 
@@ -399,7 +401,7 @@ def _colliding_paths(
 
 
 def confirm_work_item_claim(
-    session: Any,
+    session: SqlExecutor,
     logical_key: str,
     revision_hash: WorkflowRevisionHash,
     confirmed: ConfirmedWorkItemClaim,
@@ -419,7 +421,7 @@ def confirm_work_item_claim(
 
 
 def commit_work_item_claim_refusal(
-    session: Any,
+    session: SqlExecutor,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
