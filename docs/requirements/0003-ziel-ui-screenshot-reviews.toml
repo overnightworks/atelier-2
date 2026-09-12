@@ -358,3 +358,9 @@ requirement = "REQ-UIQ-11"
 scope_sha256 = "a3b4bc664105001c09b3295ca4cc3ce6eb9d7fd7a5592fb27dfe7a26d8cc5af5"
 approval_comment_id = 5574090943
 approval_sha256 = "a5b5a1d63695d3465ac6073ad0aa1215cc8cbdd9d923d7899907b3d7e16c3ea2"
+
+[[approval]]
+requirement = "REQ-UIQ-14"
+scope_sha256 = "ae3b69f24da5e0f2202bf0e5e02422d559bf00948f63ed72c44dae8dee68cff3"
+approval_comment_id = 5647475636
+approval_sha256 = "719dd7a60eab62e6d559f2c12847b70892d9198c93216c2a5ecccd5883e27c4d"
