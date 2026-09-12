@@ -135,7 +135,6 @@
           class:held={addHeld}
           type="button"
           disabled={adding || selectedKind === null}
-          title={addHeld ? wrapDisplayCopy(catalogPageCopy.noKindDeclared) : undefined}
           onclick={() => { void addDeclaredDocument(); }}
         >
           {wrapDisplayCopy(adding ? catalogPageCopy.addingToCatalog : catalogPageCopy.addToCatalog)}
@@ -162,7 +161,7 @@
   .kind-chips { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
   .kind-chip { min-height: var(--tap); min-width: var(--tap); padding: var(--space-2) var(--space-1); border: 0; border-bottom: var(--edge-strong) solid transparent; border-radius: 0; background: transparent; color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
   /*
-   * Filled, not just underlined (#1500): a focused-but-unchosen chip keeps
+   * Filled, not just underlined: a focused-but-unchosen chip keeps
    * the workshop's ordinary 3px outline ring, which sits well outside the
    * button; a chosen chip fills the button itself, so the two signals never
    * read as the same "this one is picked" shape.
@@ -176,7 +175,7 @@
   /*
    * A `showModal()`-opened dialog stays capped by Chromium's own UA rule
    * (`max-width: calc((100% - 6px) - 2em)`) unless a rule here overrides
-   * `max-width` too (#1500); `width: 100%` alone cannot beat a narrower
+   * `max-width` too; `width: 100%` alone cannot beat a narrower
    * `max-width`.
    */
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }

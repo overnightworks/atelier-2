@@ -203,71 +203,52 @@ export function startAccountSuffix(accountId: string): string {
   return ` · Account ${accountId}`;
 }
 
-export function startUnavailableSuffix(): string {
-  return ` · ◇ ${workflowStartCopy.unavailable}`;
-}
-
 /** The wire's own closed vocabulary (`client.ts`'s generated enum) for why a
  * listed agent configuration cannot start -- never widened to a bare
  * `string`, so a fifth reason breaks this file's build until it is mapped. */
 type NotStartableReason = NonNullable<AgentConfigurationRevisionListItem["not_startable_reason"]>;
 
 /**
- * One sentence per reason, true of every case that reason actually covers
- * (agent_catalog.py's precedence), not just its most common one:
- * - `agent-executor-binding-unavailable`: no factory runs this executor on
- *   this atelier at all -- always the same fact, so always the same door
- *   (a different configuration, offered right here).
- * - `model-not-registered`: no checked registry entry currently points at
- *   this exact configuration -- true whether it was never registered, a
- *   newer revision superseded it, or an existing entry is still
- *   `not-checked`/`unknown-at-provider` (`resolve_start_bindings.py`'s
- *   eligible-candidate filter keeps only `checked` entries), so the
- *   sentence never claims "not registered" outright and names the two
- *   Settings doors that exist for an existing-but-unchecked entry (`Check`,
- *   `Correct the ID`) alongside choosing a different configuration here.
- * - `provider-probe-receipt-missing`: no receipt currently proves this
- *   configuration -- true whether none was ever taken or the only one on
- *   file is a stale, no-longer-current success (agent_catalog.py's own
- *   comment on this exact branch). Settings' "Check" validates a model's
- *   registration, not this live evidence, so no UI door is named; the
- *   provider canary (`provider_canary.py`) is the only thing that changes
- *   this field, and is named honestly instead of a step this atelier does
- *   not offer today.
- * - `provider-probe-failed`: the latest receipt is itself a genuine
- *   failure -- one case, but for the same reason as above, no Settings door
- *   repairs a live connection, so none is claimed.
+ * One sentence per reason, true of every case that reason covers
+ * (`agent_catalog.py`'s precedence), not just its most common one: a model
+ * can lack a checked registration because none was ever made, because a newer
+ * revision superseded it, or because an entry is still unchecked, and a live
+ * check can be missing because none was ever taken or because the only one on
+ * file is no longer current.
+ *
+ * No sentence names its role -- the row's own label carries it -- and none
+ * names a repair this surface does not offer: nothing in the console renews a
+ * live check, so those two sentences point at the one door the role's own
+ * select does have.
  */
-const NOT_STARTABLE_REASON_SENTENCE: Readonly<Record<NotStartableReason, (role: string) => string>> = {
-  "agent-executor-binding-unavailable": (role) =>
-    `${role}'s model can't run on this atelier yet — choose a different configuration.`,
-  "model-not-registered": (role) =>
-    `${role}'s configuration has no current, checked registration — check it or correct the model ID in Settings, or choose a different one.`,
-  "provider-probe-receipt-missing": (role) =>
-    `${role}'s connection has no current check on file — the next canary run renews it.`,
-  "provider-probe-failed": (role) =>
-    `${role}'s last connection check failed — the next canary run will retry it.`
+const NOT_STARTABLE_SENTENCE: Readonly<Record<NotStartableReason, string>> = {
+  "agent-executor-binding-unavailable":
+    "This model cannot run in this workshop — choose a different one.",
+  "model-not-registered":
+    "This model is not checked in Settings — check or correct it there.",
+  "provider-probe-receipt-missing":
+    "This model has no current live check — choose a different one.",
+  "provider-probe-failed":
+    "This model's last live check failed — choose a different one."
 };
 
-export function startNotStartableReason(role: string, reason: NotStartableReason | null): string {
-  return reason === null
-    ? workflowStartCopy.startNeedsConfiguration(role)
-    : NOT_STARTABLE_REASON_SENTENCE[reason](role);
+/** Why this role cannot start, or the bare badge when the host named no reason. */
+export function startNotStartableReason(reason: NotStartableReason | null): string {
+  return reason === null ? workflowStartCopy.unavailable : NOT_STARTABLE_SENTENCE[reason];
 }
 
-export function pinnedModelLine(model: string, account: string, unavailable: string): string {
-  return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}${unavailable}`;
+export function pinnedModelLine(model: string, account: string): string {
+  return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}`;
 }
 
 export function projectDefaultLine(
   difficulty: number,
   model: string,
   nextHigher: boolean,
-  account: string,
-  unavailable: string
+  account: string
 ): string {
   const fallback = nextHigher ? ` (${workflowStartCopy.nextHigher})` : "";
-  return `difficulty ${difficulty} → ${model}${fallback}${account}${unavailable}`;
+  return `difficulty ${difficulty} → ${model}${fallback}${account}`;
 }
 
 export function startOrderGroup(name: string): string {

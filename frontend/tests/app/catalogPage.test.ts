@@ -785,7 +785,6 @@ describe("the catalog room", () => {
     expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
-    expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
     await fireEvent.click(agentChip);
     expect(agentChip.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText(catalogPageCopy.oneAgent).isConnected).toBe(true);
@@ -820,7 +819,6 @@ describe("the catalog room", () => {
     expect(screen.getByRole("button", { name: catalogPageCopy.cancel })).toBeTruthy();
     const add = screen.getByRole("button", { name: catalogPageCopy.addToCatalog });
     expect((add as HTMLButtonElement).disabled).toBe(true);
-    expect(add.getAttribute("title")).toBe(catalogPageCopy.noKindDeclared);
     expect(kindButton(catalogPageCopy.kindWorkflow).getAttribute("aria-pressed")).toBe("false");
     expect(kindButton(catalogPageCopy.kindAgent).getAttribute("aria-pressed")).toBe("false");
     expect(offeredKindButtons()).toHaveLength(IMPORT_SHEET_KINDS.length);

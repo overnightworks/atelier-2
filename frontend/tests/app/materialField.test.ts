@@ -16,7 +16,6 @@ import {
   projectDefaultLine,
   startAccountSuffix,
   startNotStartableReason,
-  startUnavailableSuffix,
   workItemFor,
   workflowStartCopy
 } from "../../src/lib/catalogPageCopy";
@@ -881,7 +880,7 @@ describe("the catalog start sheet's project model resolution", () => {
     const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
     expect((picker as HTMLSelectElement).value).toBe(configurationHash);
     expect(within(picker).getByRole("option", {
-      name: projectDefaultLine(2, "cook-model", true, startAccountSuffix("test"), "")
+      name: projectDefaultLine(2, "cook-model", true, startAccountSuffix("test"))
     })).toBeTruthy();
     expect(screen.queryByText("Next higher difficulty")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
@@ -906,7 +905,7 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(cockpitApi);
 
     expect(within(screen.getByLabelText(workflowStartCopy.configurationFor("cook"))).getByRole("option", {
-      name: pinnedModelLine("cook-model", startAccountSuffix("test"), "")
+      name: pinnedModelLine("cook-model", startAccountSuffix("test"))
     })).toBeTruthy();
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
@@ -1018,7 +1017,7 @@ describe("the catalog start sheet's project model resolution", () => {
     expect(picker.value).toBe(configurationHash);
     expect(picker.selectedOptions[0]?.disabled).toBe(true);
     expect(picker.selectedOptions[0]?.textContent).toBe(
-      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), startUnavailableSuffix())
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"))
     );
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
       .toBe(true);
@@ -1033,20 +1032,19 @@ describe("the catalog start sheet's project model resolution", () => {
   it.each([
     [
       "agent-executor-binding-unavailable",
-      "cook's model can't run on this atelier yet — choose a different configuration."
+      "This model cannot run in this workshop — choose a different one."
     ],
     [
       "model-not-registered",
-      "cook's configuration has no current, checked registration — check it or correct the model ID in " +
-        "Settings, or choose a different one."
+      "This model is not checked in Settings — check or correct it there."
     ],
     [
       "provider-probe-receipt-missing",
-      "cook's connection has no current check on file — the next canary run renews it."
+      "This model has no current live check — choose a different one."
     ],
     [
       "provider-probe-failed",
-      "cook's last connection check failed — the next canary run will retry it."
+      "This model's last live check failed — choose a different one."
     ]
   ] as const)(
     "%s reads a sentence true of every case that reason covers, not just Unavailable",
@@ -1060,10 +1058,18 @@ describe("the catalog start sheet's project model resolution", () => {
       ]);
       await openStart(cockpitApi);
 
-      const sentence = startNotStartableReason("cook", reason);
+      const sentence = startNotStartableReason(reason);
       expect(sentence).toBe(expectedSentence);
       expect(screen.getByText(sentence, { exact: false })).toBeTruthy();
-      expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(sentence);
+      const picker = screen.getByLabelText(
+        workflowStartCopy.configurationFor("cook")
+      ) as HTMLSelectElement;
+      // The reason stands once: rendered under the role, never repeated as a
+      // second badge in the option the sentence already explains.
+      expect(picker.selectedOptions[0]?.textContent).not.toContain(workflowStartCopy.unavailable);
+      expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
+        workflowStartCopy.startNeedsConfiguration("cook")
+      );
       expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
     }
   );
@@ -1086,7 +1092,7 @@ describe("the catalog start sheet's project model resolution", () => {
 
     expect((screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement)
       .selectedOptions[0]?.textContent).toBe(
-      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), "")
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"))
     );
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 

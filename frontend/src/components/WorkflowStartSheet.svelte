@@ -22,7 +22,6 @@
     startNotStartableReason,
     startOrderByteCount,
     startOrderGroup,
-    startUnavailableSuffix,
     workItemFor,
     workflowStartCopy
   } from "../lib/catalogPageCopy";
@@ -122,8 +121,7 @@
     orders,
     roles,
     resolutions,
-    registeredConfigurations,
-    configurations
+    registeredConfigurations
   );
 
   onMount(() => {
@@ -301,19 +299,15 @@
   ): string {
     const model = resolution.model_id ?? workflowStartCopy.unavailable;
     const account = registered === undefined ? "" : startAccountSuffix(registered.accountId);
-    const unavailable = registered?.configuration.startable === false
-      ? startUnavailableSuffix()
-      : "";
     if (resolution.source === "pinned-in-workflow") {
-      return pinnedModelLine(model, account, unavailable);
+      return pinnedModelLine(model, account);
     }
     if (resolution.source === "from-project") {
       return projectDefaultLine(
         resolution.declared_difficulty,
         model,
         resolution.default_difficulty !== resolution.declared_difficulty,
-        account,
-        unavailable
+        account
       );
     }
     return registered === undefined ? model : configurationLabel(registered);
@@ -401,8 +395,7 @@
     currentOrders: readonly OrderDraft[],
     currentRoles: readonly string[],
     currentResolutions: Readonly<Record<string, RoleResolution>>,
-    currentConfigurations: readonly RegisteredConfiguration[],
-    everyConfiguration: readonly AgentConfigurationRevisionListItem[]
+    currentConfigurations: readonly RegisteredConfiguration[]
   ): string | null {
     if (isLoading || isResolving) return workflowStartCopy.startPreparing;
     const incompleteOrder = currentOrders.find((order) => !orderCanStart(order));
@@ -421,13 +414,9 @@
         configuration.agent_configuration_revision_hash === configurationHash
       )?.configuration.startable !== true;
     });
-    if (unresolvedRole === undefined) return null;
-    const resolvedHash = currentResolutions[unresolvedRole]?.agent_configuration_revision_hash ?? null;
-    if (resolvedHash === null) return workflowStartCopy.startNeedsConfiguration(unresolvedRole);
-    const reason = everyConfiguration.find((candidate) =>
-      candidate.agent_configuration_revision_hash === resolvedHash
-    )?.not_startable_reason ?? null;
-    return startNotStartableReason(unresolvedRole, reason);
+    return unresolvedRole === undefined
+      ? null
+      : workflowStartCopy.startNeedsConfiguration(unresolvedRole);
   }
 
   function requiredFieldsFilled(order: OrderDraft): boolean {
@@ -1049,7 +1038,7 @@
               {#if resolvedHash !== null && (resolution?.source === "chosen-now" || roleUnavailable)}
                 <p class="role-source">
                   {#if roleUnavailable}
-                    <span class="unavailable">◇ {startNotStartableReason(role, configurationByHash(resolvedHash)?.not_startable_reason ?? null)}</span>
+                    <span class="unavailable">◇ {startNotStartableReason(configurationByHash(resolvedHash)?.not_startable_reason ?? null)}</span>
                     {#if resolution?.source === "chosen-now"} · {/if}
                   {/if}
                   {#if resolution?.source === "chosen-now"}{workflowStartCopy.chosenNow}{/if}
@@ -1115,7 +1104,7 @@
   /*
    * A `showModal()`-opened dialog stays capped by Chromium's own UA rule
    * (`max-width: calc((100% - 6px) - 2em)`) unless a rule here overrides
-   * `max-width` too (#1500); `width: 100%` alone cannot beat a narrower
+   * `max-width` too; `width: 100%` alone cannot beat a narrower
    * `max-width`.
    */
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
