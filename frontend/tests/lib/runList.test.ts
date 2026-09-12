@@ -6,7 +6,8 @@ import {
   newestReadOfEachRun,
   runActivityAt,
   runListRowReference,
-  splitRunListRows
+  splitRunListRows,
+  withDefectiveRow
 } from "../../src/lib/runList";
 import {
   defectiveRunRow,
@@ -166,5 +167,24 @@ describe("splitting a run list page into its two row shapes (#1042)", () => {
 
     expect(runListRowReference(healthy)).toBe("run1.YQ");
     expect(runListRowReference(defective)).toBe("run1.Yg");
+  });
+});
+
+describe("one defective row per run, however often it is named", () => {
+  it("adds a run no reader has named yet", () => {
+    const listed = defectiveRunRow({ public_run_reference: "run1.YQ" });
+    const named = defectiveRunRow({ public_run_reference: "run1.Yg" });
+
+    expect(withDefectiveRow([listed], named)).toEqual([listed, named]);
+  });
+
+  it("keeps the first row when the same run is named again", () => {
+    const listed = defectiveRunRow({ public_run_reference: "run1.YQ" });
+    const namedAgain = defectiveRunRow({
+      public_run_reference: "run1.YQ",
+      detail: "Durable state is corrupt"
+    });
+
+    expect(withDefectiveRow([listed], namedAgain)).toEqual([listed]);
   });
 });
