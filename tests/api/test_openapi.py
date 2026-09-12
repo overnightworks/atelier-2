@@ -725,6 +725,7 @@ def test_the_fork_door_publishes_server_owned_identity_and_closed_refusals() -> 
         "run-fork-command-conflict",
         "agent-executor-binding-unavailable",
         "agent-mode-mismatch",
+        "workflow-format-not-executable",
         "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",

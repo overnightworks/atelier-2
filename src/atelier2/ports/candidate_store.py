@@ -133,6 +133,32 @@ class CandidateTreeStore(Protocol):
         """The candidate this attempt captured, or nothing if it captured none."""
         ...
 
+    def attest(self, candidate: CandidateTree) -> None:
+        """Refuse a candidate this store cannot hand out whole, unpacking nothing.
+
+        Whole is the word that matters: the tree still anchored under the
+        attempt that made it, and every object beneath that tree readable here.
+        The anchor is what keeps those objects from being collected, so a tree
+        found without its anchor is one nothing promises to still hold.
+
+        Asked by whoever is about to begin work in a candidate, before that
+        work costs anything. It leaves through `CandidateNotKept` like the rest
+        of this port: work that cannot be named cannot be continued either.
+        """
+        ...
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        """Unpack this candidate into the directory an attempt leased.
+
+        The mirror of a capture: what `capture` read out of a lease is what this
+        writes back into one, so an attempt handed a candidate it then leaves
+        alone captures that very tree again. Material travels and no repository
+        does -- the same stated limit the pinned tree's own unpacking carries.
+        """
+        ...
+
     def written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> LeasedWorkingTree:

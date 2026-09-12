@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from atelier2.contracts.agents import ResolvedAgentBinding
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, require_exact_round_ordinal
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
@@ -57,6 +57,15 @@ class AgentNodeBindingV2:
     Recovery replays this binding, not the catalog, so the bound has to live
     here for a workspace-tool launch to see the same ceiling the pin named.
     """
+    start_candidate: CandidateTree | None = None
+    """The work of an earlier publication this node goes on in, or nothing.
+
+    It travels beside the pin rather than in its place: the pin stays what the
+    work is compared and committed against, so what a later publisher pushes is
+    the cumulative diff and an empty continuation is no failure, while this names
+    the tree the attempt actually begins in. A replacement attempt is composed
+    from the same publication and therefore starts from the same candidate.
+    """
 
     def __post_init__(self) -> None:
         require_exact_round_ordinal(self.round_ordinal)
@@ -64,6 +73,11 @@ class AgentNodeBindingV2:
             raise RunBindingConflict(
                 "a node redeeming a tool grant requires the project source its "
                 "binding pinned, and this durable binding pinned none"
+            )
+        if self.start_candidate is not None and self.project_source is None:
+            raise RunBindingConflict(
+                "a node continuing an earlier publication requires the project "
+                "source its binding pinned, and this durable binding pinned none"
             )
 
 

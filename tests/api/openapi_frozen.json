@@ -1655,6 +1655,17 @@
             "title": "Skills",
             "type": "array"
           },
+          "starts_from": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StartsFromNode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "default": [],
             "items": {
@@ -9963,6 +9974,22 @@
         "title": "StartRunRequestResourceV3",
         "type": "object"
       },
+      "StartsFromNode": {
+        "additionalProperties": false,
+        "description": "Whose publication a node goes on working in (ADR 0006).",
+        "properties": {
+          "node": {
+            "minLength": 1,
+            "title": "Node",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "title": "StartsFromNode",
+        "type": "object"
+      },
       "StreamFailureResource": {
         "additionalProperties": false,
         "description": "The terminal event-stream frame: this stream ended because it failed.\n\nIt carries the same problem body the REST surface would answer, so an\noperator and a machine consumer read one problem vocabulary whether the\nfailure was decided before the response headers or after them.",
@@ -17283,6 +17310,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAgentExecutorBindingUnavailable"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemWorkflowFormatNotExecutable"
                     }
                   ]
                 }
