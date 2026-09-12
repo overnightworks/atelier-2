@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,8 +14,10 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.advancer import (
     graph_action_intent,
+    prepare_graph_action,
     prepared_effect_intent,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -38,6 +41,10 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.git_transport.effects import (
+    GitRemote,
+    GitTransportEffectAdapterFactory,
+)
 from atelier2.adapters.github.effects import (
     GitHubEffectAdapterFactory,
     RecordedPullRequest,
@@ -57,6 +64,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutionRequestV2,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
@@ -67,10 +75,8 @@ from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effect_requests import (
     GitCommitIdentity,
     HeadBranch,
-    OpenPullRequest,
     PushAtelierCommit,
     PushAtelierCommitReceipt,
-    head_branch_for_queue_item,
 )
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -97,10 +103,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import ObservedWorkItemOrderValue
-from atelier2.contracts.queue_projection import (
-    TrackerItemReference,
-    WorkItemReference,
-)
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
 from atelier2.contracts.runs import (
@@ -109,6 +112,7 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevision,
 )
+from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
     WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
@@ -121,18 +125,24 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.agent_executions import AgentProcessCommand
 from atelier2.ports.durable_run_forks import (
     DurableRunForkCreated,
     DurableRunForkStateCorrupt,
     ForkRunRequest,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.effects import (
+    EffectAdapter,
+    EffectAdapterRegistration,
+    EffectAdapterRegistry,
+)
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
 from tests.scenarios.agents import (
+    AgentCommandFactory,
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     answering_each_execution,
@@ -140,29 +150,34 @@ from tests.scenarios.agents import (
     publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
+from tests.scenarios.head_branch_pull_requests import FakeHeadBranchPullRequests
+from tests.scenarios.projects import git_project, run_git
 from tests.scenarios.runs import (
     publish_pinned_revisions,
     publish_revision,
-    publish_v3_agent_bindings,
     submit_wait_answer,
 )
+from tests.scenarios.work_item_claims import fake_agent_claim_executable
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/open-pr")
 TRANSITIVE_RUN = RunId("v3/open-pr/transitive")
 TWO_PUBLISHER_RUN = RunId("v3/open-pr/two-publishers")
 BOUND_PROJECT = ProjectId("project-with-two-publishers")
+BUILDING_NODE = "build"
+FIXING_NODE = "fix"
+ACTION_NODE = "publish"
 ORDERED_ITEM = ObservedWorkItemRevision(
     TrackerItemReference("gh:1528"),
     WorkItemKind.ISSUE,
-    b"Open the pull request over the last publication of the run.\n",
+    b"Open the pull request over the last publication of the run.\n"
+    b"\n## Bereich\nkept.txt\n",
     WorkItemChangeMarker("issue-1528-v1"),
     RecordedAt("2026-09-11T09:00:00Z"),
 )
-PUBLISHED_BRANCH = head_branch_for_queue_item(
-    WorkItemReference(BOUND_PROJECT, ORDERED_ITEM.item).item_id
-)
-"""The branch this run's work item derives: where its publishers land their commits."""
+BUILD_REPORT = b'"what the builder published"'
+FIX_REPORT = b'"what the fixer published after the builder"'
+"""Two reports of distinct bytes, so an opened pull request names which it read."""
 TREE = json.dumps({"files": {"hello.txt": "from the builder"}}).encode("utf-8")
 REVIEWERS_VERDICT = json.dumps(
     {"verdict": "approved by the reviewer, not the builder"}
@@ -181,6 +196,43 @@ _LIST_THEN_WRITE = (
     "import os, pathlib, sys; "
     "pathlib.Path(sys.argv[1]).write_text('\\n'.join(sorted(os.listdir('.')))); "
     "os.write(1, bytes.fromhex(sys.argv[2]))"
+)
+_WRITE_THEN_ANSWER = (
+    "import os, pathlib, sys; "
+    "pathlib.Path(sys.argv[1]).write_text(sys.argv[1]); "
+    "os.write(1, bytes.fromhex(sys.argv[2]))"
+)
+_STANDING_PATIENCE_SECONDS = 30.0
+"""How long two real agent attempts and two real pushes may take to stand aside."""
+_STANDING_POLL_SECONDS = 0.025
+_PUSHED = AdapterOperationName.PUSH_ATELIER_COMMIT
+_PUSH_AUTHOR = GitCommitIdentity("Atelier Agent", "agent@example.test")
+_PUSH_COMMITTER = GitCommitIdentity("Atelier Core", "core@example.test")
+PUSH_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps(
+        {
+            "operation": _PUSHED.value,
+            "author": _PUSH_AUTHOR.as_json(),
+            "committer": _PUSH_COMMITTER.as_json(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8"),
+)
+PUSH_GRANT = PublishedRevision(
+    RevisionKind.TOOL,
+    json.dumps(
+        {
+            "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
+            "operation": {
+                "ref": "push-atelier-commit",
+                "revision": PUSH_OPERATION.revision_hash.value,
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8"),
 )
 
 
@@ -467,29 +519,14 @@ nodes:
     )
 
 
-def publish_two_publisher_line(
-    runtime: DbosRuntime, body_from: str
-) -> tuple[WorkflowRevision, tuple[AuthoredAgentBinding, ...]]:
-    """A build, a fix behind it, and the Action whose `body` reads one of them.
-
-    The run carries a work-item order because an open-pr Action of a bound
-    project derives the head it opens over from that order.
-    """
-    publish_pinned_revisions(
-        runtime.engine,
-        ANY_JSON_SCHEMA,
-        PublishedRevision(RevisionKind.ADAPTER_OPERATION, OPEN_PR_DOCUMENT),
-        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
-    )
-    workflow = WorkflowRevision(_two_publisher_document(body_from))
-    publish_revision(runtime.engine, workflow)
-    return workflow, publish_v3_agent_bindings(
-        runtime.engine, runtime.agent_executor_registry
-    )
-
-
 def _two_publisher_document(body_from: str) -> bytes:
-    operation_hash = PublishedRevision(
+    """`build`, a `fix` ordered behind it, and the Action reading one report.
+
+    Both agents hold the push grant, so each publishes a candidate of its own
+    onto the branch this run's work item derives. The Action's `body` names
+    which of the two reports the pull request would carry.
+    """
+    open_pr_hash = PublishedRevision(
         RevisionKind.ADAPTER_OPERATION, OPEN_PR_DOCUMENT
     ).revision_hash.value
     return (
@@ -501,33 +538,249 @@ graph_inputs:
       ref: work-item
       revision: {WORK_ITEM_ORDER_SCHEMA_REVISION.value}
 nodes:
-  - id: build
-    type: agent
-    role: builder
-    mode: headless
-    instruction: Write the tree this chain lands.
-    inputs:
-      - name: work_item
-        from: {{graph_input: work_item}}
 """.encode()
-        + declared_output()
-        + b"""  - id: fix
-    type: agent
-    role: builder
-    mode: headless
-    instruction: Carry the published candidate one step further.
-    depends_on: [build]
-"""
-        + declared_output()
-        + f"""  - id: publish
+        + _publishing_node(BUILDING_NODE, ())
+        + _publishing_node(FIXING_NODE, (BUILDING_NODE,))
+        + f"""  - id: {ACTION_NODE}
     type: action
-    operation: {{ref: open-pr, revision: {operation_hash}}}
-    depends_on: [fix]
+    operation: {{ref: open-pr, revision: {open_pr_hash}}}
+    depends_on: [{FIXING_NODE}]
     inputs:
       - name: body
         from: {{node: {body_from}, output: result}}
 """.encode()
     )
+
+
+def _publishing_node(node_id: str, depends_on: tuple[str, ...]) -> bytes:
+    ordered = f"    depends_on: [{', '.join(depends_on)}]\n" if depends_on else ""
+    ordered_item = (
+        ""
+        if depends_on
+        else "    inputs:\n      - name: work_item\n"
+        "        from: {graph_input: work_item}\n"
+    )
+    return (
+        f"""  - id: {node_id}
+    type: agent
+    role: builder
+    mode: headless_with_tools
+    instruction: Carry this run one step further and leave your candidate behind.
+    tools:
+      - {{ref: push-atelier-commit, revision: {PUSH_GRANT.revision_hash.value}}}
+{ordered}{ordered_item}""".encode()
+        + declared_output()
+    )
+
+
+def _publishing_reports(reports: Mapping[str, bytes]) -> AgentCommandFactory:
+    """Each publisher changes a file of its own and answers with its own report.
+
+    The candidate the atelier captures differs per node, so the two
+    publications of one run are two different commits rather than one tree
+    pushed twice.
+    """
+
+    def command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        return launching(
+            sys.executable,
+            "-c",
+            _WRITE_THEN_ANSWER,
+            f"{request.node_id}.txt",
+            reports[request.node_id].hex(),
+        )(request)
+
+    return command
+
+
+def _tooled_builder_binding(runtime: DbosRuntime) -> tuple[AuthoredAgentBinding, ...]:
+    """The role both publishers bind: a workspace agent whose grant may push."""
+    catalog = DbosAgentConfigurationCatalog(
+        runtime.engine, runtime.agent_executor_registry
+    )
+    auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
+    assert isinstance(
+        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+    )
+    configuration = AgentConfigurationRevision(
+        "opus",
+        auth.revision_hash,
+        AgentExecutorRevision("exact/v1"),
+        AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    assert isinstance(
+        catalog.publish_agent_configuration_revision(configuration),
+        AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
+    )
+    return (AuthoredAgentBinding("builder", configuration.revision_hash.value),)
+
+
+@dataclass(frozen=True, slots=True)
+class TwoPublisherRun:
+    """A launched run of that line, and what its publishers really left behind."""
+
+    runtime: DbosRuntime
+    github: CountingGitHubEffectAdapterFactory
+    workflow: WorkflowRevision
+    remote: Path
+
+    def publication_of(self, publisher: str) -> PushAtelierCommitReceipt:
+        """What this node's confirmed push receipt says it put on the branch."""
+        with self.runtime.engine.connect() as connection:
+            result = connection.execute(
+                sa.select(effect_receipts.c.result).where(
+                    effect_receipts.c.logical_key
+                    == logical_effect_key_for_node(
+                        TWO_PUBLISHER_RUN,
+                        self.workflow.revision_hash,
+                        publisher,
+                        FIRST_ROUND_ORDINAL,
+                    ).value
+                )
+            ).scalar_one()
+        return PushAtelierCommitReceipt.from_result_bytes(bytes(result))
+
+    def remote_head_of(self, full_ref: str) -> str:
+        """Which commit the destination itself now answers for that ref."""
+        return run_git(self.remote, "rev-parse", full_ref)
+
+    def effects_its_action_asked_for(self) -> tuple[AdapterOperationName, ...]:
+        """Every effect intent the Action's own node execution durably holds."""
+        with self.runtime.engine.connect() as connection:
+            return tuple(
+                AdapterOperationName(str(operation))
+                for operation in connection.scalars(
+                    sa.select(effect_intents.c.operation_name).where(
+                        effect_intents.c.logical_key
+                        == logical_effect_key_for_node(
+                            TWO_PUBLISHER_RUN,
+                            self.workflow.revision_hash,
+                            ACTION_NODE,
+                            FIRST_ROUND_ORDINAL,
+                        ).value
+                    )
+                )
+            )
+
+    def wait_until_standing_at_its_action(self) -> None:
+        """Wait until both publishers confirmed and the Action is the next node.
+
+        An Action whose report was overtaken never gets past its refusal, so a
+        scenario about that refusal waits for the node the run stands on, not
+        for a state it reaches afterwards.
+        """
+        self._wait_until(
+            "its Action",
+            lambda: self._standing() == (ACTION_NODE, RunState.STARTED),
+        )
+
+    def wait_until_it_completes(self) -> None:
+        """Wait until the run ended, its publications and pull request included."""
+        self._wait_until("its end", lambda: self._standing()[1] is RunState.COMPLETED)
+
+    def _standing(self) -> tuple[str, RunState]:
+        with self.runtime.engine.connect() as connection:
+            record = connection.execute(
+                sa.select(runs.c.current_node_id, runs.c.state).where(
+                    runs.c.run_id == TWO_PUBLISHER_RUN.value
+                )
+            ).one()
+        return str(record.current_node_id), RunState(str(record.state))
+
+    def _wait_until(self, awaited: str, reached: Callable[[], bool]) -> None:
+        deadline = time.monotonic() + _STANDING_PATIENCE_SECONDS
+        while time.monotonic() < deadline:
+            if reached():
+                return
+            time.sleep(_STANDING_POLL_SECONDS)
+        raise AssertionError(f"the run stands at {self._standing()}, not at {awaited}")
+
+
+@contextmanager
+def two_publisher_run(root: Path, body_from: str) -> Iterator[TwoPublisherRun]:
+    """A launched run of that line over a real project, remote and candidate store.
+
+    Nothing about the publications is seeded: both agents run, the transport
+    really pushes, and the branch the Action would open over really carries
+    what the second push put there.
+    """
+    project = root / "project"
+    git_project(project, {"kept.txt": "what trunk carried first\n"})
+    remote = root / "remote.git"
+    run_git(root, "init", "--bare", "--quiet", str(remote))
+    run_git(project, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
+    github = CountingGitHubEffectAdapterFactory(root / "github.sqlite")
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "v3-open-pr-two-publishers",
+            agent_scratch_root=agent_scratch_root(root),
+            project_id=BOUND_PROJECT,
+            bootstrap_project_root=project,
+            aco_executable=fake_agent_claim_executable(root),
+        ),
+        EffectAdapterRegistry(
+            (
+                EffectAdapterRegistration(AdapterOperationName.OPEN_PR, github),
+                EffectAdapterRegistration(
+                    AdapterOperationName.PUSH_ATELIER_COMMIT,
+                    GitTransportEffectAdapterFactory(
+                        root / CANDIDATE_STORE_DIRECTORY_NAME,
+                        GitRemote("local-test", str(remote)),
+                        AdapterRevision("git-push-v1"),
+                        EffectDestination("git"),
+                        FakeHeadBranchPullRequests(),
+                    ),
+                ),
+            )
+        ),
+        (
+            RecordingAgentExecutorFactoryV2(
+                "exact",
+                "exact/v1",
+                "exact-operation",
+                b"",
+                capability_set=frozenset(
+                    {AgentExecutionCapability.HEADLESS_WITH_TOOLS}
+                ),
+                command=_publishing_reports(
+                    {BUILDING_NODE: BUILD_REPORT, FIXING_NODE: FIX_REPORT}
+                ),
+            ),
+        ),
+    )
+    runtime.initialize_storage()
+    try:
+        publish_pinned_revisions(
+            runtime.engine,
+            ANY_JSON_SCHEMA,
+            PublishedRevision(RevisionKind.ADAPTER_OPERATION, OPEN_PR_DOCUMENT),
+            PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
+            PUSH_OPERATION,
+            PUSH_GRANT,
+        )
+        workflow = WorkflowRevision(_two_publisher_document(body_from))
+        publish_revision(runtime.engine, workflow)
+        started = start_published_run(
+            TWO_PUBLISHER_RUN,
+            workflow.revision_hash,
+            _tooled_builder_binding(runtime),
+            DbosDurableRunStarter(
+                runtime.engine, runtime.settings, runtime.agent_executor_registry
+            ),
+            orders=(
+                AuthoredOrder("work_item", ObservedWorkItemOrderValue(ORDERED_ITEM)),
+            ),
+        )
+        assert isinstance(started, RunCreated), started
+        runtime.launch()
+        yield TwoPublisherRun(runtime, github, workflow, remote)
+    finally:
+        runtime.close()
 
 
 def wait_for_state(runtime: DbosRuntime, state: RunState, run_id: RunId = RUN) -> None:
@@ -876,23 +1129,6 @@ def test_unreached_action_without_a_receipt_does_not_block_a_full_fork(
 
 
 @dataclass(frozen=True, slots=True)
-class _Publication:
-    """Which node of which run pushed which candidate onto which branch."""
-
-    run_id: RunId
-    publisher: str
-    branch: HeadBranch
-    candidate_tree: str
-
-
-_IMPLEMENTED = _Publication(
-    RUN, "implement", HeadBranch("atelier2/work-item/confirmed-push"), "b2" * 20
-)
-_BUILT = _Publication(TWO_PUBLISHER_RUN, "build", PUBLISHED_BRANCH, "b2" * 20)
-_FIXED = _Publication(TWO_PUBLISHER_RUN, "fix", PUBLISHED_BRANCH, "d4" * 20)
-
-
-@dataclass(frozen=True, slots=True)
 class _PushReceiptMutation:
     operation: AdapterOperationName = AdapterOperationName.PUSH_ATELIER_COMMIT
     branch: HeadBranch | None = None
@@ -909,14 +1145,13 @@ class _PushReceiptMutation:
 def _push_intent(
     workflow: WorkflowRevision,
     mutation: _PushReceiptMutation | None = None,
-    publication: _Publication = _IMPLEMENTED,
 ) -> tuple[EffectIntent, PushAtelierCommit]:
     mutation = mutation or _PushReceiptMutation()
     request = PushAtelierCommit(
         "a1" * 32,
-        publication.candidate_tree,
+        "b2" * 20,
         "c3" * 20,
-        publication.branch,
+        HeadBranch("atelier2/work-item/confirmed-push"),
         GitCommitIdentity("Atelier Agent", "agent@example.test"),
         GitCommitIdentity("Atelier Core", "core@example.test"),
         "2026-08-27T12:34:56Z",
@@ -925,12 +1160,9 @@ def _push_intent(
         EffectIntent(
             EffectBinding(
                 logical_effect_key_for_node(
-                    publication.run_id,
-                    workflow.revision_hash,
-                    publication.publisher,
-                    FIRST_ROUND_ORDINAL,
+                    RUN, workflow.revision_hash, "implement", 1
                 ),
-                publication.run_id,
+                RUN,
                 workflow.revision_hash,
                 AdapterRevision("git-push-v1"),
                 EffectDestination("git"),
@@ -947,9 +1179,8 @@ def _confirm_push_receipt(
     connection: Any,
     workflow: WorkflowRevision,
     mutation: _PushReceiptMutation,
-    publication: _Publication = _IMPLEMENTED,
 ) -> None:
-    intent, request = _push_intent(workflow, mutation, publication)
+    intent, request = _push_intent(workflow, mutation)
     prepared_effect_intent(connection, intent)
     expected = request.expected_commit_oid(intent.request.request_hash.value)
     branch = mutation.branch or request.head_branch
@@ -1107,90 +1338,69 @@ def test_a_project_open_pr_action_refuses_a_corrupt_confirmed_push_receipt(
     assert calls_before_retry == (github.readback_calls, github.execute_calls)
 
 
-def _run_that_published_twice(
-    started_runtime: DbosRuntime, body_from: str
-) -> WorkflowRevision:
-    """A run whose `build` and whose `fix` both confirmed a push, back on its Action.
-
-    Both publications carry the branch the run's work item derives, as two
-    pushes of one run do: the second replaced what the first left there.
-    """
-    workflow, bindings = publish_two_publisher_line(started_runtime, body_from)
-    started = start_published_run(
-        TWO_PUBLISHER_RUN,
-        workflow.revision_hash,
-        bindings,
-        DbosDurableRunStarter(
-            started_runtime.engine,
-            started_runtime.settings,
-            started_runtime.agent_executor_registry,
-        ),
-        orders=(AuthoredOrder("work_item", ObservedWorkItemOrderValue(ORDERED_ITEM)),),
-    )
-    assert isinstance(started, RunCreated), started
-    started_runtime.launch()
-    wait_for_state(started_runtime, RunState.COMPLETED, TWO_PUBLISHER_RUN)
-    with started_runtime.engine.begin() as connection:
-        for publication in (_BUILT, _FIXED):
-            _confirm_push_receipt(
-                connection, workflow, _PushReceiptMutation(), publication
-            )
-        connection.execute(
-            runs.update()
-            .where(runs.c.run_id == TWO_PUBLISHER_RUN.value)
-            .values(state=RunState.STARTED.value, terminal_hash=None)
-        )
-    return workflow
-
-
 def test_a_project_open_pr_action_refuses_the_report_a_later_publisher_overtook(
-    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+    tmp_path: Path,
 ) -> None:
-    """The branch carries what `fix` pushed, so a pull request over `build`'s
-    report would describe something other than the head it shows. Both nodes are
-    named, because the reader has to see which report was overtaken by whom.
+    """`fix` published after `build`, so the branch no longer shows `build`'s work.
+
+    A pull request over the overtaken report would describe something other
+    than the head it shows, so the refusal names both nodes -- and it stands
+    before anything is asked for: no open-pr intent is written and the platform
+    is never called.
     """
-    started_runtime, github, _listing, _atelier_sqlite = runtime
-    workflow = _run_that_published_twice(started_runtime, "build")
-    opened_before = len(github.recorded_pull_requests())
-    calls_before = (github.readback_calls, github.execute_calls)
+    with two_publisher_run(tmp_path, BUILDING_NODE) as run:
+        run.wait_until_standing_at_its_action()
 
-    with (
-        started_runtime.engine.begin() as connection,
-        pytest.raises(
-            RunPublicationRefused,
-            match="open-pr reads the report of `build`, but `fix` published after it",
-        ),
-    ):
-        graph_action_intent(
-            connection,
-            TWO_PUBLISHER_RUN,
-            workflow.revision_hash,
-            github.binding,
-            BOUND_PROJECT,
-        )
+        with (
+            pytest.raises(
+                RunPublicationRefused,
+                match=(
+                    "open-pr reads the report of `build`, but `fix` published after it"
+                ),
+            ),
+            run.runtime.engine.begin() as connection,
+        ):
+            prepare_graph_action(
+                connection,
+                TWO_PUBLISHER_RUN,
+                run.workflow.revision_hash,
+                run.github.binding,
+                BOUND_PROJECT,
+            )
 
-    assert len(github.recorded_pull_requests()) == opened_before
-    assert calls_before == (github.readback_calls, github.execute_calls)
+        asked_for = run.effects_its_action_asked_for()
+        opened = run.github.recorded_pull_requests()
+        asked = (run.github.readback_calls, run.github.execute_calls)
+
+    assert asked_for == ()
+    assert opened == ()
+    assert asked == (0, 0)
 
 
 def test_a_project_open_pr_action_opens_over_the_last_publication_of_its_run(
-    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+    tmp_path: Path,
 ) -> None:
-    started_runtime, github, _listing, _atelier_sqlite = runtime
-    workflow = _run_that_published_twice(started_runtime, "fix")
+    """The pull request the platform records stands on the run's last publication.
 
-    with started_runtime.engine.begin() as connection:
-        intent = graph_action_intent(
-            connection,
-            TWO_PUBLISHER_RUN,
-            workflow.revision_hash,
-            github.binding,
-            BOUND_PROJECT,
-        )
+    Both publishers really push, so the branch carries the builder's commit and
+    then the fixer's own; the Action reads the fixer's report and the recorded
+    pull request is the one over the commit the destination now answers with.
+    """
+    with two_publisher_run(tmp_path, FIXING_NODE) as run:
+        run.wait_until_it_completes()
 
-    opened = OpenPullRequest.from_canonical_bytes(intent.request.payload)
-    assert opened.head_branch == _FIXED.branch
+        built = run.publication_of(BUILDING_NODE)
+        fixed = run.publication_of(FIXING_NODE)
+        standing_head = run.remote_head_of(fixed.full_ref)
+        opened = run.github.recorded_pull_requests()
+        asked_for = run.effects_its_action_asked_for()
+
+    assert built.commit_oid != fixed.commit_oid
+    assert standing_head == fixed.commit_oid
+    assert [pull_request.branch for pull_request in opened] == [fixed.branch]
+    assert FIX_REPORT.decode("utf-8") in opened[0].body
+    assert BUILD_REPORT.decode("utf-8") not in opened[0].body
+    assert asked_for == (AdapterOperationName.OPEN_PR,)
 
 
 def durable_bytes_contain(database: Path, token: str) -> bool:
