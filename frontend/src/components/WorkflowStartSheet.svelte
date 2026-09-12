@@ -19,9 +19,9 @@
     projectDefaultLine,
     startAccountSuffix,
     startConfigurationLabel,
+    startNotStartableReason,
     startOrderByteCount,
     startOrderGroup,
-    startUnavailableSuffix,
     workItemFor,
     workflowStartCopy
   } from "../lib/catalogPageCopy";
@@ -267,6 +267,17 @@
     );
   }
 
+  /**
+   * The listed configuration behind a hash, straight from the exhaustive
+   * fetch (`configurations`) rather than the registry-matched subset
+   * (`registeredConfigurations`): the host's `not_startable_reason` for a
+   * resolved-but-unavailable role lives here even when the model registry
+   * never matched that configuration into `registeredConfigurations` at all.
+   */
+  function configurationByHash(hash: string): AgentConfigurationRevisionListItem | undefined {
+    return configurations.find((candidate) => candidate.agent_configuration_revision_hash === hash);
+  }
+
   function roleCanStart(role: string): boolean {
     const resolution = resolutions[role];
     if (resolution?.agent_configuration_revision_hash === null) return false;
@@ -288,19 +299,15 @@
   ): string {
     const model = resolution.model_id ?? workflowStartCopy.unavailable;
     const account = registered === undefined ? "" : startAccountSuffix(registered.accountId);
-    const unavailable = registered?.configuration.startable === false
-      ? startUnavailableSuffix()
-      : "";
     if (resolution.source === "pinned-in-workflow") {
-      return pinnedModelLine(model, account, unavailable);
+      return pinnedModelLine(model, account);
     }
     if (resolution.source === "from-project") {
       return projectDefaultLine(
         resolution.declared_difficulty,
         model,
         resolution.default_difficulty !== resolution.declared_difficulty,
-        account,
-        unavailable
+        account
       );
     }
     return registered === undefined ? model : configurationLabel(registered);
@@ -998,6 +1005,7 @@
             {@const resolution = resolutions[role]}
             {@const resolvedHash = resolution?.agent_configuration_revision_hash ?? null}
             {@const resolvedConfiguration = registeredConfiguration(resolvedHash)}
+            {@const roleUnavailable = resolvedHash !== null && !roleCanStart(role)}
             <div class="role-row">
               <label>
                 {role}
@@ -1027,12 +1035,13 @@
                   </select>
                 </span>
               </label>
-              {#if resolvedHash !== null && resolution?.source === "chosen-now"}
+              {#if resolvedHash !== null && (resolution?.source === "chosen-now" || roleUnavailable)}
                 <p class="role-source">
-                  {#if resolvedConfiguration?.configuration.startable === false}
-                    <span class="unavailable">◇ {workflowStartCopy.unavailable}</span> ·
+                  {#if roleUnavailable}
+                    <span class="unavailable">◇ {startNotStartableReason(configurationByHash(resolvedHash)?.not_startable_reason ?? null)}</span>
+                    {#if resolution?.source === "chosen-now"} · {/if}
                   {/if}
-                  {workflowStartCopy.chosenNow}
+                  {#if resolution?.source === "chosen-now"}{workflowStartCopy.chosenNow}{/if}
                 </p>
               {/if}
             </div>
@@ -1092,5 +1101,11 @@
   .needs-choice { border-color: var(--signal-attention); color: var(--signal-attention); }
   .role-source { color: var(--ink); font-size: var(--text-2xs); font-weight: var(--weight-strong); margin: var(--space-1) 0 0; }
   .unavailable { color: var(--ink-dim); }
-  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
+  /*
+   * A `showModal()`-opened dialog stays capped by Chromium's own UA rule
+   * (`max-width: calc((100% - 6px) - 2em)`) unless a rule here overrides
+   * `max-width` too; `width: 100%` alone cannot beat a narrower
+   * `max-width`.
+   */
+  @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>

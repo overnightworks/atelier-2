@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import {
+  catalogPageCopy,
+  startNotStartableReason,
+  workflowStartCopy
+} from "../../src/lib/catalogPageCopy";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -162,6 +166,72 @@ async function agentOf(
   return configurationHash;
 }
 
+/** The model a document pins for the role that cannot start. */
+const BLOCKED_MODEL = "shot-tools-model";
+
+/**
+ * A configuration a pin resolves to and a start still refuses: its registry
+ * entry is checked, so casting finds it, but it asks for a capability the
+ * executor behind it never declared -- the host's own
+ * `agent-executor-binding-unavailable`.
+ */
+async function blockedAgent(page: Page): Promise<void> {
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: "shots-blocked",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: BLOCKED_MODEL,
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless_with_tools"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  await publishCheckedModelRegistry(
+    page,
+    "e2e-v3",
+    BLOCKED_MODEL,
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
+}
+
+async function pinnedWorkflow(page: Page, name: string, schemaHash: string): Promise<void> {
+  const published = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${name}`,
+      "description: one pass, with the model this document pins",
+      "nodes:",
+      "  - id: translate",
+      "    type: agent",
+      "    role: translator",
+      "    mode: headless_with_tools",
+      `    model: ${BLOCKED_MODEL}`,
+      "    instruction: Translate the handbook.",
+      `    outputs: [{name: pages, schema: {ref: any, revision: ${schemaHash}}}]`,
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const admitted = await page.request.post("/atelier/api/v1/catalog-lineages", {
+    data: {
+      kind: "workflow",
+      catalog_revision_hash: (await published.json()).workflow_revision_hash as string,
+      actor: "shots",
+      activated_at: "2026-08-23T00:00:00Z"
+    }
+  });
+  expect(admitted.status()).toBe(201);
+}
+
 async function chainOf(page: Page, name: string, schemaHash: string, nodeIds: readonly string[]): Promise<string> {
   const lines = ["format_version: 3", `name: ${name}`, "nodes:"];
   nodeIds.forEach((nodeId, index) => {
@@ -305,6 +375,20 @@ test("captures every surface at both widths", async ({ page }) => {
   ).toBeVisible();
   await shoot(page, "catalog");
 
+  // The import sheet at the moment its Add to catalog is locked: the file is
+  // read, no kind is declared yet, and the sentence that says so is rendered
+  // above the button, where a finger at 390px can reach it.
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
+    name: "bench-notes.md",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("a note from the bench\n")
+  });
+  const importSheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+  await expect(importSheet.getByText(catalogPageCopy.noKindDeclared)).toBeVisible();
+  await shoot(page, "catalog-import-no-kind");
+  await importSheet.getByRole("button", { name: catalogPageCopy.cancel }).click();
+  await expect(importSheet).toHaveCount(0);
+
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.waiting);
   await shoot(page, "run-waiting");
@@ -367,4 +451,21 @@ test("captures every surface at both widths", async ({ page }) => {
   await page.goto("/atelier/settings");
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await shoot(page, "project");
+
+  // A role whose model is cast and still cannot start: the sheet says in one
+  // sentence why this start is locked. Staged last, so every room above is
+  // photographed without this workflow in it.
+  const pinnedName = "translate-the-handbook";
+  await blockedAgent(page);
+  await pinnedWorkflow(page, pinnedName, schemaHash);
+  await page.goto(`/atelier/catalog/${pinnedName}`);
+  await expect(page.getByRole("heading", { level: 1, name: pinnedName })).toBeVisible();
+  await page.getByRole("button", { name: catalogPageCopy.start }).click();
+  await expect(
+    page.getByRole("heading", { name: workflowStartCopy.startTitle(pinnedName) })
+  ).toBeVisible();
+  await expect(
+    page.getByText(startNotStartableReason("agent-executor-binding-unavailable"))
+  ).toBeVisible();
+  await shoot(page, "workflow-start-blocked");
 });

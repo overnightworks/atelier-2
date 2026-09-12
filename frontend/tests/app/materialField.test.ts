@@ -15,7 +15,7 @@ import {
   pinnedModelLine,
   projectDefaultLine,
   startAccountSuffix,
-  startUnavailableSuffix,
+  startNotStartableReason,
   workItemFor,
   workflowStartCopy
 } from "../../src/lib/catalogPageCopy";
@@ -774,11 +774,26 @@ function resolvedRole(
   };
 }
 
+type NotStartableReason = NonNullable<AgentConfigurationRevisionListItem["not_startable_reason"]>;
+
+/**
+ * A listed configuration built to the same structural invariants the wire's
+ * own schema enforces (`agentConfigurationRevisionListItemSchema`'s
+ * `superRefine` in `client.ts`): `structurally_startable` is false only for
+ * `agent-executor-binding-unavailable`, never for the other three reasons,
+ * and a `provider-probe-failed` reason always carries its own problem code
+ * and observed-at pair. A fixture violating these could never reach the
+ * component through a real decode, so it must not be able to reach it here
+ * either (#1500 review finding 3).
+ */
 function configuration(
   hash: string,
   model: string,
-  startable = true
+  startable = true,
+  notStartableReason: NotStartableReason = "agent-executor-binding-unavailable"
 ): AgentConfigurationRevisionListItem {
+  const reason = startable ? null : notStartableReason;
+  const isProbeFailure = reason === "provider-probe-failed";
   return {
     agent_configuration_revision_hash: hash,
     provider_id: "test",
@@ -788,10 +803,10 @@ function configuration(
     executor_revision: "immediate/v1",
     requested_capability: "headless",
     startable,
-    structurally_startable: startable,
-    not_startable_reason: startable ? null : "agent-executor-binding-unavailable",
-    provider_probe_problem_code: null,
-    provider_probe_observed_at: null
+    structurally_startable: startable || reason !== "agent-executor-binding-unavailable",
+    not_startable_reason: reason,
+    provider_probe_problem_code: isProbeFailure ? "provider-probe-timeout" : null,
+    provider_probe_observed_at: isProbeFailure ? "2026-09-01T00:00:00Z" : null
   };
 }
 
@@ -865,7 +880,7 @@ describe("the catalog start sheet's project model resolution", () => {
     const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
     expect((picker as HTMLSelectElement).value).toBe(configurationHash);
     expect(within(picker).getByRole("option", {
-      name: projectDefaultLine(2, "cook-model", true, startAccountSuffix("test"), "")
+      name: projectDefaultLine(2, "cook-model", true, startAccountSuffix("test"))
     })).toBeTruthy();
     expect(screen.queryByText("Next higher difficulty")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
@@ -890,7 +905,7 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(cockpitApi);
 
     expect(within(screen.getByLabelText(workflowStartCopy.configurationFor("cook"))).getByRole("option", {
-      name: pinnedModelLine("cook-model", startAccountSuffix("test"), "")
+      name: pinnedModelLine("cook-model", startAccountSuffix("test"))
     })).toBeTruthy();
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
@@ -1002,7 +1017,7 @@ describe("the catalog start sheet's project model resolution", () => {
     expect(picker.value).toBe(configurationHash);
     expect(picker.selectedOptions[0]?.disabled).toBe(true);
     expect(picker.selectedOptions[0]?.textContent).toBe(
-      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), startUnavailableSuffix())
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"))
     );
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
       .toBe(true);
@@ -1013,6 +1028,51 @@ describe("the catalog start sheet's project model resolution", () => {
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
       .toBe(false);
   });
+
+  it.each([
+    [
+      "agent-executor-binding-unavailable",
+      "This model cannot run in this workshop — choose a different one."
+    ],
+    [
+      "model-not-registered",
+      "This model is not checked in Settings — check or correct it there."
+    ],
+    [
+      "provider-probe-receipt-missing",
+      "This model has no current live check — choose a different one."
+    ],
+    [
+      "provider-probe-failed",
+      "This model's last live check failed — choose a different one."
+    ]
+  ] as const)(
+    "%s reads a sentence true of every case that reason covers, not just Unavailable",
+    async (reason, expectedSentence) => {
+      const resolveProjectModels = vi.fn(async (
+        _project: string,
+        workflowHash: string
+      ) => projectResolution(workflowHash, [resolvedRole()]));
+      const cockpitApi = modelApi(resolveProjectModels, [
+        configuration(configurationHash, "cook-model", false, reason)
+      ]);
+      await openStart(cockpitApi);
+
+      const sentence = startNotStartableReason(reason);
+      expect(sentence).toBe(expectedSentence);
+      expect(screen.getByText(sentence, { exact: false })).toBeTruthy();
+      const picker = screen.getByLabelText(
+        workflowStartCopy.configurationFor("cook")
+      ) as HTMLSelectElement;
+      // The reason stands once: rendered under the role, never repeated as a
+      // second badge in the option the sentence already explains.
+      expect(picker.selectedOptions[0]?.textContent).not.toContain(workflowStartCopy.unavailable);
+      expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
+        workflowStartCopy.startNeedsConfiguration("cook")
+      );
+      expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    }
+  );
 
   it("drops a vanished project default during the mandatory pre-start resolution", async () => {
     const resolveProjectModels = vi
@@ -1032,7 +1092,7 @@ describe("the catalog start sheet's project model resolution", () => {
 
     expect((screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement)
       .selectedOptions[0]?.textContent).toBe(
-      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), "")
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"))
     );
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
