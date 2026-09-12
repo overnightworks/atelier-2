@@ -15,6 +15,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from http import HTTPStatus
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -239,6 +240,10 @@ def live_attention_server(runtime: DbosRuntime) -> Iterator[int]:
             assert not thread.is_alive()
 
 
+class SubscriptionBroke(Exception):
+    """The subscriber never received what it held the feed for."""
+
+
 def _sse_frames(
     response: httpx.Response, deadline: float
 ) -> Iterator[dict[str, object]]:
@@ -246,7 +251,7 @@ def _sse_frames(
     fields: dict[str, str] = {}
     for line in response.iter_lines():
         if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for an attention event")
+            raise SubscriptionBroke("timed out waiting for an attention event")
         if line == "":
             if fields:
                 payload: dict[str, object] = json.loads(fields["data"])
@@ -281,13 +286,22 @@ def _hold_until(
             headers=request_headers,
             timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
         ) as response:
-            assert response.status_code == 200, response.read()
+            if response.status_code != HTTPStatus.OK:
+                raise SubscriptionBroke(
+                    f"the attention feed answered {response.status_code}: "
+                    f"{response.read()!r}"
+                )
             connected.set()
             for frame in _sse_frames(response, time.monotonic() + 12):
                 received.append(frame)
                 if last(frame):
                     return
-    except (AssertionError, httpx.HTTPError, json.JSONDecodeError, ValueError) as error:
+    except (
+        SubscriptionBroke,
+        httpx.HTTPError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as error:
         errors.append(error)
         connected.set()
 
