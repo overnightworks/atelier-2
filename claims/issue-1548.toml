@@ -1,0 +1,8 @@
+claim_id = "d3482cd8dd294dc4b80b435c3a568416"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "00328d1486962ca77baea9f2e8c51f88fd8922a2"
+branch = "claude/issue-1548-fence-proves-boundary"
+scope = ["src/atelier2/adapters/bwrap_sandbox.py", "tests/scenarios/agents.py", "tests/adapters/test_bwrap_sandbox.py", "tests/integration/test_bwrap_fence.py", "tests/integration/test_grok_subscription.py", "docs/product/runtime.md", "tests/host/test_serving.py", "tests/adapters/test_agent_provider_catalog.py", "tests/integration/test_v3_output_enforcement.py"]
+opened_commit = "4326c2f94ce261730f479d9f36d1509e5da3b3b3"
+whole_reason = "Die Sonde, der abgeschaffte Stellvertreter und jede Naht, die ihn benannte, sind eine Aenderung: ein Stellvertreter, der die negative Haelfte nicht beantworten kann, muss mit ihr fallen."
