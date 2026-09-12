@@ -322,27 +322,21 @@ def grok_subscription_deployment(
     )
 
 
-def skip_where_this_host_fences_nothing() -> None:
-    """Leave the tool-bearing proofs unrun where nothing can hold that vector.
-
-    Its every start is composed behind this host's own bubblewrap and refused
-    where there is none, so a machine carrying no enforcer serves no such
-    executor at all -- there is nothing left to observe. The pipeline's runner
-    carries one, where the same silence would be a failure.
-    """
-
-    if UNFENCEABLE is not None:
-        pytest.skip(f"this machine fences nothing: {UNFENCEABLE}")
-
-
 def opened_grok_executor(
     factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
     settings: GrokSubscriptionSettings,
 ) -> GrokSubscriptionExecutor:
-    """One opened Grok executor, if this host can hold the vector it serves."""
+    """One opened Grok executor, where this host can hold the vector it serves.
 
-    if factory is GrokWorkspaceToolExecutorFactory:
-        skip_where_this_host_fences_nothing()
+    The tool-bearing vector composes every start behind this host's own
+    bubblewrap and is refused where there is none, so a machine carrying no
+    enforcer serves no such executor at all and there is nothing left to
+    observe. The pipeline's runner carries one, where the same silence would
+    be a failure. The tool-free vector reaches no file and opens anywhere.
+    """
+
+    if factory is GrokWorkspaceToolExecutorFactory and UNFENCEABLE is not None:
+        pytest.skip(f"this machine fences nothing: {UNFENCEABLE}")
     return factory(settings).open()
 
 
