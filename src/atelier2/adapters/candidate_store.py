@@ -214,17 +214,22 @@ class GitCandidateTreeStore:
         return None if standing is None else CandidateTree(attempt_id, standing)
 
     def attest(self, candidate: CandidateTree) -> None:
-        """Refuse this candidate unless the store still holds all of it.
+        """Refuse this candidate unless the store still holds all of it, readably.
 
         Two questions, and the first is not enough on its own: the anchor says
-        this attempt's work is still claimed here, and the walk says every
-        object that work is made of is still readable. A ref alone would admit a
-        tree whose blobs a repack lost, and the loss would only surface once a
-        checkout had already begun writing into a lease.
+        this attempt's work is still claimed here, and the check says the
+        objects that work is made of inflate to the names they are stored
+        under. A ref alone would admit a tree whose blobs a repack lost, and
+        finding the objects alone would admit one whose bytes rotted where they
+        lie -- both losses would otherwise surface once a checkout had already
+        begun writing into a lease the attempt holds.
 
-        The walk reads nothing back: it is asked for its exit alone, so the cost
-        of attesting a large tree is git's traversal and not a listing this
-        process holds.
+        Reading every object is what `git fsck` is, and it reads the store
+        rather than this tree alone: a candidate is refused here when anything
+        this store holds no longer reads back, and the refusal says so. The
+        narrower readers do not answer this -- `rev-list --verify-objects`
+        reports a rotted blob and still exits zero, and `cat-file --batch`
+        would carry the whole tree through this process to say the same thing.
         """
 
         kept = self.read(candidate.attempt_id)
@@ -234,7 +239,15 @@ class GitCandidateTreeStore:
                 f"{candidate.tree} in {self._store}, so the work this attempt "
                 "would go on in is not there to begin in"
             )
-        self._in_store(("rev-list", "--objects", "--quiet", candidate.tree))
+        self._in_store(
+            ("fsck", "--no-progress", "--no-dangling", candidate.tree),
+            failure=(
+                f"the candidate store at {self._store} does not read back "
+                f"whole, so the tree {candidate.tree} that attempt "
+                f"{candidate.attempt_id.value} would go on working in cannot "
+                "be begun in"
+            ),
+        )
 
     def materialize(
         self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
@@ -541,9 +554,13 @@ class GitCandidateTreeStore:
         self,
         arguments: tuple[str, ...],
         standard_input: int | IO[bytes] = subprocess.DEVNULL,
+        failure: str | None = None,
     ) -> bytes:
         return self._read_in_store(
-            arguments, standard_input=standard_input, maximum_output_bytes=None
+            arguments,
+            standard_input=standard_input,
+            maximum_output_bytes=None,
+            failure=failure,
         ).written
 
     def _read_in_store(
@@ -552,12 +569,17 @@ class GitCandidateTreeStore:
         standard_input: int | IO[bytes] = subprocess.DEVNULL,
         *,
         maximum_output_bytes: int | None,
+        failure: str | None = None,
     ) -> GitOutputUnderBound:
+        """One git call in the store, refused under `failure` where the call names
+        what it was asking for, and under the store's own sentence otherwise."""
+
         return self._answered(
             arguments,
             working_directory=str(self._store.parent),
             environment=isolated_git_environment(GIT_DIR=str(self._store)),
-            failure=f"the candidate store at {self._store} could not be reached",
+            failure=failure
+            or f"the candidate store at {self._store} could not be reached",
             standard_input=standard_input,
             maximum_output_bytes=maximum_output_bytes,
         )

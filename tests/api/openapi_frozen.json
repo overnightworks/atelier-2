@@ -17310,6 +17310,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ProblemAgentExecutorBindingUnavailable"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProblemWorkflowFormatNotExecutable"
                     }
                   ]
                 }

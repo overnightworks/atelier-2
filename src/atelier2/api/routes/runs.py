@@ -94,6 +94,7 @@ from atelier2.application.fork_run import (
     RunForkCapabilityUnavailable,
     RunForkCommandConflict,
     RunForkCreated,
+    RunForkDocumentNotExecutable,
     RunForkExecutorUnavailable,
     RunForkExisting,
     RunForkLoopUnsupported,
@@ -448,6 +449,8 @@ async def fork_run_route(
             raise ApiProblem("agent-executor-binding-unavailable")
         case RunForkCapabilityUnavailable():
             raise ApiProblem("agent-executor-binding-unavailable")
+        case RunForkDocumentNotExecutable(reason):
+            raise ApiProblem("workflow-format-not-executable", reason)
         case AgentModeMismatch() as refused:
             _refuse_node_binding(refused)
         case WriteUnavailable(detail):

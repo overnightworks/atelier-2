@@ -188,6 +188,23 @@ def unanchored(run: PublishingRun, candidate: CandidateTree) -> None:
     )
 
 
+def rotted(run: PublishingRun, candidate: CandidateTree, path: str) -> None:
+    """Break one blob of this candidate where it lies, as a losing disk would.
+
+    The anchor stands, the tree stands, and every object of it is still findable
+    under its own name -- only what one of them inflates to is gone. That is the
+    loss a walk which merely finds objects cannot see and a checkout would be
+    the first to hit.
+    """
+
+    blob = run_git(run.candidates, "rev-parse", f"{candidate.tree}:{path}")
+    stored = run.candidates / "objects" / blob[:2] / blob[2:]
+    stored.chmod(0o644)
+    bytes_of_it = bytearray(stored.read_bytes())
+    bytes_of_it[len(bytes_of_it) // 2] ^= 0xFF
+    stored.write_bytes(bytes(bytes_of_it))
+
+
 def never_kept(run: PublishingRun, files: Mapping[str, str]) -> CandidateTree:
     """A tree this project really has and this store was never given."""
 
@@ -277,6 +294,26 @@ def test_a_start_candidate_the_store_lost_stops_the_attempt_before_it_is_claimed
         built = published_build(run)
         _binding, execution = attempt_of(run, FIX)
         unanchored(run, built)
+        provider = WorkingProvider(WHAT_THE_FIXER_ADDS)
+
+        with pytest.raises(CandidateNotKept, match=built.tree):
+            worked(run, FIX, provider)
+
+        assert provider.found == []
+        attempts = DbosAgentAttemptStore(run.runtime.engine)
+        assert attempts.load(execution.attempt_id).state is AgentAttemptState.PREPARED
+
+
+def test_a_start_candidate_that_no_longer_reads_back_stops_the_attempt_before_the_claim(
+    tmp_path: Path,
+) -> None:
+    """Standing there is not readable: the check before the claim reads what it finds."""
+
+    with publishing_run(tmp_path, "Build, then fix", (BUILD, FIX)) as run:
+        built = published_build(run)
+        _binding, execution = attempt_of(run, FIX)
+        one_of_its_files = next(iter(WHAT_THE_BUILDER_MADE))
+        rotted(run, built, one_of_its_files)
         provider = WorkingProvider(WHAT_THE_FIXER_ADDS)
 
         with pytest.raises(CandidateNotKept, match=built.tree):
