@@ -56,6 +56,7 @@ from atelier2.adapters.bwrap_sandbox import entered_fence, toolchain_sandbox
 from atelier2.adapters.grok_capability import (
     GROK_PROBE_TIMEOUT_SECONDS,
     GrokExecutableUnsupported,
+    verify_grok_capability,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
@@ -387,6 +388,9 @@ class GrokSubscriptionSettings:
     """
 
     def __post_init__(self) -> None:
+        # Whether the credential directory exists, and `auth.json` itself, are
+        # asked by `verify_grok_deployment` and `_authentication_bytes` below,
+        # never here (see their docstrings).
         executable = self.executable.resolve()
         workspace = self.workspace.resolve()
         credential_directory = self.credential_directory.resolve()
@@ -397,24 +401,24 @@ class GrokSubscriptionSettings:
             raise ValueError("the Grok executable must be an executable file")
         if not workspace.is_dir():
             raise ValueError("the Grok workspace must be an existing directory")
-        if not credential_directory.is_dir():
-            raise ValueError(
-                "the Grok credential directory must be an existing directory"
-            )
-        authentication = credential_directory / AUTHENTICATION_FILE_NAME
-        try:
-            authentication_status = authentication.stat(follow_symlinks=False)
-        except OSError as error:
-            raise ValueError(
-                "the Grok credential directory must contain a regular auth.json"
-            ) from error
-        if (
-            not stat.S_ISREG(authentication_status.st_mode)
-            or stat.S_IMODE(authentication_status.st_mode) & 0o077
-        ):
-            raise ValueError("the Grok auth.json must be a private regular file")
         if not self.search_path.strip():
             raise ValueError("the Grok executable search path must be nonempty")
+
+
+def verify_grok_deployment(settings: GrokSubscriptionSettings) -> None:
+    """Refuse a Grok deployment this host cannot reach at all, by name.
+
+    The credential directory's existence is this deployment's own structural
+    precondition, not the account's login state: `auth.json` itself is read
+    once per attempt, by `_authentication_bytes` below, so a login that goes
+    stale between one attempt and the next refuses that one attempt rather
+    than this whole deployment. Bundled with the version probe so composition
+    asks one reachability question, on one start-refusal path.
+    """
+
+    if not settings.credential_directory.is_dir():
+        raise ValueError("the Grok credential directory must be an existing directory")
+    verify_grok_capability(settings.executable)
 
 
 def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, ...]:

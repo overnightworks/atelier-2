@@ -35,6 +35,7 @@ from atelier2.adapters.grok_capability import (
     verify_grok_capability,
 )
 from atelier2.adapters.grok_subscription import (
+    AUTHENTICATION_FILE_NAME,
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_SUBSCRIPTION_FRAME_BYTES,
     GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
@@ -2958,3 +2959,27 @@ def test_an_executable_that_answers_a_jobless_grok_invocation_successfully_is_re
 
     with pytest.raises(GrokExecutableUnsupported, match="jobless"):
         attest_grok_workspace_tool_invocation(settings)
+
+
+def test_a_missing_auth_json_refuses_only_that_attempt_not_the_next_one(
+    tmp_path: Path,
+) -> None:
+    """A stale or deleted `auth.json` fails one attempt; bringing the file back
+    makes the next attempt on the same executor succeed, with no recomposition."""
+
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    authentication = settings.credential_directory / AUTHENTICATION_FILE_NAME
+    login = authentication.read_bytes()
+    authentication.unlink()
+
+    with pytest.raises(OSError):
+        executor.prepare_process(subscription_request())
+
+    authentication.write_bytes(login)
+    authentication.chmod(0o600)
+
+    command = executor.prepare_process(subscription_request())
+
+    assert isinstance(command, GrokSubscriptionProcessCommand)
+    executor.release_credential_channel(command)
