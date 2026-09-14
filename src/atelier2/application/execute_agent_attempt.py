@@ -61,6 +61,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
     AgentProcessCompletion,
     AgentProcessInvocation,
+    AgentProcessLaunchYieldedToCancellation,
     AgentSession,
 )
 from atelier2.ports.artifacts import ArtifactPublisher
@@ -234,7 +235,16 @@ def execute_agent_attempt(
                 ),
             )
         invocation = AgentProcessInvocation(command, lease, conversation)
-        completion = session.launch_and_wait(execution, invocation, authority)
+        try:
+            completion = session.launch_and_wait(execution, invocation, authority)
+        except AgentProcessLaunchYieldedToCancellation as yielded:
+            # Mirrors the claim above losing its CAS to the same outcome: the
+            # attempt is not yet terminal (it may still be `CANCEL_REQUESTED`),
+            # so neither `session.finalize` nor `workspaces.release` may run
+            # here. The independently enqueued cancellation workflow reaps
+            # this call's own watchdog and releases the workspace once its
+            # cleanup is durably attested.
+            return yielded.outcome
         result = _with_recorded_transcript(
             executor.decode_process_completion(invocation, completion), clock
         )
