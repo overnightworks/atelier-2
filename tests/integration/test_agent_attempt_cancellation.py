@@ -426,7 +426,6 @@ def test_a_cancellation_during_the_launch_handshake_ends_the_node_cancelled(
         reached_observation = threading.Event()
         cancellation_recorded = threading.Event()
         original_observe_process = DbosAgentAttemptStore.observe_process
-        original_excepthook = threading.excepthook
 
         def synchronized_observe_process(
             self: DbosAgentAttemptStore,
@@ -447,45 +446,42 @@ def test_a_cancellation_during_the_launch_handshake_ends_the_node_cancelled(
         monkeypatch.setattr(
             DbosAgentAttemptStore, "observe_process", synchronized_observe_process
         )
-        threading.excepthook = record_worker_failure
-        try:
+        monkeypatch.setattr(threading, "excepthook", record_worker_failure)
 
-            def run_attempt() -> None:
-                outcomes.append(
-                    execute_agent_attempt(
-                        execution,
-                        executor,
-                        store,
-                        runtime.agent_process_supervisor,
-                        runtime_workspace_owner(runtime),
-                        permissions=GRANTS_NOTHING,
-                        workspace_files=workspace_files_nobody_opens,
-                    )
-                )
-
-            worker = threading.Thread(target=run_attempt)
-            worker.start()
-            assert reached_observation.wait(timeout=5)
-            current = store.load(execution.attempt_id)
-            result = store.request_cancellation(
-                CancelAgentAttemptRequest(
-                    current.run_id,
-                    current.attempt_id,
-                    "cancel-launch-handshake",
-                    current.state_version,
-                    AgentAttemptReplacement.NONE,
+        def run_attempt() -> None:
+            outcomes.append(
+                execute_agent_attempt(
+                    execution,
+                    executor,
+                    store,
+                    runtime.agent_process_supervisor,
+                    runtime_workspace_owner(runtime),
+                    permissions=GRANTS_NOTHING,
+                    workspace_files=workspace_files_nobody_opens,
                 )
             )
-            assert isinstance(result, AgentAttemptCancellationAccepted)
-            cancellation_recorded.set()
-            runtime.launch()
 
-            terminal = _wait_for_attempt_state(
-                store, execution.attempt_id, AgentAttemptState.CANCELLED
+        worker = threading.Thread(target=run_attempt)
+        worker.start()
+        assert reached_observation.wait(timeout=5)
+        current = store.load(execution.attempt_id)
+        result = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                current.run_id,
+                current.attempt_id,
+                "cancel-launch-handshake",
+                current.state_version,
+                AgentAttemptReplacement.NONE,
             )
-            worker.join(timeout=5)
-        finally:
-            threading.excepthook = original_excepthook
+        )
+        assert isinstance(result, AgentAttemptCancellationAccepted)
+        cancellation_recorded.set()
+        runtime.launch()
+
+        terminal = _wait_for_attempt_state(
+            store, execution.attempt_id, AgentAttemptState.CANCELLED
+        )
+        worker.join(timeout=5)
         assert not worker.is_alive()
         assert not worker_failures
         assert terminal.cancellation is not None
