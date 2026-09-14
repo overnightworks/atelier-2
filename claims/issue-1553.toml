@@ -1,0 +1,7 @@
+claim_id = "644b37c3ab1148a3af33a65ca1dd2dc9"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "6c9d599ca7aee6a62f88864dc53a67821d7214e3"
+branch = "claude/issue-1553-home-runs-block"
+scope = ["docs/requirements/0003-ziel-ui-mockup-v9.html", "docs/requirements/0003-ziel-ui.md"]
+opened_commit = "d6cd506f17403713b099a807d3970fab830c6ace"
