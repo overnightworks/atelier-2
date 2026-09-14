@@ -30,6 +30,7 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
 )
+from atelier2.adapters.codex_subscription import CODEX_SUBSCRIPTION_EXECUTOR_KEY
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import (
@@ -1879,3 +1880,54 @@ def test_a_codex_deployment_without_auth_json_still_composes(
     )
 
     assert declared.settings is not None
+
+
+def test_a_missing_codex_credential_directory_leaves_only_that_vector_unstartable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing credential directory names the Codex vector unstartable; the
+    house still serves, and an unrelated Claude vector stays startable.
+    """
+
+    codex_root = tmp_path / "codex-deployment"
+    codex_root.mkdir()
+    codex = codex_subscription_deployment(codex_root)
+    monkeypatch.setenv("PATH", codex.search_path)
+
+    declared = _codex_subscription_settings(
+        argparse.ArgumentParser(),
+        argparse.Namespace(
+            codex_executable=codex.executable,
+            codex_credential_directory=codex_root / "never-created-codex-home",
+            codex_sandbox=codex.sandbox.value,
+        ),
+    )
+    assert declared.settings is not None
+    assert declared.start_refusal is not None
+    assert "credential directory" in declared.start_refusal
+
+    claude_root = tmp_path / "claude-deployment"
+    claude_root.mkdir()
+    claude = claude_subscription_deployment(claude_root, INERT_CLAUDE)
+    settings = replace(
+        served_settings(tmp_path, claude_subscription=claude),
+        codex_subscription=declared.settings,
+        codex_start_refusal=declared.start_refusal,
+    )
+
+    app, runtime = compose_application(settings)
+    try:
+        with TestClient(app) as client:
+            health = client.get(API_PREFIX + "/health")
+            assert health.status_code == 200
+            assert health.json()["status"] == "serving"
+        registry = runtime.agent_executor_registry
+        assert CODEX_SUBSCRIPTION_EXECUTOR_KEY in registry.keys
+        assert not registry.is_structurally_startable(
+            CODEX_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+        )
+        assert registry.is_structurally_startable(
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+        )
+    finally:
+        runtime.close()

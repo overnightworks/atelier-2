@@ -282,20 +282,32 @@ class CodexSubscriptionSettings:
     sandbox: CodexSandboxMode
 
     def __post_init__(self) -> None:
+        # Whether the credential directory exists is asked by
+        # `verify_codex_deployment` below, never here (see its docstring).
         executable = self.executable.resolve()
         credential_directory = self.credential_directory.resolve()
         object.__setattr__(self, "executable", executable)
         object.__setattr__(self, "credential_directory", credential_directory)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("the Codex executable must be an executable file")
-        if not credential_directory.is_dir():
-            raise ValueError(
-                "the Codex credential directory must be an existing directory"
-            )
         if not self.search_path.strip():
             raise ValueError("the Codex executable search path must be nonempty")
         if not isinstance(self.sandbox, CodexSandboxMode):
             raise TypeError("the Codex sandbox mode must be a measured policy")
+
+
+def verify_codex_deployment(settings: CodexSubscriptionSettings) -> None:
+    """Refuse a Codex deployment this host cannot reach at all, by name.
+
+    The credential directory's existence is this deployment's own structural
+    precondition, not the account's login state: `auth.json` itself is read
+    once per attempt, by the job seam that copies it into a disposable home,
+    so a login that goes stale between one attempt and the next refuses that
+    one attempt rather than this whole deployment.
+    """
+
+    if not settings.credential_directory.is_dir():
+        raise ValueError("the Codex credential directory must be an existing directory")
 
 
 def _child_environment(
