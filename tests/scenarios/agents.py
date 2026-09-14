@@ -14,6 +14,11 @@ from atelier2.adapters.agent_workspaces import (
     SCRATCH_ROOT_MODE,
     LocalAgentAttemptWorkspaceOwner,
 )
+from atelier2.adapters.bwrap_sandbox import (
+    SANDBOX_EXECUTABLE_NAME,
+    resolved_sandbox_executable,
+    verified_sandbox_host,
+)
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
@@ -86,7 +91,7 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.process_endings import ProcessExitSignature
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
-from atelier2.contracts.sandbox_grants import SandboxedLaunch
+from atelier2.contracts.sandbox_grants import SandboxedLaunch, SandboxUnavailable
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
@@ -311,31 +316,28 @@ def _version_answering(program: str, version: str | None) -> str:
     ) + program
 
 
-def stand_in_bubblewrap(directory: Path) -> Path:
-    """An executable named `bwrap` that runs what it is handed, fencing nothing.
+HOST_ENFORCER = resolved_sandbox_executable(os.environ.get("PATH", "/usr/bin"))
+"""The bubblewrap this host carries, which every deployment fake names.
 
-    A deployment fake has to name the enforcer its launches would start, and a
-    machine without bubblewrap still has to prove everything that is not the
-    fence: which vector a provider is started with, and what it answers. So
-    this stand-in reads that vector the way the enforcer does -- its own
-    options, then the command behind `--` -- and runs the command where the
-    launch already stands. Every proof about the fence itself names this
-    host's own bubblewrap instead, in `tests/integration/test_bwrap_fence.py`.
-    """
+No stand-in can take its place. A deployment that composes a tool-bearing
+vector attests its enforcer by starting one, and that start has to answer a
+negative -- a file outside every grant is not there -- which an executable that
+merely runs what stands behind `--` answers the same way an unfenced account
+does. So a fake names this host's own enforcer, and a machine carrying none
+runs the proofs that need one not at all.
+"""
 
-    tools = directory / "tools"
-    tools.mkdir(exist_ok=True)
-    bubblewrap = tools / "bwrap"
-    bubblewrap.write_text(
-        f"#!{sys.executable}\n"
-        "import os\n"
-        "import sys\n"
-        'command = sys.argv[sys.argv.index("--") + 1 :]\n'
-        "os.execvp(command[0], command)\n",
-        encoding="utf-8",
+UNFENCEABLE: str | None = None
+"""Why this machine fences nothing, or `None` when it does."""
+
+try:
+    verified_sandbox_host(HOST_ENFORCER)
+except SandboxUnavailable as refusal:
+    UNFENCEABLE = str(refusal)
+if UNFENCEABLE is not None and os.environ.get("CI"):
+    raise RuntimeError(
+        f"the pipeline gives this runner an enforcer it cannot use: {UNFENCEABLE}"
     )
-    bubblewrap.chmod(0o755)
-    return bubblewrap
 
 
 def claude_search_path(directory: Path) -> str:
@@ -343,10 +345,16 @@ def claude_search_path(directory: Path) -> str:
 
     The CLI resolves it through the search path this deployment hands the
     launched process, so a deployment fake needs one there or it is not a
-    deployment this executor accepts.
+    deployment this executor accepts. It is a name on a path and nothing more:
+    this vector is deliberately unfenced, so nothing here is ever attested.
     """
 
-    return str(stand_in_bubblewrap(directory).parent)
+    tools = directory / "tools"
+    tools.mkdir(exist_ok=True)
+    named = tools / SANDBOX_EXECUTABLE_NAME
+    named.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    named.chmod(0o755)
+    return str(tools)
 
 
 PERSONAL_SUBSCRIPTION_TYPE = "max"
