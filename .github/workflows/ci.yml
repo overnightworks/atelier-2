@@ -126,6 +126,9 @@ jobs:
             exit 1
           fi
 
+      - name: Give this runner the fence enforcer
+        uses: ./.github/actions/fence-enforcer
+
       - name: Test the production cockpit in Chromium
         run: |
           set -euo pipefail
