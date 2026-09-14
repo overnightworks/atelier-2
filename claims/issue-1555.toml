@@ -1,0 +1,7 @@
+claim_id = "0477a6a9ee3843a7ad6a8cc8fb7876a1"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "6c9d599ca7aee6a62f88864dc53a67821d7214e3"
+branch = "claude/issue-1555-duplex-fragment"
+scope = ["tests/integration/test_agent_process_duplex.py"]
+opened_commit = "1bdb3a576acfccfd6e3277dc78d4294c8ea3b1aa"
