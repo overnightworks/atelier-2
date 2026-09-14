@@ -2410,6 +2410,7 @@ def decoded_workspace_tool_stream(
     tmp_path: Path,
     stream: bytes,
     declared_output_schema: bytes | None = None,
+    standard_error: bytes = b"",
 ) -> AgentExecutionResult | AgentExecutionFailure:
     """One workspace-tool call decoded from exactly these recorded stream bytes."""
 
@@ -2422,7 +2423,7 @@ def decoded_workspace_tool_stream(
         try:
             return executor.decode_process_completion(
                 leased(command, leased_workspace(tmp_path)),
-                AgentProcessCompletion(0, stream, b""),
+                AgentProcessCompletion(0, stream, standard_error),
             )
         finally:
             executor.release_credential_channel(command)
@@ -2958,3 +2959,105 @@ def test_an_executable_that_answers_a_jobless_grok_invocation_successfully_is_re
 
     with pytest.raises(GrokExecutableUnsupported, match="jobless"):
         attest_grok_workspace_tool_invocation(settings)
+
+
+GROK_BUILD_BALANCE_EXHAUSTED_MESSAGE = (
+    "API error (status 402 Payment Required): Grok Build usage balance exhausted"
+)
+"""The provider's own words for the refusal measured live 12.09.2026 (#1549)."""
+
+CHILD_STDERR_LINE = "grok: fatal: could not reach the inference endpoint"
+"""What this executor's own launched process wrote to its standard error."""
+
+FAKE_ISSUED_TOKEN = "ghp_" + "a" * 40
+"""A token-shaped pattern assembled as scenario data, never a real credential."""
+
+TOKEN_BEARING_REFUSAL_TEXT = (
+    f"balance check failed near {FAKE_ISSUED_TOKEN} for this run"
+)
+"""Provider output carrying both a credential shape and text worth keeping."""
+
+
+def test_a_refusal_carries_both_its_errors_and_its_childs_stderr(
+    tmp_path: Path,
+) -> None:
+    """A payment refusal explains itself in `errors[]` and in the child's stderr (#1549)."""
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        {
+            **recorded_terminal_line("", is_error=True),
+            "errors": [
+                {"message": GROK_BUILD_BALANCE_EXHAUSTED_MESSAGE, "http_status": 402}
+            ],
+        },
+    )
+
+    result = decoded_workspace_tool_stream(
+        tmp_path, stream, standard_error=CHILD_STDERR_LINE.encode("utf-8")
+    )
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    events = result.transcript.events
+    assert any(
+        isinstance(step, ProviderTerminalRefusal)
+        and GROK_BUILD_BALANCE_EXHAUSTED_MESSAGE in step.text
+        for step in events
+    )
+    assert any(
+        isinstance(step, UnrecognisedProviderOutput) and step.text == CHILD_STDERR_LINE
+        for step in events
+    )
+
+
+def test_an_empty_errors_list_and_empty_stderr_change_nothing(tmp_path: Path) -> None:
+    """No child stderr and no `errors[]` leave the transcript exactly as it was."""
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        {
+            **recorded_terminal_line(
+                "Maximum turns reached", is_error=True, subtype="error_max_turns"
+            ),
+            "errors": [],
+        },
+    )
+
+    result = decoded_workspace_tool_stream(tmp_path, stream, standard_error=b"")
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    assert (
+        ProviderTerminalRefusal("error_max_turns", "", "Maximum turns reached")
+        in result.transcript.events
+    )
+    assert len(result.transcript.events) == 3
+
+
+@pytest.mark.parametrize(
+    ("errors_field", "standard_error"),
+    (
+        pytest.param([TOKEN_BEARING_REFUSAL_TEXT], b"", id="in-errors"),
+        pytest.param([], TOKEN_BEARING_REFUSAL_TEXT.encode("utf-8"), id="in-stderr"),
+    ),
+)
+def test_a_token_shaped_pattern_never_reaches_the_transcript(
+    tmp_path: Path, errors_field: list[str], standard_error: bytes
+) -> None:
+    """Carrying the provider's refusal keeps its text but never a credential shape."""
+
+    stream = recorded_grok_stream(
+        recorded_session_start(),
+        {**recorded_terminal_line("", is_error=True), "errors": errors_field},
+    )
+
+    result = decoded_workspace_tool_stream(
+        tmp_path, stream, standard_error=standard_error
+    )
+
+    assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
+    assert result.transcript is not None
+    document = result.transcript.document.decode("utf-8")
+    assert "balance check failed near" in document
+    assert FAKE_ISSUED_TOKEN not in document
