@@ -93,6 +93,7 @@ def producing_round(
     reader_id: str,
     source_node: str,
     current_round_ordinal: int,
+    producer_last_executed_round: int | None = None,
 ) -> int | None:
     """Which round wrote the value this reader is asking that source for.
 
@@ -101,12 +102,29 @@ def producing_round(
     can name — the review the next build must read — wrote in the immediately
     previous round. Round one has no previous round, so that input is absent
     rather than refused: honestly empty, not a missing write.
+
+    A source a loop repeats that this reader stands outside of — the loop the
+    reader belongs to, if any, is not the source's — wrote its value in the
+    round the loop last ran, not in the round the reader itself stands in: the
+    run leaves a finished loop and starts again at round one outside it, so
+    reading the reader's own round would read round one even after the loop
+    turned twice. That round is a durable fact this pure rule does not hold,
+    so the caller supplies it as `producer_last_executed_round`; asking for one
+    without supplying it is a caller error, not a guess this rule could make.
     """
     require_exact_round_ordinal(current_round_ordinal)
     if is_previous_round_data_edge(graph, reader_id, source_node):
         if current_round_ordinal == FIRST_ROUND_ORDINAL:
             return None
         return current_round_ordinal - 1
+    source_loop = graph.loop_of(source_node)
+    if source_loop is not None and graph.loop_of(reader_id) != source_loop:
+        if producer_last_executed_round is None:
+            raise ValueError(
+                f"node {reader_id!r} reads {source_node!r} out of loop "
+                f"{source_loop.id!r} without its last executed round"
+            )
+        return producer_last_executed_round
     return round_of(graph, source_node, current_round_ordinal)
 
 

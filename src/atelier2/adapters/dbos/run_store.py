@@ -437,6 +437,43 @@ def event_carrying_the_output_of(node: WorkflowNodeV3) -> RunEventKind:
             )
 
 
+def last_executed_round_or_none(
+    session: SqlExecutor,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    graph: WorkflowGraphV3,
+    reader_id: str,
+    producer: WorkflowNodeV3,
+) -> int | None:
+    """The round `producing_round` needs where a reader stands outside the loop.
+
+    Only that case ever needs one -- `producing_round` reads every other
+    producer's round straight from the graph -- so this returns None rather
+    than spending a query nothing will use. Where the reader really does
+    stand outside the producer's loop, the round is a durable fact read back
+    the way `load_kept_value` reads a round's own kept value: from what the
+    run actually wrote, never the reader's own round, because a run leaves a
+    finished loop standing in round one again.
+    """
+    source_loop = graph.loop_of(producer.id)
+    if source_loop is None or graph.loop_of(reader_id) == source_loop:
+        return None
+    round_ordinal = session.scalar(
+        sa.select(sa.func.max(run_events.c.round_ordinal)).where(
+            run_events.c.run_id == run_id.value,
+            run_events.c.revision_hash == revision_hash.value,
+            run_events.c.node_id == producer.id,
+            run_events.c.event_kind == event_carrying_the_output_of(producer).value,
+        )
+    )
+    if round_ordinal is None:
+        raise RunTransitionConflict(
+            f"node {producer.id!r} has written no round a reader outside its "
+            "loop can read"
+        )
+    return int(round_ordinal)
+
+
 def load_node_outputs(
     session: SqlExecutor,
     run_id: RunId,
@@ -447,31 +484,10 @@ def load_node_outputs(
 ) -> tuple[DeliveredOutput, ...]:
     """The work of earlier nodes this Agent or Wait reads, as they wrote it.
 
-    The value is the producing node's own completion payload -- carried by
-    whichever event finished that node, which `event_carrying_the_output_of`
-    answers from the producer's kind -- and it is verified against the hash that
-    event stored, exactly as the Action path has always verified an Agent output
-    it consumes. A payload that no longer matches its hash is a store that
-    disagrees with itself, and it refuses here rather than travelling into a job.
-
-    It is then read against the schema the producing node's author pinned for
-    that output, through the same door that first admitted it: an Agent's output
-    is a produced JSON value, while a Wait's answer is authored text. A value
-    written by an older build never passed that write, so the value that travels
-    is judged where it travels rather than trusted for having been stored.
-
     A node that reads nothing gets nothing: no query runs, and the composition
-    is the authored instruction alone.
-
-    Which round wrote the value is read from the graph, never guessed.
-    `producing_round` answers: a predecessor the edges order wrote in the round
-    now turning, a loop-mate the edges cannot name wrote in the previous round,
-    and a producer no loop repeats wrote once. Round one of a previous-round
-    edge delivers nothing — the source has not written yet, and that absence is
-    not a missing write. The query names the producing execution rather than the
-    producing node -- a node id alone would match every round at once, and a
-    store that has several answers to one question is a store that cannot
-    answer it.
+    is the authored instruction alone. Each declared source is read, verified
+    and judged in turn by `_delivered_output`, which it lets stand for itself
+    when nothing was written yet.
     """
     read = tuple(
         entry.source
@@ -482,38 +498,61 @@ def load_node_outputs(
         return ()
     if not isinstance(graph, WorkflowGraphV3):
         raise RunTransitionConflict("a V3 Agent or Wait node belongs to a V3 document")
-    delivered: list[DeliveredOutput] = []
-    for source in sorted(read, key=lambda named: (named.node, named.output)):
-        written_in = producing_round(graph, node.id, source.node, round_ordinal)
-        if written_in is None:
-            continue
-        producer = graph.node(source.node)
-        payload = load_node_output_payload(
-            session,
-            run_id,
-            revision_hash,
-            graph,
-            source.node,
-            written_in,
+    delivered = (
+        _delivered_output(
+            session, run_id, revision_hash, graph, node.id, source, round_ordinal
         )
-        declared = next(
-            output for output in producer.outputs if output.name == source.output
+        for source in sorted(read, key=lambda named: (named.node, named.output))
+    )
+    return tuple(output for output in delivered if output is not None)
+
+
+def _delivered_output(
+    session: SqlExecutor,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    graph: WorkflowGraphV3,
+    reader_id: str,
+    source: NodeOutputSource,
+    round_ordinal: int,
+) -> DeliveredOutput | None:
+    """One `load_node_outputs` source: read, hash-verified, and schema-judged.
+
+    The value is the producing node's own completion payload, hash-verified
+    exactly as the Action path has always verified an Agent output it
+    consumes, then read against the schema the producing node's author
+    pinned. Which round wrote it is read from the graph, never guessed --
+    `producing_round` and `last_executed_round_or_none` answer -- and None
+    means the source has not written yet, honestly absent, so the caller
+    drops it rather than reading nothing as a value.
+    """
+    producer = graph.node(source.node)
+    last_round = last_executed_round_or_none(
+        session, run_id, revision_hash, graph, reader_id, producer
+    )
+    written_in = producing_round(
+        graph, reader_id, source.node, round_ordinal, last_round
+    )
+    if written_in is None:
+        return None
+    payload = load_node_output_payload(
+        session, run_id, revision_hash, graph, source.node, written_in
+    )
+    declared = next(
+        output for output in producer.outputs if output.name == source.output
+    )
+    if isinstance(producer, WaitNodeV3):
+        refusal = why_a_wait_node_does_not_admit_an_answer(session, producer, payload)
+        if refusal is not None:
+            raise NodeOutputSchemaRefused(
+                f"node {source.node!r} carried an answer its own schema refuses: "
+                f"{refusal}"
+            )
+    else:
+        refuse_an_output_its_schema_does_not_admit(
+            session, source.node, declared, payload
         )
-        if isinstance(producer, WaitNodeV3):
-            refusal = why_a_wait_node_does_not_admit_an_answer(
-                session, producer, payload
-            )
-            if refusal is not None:
-                raise NodeOutputSchemaRefused(
-                    f"node {source.node!r} carried an answer its own schema "
-                    f"refuses: {refusal}"
-                )
-        else:
-            refuse_an_output_its_schema_does_not_admit(
-                session, source.node, declared, payload
-            )
-        delivered.append(DeliveredOutput(source.node, source.output, payload))
-    return tuple(delivered)
+    return DeliveredOutput(source.node, source.output, payload)
 
 
 def load_kept_value(session: SqlExecutor, node_execution_id: NodeExecutionId) -> bytes:

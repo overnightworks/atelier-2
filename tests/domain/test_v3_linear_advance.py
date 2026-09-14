@@ -422,22 +422,37 @@ def test_a_loop_head_may_read_the_loop_tails_previous_round() -> None:
 
 
 @pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
-@pytest.mark.parametrize(
-    ("document", "named"),
-    (
-        (_LOOPED_ACTION, "no round repeats"),
-        (_READ_OUT_OF_A_LOOP, "which round it reads"),
-    ),
-    ids=("an action node inside a loop body", "a value read out of a loop"),
-)
-def test_a_loop_shape_no_round_of_this_build_carries_is_refused_by_name(
-    document: bytes, named: str
-) -> None:
-    """Both would run: what neither has is an owner for the round it means."""
+def test_a_loop_shape_no_round_of_this_build_carries_is_refused_by_name() -> None:
+    """An action node inside a loop body would run: what it lacks is an owner
+    for the round its repeated effect would need."""
     with pytest.raises(WorkflowFormatNotExecutable) as refused:
-        parse_executable_workflow_document(document)
+        parse_executable_workflow_document(_LOOPED_ACTION)
 
-    assert named in str(refused.value)
+    assert "no round repeats" in str(refused.value)
+
+
+def test_a_node_after_a_loop_may_read_what_the_loop_produced() -> None:
+    """The shape that used to be refused for naming no round is executable now:
+    a reader outside the loop reads the round the loop last actually ran.
+    """
+    graph = parse_executable_workflow_document(_READ_OUT_OF_A_LOOP)
+
+    assert isinstance(graph, WorkflowGraphV3)
+    assert graph.sink_node_ids == ("ship",)
+
+
+def test_a_reader_outside_a_loop_reads_the_round_its_source_last_executed() -> None:
+    graph = _graph(_READ_OUT_OF_A_LOOP)
+
+    assert producing_round(graph, "ship", "review", FIRST_ROUND_ORDINAL, 2) == 2
+
+
+def test_a_reader_outside_a_loop_refuses_without_its_sources_last_round() -> None:
+    """The last executed round is a durable fact this pure rule cannot guess."""
+    graph = _graph(_READ_OUT_OF_A_LOOP)
+
+    with pytest.raises(ValueError, match="last executed round"):
+        producing_round(graph, "ship", "review", FIRST_ROUND_ORDINAL)
 
 
 def test_a_loop_may_repeat_its_wait_node() -> None:
