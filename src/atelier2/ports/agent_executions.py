@@ -42,6 +42,7 @@ from atelier2.contracts.provider_probe_receipts import (
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.sandbox_grants import SandboxedLaunch
 from atelier2.contracts.when import RecordedAt
+from atelier2.ports.agent_attempts import AgentAttemptPossiblyRan
 from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
     ProviderConversation,
@@ -502,6 +503,32 @@ class AgentSession(Protocol):
 
 class AgentProcessOwnerNotLocal(Exception):
     pass
+
+
+class AgentProcessLaunchYieldedToCancellation(AgentProcessOwnerNotLocal):
+    """A launch that yielded to a cancellation the store recorded first.
+
+    Carries the store's own typed outcome, so a caller that catches this one
+    named case finishes the attempt from what `observe_process` already
+    decided rather than re-reading state to guess it again. A caller that only
+    catches the parent `AgentProcessOwnerNotLocal` keeps working unchanged.
+    """
+
+    def __init__(self, outcome: AgentAttemptPossiblyRan) -> None:
+        super().__init__()
+        self.outcome = outcome
+
+
+def raise_if_launch_yielded_to_cancellation(
+    observed: AgentAttempt | AgentAttemptPossiblyRan,
+) -> None:
+    """Turn `observe_process`'s already-decided outcome into the launch's own signal.
+
+    The store, not this call, decided whether a recorded cancellation won; this
+    only carries that decision into the control flow `launch_and_wait` reacts to.
+    """
+    if isinstance(observed, AgentAttemptPossiblyRan):
+        raise AgentProcessLaunchYieldedToCancellation(observed)
 
 
 class AgentExecutorFactoryV2(Protocol):

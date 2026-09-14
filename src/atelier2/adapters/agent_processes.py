@@ -47,6 +47,7 @@ from atelier2.ports.agent_executions import (
     AgentSession,
     PermissionDecider,
     ProviderConversationBinding,
+    raise_if_launch_yielded_to_cancellation,
 )
 from atelier2.ports.provider_conversations import (
     ProviderCancellationCause,
@@ -445,7 +446,10 @@ class AgentProcessSupervisor(AgentSession):
             )
             if launch_response.get("type") == "STARTED":
                 owned.launched = True
-                self._store.observe_process(execution, owned.owner, owned.generation)
+                observed = self._store.observe_process(
+                    execution, owned.owner, owned.generation
+                )
+                raise_if_launch_yielded_to_cancellation(observed)
             elif launch_response.get("type") == "TERMINAL_BEFORE_START":
                 raise AgentProcessOwnerNotLocal
             else:

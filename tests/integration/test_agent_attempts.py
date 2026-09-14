@@ -49,7 +49,11 @@ from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptFailureCode,
     AgentAttemptId,
+    AgentAttemptReplacement,
     AgentAttemptState,
+    AgentProcessOwnerId,
+    CancelAgentAttemptRequest,
+    WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import (
     ATTEMPT_WORKSPACE,
@@ -105,6 +109,7 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
     AgentAttemptPossiblyRan,
@@ -613,6 +618,89 @@ def test_a_claim_replayed_from_a_lost_incarnation_never_authorizes_invocation(
         assert isinstance(outcome, AgentAttemptPossiblyRan)
         assert not counter.exists()
         assert len(executor.released_commands) == 1
+    finally:
+        runtime.close()
+
+
+def _armed_and_bound(
+    store: DbosAgentAttemptStore, execution: AgentAttemptExecution
+) -> tuple[AgentProcessOwnerId, WatchdogGenerationId]:
+    """Prepare, bind a watchdog identity and claim, leaving the attempt armed.
+
+    Mirrors the sequence `execute_agent_attempt` drives through `AgentSession`
+    before it ever reaches `observe_process`, so a test racing a cancellation
+    against that one CAS starts from the same durable shape a real launch does.
+    """
+
+    store.prepare(execution)
+    owner = AgentProcessOwnerId("owner-observe-race")
+    generation = WatchdogGenerationId("generation-observe-race")
+    store.bind_watchdog(execution, owner, generation)
+    claimed = store.claim(execution)
+    assert isinstance(claimed, AgentAttemptClaimedByThisCall)
+    return owner, generation
+
+
+def test_a_cancellation_recorded_before_observation_wins_the_launch_race(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/before-observation")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        owner, generation = _armed_and_bound(store, execution)
+        armed = store.load(execution.attempt_id)
+
+        cancelled = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                armed.run_id,
+                armed.attempt_id,
+                "cancel-before-observation",
+                armed.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(cancelled, AgentAttemptCancellationAccepted)
+
+        observed = store.observe_process(execution, owner, generation)
+
+        assert isinstance(observed, AgentAttemptPossiblyRan)
+        assert observed.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+        assert store.load(execution.attempt_id) == observed.attempt
+    finally:
+        runtime.close()
+
+
+def test_an_observation_lost_to_no_recorded_cancellation_still_raises(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/unexplained-observation-loss")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        _armed_and_bound(store, execution)
+        armed = store.load(execution.attempt_id)
+
+        with pytest.raises(
+            RunTransitionConflict, match="process observation lost its attempt CAS"
+        ):
+            store.observe_process(
+                execution,
+                AgentProcessOwnerId("a-different-owner"),
+                WatchdogGenerationId("generation-observe-race"),
+            )
+
+        assert store.load(execution.attempt_id) == armed
     finally:
         runtime.close()
 
