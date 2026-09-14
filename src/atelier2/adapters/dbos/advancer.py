@@ -30,7 +30,10 @@ from atelier2.adapters.dbos.run_publications import (
     RunPublicationRefused,
     confirmed_publication,
 )
-from atelier2.adapters.dbos.run_store import load_node_output_payload
+from atelier2.adapters.dbos.run_store import (
+    last_executed_round_or_none,
+    load_node_output_payload,
+)
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
@@ -133,12 +136,7 @@ def graph_action_intent(
         raise RunEffectConflict("effect requires the current STARTED Action")
     if is_documentation_release_action_form(action):
         return _documentation_release_action_intent(
-            session,
-            run_id,
-            revision_hash,
-            action,
-            effect_adapter_bindings,
-            project_id,
+            session, run_id, revision_hash, action, effect_adapter_bindings, project_id
         )
     body_source = action_body_source(action)
     if body_source is None:
@@ -146,18 +144,16 @@ def graph_action_intent(
     predecessor = graph.node(body_source.node)
     if not isinstance(predecessor, AgentNodeV3):
         raise RunEffectConflict("Action body input names no Agent output")
+    last_round = last_executed_round_or_none(
+        session, run_id, revision_hash, graph, action.id, predecessor
+    )
     producing = producing_round(
-        graph, action.id, predecessor.id, run.current_round_ordinal
+        graph, action.id, predecessor.id, run.current_round_ordinal, last_round
     )
     if producing is None:
         raise RunEffectConflict("Action body input names an output not yet written")
     payload = load_node_output_payload(
-        session,
-        run_id,
-        revision_hash,
-        graph,
-        predecessor.id,
-        producing,
+        session, run_id, revision_hash, graph, predecessor.id, producing
     )
     operation = _operation_for(session, action.operation)
     effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)

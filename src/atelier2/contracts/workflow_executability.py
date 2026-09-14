@@ -10,7 +10,6 @@ from atelier2.contracts.workflows_v3 import (
     NodeReceiptSource,
     WaitNodeV3,
     WorkflowGraphV3,
-    declared_reads,
     is_linear_chain,
 )
 
@@ -176,12 +175,6 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
 def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
     """What a declared loop asks for that no round of this build carries.
 
-    One thing is still nobody's: a value read *out of* a loop names no round. A
-    run leaves the loop in whichever round ended it and stands in the first
-    round again outside, so the reader would have to say which round wrote the
-    value it reads, and no rule here says. A declared verdict decides when a
-    loop ends; it does not decide that.
-
     A round is a second execution of a node. The Agent and Wait kinds both mint
     one: a `WaitNodeBinding` carries the round ordinal it was bound in, and an
     answer is keyed by execution and round, so a repeated Wait now asks its
@@ -201,19 +194,6 @@ def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
             return f"node kinds no round repeats in loop {loop.id!r}: " + ", ".join(
                 repeated
             )
-    for node in graph.nodes:
-        if graph.loop_of(node.id) is not None:
-            continue
-        for source in declared_reads(node):
-            if not isinstance(source, NodeOutputSource):
-                continue
-            loop = graph.loop_of(source.node)
-            if loop is not None:
-                return (
-                    f"node {node.id!r} reads {source.output!r} of {source.node!r}, "
-                    f"which loop {loop.id!r} writes once per round, and no rule "
-                    "here names which round it reads"
-                )
     return None
 
 
