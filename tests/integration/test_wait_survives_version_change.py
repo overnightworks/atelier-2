@@ -161,7 +161,7 @@ def answer_through_the_public_door(client: TestClient, node_id: str) -> Response
 
 
 def test_a_parked_wait_takes_its_answer_under_a_later_application_version(
-    tmp_path: Path, dbos_logging_isolation: None
+    tmp_path: Path,
 ) -> None:
     parked = runtime_over(tmp_path, VERSION_THAT_PARKED_THE_WAIT)
     parked.initialize_storage()
