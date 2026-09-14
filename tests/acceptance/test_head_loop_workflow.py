@@ -349,6 +349,15 @@ def _start(stage: _Stage, bindings: AgentBindingSet) -> Response:
             expected_snapshot_reference=OBSERVED_ITEM.item,
         ),
     )
+    published_owner_documents = client.post(
+        API_PREFIX + "/artifacts",
+        content=OWNER_DOCUMENTS.encode(),
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert published_owner_documents.status_code in (200, 201), (
+        published_owner_documents.text
+    )
+    owner_documents_hash = published_owner_documents.json()["artifact_hash"]
     return client.post(
         API_PREFIX + "/runs",
         json={
@@ -366,7 +375,7 @@ def _start(stage: _Stage, bindings: AgentBindingSet) -> Response:
             ],
             "orders": [
                 {"name": ITEM_ORDER, "work_item": ITEM.value},
-                {"name": OWNER_DOCUMENTS_ORDER, "value": OWNER_DOCUMENTS},
+                {"name": OWNER_DOCUMENTS_ORDER, "artifact_hash": owner_documents_hash},
             ],
         },
     )
