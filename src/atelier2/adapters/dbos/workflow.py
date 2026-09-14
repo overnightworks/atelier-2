@@ -65,7 +65,7 @@ from atelier2.adapters.dbos.node_binding_codec import (
 from atelier2.adapters.dbos.run_publications import (
     NodeInRun,
     RunPublicationRefused,
-    confirmed_publication,
+    declared_publication_of,
     pinned_source_for,
 )
 from atelier2.adapters.dbos.run_store import (
@@ -372,7 +372,7 @@ def _declared_start_candidate(
         round_of(graph, node.starts_from.node, execution.round_ordinal),
     )
     try:
-        publication = confirmed_publication(session, published)
+        publication = declared_publication_of(session, published)
     except RunPublicationRefused as refusal:
         raise RunBindingConflict(
             f"node {node.id!r} goes on working in what {node.starts_from.node!r} "

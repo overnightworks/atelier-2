@@ -285,6 +285,26 @@ def test_a_replacement_attempt_begins_in_the_candidate_the_first_one_did(
         assert replacement.get("start_candidate_tree") == built.tree
 
 
+def test_a_continuing_publisher_binds_even_though_it_has_already_published(
+    tmp_path: Path,
+) -> None:
+    """A later node's own confirmed push must not refuse what it starts from.
+
+    open-pr's freshness question is about a report a pull request would stand
+    over; asked here it would refuse a node for the very push its own
+    continuation goes on to make, and a replacement composing the binding
+    again would never begin in the candidate it began in the first time.
+    """
+
+    with publishing_run(tmp_path, "Build, then fix", (BUILD, FIX)) as run:
+        built = published_build(run)
+        run.publish(FIX, built, run.pin_of(FIX).commit)
+
+        replacement = run.binding_of(FIX)
+
+        assert replacement.get("start_candidate_tree") == built.tree
+
+
 def test_a_start_candidate_the_store_lost_stops_the_attempt_before_it_is_claimed(
     tmp_path: Path,
 ) -> None:

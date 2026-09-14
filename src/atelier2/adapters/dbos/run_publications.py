@@ -13,6 +13,13 @@ Which publication is the last one is answered by the workflow's declared order
 and not by when a receipt happened to be written: two publications the graph
 never ordered against each other are refused by name rather than guessed
 between, because picking either would decide by accident what a run stands on.
+
+`confirmed_publication` answers whether a pull request may still open over what
+one node reported, refusing once the run has published something later.
+`declared_publication_of` answers only what a node's own binding named it
+continues, with no freshness policy: a node that keeps building on a
+publication its binding declared must not be refused merely because its own
+push -- of that very continuation -- comes later in the run.
 """
 
 from __future__ import annotations
@@ -57,6 +64,9 @@ _MISSING_FOR_OPEN_PR = (
 )
 DISAGREES_WITH_OPEN_PR_HEAD = "confirmed push receipt disagrees with the open-pr head"
 _DISAGREES_WITH_ITS_PUSH = "confirmed push receipt disagrees with the push it reports"
+_MISSING_FOR_CONTINUATION = (
+    "a node continuing a declared publication requires its confirmed push receipt"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +110,32 @@ def confirmed_publication(
     later publisher put there, so a pull request opened over the earlier report
     would describe something other than what it shows.
     """
+    publication = _read_confirmed_publication(
+        session, node, _MISSING_FOR_OPEN_PR, DISAGREES_WITH_OPEN_PR_HEAD
+    )
+    published_after = _published_after(session, graph, node)
+    if published_after:
+        raise RunPublicationRefused(_overtaken_report(node.node_id, published_after))
+    return publication
+
+
+def declared_publication_of(session: Any, node: NodeInRun) -> RunPublication:
+    """The publication a binding named directly, with no freshness policy asked.
+
+    A node whose binding declares it continues this exact publication keeps
+    working on it whatever the run has published since -- its own push of that
+    continuation necessarily comes later in the run, so asking open-pr's
+    freshness question here would refuse the very thing this node exists to do.
+    """
+    return _read_confirmed_publication(
+        session, node, _MISSING_FOR_CONTINUATION, _DISAGREES_WITH_ITS_PUSH
+    )
+
+
+def _read_confirmed_publication(
+    session: Any, node: NodeInRun, missing: str, disagreement: str
+) -> RunPublication:
+    """The confirmed push receipt this exact node's logical key names, or a refusal."""
     record = (
         session.execute(
             sa.select(effect_receipts).where(
@@ -110,12 +146,8 @@ def confirmed_publication(
         .one_or_none()
     )
     if record is None:
-        raise RunPublicationRefused(_MISSING_FOR_OPEN_PR)
-    publication = _publication_from(record, node, DISAGREES_WITH_OPEN_PR_HEAD)
-    published_after = _published_after(session, graph, node)
-    if published_after:
-        raise RunPublicationRefused(_overtaken_report(node.node_id, published_after))
-    return publication
+        raise RunPublicationRefused(missing)
+    return _publication_from(record, node, disagreement)
 
 
 def pinned_source_for(
