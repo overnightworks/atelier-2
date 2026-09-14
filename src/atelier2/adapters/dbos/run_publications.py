@@ -83,11 +83,16 @@ class RunPublication:
     candidate_tree: str
 
 
-def confirmed_publication(session: Any, node: NodeInRun) -> RunPublication:
+def confirmed_publication(
+    session: Any, graph: WorkflowGraphV3, node: NodeInRun
+) -> RunPublication:
     """The publication this exact node confirmed, for the open-pr standing on it.
 
     Its refusals name that open-pr, because the head a pull request would be
-    opened over is what the reader of such a refusal is holding.
+    opened over is what the reader of such a refusal is holding. A report the
+    run has published past is one of them: the branch already carries what the
+    later publisher put there, so a pull request opened over the earlier report
+    would describe something other than what it shows.
     """
     record = (
         session.execute(
@@ -100,7 +105,11 @@ def confirmed_publication(session: Any, node: NodeInRun) -> RunPublication:
     )
     if record is None:
         raise RunPublicationRefused(_MISSING_FOR_OPEN_PR)
-    return _publication_from(record, node, DISAGREES_WITH_OPEN_PR_HEAD)
+    publication = _publication_from(record, node, DISAGREES_WITH_OPEN_PR_HEAD)
+    published_after = _published_after(session, graph, node)
+    if published_after:
+        raise RunPublicationRefused(_overtaken_report(node.node_id, published_after))
+    return publication
 
 
 def pinned_source_for(
@@ -137,6 +146,38 @@ def last_in_workflow_order(
         "the workflow orders none of the confirmed publications of "
         f"{', '.join(sorted(published))} after the others, so which one a later "
         "publisher continues is not this run's to choose"
+    )
+
+
+def _published_after(
+    session: Any, graph: WorkflowGraphV3, node: NodeInRun
+) -> frozenset[str]:
+    """Every node the workflow orders after this one whose push this run confirmed.
+
+    Asked of the receipts rather than of the grants a node holds, because what a
+    pull request would stand over is what the branch carries, and only a
+    confirmed push put something there.
+    """
+    node_of_key = {
+        _logical_key(_execution_of(graph, node, later.id)): later.id
+        for later in graph.nodes
+        if node.node_id in graph.dependency_closure(later.id)
+    }
+    confirmed = session.execute(
+        sa.select(effect_receipts.c.logical_key).where(
+            effect_receipts.c.logical_key.in_(node_of_key),
+            effect_receipts.c.operation_name
+            == AdapterOperationName.PUSH_ATELIER_COMMIT.value,
+        )
+    ).scalars()
+    return frozenset(node_of_key[str(key)] for key in confirmed)
+
+
+def _overtaken_report(read_node: str, published_after: frozenset[str]) -> str:
+    publishers = ", ".join(f"`{node_id}`" for node_id in sorted(published_after))
+    return (
+        f"open-pr reads the report of `{read_node}`, "
+        f"but {publishers} published after it"
     )
 
 

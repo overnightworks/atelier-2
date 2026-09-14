@@ -174,7 +174,11 @@ attempt of one that already published -- stands where that publication stands,
 so the commit replacing the branch head keeps the same parent instead of
 dropping what trunk gained beside the run. Where a run's own graph orders two
 publications only beside each other, nothing is pinned and the node is refused
-by name rather than resolved by which receipt happens to be newer.
+by name rather than resolved by which receipt happens to be newer. An open-PR
+Action whose body reads the report of a node another publisher of the same run
+has published after is refused the same way, naming both nodes, and opens
+nothing: the branch already carries the later commit, so a pull request over the
+overtaken report would describe something other than the head it shows.
 A destination that answers and holds nothing, asked before anything was sent,
 has said so: a remote read that succeeds and advertises no
 such ref, and a pull request listing for that exact head branch answered with
