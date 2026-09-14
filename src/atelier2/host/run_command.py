@@ -54,7 +54,6 @@ from atelier2.api.wire.requests import (
     AnyStartRunOrderResource,
     ArtifactOrderResource,
     FoundCatalogLineageRequestResource,
-    InlineOrderResource,
     PublishAgentConfigurationRevisionRequestResource,
     PublishAuthProfileRevisionRequestResource,
     StartRunAgentBindingResourceV2,
@@ -266,7 +265,13 @@ class SuppliedWorkItemOrder:
     work_item: str
 
 
-type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder | SuppliedWorkItemOrder
+type SuppliedStartOrder = SuppliedArtifactOrder | SuppliedWorkItemOrder
+"""What a start body can honestly carry: a published address, or a work item.
+
+`SuppliedOrder` is the operator's own exact bytes, before `_published_orders`
+turns each one into a `SuppliedArtifactOrder` -- no caller of `start_request_body`
+ever hands it a bare `SuppliedOrder`.
+"""
 
 
 @dataclass(frozen=True)
@@ -721,9 +726,7 @@ def start_request_body(
 def _wire_start_order(order: SuppliedStartOrder) -> AnyStartRunOrderResource:
     if isinstance(order, SuppliedArtifactOrder):
         return ArtifactOrderResource(name=order.name, artifact_hash=order.artifact_hash)
-    if isinstance(order, SuppliedWorkItemOrder):
-        return WorkItemOrderResource(name=order.name, work_item=order.work_item)
-    return InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
+    return WorkItemOrderResource(name=order.name, work_item=order.work_item)
 
 
 def _read_history(api: AtelierApi, public_run_reference: str) -> RunHistory:

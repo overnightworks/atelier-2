@@ -21,6 +21,7 @@ from atelier2.adapters.dbos.advancer import (
     prepared_effect_intent,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
@@ -66,6 +67,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effect_requests import (
     OpenPullRequest,
     ReviewedDocumentationPullRequest,
@@ -85,7 +87,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.orders import InlineOrderValue, ObservedWorkItemOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue, ObservedWorkItemOrderValue
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -103,6 +105,7 @@ from atelier2.ports.agent_configurations import (
     AuthProfileRevisionCreated,
     AuthProfileRevisionExisting,
 )
+from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
@@ -831,7 +834,7 @@ def test_release_resolve_after_a_push_crash_opens_one_pr_without_another_push(
     try:
         workflow = _publish_documentation_release(runtime)
         orders, replacement = _documentation_release_orders(
-            base_revision=base, verdict="approve", mutate_after_digest=False
+            runtime, base_revision=base, verdict="approve", mutate_after_digest=False
         )
         started = DbosDurableRunStarter(
             runtime.engine, runtime.settings, runtime.agent_executor_registry
@@ -950,8 +953,16 @@ def _publish_documentation_release(runtime: DbosRuntime) -> WorkflowRevision:
     return workflow
 
 
+def _published_artifact_order(
+    runtime: DbosRuntime, name: str, content: bytes
+) -> AuthoredOrder:
+    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(content))
+    assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
+    return AuthoredOrder(name, ArtifactOrderValue(published.artifact.artifact_hash))
+
+
 def _documentation_release_orders(
-    *, base_revision: str, verdict: str, mutate_after_digest: bool
+    runtime: DbosRuntime, *, base_revision: str, verdict: str, mutate_after_digest: bool
 ) -> tuple[tuple[AuthoredOrder, ...], bytes]:
     replacements = (
         ReviewedDocumentReplacement(
@@ -1001,12 +1012,11 @@ def _documentation_release_orders(
     return (
         (
             AuthoredOrder("work_item", ObservedWorkItemOrderValue(item)),
-            AuthoredOrder(
-                "candidate", InlineOrderValue(json.dumps(candidate).encode())
+            _published_artifact_order(
+                runtime, "candidate", json.dumps(candidate).encode()
             ),
-            AuthoredOrder(
-                "approved_verdict",
-                InlineOrderValue(json.dumps(verdict_document).encode()),
+            _published_artifact_order(
+                runtime, "approved_verdict", json.dumps(verdict_document).encode()
             ),
         ),
         replacements[0].replacement,
@@ -1073,6 +1083,7 @@ def test_the_real_release_entry_binds_approval_to_the_exact_candidate_before_eff
     try:
         workflow = _publish_documentation_release(runtime)
         orders, expected_replacement = _documentation_release_orders(
+            runtime,
             base_revision=base,
             verdict=verdict,
             mutate_after_digest=mutate_after_digest,

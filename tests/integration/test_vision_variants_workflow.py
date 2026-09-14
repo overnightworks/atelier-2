@@ -59,7 +59,7 @@ from atelier2.contracts.executions import (
     WaitAnswerActor,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.run_projections import NodeState
@@ -406,7 +406,7 @@ def start_orders(runtime: DbosRuntime) -> tuple[AuthoredOrder, ...]:
     return (
         artifact_order(runtime, "fragments", FRAGMENTS),
         artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
-        AuthoredOrder("context", InlineOrderValue(CONTEXT)),
+        artifact_order(runtime, "context", CONTEXT),
     )
 
 
@@ -673,7 +673,7 @@ def test_a_graph_input_wait_keeps_the_question_from_its_pause(
         workflow,
         AgentBindingSet(()),
         run_id,
-        authored_orders=(AuthoredOrder("context", InlineOrderValue(CONTEXT)),),
+        authored_orders=(artifact_order(runtime, "context", CONTEXT),),
     )
     assert isinstance(created, DurableRunCreated), created
 

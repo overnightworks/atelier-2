@@ -72,7 +72,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import RunInput
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
@@ -224,6 +224,22 @@ def jobs_handed_to(cook: RecordingAgentExecutorFactoryV2) -> list[bytes]:
     """Every job this provider was actually asked to run, in the order asked."""
     assert cook.opened is not None, "the provider was never opened"
     return [request.job_bytes for request in cook.opened.requests]
+
+
+def published_artifact_hash(client: TestClient, content: bytes) -> str:
+    """The address `POST /artifacts` answers for these exact bytes.
+
+    Every order this file's HTTP tests send now names an address: the wire
+    carries no bytes of its own any more, so a test that wants an order
+    publishes one first, through the same door an operator uses.
+    """
+    published = client.post(
+        API_PREFIX + "/artifacts",
+        content=content,
+        headers={"content-type": "application/octet-stream"},
+    )
+    assert published.status_code in (200, 201), published.text
+    return str(published.json()["artifact_hash"])
 
 
 def publish(runtime: DbosRuntime, *revisions: PublishedRevision) -> None:
@@ -473,17 +489,12 @@ def test_an_authored_order_reaches_the_agent(
     workflow, bindings = publish_ordered_workflow(runtime)
     run_id = RunId("v3/authored")
 
-    created = DbosDurableRunStarter(
-        runtime.engine,
-        runtime.settings,
-        runtime.agent_executor_registry,
-    ).start_published(
-        StartPublishedRunRequestV3(
-            run_id,
-            workflow.revision_hash,
-            bindings,
-            orders=(AuthoredOrder(ORDER_NAME, InlineOrderValue(b'{"portions": 7}')),),
-        )
+    created = start_authored(
+        runtime,
+        workflow,
+        bindings,
+        run_id,
+        artifact_order(runtime, b'{"portions": 7}'),
     )
     assert isinstance(created, DurableRunCreated), created
 
@@ -491,6 +502,42 @@ def test_an_authored_order_reaches_the_agent(
     wait_for_state(runtime, run_id, RunState.COMPLETED)
 
     assert b'{"portions": 7}' in jobs_handed_to(cook)[0]
+
+
+def test_the_public_start_route_refuses_an_order_still_shaped_as_inline_value(
+    runtime: DbosRuntime,
+) -> None:
+    """No caller publishes `{name, value}` any more (#1552): the wire has no
+    shape left that reads it.
+
+    `InlineOrderResource` is gone, so a body speaking its old dialect never
+    reaches `_authored_order` -- it fails the same envelope-shape door every
+    other malformed V2/V3 body already goes through, before a row exists.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    binding = bindings.bindings[0]
+
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/inline-order-refused",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "value": '{"portions": 7}'}],
+        },
+    )
+
+    assert refused.status_code == 422
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
@@ -504,8 +551,10 @@ def test_the_public_start_route_posts_the_order_the_document_declared(
     """
     workflow, bindings = publish_ordered_workflow(runtime)
     binding = bindings.bindings[0]
+    client = durable_api_client(runtime)
+    artifact_hash = published_artifact_hash(client, b'{"portions": 7}')
 
-    started = durable_api_client(runtime).post(
+    started = client.post(
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 3,
@@ -519,7 +568,7 @@ def test_the_public_start_route_posts_the_order_the_document_declared(
                     ),
                 }
             ],
-            "orders": [{"name": ORDER_NAME, "value": '{"portions": 7}'}],
+            "orders": [{"name": ORDER_NAME, "artifact_hash": artifact_hash}],
         },
     )
 
@@ -549,8 +598,11 @@ def test_the_public_start_route_names_an_undeclared_order(
     """
     workflow, bindings = publish_ordered_workflow(runtime)
     binding = bindings.bindings[0]
+    client = durable_api_client(runtime)
+    order_hash = published_artifact_hash(client, b'{"portions": 7}')
+    supper_hash = published_artifact_hash(client, b'{"portions": 1}')
 
-    refused = durable_api_client(runtime).post(
+    refused = client.post(
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 3,
@@ -565,8 +617,8 @@ def test_the_public_start_route_names_an_undeclared_order(
                 }
             ],
             "orders": [
-                {"name": ORDER_NAME, "value": '{"portions": 7}'},
-                {"name": "supper", "value": '{"portions": 1}'},
+                {"name": ORDER_NAME, "artifact_hash": order_hash},
+                {"name": "supper", "artifact_hash": supper_hash},
             ],
         },
     )
@@ -592,8 +644,10 @@ def test_the_public_start_route_names_the_violated_field(runtime: DbosRuntime) -
     """
     workflow, bindings = publish_ordered_workflow(runtime)
     binding = bindings.bindings[0]
+    client = durable_api_client(runtime)
+    artifact_hash = published_artifact_hash(client, b'{"portions": 0}')
 
-    refused = durable_api_client(runtime).post(
+    refused = client.post(
         API_PREFIX + "/runs",
         json={
             "workflow_format_version": 3,
@@ -607,7 +661,7 @@ def test_the_public_start_route_names_the_violated_field(runtime: DbosRuntime) -
                     ),
                 }
             ],
-            "orders": [{"name": ORDER_NAME, "value": '{"portions": 0}'}],
+            "orders": [{"name": ORDER_NAME, "artifact_hash": artifact_hash}],
         },
     )
 
@@ -910,10 +964,6 @@ def test_the_same_run_started_with_the_same_order_stays_idempotent(
     assert isinstance(answer, DurableRunExisting), answer
 
 
-def authored(value: bytes) -> AuthoredOrder:
-    return AuthoredOrder(ORDER_NAME, InlineOrderValue(value))
-
-
 @pytest.mark.proves("an-authored-retry-reports-the-existing-run")
 def test_an_authored_retry_reports_the_existing_run(runtime: DbosRuntime) -> None:
     """The operator door, not the run_inputs helper the first retry tests used.
@@ -926,12 +976,12 @@ def test_an_authored_retry_reports_the_existing_run(runtime: DbosRuntime) -> Non
     workflow, bindings = publish_ordered_workflow(runtime)
     run_id = RunId("v3/authored-retry")
     first = start_authored(
-        runtime, workflow, bindings, run_id, authored(b'{"portions": 2}')
+        runtime, workflow, bindings, run_id, artifact_order(runtime, b'{"portions": 2}')
     )
     assert isinstance(first, DurableRunCreated), first
 
     answer = start_authored(
-        runtime, workflow, bindings, run_id, authored(b'{"portions": 2}')
+        runtime, workflow, bindings, run_id, artifact_order(runtime, b'{"portions": 2}')
     )
 
     assert isinstance(answer, DurableRunExisting), answer
@@ -946,13 +996,17 @@ def test_an_authored_start_with_another_order_stays_a_conflict(
     run_id = RunId("v3/authored-conflict")
     assert isinstance(
         start_authored(
-            runtime, workflow, bindings, run_id, authored(b'{"portions": 2}')
+            runtime,
+            workflow,
+            bindings,
+            run_id,
+            artifact_order(runtime, b'{"portions": 2}'),
         ),
         DurableRunCreated,
     )
 
     answer = start_authored(
-        runtime, workflow, bindings, run_id, authored(b'{"portions": 4}')
+        runtime, workflow, bindings, run_id, artifact_order(runtime, b'{"portions": 4}')
     )
 
     assert isinstance(answer, DurableRunIdentityConflict), answer
@@ -975,6 +1029,8 @@ def test_the_public_start_route_answers_an_authored_retry_as_the_same_run(
 ) -> None:
     workflow, bindings = publish_ordered_workflow(runtime)
     binding = bindings.bindings[0]
+    client = durable_api_client(runtime)
+    artifact_hash = published_artifact_hash(client, b'{"portions": 7}')
     body = {
         "workflow_format_version": 3,
         "run_id": "v3/route-authored-retry",
@@ -987,9 +1043,8 @@ def test_the_public_start_route_answers_an_authored_retry_as_the_same_run(
                 ),
             }
         ],
-        "orders": [{"name": ORDER_NAME, "value": '{"portions": 7}'}],
+        "orders": [{"name": ORDER_NAME, "artifact_hash": artifact_hash}],
     }
-    client = durable_api_client(runtime)
 
     created = client.post(API_PREFIX + "/runs", json=body)
     retried = client.post(API_PREFIX + "/runs", json=body)
@@ -1196,31 +1251,6 @@ def test_an_order_naming_an_unpublished_artifact_is_refused_before_any_row(
             )
             == 0
         )
-
-
-@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
-def test_an_inline_order_past_the_inline_bound_is_sent_to_the_artifact_door(
-    runtime: DbosRuntime,
-) -> None:
-    """The inline bound stays strict, and its refusal says where the material goes.
-
-    The same bytes are admitted as an artifact, so a refusal that only said
-    "too large" would leave an operator believing this stack cannot carry them.
-    """
-    workflow, bindings = publish_ordered_workflow(runtime, ANY_JSON_SCHEMA)
-    oversized = json.dumps({"diff": "x" * MAXIMUM_INSTANCE_DOCUMENT_BYTES}).encode()
-
-    refused = start_authored(
-        runtime,
-        workflow,
-        bindings,
-        RunId("v3/inline-too-large"),
-        AuthoredOrder(ORDER_NAME, InlineOrderValue(oversized)),
-    )
-
-    assert isinstance(refused, DurableV3StartInputRefused), refused
-    assert refused.refusal is V3InputRefusal.VALUE_REFUSED
-    assert "artifact" in str(refused.detail)
 
 
 @pytest.mark.proves("a-full-pull-request-diff-reaches-its-agent-as-an-artifact")
