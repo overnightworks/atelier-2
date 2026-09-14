@@ -54,12 +54,8 @@ from tests.scenarios.agents import (
 
 
 @pytest.fixture
-def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
-    """A runtime with no provider that can answer: these tests drive the store.
-
-    The shared DBOS logging fixture isolates the process handlers because a
-    durable runtime flushes every handler during construction.
-    """
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    """A runtime with no provider that can answer: these tests drive the store."""
     started = DbosRuntime(
         DbosRuntimeSettings(
             tmp_path / "atelier.sqlite",
@@ -217,3 +213,71 @@ def test_a_writer_handed_a_failed_check_to_store_refuses_it_by_name(runtime) -> 
         pytest.raises(ToolRedemptionConflict, match="a check that passed"),
     ):
         _keep_tool_redemption(connection, execution, redemption_for(execution, 1))
+
+
+_LEAK_A_DBOS_HANDLER_THEN_FLUSH_LIKE_DBOS_INIT_DOES = """
+import io
+import logging
+
+
+def test_leaves_a_handler_bound_to_its_own_closed_stream():
+    stream = io.TextIOWrapper(io.BytesIO())
+    logging.getLogger("dbos").addHandler(logging.StreamHandler(stream))
+    stream.close()
+
+
+def test_constructs_dbos_and_flushes_its_logger_like_DBOS_init_does():
+    for handler in logging.getLogger("dbos").handlers:
+        handler.flush()
+"""
+
+
+def test_a_leaked_dbos_logger_handler_fails_the_next_test_unguarded(
+    pytester: pytest.Pytester,
+) -> None:
+    """The failure the shared autouse guard in ``tests/conftest.py`` prevents.
+
+    ``DBOS.__init__`` flushes every handler already on the ``dbos`` logger. A
+    handler still bound to an earlier test's closed capture stream raises
+    ``ValueError`` on that flush, so a later, unrelated test fails for a leak it
+    did not cause -- unless something hands the logger back its own handlers
+    between tests. This reproduces the failure with no guard active at all.
+    """
+
+    pytester.makepyfile(
+        test_leak_then_flush=_LEAK_A_DBOS_HANDLER_THEN_FLUSH_LIKE_DBOS_INIT_DOES
+    )
+
+    result = pytester.runpytest_subprocess()
+
+    result.assert_outcomes(passed=1, failed=1)
+
+
+def test_the_autouse_dbos_logger_guard_keeps_the_leak_from_failing_the_next_test(
+    pytester: pytest.Pytester,
+) -> None:
+    """The same leak, this time behind ``dbos_logger_handlers_stay_with_their_test``.
+
+    Registering ``tests.conftest`` as a plugin loads the real production fixture
+    rather than a copy of it, so a pass here proves that fixture -- the one every
+    test in this suite already gets for free -- carries the invariant the now
+    removed ``dbos_logging_isolation`` opt-in fixture existed for.
+    """
+
+    pytester.makepyfile(
+        test_leak_then_flush=_LEAK_A_DBOS_HANDLER_THEN_FLUSH_LIKE_DBOS_INIT_DOES
+    )
+    repository_root = Path(__file__).resolve().parents[2]
+    pytester.makeconftest(
+        f"""
+        import sys
+
+        sys.path.insert(0, {str(repository_root)!r})
+
+        pytest_plugins = ["tests.conftest"]
+        """
+    )
+
+    result = pytester.runpytest_subprocess()
+
+    result.assert_outcomes(passed=2)
