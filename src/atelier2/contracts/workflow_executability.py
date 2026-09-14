@@ -173,6 +173,66 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
     return _unbound_input_sources(graph)
 
 
+def what_a_declared_start_refuses(
+    graph: WorkflowGraphV3, publishers: frozenset[str]
+) -> str | None:
+    """Why no run of this document may begin one of its nodes, or None if none may not.
+
+    `publishers` is every node holding a push grant, which only a reader of the
+    published revisions can say; the rule itself is the document's.
+
+    Two sentences. A node continuing an earlier publication says whose it
+    continues, and that publication has to be one this graph both orders before
+    it and lets publish anything. A second publisher that says nothing is
+    refused rather than started on a tree nobody named: a push grant is
+    authority, and reading it as material flow would move where the work goes on
+    every time that authority moved.
+    """
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3):
+            continue
+        refusal = _unstartable_continuation(graph, node, publishers)
+        if refusal is not None:
+            return refusal
+    return None
+
+
+def _unstartable_continuation(
+    graph: WorkflowGraphV3, node: AgentNodeV3, publishers: frozenset[str]
+) -> str | None:
+    """What keeps this one node from starting where its document says it starts."""
+    earlier = publishers & graph.dependency_closure(node.id)
+    if node.starts_from is None:
+        if node.id in publishers and earlier:
+            return (
+                f"node {node.id!r} publishes after {', '.join(sorted(earlier))} and "
+                "declares no starts_from, and a push grant says what a node may do "
+                "rather than which tree it goes on working in"
+            )
+        return None
+    named = node.starts_from.node
+    if node.id not in publishers:
+        return (
+            f"node {node.id!r} starts from {named!r} and holds no push grant, and "
+            "only a node that publishes continues a publication"
+        )
+    if named not in {declared.id for declared in graph.nodes}:
+        return (
+            f"node {node.id!r} starts from {named!r}, which this graph never declares"
+        )
+    if named not in graph.dependency_closure(node.id):
+        return (
+            f"node {node.id!r} starts from {named!r}, which this graph does not "
+            "order before it"
+        )
+    if named not in publishers:
+        return (
+            f"node {node.id!r} starts from {named!r}, which publishes nothing this "
+            "run could continue"
+        )
+    return None
+
+
 def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
     """What a declared loop asks for that no round of this build carries.
 

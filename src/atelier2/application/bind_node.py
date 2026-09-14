@@ -29,7 +29,7 @@ from atelier2.contracts.node_bindings import (
     WaitNodeBinding,
 )
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.run_bindings import AnyRun, RunBindingConflict, RunV2, RunV3
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
@@ -69,6 +69,7 @@ def bind_node(
     project_source: ProjectSourcePin | None = None,
     declared_output_schema_document: str | None = None,
     maximum_assistant_turns: int | None = None,
+    start_candidate: CandidateTree | None = None,
 ) -> NodeBinding:
     """What this node binds: its form, and the material that form carries.
 
@@ -76,7 +77,8 @@ def bind_node(
     already fetched; the other forms are given none and read none.
     `project_source` is the pin the runtime took for this binding -- taken once
     here rather than at launch, so a commit landing in between cannot change what
-    a started run works on.
+    a started run works on. `start_candidate` is the published work this node
+    declared it goes on in, read once here for the same reason.
     """
     if isinstance(node, AgentNodeV3):
         if not isinstance(run, (RunV2, RunV3)):
@@ -100,6 +102,7 @@ def bind_node(
             declared_output_schema_document,
             run.current_round_ordinal,
             maximum_assistant_turns,
+            start_candidate,
         )
     if isinstance(node, ActionNodeV3):
         return ActionNodeBinding()
@@ -166,7 +169,9 @@ def pinned_project(
             "a node whose binding pinned a project source requires the declared "
             "project, and this runtime was given none"
         )
-    return project.pinned(binding.project_source, binding.tool_grant)
+    return project.pinned(
+        binding.project_source, binding.tool_grant, binding.start_candidate
+    )
 
 
 def bound_outside_its_mode(

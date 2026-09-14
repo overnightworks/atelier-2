@@ -285,7 +285,7 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
             runtime_workspace_owner(runtime),
             declared_project(
                 tmp_path / "project", runtime.settings.database_path
-            ).pinned(pin, None),
+            ).pinned(pin, None, None),
             permissions=GRANTS_NOTHING,
             workspace_files=workspace_files_nobody_opens,
         )

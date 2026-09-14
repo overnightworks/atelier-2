@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.agent_effect_grants import (
 )
 from atelier2.adapters.dbos.bound_reads import one_record
 from atelier2.adapters.dbos.effect_store import receipt_from_record
+from atelier2.adapters.dbos.fork_admission import unadmitted_fork_document
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import (
@@ -109,6 +110,7 @@ from atelier2.ports.durable_run_forks import (
     DurableRunForkWriteUnavailable,
     ForkRunRequest,
 )
+from atelier2.ports.published_revisions import PublishedRevisionResolver
 
 
 class _PrefixNotReusable(RuntimeError):
@@ -123,10 +125,12 @@ class DbosRunForkStore:
         engine: Engine,
         settings: DbosRuntimeSettings,
         agent_executor_registry: AgentExecutorRegistry,
+        published_revisions: PublishedRevisionResolver,
     ) -> None:
         self._engine = engine
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
+        self._published_revisions = published_revisions
 
     def fork_run(self, request: ForkRunRequest) -> DurableRunForkResult:
         try:
@@ -158,6 +162,9 @@ class DbosRunForkStore:
                 refusal = self._binding_refusal(origin, graph)
                 if refusal is not None:
                     return refusal
+                unadmitted = unadmitted_fork_document(graph, self._published_revisions)
+                if unadmitted is not None:
+                    return unadmitted
 
                 run_configuration = _load_run_configuration(connection, origin)
                 orders = load_run_orders(connection, (origin.run_id.value,)).get(

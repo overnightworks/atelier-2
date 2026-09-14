@@ -69,6 +69,18 @@ class DurableRunForkCapabilityUnavailable:
 
 
 @dataclass(frozen=True)
+class DurableRunForkDocumentNotExecutable:
+    """The rules a start is admitted under refuse the document the origin ran.
+
+    `reason` is the refusal in the words its author reads at a start, so an
+    operator forking a run of an older document is told what stands in the way
+    rather than that something did.
+    """
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class DurableRunForkWriteUnavailable:
     detail: str | None = None
 
@@ -89,6 +101,7 @@ type DurableRunForkResult = (
     | DurableRunForkCommandConflict
     | DurableRunForkExecutorUnavailable
     | DurableRunForkCapabilityUnavailable
+    | DurableRunForkDocumentNotExecutable
     | AgentModeMismatch
     | DurableRunForkWriteUnavailable
     | DurableRunForkStateCorrupt

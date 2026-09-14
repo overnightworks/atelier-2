@@ -540,7 +540,7 @@ graph_inputs:
 nodes:
 """.encode()
         + _publishing_node(BUILDING_NODE, ())
-        + _publishing_node(FIXING_NODE, (BUILDING_NODE,))
+        + _publishing_node(FIXING_NODE, (BUILDING_NODE,), starts_from=BUILDING_NODE)
         + f"""  - id: {ACTION_NODE}
     type: action
     operation: {{ref: open-pr, revision: {open_pr_hash}}}
@@ -552,13 +552,18 @@ nodes:
     )
 
 
-def _publishing_node(node_id: str, depends_on: tuple[str, ...]) -> bytes:
+def _publishing_node(
+    node_id: str, depends_on: tuple[str, ...], *, starts_from: str | None = None
+) -> bytes:
     ordered = f"    depends_on: [{', '.join(depends_on)}]\n" if depends_on else ""
     ordered_item = (
         ""
         if depends_on
         else "    inputs:\n      - name: work_item\n"
         "        from: {graph_input: work_item}\n"
+    )
+    continuation = (
+        f"    starts_from: {{node: {starts_from}}}\n" if starts_from is not None else ""
     )
     return (
         f"""  - id: {node_id}
@@ -568,7 +573,7 @@ def _publishing_node(node_id: str, depends_on: tuple[str, ...]) -> bytes:
     instruction: Carry this run one step further and leave your candidate behind.
     tools:
       - {{ref: push-atelier-commit, revision: {PUSH_GRANT.revision_hash.value}}}
-{ordered}{ordered_item}""".encode()
+{ordered}{ordered_item}{continuation}""".encode()
         + declared_output()
     )
 

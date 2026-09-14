@@ -487,6 +487,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "run-fork-command-conflict",
         "agent-executor-binding-unavailable",
         "agent-mode-mismatch",
+        "workflow-format-not-executable",
         "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",

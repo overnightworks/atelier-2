@@ -56,6 +56,7 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
+from atelier2.contracts.candidate_reports import ReadPatch
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
@@ -70,7 +71,7 @@ from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionResult,
 )
-from atelier2.ports.candidate_store import CandidateTreeStore
+from atelier2.ports.candidate_store import CandidateTreeStore, LeasedWorkingTree
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from atelier2.ports.project_verification import DeclaredProject, PinnedProjectSource
 from atelier2.ports.run_queries import (
@@ -161,13 +162,29 @@ class DiesOnceTheWorkIsKept:
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         return self._kept.read(attempt_id)
 
+    def attest(self, candidate: CandidateTree) -> None:
+        self._kept.attest(candidate)
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        self._kept.materialize(candidate, lease)
+
+    def written(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> LeasedWorkingTree:
+        return self._kept.written(pin, lease)
+
+    def changes(self, written: LeasedWorkingTree) -> ReadPatch:
+        return self._kept.changes(written)
+
 
 def pinned_project_of(root: Path) -> PinnedProjectSource:
     """One real repository beside the store, pinned as an attempt would get it."""
 
     checkout = root / "project"
     pin = git_project(checkout, {"pyproject.toml": "", "src/tool.py": "print('x')\n"})
-    return declared_project(checkout, root / "atelier.sqlite").pinned(pin, None)
+    return declared_project(checkout, root / "atelier.sqlite").pinned(pin, None, None)
 
 
 def candidate_store_of(root: Path) -> GitCandidateTreeStore:
@@ -589,13 +606,14 @@ def main(root: Path, mode: str) -> None:
         if mode == "crash-once-the-candidate-is-kept":
             project = pinned_project_of(root)
             (root / "pinned-tree").write_text(project.pin.tree, encoding="utf-8")
+            candidates: CandidateTreeStore = DiesOnceTheWorkIsKept(project.candidates)
             execute_agent_attempt(
                 agent_attempt_execution(exact_request),
                 controlled_process_executor(root / "counter"),
                 store,
                 lease.agent_process_supervisor,
                 runtime_workspace_owner(lease),
-                replace(project, candidates=DiesOnceTheWorkIsKept(project.candidates)),
+                replace(project, candidates=candidates),
                 permissions=GRANTS_NOTHING,
                 workspace_files=workspace_files_nobody_opens,
             )

@@ -203,6 +203,30 @@ state. Inputs may skip intermediate nodes, which is what makes a fix node
 expressible: it reads the original candidate and each review's findings, and the
 reviews are never merged into a shared chat.
 
+### `starts_from`: which tree an Agent node goes on working in
+
+`inputs` carry what a node reads. Which working tree it *begins in* is a separate
+statement, and an Agent node writes it down:
+
+```yaml
+starts_from: {node: build}
+```
+
+Absent, the node begins in the tree its project pin names. Present, it begins in
+the candidate that node's confirmed push published, while the pin stays what the
+work is compared and committed against — so a continuing publisher's commit keeps
+the same base and carries the cumulative diff, and a continuation that changes
+nothing is no failure.
+
+Declared rather than derived from the push grant a node holds: a grant says what
+a node may *do*, this says what it works *on*. Derived, moving that authority
+would silently move where the work starts, and a node that lost it would begin
+from the pin again and take the earlier publication off the branch at the next
+push. Before any run of the document starts, executability refuses a
+`starts_from` on a node holding no push grant, one naming a node this graph never
+declares, does not order before it, or lets publish nothing — and a second
+publisher that declares none at all.
+
 ### Dispositions, joins, and how a failure reaches every node
 
 Two closed sets, and they are not the same set. Every node ends in exactly one
