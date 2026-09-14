@@ -253,7 +253,7 @@ def test_the_current_requirement_contract_passes_both_wrappers(tmp_path: Path) -
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "7 document(s), 74 rule(s), 2 frozen legacy, 5 approval-backed" in result.stdout
+        "7 document(s), 79 rule(s), 2 frozen legacy, 5 approval-backed" in result.stdout
     )
 
 

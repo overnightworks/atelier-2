@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# REQ-UIQ-11 ("the surface may look great and be fun; the screenshot yardstick
-# is Mockup v8, and the operator has the last word") cannot be proven by a
+# REQ-UIQ-14 ("the surface may look great and be fun; the screenshot yardstick
+# is Mockup v9, and the operator has the last word") cannot be proven by a
 # test, so this gate proves the *freshness* of the operator's judgement
 # instead: it pins the operator's approval to an exact digest over the exact
 # source files that render the surfaces being judged. #994 owns the design;
@@ -18,7 +18,7 @@ from typing import Any
 # not a requirement document) with its own registry and its own scope.
 
 LEDGER_LOCATION = Path("docs/requirements/0003-ziel-ui-screenshot-reviews.toml")
-GOVERNED_REQUIREMENT = "REQ-UIQ-11"
+GOVERNED_REQUIREMENT = "REQ-UIQ-14"
 REQUIREMENT_IDENTIFIER = re.compile(r"^REQ-[A-Z0-9]+-[0-9]{2}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 ROOT_FIELDS = frozenset({"schema_version"})
@@ -57,7 +57,10 @@ ENTRY_FIELDS = frozenset(
 #   tokens      -- the one file every colour, length, weight, and beat is
 #                  declared in; editing it re-skins every surface.
 #   mockup      -- the frozen picture owner (ADR 0019) the surfaces are
-#                  judged against.
+#                  judged against, plus the frozen version before it: v8 is
+#                  still read by `frontend/tests/e2e/run-log.spec.ts`, whose
+#                  frame `#v8-14-run-log` is a judged surface's yardstick, so
+#                  editing either picture must reopen the verdict.
 _PAGES = (
     Path("frontend/src/pages/WorkbenchPage.svelte"),
     Path("frontend/src/pages/CatalogPage.svelte"),
@@ -122,7 +125,10 @@ _COPY = (
     Path("frontend/src/lib/workshop.ts"),
 )
 _TOKENS = (Path("frontend/src/styles.css"),)
-_MOCKUP = (Path("docs/requirements/0003-ziel-ui-mockup-v8.html"),)
+_MOCKUP = (
+    Path("docs/requirements/0003-ziel-ui-mockup-v8.html"),
+    Path("docs/requirements/0003-ziel-ui-mockup-v9.html"),
+)
 
 SCOPE: tuple[Path, ...] = tuple(
     sorted({*_PAGES, *_SHELL, *_COMPONENTS, *_COPY, *_TOKENS, *_MOCKUP})

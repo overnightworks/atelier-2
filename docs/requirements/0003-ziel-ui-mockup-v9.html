@@ -1,0 +1,1715 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workshop target picture v9 — Runde 4.2</title>
+<style>
+
+/* ── Light is the bare :root palette; dark is layered on top ───────────── */
+:root {
+  color-scheme: light;
+  --page: #e9e6dc;
+  --paper: #f6f2e8;
+  --panel: #fffdf7;
+  --panel-2: #eeece3;
+  --ink: #191d1b;
+  --muted: #5c615b;
+  --faint: #7b807a;
+  --line: #cecfc6;
+  --line-strong: #a6aba4;
+  --mint: #1f6c50;
+  --mint-deep: #d9ece2;
+  --copper: #8a4c22;
+  --copper-deep: #f1dfce;
+  --brick: #993833;
+  --brick-deep: #f2d8d5;
+  --blue: #2c5e7c;
+  --terminal: #111513;
+  --terminal-line: #303835;
+  --term-ink: #dfe4de;
+  --term-dim: #97a29b;
+  --term-mint: #8ed5b0;
+  --term-copper: #dda374;
+  --term-blue: #9dc0de;
+  --shadow: 0 22px 60px rgba(35,38,33,.13);
+  --sans: "DM Sans", "Segoe UI", system-ui, sans-serif;
+  --serif: "Newsreader", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #090b0b; --paper: #0e1110; --panel: #121615; --panel-2: #171b19;
+    --ink: #f0eadb; --muted: #9a9990; --faint: #767b74; --line: #2a302d;
+    --line-strong: #3c4540; --mint: #86d4af; --mint-deep: #17382b;
+    --copper: #d39a68; --copper-deep: #412c1d; --brick: #da736a;
+    --brick-deep: #3b211f; --blue: #91b7d8;
+    --terminal: #070908; --terminal-line: #232a27;
+    --term-ink: #dfe4de; --term-dim: #7b8781; --term-mint: #86d4af;
+    --term-copper: #d39a68; --term-blue: #91b7d8;
+    --shadow: 0 24px 80px rgba(0,0,0,.34);
+  }
+}
+
+:root[data-theme="dark"],
+:root:has(#theme-dark:checked) {
+  color-scheme: dark;
+  --page: #090b0b; --paper: #0e1110; --panel: #121615; --panel-2: #171b19;
+  --ink: #f0eadb; --muted: #9a9990; --faint: #767b74; --line: #2a302d;
+  --line-strong: #3c4540; --mint: #86d4af; --mint-deep: #17382b;
+  --copper: #d39a68; --copper-deep: #412c1d; --brick: #da736a;
+  --brick-deep: #3b211f; --blue: #91b7d8;
+  --terminal: #070908; --terminal-line: #232a27;
+  --term-ink: #dfe4de; --term-dim: #7b8781; --term-mint: #86d4af;
+  --term-copper: #d39a68; --term-blue: #91b7d8;
+  --shadow: 0 24px 80px rgba(0,0,0,.34);
+}
+
+:root:has(#theme-light:checked) {
+  color-scheme: light;
+  --page: #e9e6dc; --paper: #f6f2e8; --panel: #fffdf7; --panel-2: #eeece3;
+  --ink: #191d1b; --muted: #5c615b; --faint: #7b807a; --line: #cecfc6;
+  --line-strong: #a6aba4; --mint: #1f6c50; --mint-deep: #d9ece2;
+  --copper: #8a4c22; --copper-deep: #f1dfce; --brick: #993833;
+  --brick-deep: #f2d8d5; --blue: #2c5e7c;
+  --terminal: #111513; --terminal-line: #303835;
+  --term-ink: #dfe4de; --term-dim: #97a29b; --term-mint: #8ed5b0;
+  --term-copper: #dda374; --term-blue: #9dc0de;
+  --shadow: 0 22px 60px rgba(35,38,33,.13);
+}
+
+/* ── Page frame ───────────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+}
+button, input, select { font: inherit; }
+button { color: inherit; cursor: default; }
+a { color: inherit; text-underline-offset: 3px; }
+h1, h2, h3, h4, h5, p { margin-top: 0; }
+h1 { margin-bottom: 20px; font: 500 clamp(44px, 6.4vw, 86px)/.93 var(--serif); letter-spacing: -.05em; }
+h2 { margin-bottom: 12px; font: 500 clamp(30px, 3.6vw, 52px)/1 var(--serif); letter-spacing: -.035em; }
+h3 { margin-bottom: 8px; font-size: 17px; }
+code, .mono { font-family: var(--mono); }
+
+.page { width: min(1400px, 100%); margin: 0 auto; padding-inline: clamp(16px, 3vw, 32px); padding-block: 0 88px; }
+.eyebrow { margin-bottom: 10px; color: var(--mint); font: 600 11px/1.3 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.lede { max-width: 720px; color: var(--muted); font-size: 17px; }
+
+/* Hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 56px; padding-block: 48px 12px; }
+.hero-side { align-self: end; padding: 0 0 6px 22px; border-left: 1px solid var(--line); }
+.hero-side p { color: var(--muted); font-size: 13px; }
+.theme-control { display: inline-grid; grid-template-columns: repeat(3, auto); border: 1px solid var(--line-strong); }
+.theme-control input { position: absolute; opacity: 0; pointer-events: none; }
+.theme-control label { padding: 8px 12px; color: var(--muted); font: 600 11px var(--mono); cursor: pointer; }
+#theme-system:checked + label, #theme-dark:checked + label, #theme-light:checked + label { background: var(--ink); color: var(--page); }
+
+.rulings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 30px 0 8px; border: 1px solid var(--line); background: var(--line); }
+.rulings article { min-height: 158px; padding: 20px; background: var(--paper); }
+.rulings b { display: block; margin-bottom: 22px; color: var(--copper); font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.rulings p { margin: 0; font: 500 18px/1.26 var(--serif); }
+
+/* Sections */
+.section { padding-block: 60px; border-top: 1px solid var(--line); }
+.section-head { display: grid; grid-template-columns: .85fr 1.15fr; gap: 48px; align-items: end; margin-bottom: 24px; }
+.section-head p { max-width: 660px; margin: 0; color: var(--muted); font-size: 14px; }
+.surface-index { display: block; margin-bottom: 6px; color: var(--mint); font: 600 11px var(--mono); letter-spacing: .1em; }
+
+/* Shots */
+.pair { display: grid; gap: 20px; }
+.shot { min-width: 0; }
+.shot.mobile-shot { width: min(400px, 100%); margin-inline: auto; }
+.shot-label { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; color: var(--faint); font: 500 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.scrollbox { width: 100%; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--line-strong); background: var(--paper); box-shadow: var(--shadow); scrollbar-color: var(--line-strong) var(--page); }
+.screen { overflow: hidden; background: var(--paper); color: var(--ink); }
+.screen.desktop { width: 1280px; height: 780px; }
+.screen.mobile { width: 400px; height: 780px; }
+
+/* ── App chrome ───────────────────────────────────────────────────────── */
+.desktop-shell { display: grid; grid-template-columns: 122px minmax(0, 1fr); height: 100%; }
+.rail { display: flex; flex-direction: column; padding: 16px 10px 12px; border-right: 1px solid var(--line); background: var(--paper); }
+.mark-logo { display: grid; place-items: center; width: 32px; height: 32px; margin: 0 0 22px 8px; border: 1px solid var(--mint); color: var(--mint); font: 600 15px var(--serif); }
+.nav { display: grid; gap: 3px; }
+.nav a { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 36px; padding: 0 10px; border-left: 2px solid transparent; color: var(--muted); font-size: 12px; text-decoration: none; }
+.seat-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
+.nav a.active { border-left-color: var(--mint); background: var(--panel-2); color: var(--ink); font-weight: 600; }
+.nav svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.rail-foot { margin-top: auto; padding: 8px 12px 0; border-top: 1px solid var(--line); color: var(--faint); font: 10px var(--mono); }
+.app { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--paper); }
+.appbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; height: 54px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.appbar strong { font-size: 13px; font-weight: 600; }
+.appbar-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 10px var(--mono); }
+.health-dot { width: 8px; height: 8px; border: 1px solid var(--mint); border-radius: 50%; background: var(--mint); }
+.workspace { flex: 1; min-height: 0; overflow: hidden; }
+
+/* ── Atoms ────────────────────────────────────────────────────────────── */
+.state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.state::before { content: ""; width: 8px; height: 8px; flex: none; }
+.state.running { color: var(--mint); }
+.state.running::before { border: 2px solid var(--mint); border-right-color: transparent; border-radius: 50%; }
+.state.waiting { color: var(--copper); }
+.state.waiting::before { background: var(--copper); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.state.queued::before { border: 1px dashed currentColor; }
+.state.done::before { border: 1px solid currentColor; border-radius: 50%; background: currentColor; }
+.state.failed { color: var(--brick); }
+.state.failed::before { border: 2px solid currentColor; transform: rotate(45deg); }
+.state.stopped::before { width: 9px; height: 2px; background: currentColor; }
+
+.chip { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid var(--line-strong); color: var(--muted); font: 500 10px var(--mono); white-space: nowrap; }
+.chip.on { border-color: var(--mint); background: var(--mint-deep); color: var(--mint); }
+.chip.tick { border-color: var(--mint); color: var(--mint); }
+.ui-button { min-height: 26px; padding: 5px 11px; border: 1px solid var(--line-strong); border-radius: 1px; background: var(--panel); color: var(--ink); font: 600 11px var(--sans); }
+.ui-button.primary { border-color: var(--mint); background: var(--mint); color: var(--paper); }
+.ui-button.danger { border-color: var(--brick); color: var(--brick); }
+.subhead { color: var(--faint); font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.field { display: flex; align-items: center; min-height: 28px; padding: 5px 10px; border: 1px solid var(--line-strong); background: var(--paper); color: var(--faint); font: 11px var(--mono); }
+
+/* Mobile chrome */
+.mobile-shell { display: flex; flex-direction: column; height: 100%; }
+.mobile-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 50px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+.mobile-top strong { font-size: 13px; }
+.mobile-view { flex: 1; min-height: 0; overflow: hidden; }
+.mobile-nav { display: grid; grid-template-columns: repeat(4, 1fr); height: 54px; border-top: 1px solid var(--line); background: var(--paper); }
+.mobile-nav span { display: grid; place-items: center; gap: 3px; padding-top: 7px; color: var(--faint); font: 500 10px var(--sans); }
+.mobile-nav span.active { box-shadow: inset 0 2px var(--mint); color: var(--ink); font-weight: 600; }
+.mobile-nav svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+
+/* ── Seat: terminal and one-line bar ──────────────────────────────────── */
+.terminal { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--terminal-line); background: var(--terminal); color: var(--term-ink); }
+.term-tabs { display: flex; align-items: center; height: 36px; border-bottom: 1px solid var(--terminal-line); color: var(--term-dim); font: 10px var(--mono); }
+.term-tab { height: 100%; padding: 10px 14px; border-right: 1px solid var(--terminal-line); }
+.term-tab.active { color: var(--term-ink); background: rgba(255,255,255,.04); }
+.term-live { margin-left: auto; padding-right: 12px; color: var(--term-mint); }
+.term-body { flex: 1; min-height: 0; overflow: hidden; padding: 14px 16px; font: 11.5px/1.62 var(--mono); }
+.term-body p { margin: 0 0 7px; }
+.t-dim { color: var(--term-dim); }
+.t-mint { color: var(--term-mint); }
+.t-copper { color: var(--term-copper); }
+.t-blue { color: var(--term-blue); }
+.term-compose { margin: 0 12px 12px; padding: 10px 12px; border: 1px solid var(--terminal-line); color: var(--term-dim); font: 11px var(--mono); }
+
+/* ── A · Home ─────────────────────────────────────────────────────────── */
+.home-grid { display: grid; grid-template-columns: minmax(0, 1fr) 396px; height: 100%; }
+.home-main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; padding: 18px; }
+.home-intro { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 11px; }
+.home-intro h4 { margin: 3px 0 0; font: 500 23px var(--serif); }
+.home-intro small { color: var(--muted); font: 10px var(--mono); }
+.home-side { min-width: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); }
+.side-block { padding: 14px 15px; border-bottom: 1px solid var(--line); }
+.side-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.side-head .chips { display: flex; gap: 6px; }
+
+.ask-row { display: grid; gap: 7px; padding: 11px 0; border-top: 1px solid var(--line); }
+.ask-row:first-of-type { border-top: 0; }
+.ask-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--copper); font: 10px var(--mono); }
+.ask-meta b { overflow: hidden; color: var(--ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ask-q { margin: 0; font: 500 15px/1.3 var(--serif); }
+.ask-actions { display: flex; gap: 7px; }
+
+.visit-line { padding: 10px 15px; border-bottom: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
+
+.mini-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 9px 0; border-top: 1px solid var(--line); }
+.mini-row:first-of-type { border-top: 0; }
+.mini-top { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 9px; align-items: center; }
+.mini-top b { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.mini-top time { color: var(--faint); font: 10px var(--mono); }
+.mini-sub { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding-left: 91px; }
+.mini-sub span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── B · Runs ─────────────────────────────────────────────────────────── */
+.runs-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 20px; border-bottom: 1px solid var(--line); }
+.runs-filters { display: flex; gap: 6px; overflow-x: auto; }
+.runs-list { overflow: hidden; }
+.runs-row { display: grid; grid-template-columns: 104px 186px minmax(0, 1fr) 104px 62px; gap: 12px; align-items: center; min-height: 56px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+.runs-row b { overflow: hidden; font: 500 12px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.runs-row .subject { min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.runs-row .wi { min-width: 0; }
+.runs-row .age { color: var(--faint); font: 10px var(--mono); text-align: right; }
+
+.mrun-row { display: grid; gap: 5px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.mrun-top { display: grid; grid-template-columns: 100px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.mrun-top b { overflow: hidden; font: 500 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.mrun-top time { color: var(--faint); font: 10px var(--mono); }
+.mrun-sub { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mrun-sub span { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── C · Run ──────────────────────────────────────────────────────────── */
+.run-layout { display: grid; grid-template-columns: minmax(0, 1fr) 398px; height: 100%; }
+.run-left { display: flex; flex-direction: column; min-width: 0; }
+.run-toolbar { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+.run-toolbar b { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.run-toolbar .state { margin-left: auto; }
+.run-canvas { flex: 1; min-height: 0; overflow: auto; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 32px 32px; }
+.detail { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); }
+.detail-head { padding: 15px 17px; border-bottom: 1px solid var(--line); }
+.detail-head h4 { margin: 8px 0 3px; font: 500 21px var(--serif); }
+.detail-head p { margin: 0; color: var(--muted); font: 10px var(--mono); }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tabs span { padding: 10px 14px; color: var(--faint); font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.tabs span.active { border-bottom: 2px solid var(--copper); color: var(--ink); }
+.detail-body { flex: 1; min-height: 0; overflow: hidden; padding: 16px 17px; }
+.result-question { padding: 13px 14px; border-left: 2px solid var(--copper); background: var(--copper-deep); }
+.result-question b { display: block; margin-bottom: 9px; font: 500 17px/1.26 var(--serif); }
+.result-actions { display: flex; gap: 7px; }
+.proof-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.proof-row b { display: block; font-size: 11px; }
+.proof-row small { display: block; color: var(--muted); font: 10px var(--mono); }
+.event { display: grid; grid-template-columns: 44px 10px minmax(0, 1fr); gap: 9px; align-items: start; padding: 6px 0; color: var(--muted); font: 10px/1.5 var(--mono); }
+.event i { width: 7px; height: 7px; margin-top: 4px; border: 1px solid currentColor; border-radius: 50%; }
+.event.now { color: var(--copper); }
+.event.now i { background: currentColor; }
+
+.mgraph { overflow-x: auto; padding: 14px; border-bottom: 1px solid var(--line); background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 28px 28px; }
+
+/* ── D · Catalog ──────────────────────────────────────────────────────── */
+.catalog-layout { display: grid; grid-template-columns: 302px minmax(0, 1fr) 376px; height: 100%; }
+.shelves { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-right: 1px solid var(--line); background: var(--panel); }
+.shelf-tools { display: grid; gap: 9px; padding: 14px 15px; border-bottom: 1px solid var(--line); }
+.shelf-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.shelf-body { flex: 1; min-height: 0; overflow: hidden; }
+.shelf-title { display: flex; align-items: center; justify-content: space-between; padding: 11px 15px 7px; background: var(--panel-2); }
+.entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px 15px; border-bottom: 1px solid var(--line); }
+.entry.sel { background: var(--mint-deep); box-shadow: inset 2px 0 var(--mint); }
+.entry b { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.entry small { display: block; overflow: hidden; color: var(--muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.entry .right { display: grid; justify-items: end; gap: 3px; }
+
+.seat-mid { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; padding: 14px; }
+.seat-mid-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.seat-mid-head h4 { margin: 3px 0 0; font: 500 20px var(--serif); }
+
+.aside-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); }
+.aside-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+.aside-head h4 { margin: 6px 0 3px; font: 500 20px var(--serif); }
+.aside-head p { margin: 0; color: var(--muted); font: 10px var(--mono); }
+.aside-body { flex: 1; min-height: 0; overflow: hidden; padding: 14px 16px; }
+.mini-graph { overflow-x: auto; margin-bottom: 12px; padding: 8px; border: 1px solid var(--line); background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 26px 26px; }
+.rev-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
+.rev-row b { color: var(--ink); font-size: 11px; }
+.push-door { display: grid; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }
+.push-line { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; color: var(--faint); font: 10px var(--mono); }
+
+/* ── E · Settings ─────────────────────────────────────────────────────── */
+.settings-layout { display: grid; grid-template-columns: 196px minmax(0, 1fr); height: 100%; }
+.settings-nav { padding: 16px 12px; border-right: 1px solid var(--line); background: var(--panel); }
+.settings-nav b { display: block; margin: 0 0 14px 8px; font-size: 12px; }
+.settings-nav span { display: block; padding: 9px 10px; border-left: 2px solid transparent; color: var(--muted); font-size: 12px; }
+.settings-nav span.active { border-left-color: var(--mint); background: var(--panel-2); color: var(--ink); font-weight: 600; }
+.settings-main { min-height: 0; overflow: hidden; padding: 18px 20px; }
+.settings-main h4 { margin: 5px 0 2px; font: 500 23px var(--serif); }
+.set-section { margin-top: 16px; border-top: 1px solid var(--line); }
+.set-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0 9px; }
+.set-title b { font-size: 12px; }
+
+.grid-table { overflow-x: auto; border: 1px solid var(--line); }
+.grid-row { display: grid; min-width: 640px; border-top: 1px solid var(--line); }
+.grid-row:first-child { border-top: 0; background: var(--panel-2); }
+.grid-row > * { display: flex; align-items: center; padding: 9px 11px; border-right: 1px solid var(--line); font-size: 11px; }
+.grid-row > *:last-child { border-right: 0; }
+.grid-row:first-child > * { color: var(--faint); font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.rules-grid { grid-template-columns: 130px 190px 80px 172px 68px; }
+.models-grid { grid-template-columns: 124px 210px minmax(0, 1fr); }
+
+.repo-row { display: grid; grid-template-columns: minmax(0, 1fr) 156px 190px; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.repo-row b { display: block; font: 500 12px var(--mono); }
+.repo-row .roles { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.repo-row .meta { color: var(--muted); font: 10px var(--mono); }
+.repo-row .acts { display: flex; gap: 6px; justify-content: end; }
+
+.msettings-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.msettings-body { padding: 14px; }
+.mrepo { padding: 12px 0; border-top: 1px solid var(--line); }
+.mrepo b { display: block; font: 500 12px var(--mono); }
+.mrepo .meta { margin-top: 4px; color: var(--muted); font: 10px var(--mono); }
+.mrepo .acts { display: flex; gap: 6px; margin-top: 8px; }
+.mrule { padding: 11px 0; border-top: 1px solid var(--line); }
+.mrule b { display: block; font-size: 12px; }
+.mrule .facts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+
+/* ── Prose blocks ─────────────────────────────────────────────────────── */
+.tw { overflow-x: auto; border: 1px solid var(--line); }
+table { width: 100%; min-width: 760px; border-collapse: collapse; }
+th, td { padding: 11px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--faint); background: var(--panel-2); font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+td { color: var(--muted); font-size: 13px; }
+td b, td strong { color: var(--ink); }
+tr:last-child td { border-bottom: 0; }
+.gap-word { color: var(--copper); font: 600 11px var(--mono); }
+.why { display: block; margin-top: 3px; color: var(--faint); font-size: 11px; }
+
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.card { min-height: 172px; padding: 18px; background: var(--paper); }
+.card .num { display: block; margin-bottom: 16px; color: var(--mint); font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.card p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.card .tokens { display: flex; flex-wrap: wrap; gap: 8px; }
+.card code { font-size: 11px; }
+
+.killed { padding: 16px 18px; border: 1px solid var(--line); border-left: 2px solid var(--brick); background: var(--brick-deep); }
+.killed del { font: 500 17px var(--serif); }
+.killed p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.g2 > * { min-width: 0; }
+
+.note { margin-top: 14px; padding: 15px 17px; border-left: 2px solid var(--copper); background: var(--copper-deep); }
+.note p { margin: 6px 0 0; font-size: 13px; }
+.note p:last-child { margin-bottom: 0; }
+.note strong { font-size: 13px; }
+
+.slices { counter-reset: slices; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.slice { min-height: 176px; padding: 18px; background: var(--paper); counter-increment: slices; }
+.slice::before { content: "0" counter(slices); display: block; margin-bottom: 18px; color: var(--copper); font: 600 10px var(--mono); }
+.slice b { display: block; font-size: 13px; }
+.slice p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+.slice .route { display: block; margin-top: 10px; color: var(--mint); font: 10px var(--mono); }
+
+.tokens-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.swatches { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); }
+.swatch { min-height: 112px; padding: 12px; border-right: 1px solid var(--line); background: var(--panel); font: 10px var(--mono); }
+.swatch:last-child { border-right: 0; }
+.swatch i { display: block; width: 30px; height: 30px; margin-bottom: 24px; background: var(--c); }
+.type-sample { padding: 18px; border: 1px solid var(--line); background: var(--paper); }
+.type-sample .voice { margin-bottom: 10px; font: 500 26px var(--serif); }
+.type-sample .machine { color: var(--mint); font: 11px var(--mono); }
+.type-sample p { margin: 14px 0 0; color: var(--muted); font-size: 12px; }
+
+.qa { padding: 18px; border: 1px solid var(--line); background: var(--paper); }
+.qa .qq { margin-bottom: 8px; font: 500 18px/1.25 var(--serif); }
+.qa p { margin: 0; color: var(--muted); font-size: 13px; }
+.rec { display: inline-block; margin-bottom: 8px; color: var(--mint); font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+
+.footer { padding-top: 32px; border-top: 1px solid var(--line); color: var(--faint); font: 10px/1.7 var(--mono); }
+
+/* ── Runde 4.2: Asks als Links ────────────────────────────────────────── */
+.ask-link { text-decoration: none; cursor: pointer; }
+.ask-link b { line-height: 2; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
+.ask-link .go { margin-left: auto; padding-left: 6px; color: var(--copper); font: 12px var(--mono); }
+
+/* Mobiler Home-Einstieg und das Blatt */
+.mtap { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 46px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--copper-deep); color: var(--copper); font: 600 13px var(--sans); cursor: pointer; }
+.mtap .go { font: 600 14px var(--mono); }
+.sheet-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.sheet-dim { position: absolute; inset: 0; background: rgba(9, 11, 11, .5); }
+.sheet { position: absolute; right: 0; bottom: 0; left: 0; padding: 9px 14px 14px; border-top: 1px solid var(--line-strong); background: var(--panel); }
+.sheet-grip { width: 40px; height: 3px; margin: 0 auto 9px; background: var(--line-strong); }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+
+/* Runs als Tabelle */
+.runs-head { display: grid; grid-template-columns: 104px 186px minmax(0, 1fr) 104px 62px; gap: 12px; align-items: center; min-height: 34px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.runs-head > span { display: flex; align-items: center; gap: 5px; color: var(--faint); font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+.runs-head .last { justify-content: end; }
+.sort { color: var(--line-strong); font: 10px var(--mono); }
+.sort.on { color: var(--ink); }
+.rt-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 0 20px; border-top: 1px solid var(--line); color: var(--muted); font: 10px var(--mono); }
+.pager { display: flex; gap: 6px; }
+.pager button { width: 26px; min-height: 24px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); font: 12px var(--mono); }
+.pager button.off { color: var(--faint); }
+.pop-anchor { position: relative; }
+.filter-pop { position: absolute; z-index: 3; top: 54px; right: 20px; width: 320px; padding: 14px 15px; border: 1px solid var(--line-strong); background: var(--panel); box-shadow: var(--shadow); }
+.filter-pop .row { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; margin-bottom: 9px; }
+.filter-pop .row > span:first-child { color: var(--faint); font: 10px var(--mono); }
+.filter-pop .two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.filter-pop .acts { display: flex; justify-content: end; gap: 7px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
+
+/* Der Graph */
+.dag { display: block; }
+.dag .box { fill: var(--panel); stroke: var(--line-strong); stroke-width: 1; }
+.dag .box.wait { fill: var(--copper-deep); stroke: var(--copper); }
+.dag .box.queued { stroke-dasharray: 4 3; }
+.dag .box.failed { fill: var(--brick-deep); stroke: var(--brick); }
+.dag .bar { fill: var(--copper); }
+.dag .sel { fill: none; stroke: var(--copper); stroke-width: 1.5; }
+.dag .ring { fill: none; stroke: var(--mint); stroke-width: 2; animation: dagpulse 1.9s ease-in-out infinite; }
+.dag .badge { fill: none; stroke: var(--line-strong); }
+.dag .badge.wait { stroke: var(--copper); }
+.dag .bt { fill: var(--muted); font: 600 10px var(--mono); }
+.dag .bt.wait { fill: var(--copper); }
+.dag .nm { fill: var(--ink); font: 600 12px var(--sans); }
+.dag .nm.mini { font-size: 10px; }
+.dag .st { fill: var(--muted); font: 10px var(--mono); }
+.dag .tick { fill: var(--mint); font: 600 11px var(--mono); }
+.dag .cross { fill: var(--brick); font: 600 11px var(--mono); }
+.dag .lb { fill: var(--faint); font: 10px var(--mono); }
+.dag .e { fill: none; stroke: var(--line-strong); stroke-width: 1.3; }
+.dag .e.done { stroke: var(--mint); }
+.dag .ah-mint { fill: var(--mint); }
+.dag .ah-line { fill: var(--line-strong); }
+.dag .ah-copper { fill: var(--copper); }
+@keyframes dagpulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+.dagbox { overflow-x: auto; overflow-y: hidden; }
+.legend { padding: 16px 18px; border: 1px solid var(--line); background: var(--paper); }
+.legend .subhead { display: block; margin: 0 0 12px; }
+.legend p { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+
+.mobile-duo { display: grid; grid-template-columns: repeat(2, minmax(0, 400px)); gap: 20px; justify-content: center; }
+@media (max-width: 900px) { .mobile-duo { grid-template-columns: minmax(0, 400px); } }
+
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; animation: none !important; } }
+@media (max-width: 1080px) {
+  .hero, .section-head { grid-template-columns: 1fr; gap: 22px; }
+  .hero-side { padding-left: 0; border-left: 0; }
+  .rulings, .cards, .slices { grid-template-columns: 1fr 1fr; }
+  .tokens-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .section { padding-block: 44px; }
+  .rulings, .cards, .slices, .g2 { grid-template-columns: 1fr; }
+  .rulings article, .card, .slice { min-height: 0; }
+}
+</style>
+</head>
+<body>
+
+<main class="page">
+
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Atelier · Runde 4.2 · zweite Operator-Runde</p>
+      <h1>Ein Wartepunkt fragt.<br>Alles andere läuft.</h1>
+      <p class="lede">Das Bild von Codex bleibt: flache Flächen, fast keine Radien, dieselbe Palette, dieselbe Schrift. Neu in dieser Runde: ein Wort für die Definition und eins für die Ausführung, Mobil als reiner Sitz, Asks als Links, Runs als echte Tabelle, ein Lauf als echter Graph — und der Sitz nur noch dort, wo geredet wird.</p>
+    </div>
+    <aside class="hero-side">
+      <p>Neun Sätze vom 11.09.2026 — fünf aus der ersten Runde, zwei davon neu gefasst, vier aus der zweiten. Sie stehen hier als Vertrag, nicht als Absicht; jedes Bild darunter ist an ihnen zu messen.</p>
+      <div class="theme-control" aria-label="Seitenthema">
+        <input type="radio" name="theme" id="theme-system" checked><label for="theme-system">System</label>
+        <input type="radio" name="theme" id="theme-light"><label for="theme-light">Hell</label>
+        <input type="radio" name="theme" id="theme-dark"><label for="theme-dark">Dunkel</label>
+      </div>
+    </aside>
+  </header>
+
+  <section class="rulings" aria-label="Die neun Sätze">
+    <article><b>Ruling 1 · neu gefasst</b><p>Ein <em>Workflow</em> ist die Definition, ein <em>Run</em> die Ausführung. Rechts auf Home steht deshalb <em>Runs</em> mit den Chips <code>Live</code>, <code>Queued</code>, <code>Waiting</code>.</p></article>
+    <article><b>Ruling 2</b><p>Ein menschliches Tor ist immer ein deklarierter <code>wait</code>-Knoten — dieselbe Zeile, dieselben Knöpfe auf Home und im Lauf.</p></article>
+    <article><b>Ruling 3 · neu gefasst</b><p>Mitte, wo du redest: Home und Catalog. Sonst nicht da.</p></article>
+    <article><b>Ruling 4</b><p>Der Catalog ist ein Bauplatz, die Wahrheit steht in Git: drei Regale, Herkunft an jedem Eintrag, kein Import.</p></article>
+    <article><b>Ruling 5 · neu gefasst</b><p>Settings besitzt <em>Sources</em> in zwei sichtbaren Gruppen — <em>Project sources</em> und <em>Catalog sources</em> — statt Source und Import; dazu Automation und Models.</p></article>
+    <article><b>Runde 4.2 · Mobil</b><p>Mobil ist Home der Sitz und sonst nichts: Kopfzeile, eine Zeile <code>2 asks ›</code>, Terminal, Tableiste. Runs hat seinen eigenen Tab.</p></article>
+    <article><b>Runde 4.2 · Asks</b><p>Der Kopf einer Ask-Zeile ist sichtbar ein Link in den Lauf an genau diesen Knoten. <code>Yes</code> und <code>No</code> bleiben in der Zeile.</p></article>
+    <article><b>Runde 4.2 · Runs</b><p>Runs ist eine echte Tabelle: sortierbare Spaltenköpfe, Seitenfuß mit Cursor, Chips und Suche, dazu ein <code>Filter</code> für den Rest.</p></article>
+    <article><b>Runde 4.2 · Graph</b><p>Ein Lauf ist ein gerichteter Graph: Knotenarten unterscheidbar, Kanten mit Pfeilspitzen, links nach rechts geschichtet.</p></article>
+  </section>
+
+  <!-- ═══════════════ A · HOME ═══════════════ -->
+  <section class="section" id="home">
+    <div class="section-head">
+      <div><span class="surface-index">A / HOME</span><h2>Hier wird gesprochen.</h2></div>
+      <p>Links der Sitz, so breit wie er sein darf. Rechts oben die Asks: jede Zeile ist ein deklarierter Wartepunkt mit seiner Frage und zwei Antworten, und ihr Kopf ist ein Link in den Lauf an genau diesen Knoten. Darunter eine Zeile Vorgeschichte, dann <em>Runs</em> — derselbe Name wie die Seite, drei Chips, keine zweite Liste namens Queue. Mobil fällt das alles weg: dort ist Home der Sitz, und die Asks kommen als Blatt über ihn.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-a-home"><div class="desktop-shell">
+
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+
+          <div class="app">
+            <header class="appbar"><strong>Home</strong><div class="appbar-meta"><span>atelier-2</span><i class="health-dot"></i><span>healthy</span></div></header>
+            <div class="workspace home-grid">
+
+              <section class="home-main">
+                <div class="home-intro"><div><span class="subhead">Seat</span><h4>claude-code · atelier-2</h4></div><small>tmux · attached</small></div>
+                <div class="terminal">
+                  <div class="term-tabs"><span class="term-tab active">atelier — zsh</span><span class="term-tab">logs</span><span class="term-live">● live</span></div>
+                  <div class="term-body">
+                    <p class="t-dim">╭─ Claude Code · /work/atelier-2 ────────────────────────────╮</p>
+                    <p><span class="t-blue">❯</span> Bau mir einen Workflow, der eingehende Rechnungen prüft.</p>
+                    <p class="t-dim">  Unbeaufsichtigt laufen, unabhängiger Reviewer,</p>
+                    <p class="t-dim">  und vor dem Export fragst du mich.</p>
+                    <p><span class="t-mint">●</span> Im Catalog gefunden: <span class="t-blue">invoice-reader</span>, <span class="t-blue">ledger-check</span>,</p>
+                    <p>  <span class="t-blue">independent-reviewer</span>.</p>
+                    <p><span class="t-mint">●</span> Entwurf <span class="t-blue">invoice-audit@draft</span> · 5 Knoten.</p>
+                    <p><span class="t-copper">△</span> <span class="t-blue">export-report</span> ist ein deklarierter wait-Knoten.</p>
+                    <p class="t-dim">  declared effects: push-atelier-commit · open-pr</p>
+                    <p><span class="t-blue">❯</span> Speichere ihn nach atelier-2, Branch catalog/invoice-audit.</p>
+                    <p><span class="t-mint">●</span> Commit geschrieben. Nach dem Merge liest der Scan ihn als @1.</p>
+                    <p class="t-dim">  Der Sitz ist privat: Atelier liest diesen Text nicht.</p>
+                  </div>
+                  <div class="term-compose">❯ Warum ist docs-sweep@2 gescheitert?</div>
+                </div>
+              </section>
+
+              <aside class="home-side">
+                <div class="side-block">
+                  <div class="side-head"><span class="subhead">Asks</span><span class="chip">2</span></div>
+                  <div class="ask-row">
+                    <a class="ask-meta ask-link"><b>release-repair@7</b><span>wait open-pr</span><span class="go">›</span></a>
+                    <p class="ask-q">Open the pull request for the release repair?</p>
+                    <div class="ask-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                  </div>
+                  <div class="ask-row">
+                    <a class="ask-meta ask-link"><b>invoice-audit@1</b><span>wait export-report</span><span class="go">›</span></a>
+                    <p class="ask-q">Export the September report to the finance drive?</p>
+                    <div class="ask-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                  </div>
+                </div>
+
+                <div class="visit-line">since your last visit · 11 runs of 4 workflows · 7 landed · 1 failed · 2 asked</div>
+
+                <div class="side-block">
+                  <div class="side-head"><a class="subhead ask-link" style="display:flex;gap:6px"><span>Runs</span><span class="go">›</span></a><div class="chips"><span class="chip on">Live 3</span><span class="chip on">Queued 2</span><span class="chip on">Waiting 1</span></div></div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state running">Running</span><b>invoice-audit@1</b><time>3m</time></div>
+                    <div class="mini-sub"><span>September invoices</span><span class="chip">#1452</span></div>
+                  </div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state waiting">Waiting</span><b>release-repair@7</b><time>12m</time></div>
+                    <div class="mini-sub"><span>Repair release packaging</span><span class="chip">#842</span></div>
+                  </div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state running">Running</span><b>mobile-shots@2</b><time>18m</time></div>
+                    <div class="mini-sub"><span>Catalog at 400 and 1280</span></div>
+                  </div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state running">Running</span><b>banana-count@1</b><time>26m</time></div>
+                    <div class="mini-sub"><span>Warehouse photo set</span></div>
+                  </div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state queued">Queued</span><b>issue-to-pr@14</b><time>4m</time></div>
+                    <div class="mini-sub"><span>Catalog paging cursor</span><span class="chip">#1489</span></div>
+                  </div>
+                  <div class="mini-row">
+                    <div class="mini-top"><span class="state queued">Queued</span><b>docs-sweep@2</b><time>9m</time></div>
+                    <div class="mini-sub"><span>Stale links under docs/</span></div>
+                  </div>
+                </div>
+              </aside>
+
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="mobile-duo">
+        <div class="shot mobile-shot">
+          <div class="shot-label"><span>Mobil · Home ist der Sitz</span><span>400 × 780</span></div>
+          <div class="scrollbox"><div class="screen mobile" id="v9-a-home-mobile"><div class="mobile-shell">
+            <header class="mobile-top"><strong>Home</strong><div class="appbar-meta"><span>atelier-2</span><i class="health-dot"></i></div></header>
+            <div class="mobile-view" style="display:flex;flex-direction:column">
+              <a class="mtap"><span>2 asks</span><span class="go">›</span></a>
+              <div style="flex:1;min-height:0;display:flex;flex-direction:column;padding:12px">
+                <div class="terminal" style="flex:1">
+                  <div class="term-tabs"><span class="term-tab active">atelier — zsh</span><span class="term-live">● live</span></div>
+                  <div class="term-body" style="font-size:11px">
+                    <p class="t-dim">╭─ Claude Code · /work/atelier-2 ──────────────╮</p>
+                    <p><span class="t-blue">❯</span> Bau mir einen Rechnungs-Workflow.</p>
+                    <p class="t-dim">  Vor dem Export fragst du mich.</p>
+                    <p><span class="t-mint">●</span> Drei Teile im Catalog gefunden:</p>
+                    <p>  <span class="t-blue">invoice-reader</span> · <span class="t-blue">ledger-check</span></p>
+                    <p>  <span class="t-blue">independent-reviewer</span></p>
+                    <p><span class="t-mint">●</span> Entwurf <span class="t-blue">invoice-audit@draft</span> · 5 Knoten.</p>
+                    <p><span class="t-copper">△</span> <span class="t-blue">export-report</span> ist ein wait-Knoten.</p>
+                    <p class="t-dim">  declared effects: push-atelier-commit</p>
+                    <p><span class="t-blue">❯</span> Speichere ihn nach atelier-2.</p>
+                    <p><span class="t-mint">●</span> Commit geschrieben. Der Scan liest ihn</p>
+                    <p>  nach dem Merge als @1.</p>
+                    <p class="t-dim">  Der Sitz ist privat: Atelier liest ihn nicht.</p>
+                  </div>
+                  <div class="term-compose">❯ Sag etwas…</div>
+                </div>
+              </div>
+            </div>
+            <footer class="mobile-nav">
+              <span class="active"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+              <span><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+              <span><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+              <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+            </footer>
+          </div></div></div>
+        </div>
+
+        <div class="shot mobile-shot">
+          <div class="shot-label"><span>Mobil · das Blatt nach dem Tippen</span><span>400 × 780</span></div>
+          <div class="scrollbox"><div class="screen mobile" id="v9-a-home-sheet"><div class="mobile-shell">
+            <header class="mobile-top"><strong>Home</strong><div class="appbar-meta"><span>atelier-2</span><i class="health-dot"></i></div></header>
+            <div class="mobile-view" style="display:flex;flex-direction:column">
+              <a class="mtap"><span>2 asks</span><span class="go">›</span></a>
+              <div class="sheet-wrap">
+                <div style="display:flex;flex-direction:column;height:100%;padding:12px">
+                  <div class="terminal" style="flex:1">
+                    <div class="term-tabs"><span class="term-tab active">atelier — zsh</span><span class="term-live">● live</span></div>
+                    <div class="term-body" style="font-size:11px">
+                      <p><span class="t-blue">❯</span> Bau mir einen Rechnungs-Workflow.</p>
+                      <p><span class="t-mint">●</span> Drei Teile im Catalog gefunden.</p>
+                      <p><span class="t-mint">●</span> Entwurf <span class="t-blue">invoice-audit@draft</span>.</p>
+                      <p><span class="t-copper">△</span> <span class="t-blue">export-report</span> ist ein wait-Knoten.</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="sheet-dim"></div>
+                <div class="sheet">
+                  <div class="sheet-grip"></div>
+                  <div class="sheet-head"><span class="subhead">Asks</span><span class="chip">2</span></div>
+                  <div class="ask-row">
+                    <a class="ask-meta ask-link"><b>release-repair@7</b><span>wait open-pr</span><span class="go">›</span></a>
+                    <p class="ask-q">Open the pull request for the release repair?</p>
+                    <div class="ask-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                  </div>
+                  <div class="ask-row">
+                    <a class="ask-meta ask-link"><b>invoice-audit@1</b><span>wait export-report</span><span class="go">›</span></a>
+                    <p class="ask-q">Export the September report to the finance drive?</p>
+                    <div class="ask-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <footer class="mobile-nav">
+              <span class="active"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+              <span><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+              <span><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+              <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+            </footer>
+          </div></div></div>
+        </div>
+      </div>
+
+    </div>
+    <div class="note">
+      <strong>Was auf Mobil wegfällt, fällt nicht aus der Welt.</strong>
+      <p>Keine Runs-Liste auf Home: Runs ist ein eigener Tab, eine Zeile entfernt. Auch die Besuchszeile bleibt dem Desktop — sie ist Vorgeschichte, und Vorgeschichte gehört nicht vor den Sitz. Die Zeile <code>2 asks ›</code> ist die einzige Unterbrechung, die Home sich mobil leistet; sie öffnet das Blatt, und das Blatt trägt dieselben zwei Antworten wie der Lauf.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ B · RUNS ═══════════════ -->
+  <section class="section" id="runs">
+    <div class="section-head">
+      <div><span class="surface-index">B / RUNS</span><h2>Welcher Lauf war das?</h2></div>
+      <p>Eine echte Tabelle: sortierbare Spaltenköpfe, eine Zeilenform — Zustand · workflow@rev · Gegenstand · Work item · Alter — und ein Seitenfuß, der über einen Cursor blättert statt über Seitenzahlen. Fünf Chips und die Suche decken den Alltag; alles Seltenere liegt hinter <code>Filter</code>. Neueste oben, nie nach Issue gruppiert; ein Lauf ohne Work item lässt die Zelle leer. Kein Sitz: hier wird geschaut, nicht geredet.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-b-runs"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Runs</strong><div class="appbar-meta"><span>142 runs</span></div></header>
+            <div class="workspace pop-anchor" style="display:flex;flex-direction:column">
+              <div class="runs-bar">
+                <div class="runs-filters"><span class="chip on">All</span><span class="chip">Live</span><span class="chip">Waiting</span><span class="chip">Failed</span><span class="chip">Done</span></div>
+                <span style="display:flex;align-items:center;gap:8px"><span class="field" style="width:236px">Search runs…</span><span class="chip">Filter ▾</span></span>
+              </div>
+              <div class="runs-head">
+                <span>State <span class="sort">↕</span></span>
+                <span>Workflow <span class="sort">↕</span></span>
+                <span>Subject <span class="sort">↕</span></span>
+                <span>Work item <span class="sort">↕</span></span>
+                <span class="last">Started <span class="sort on">↓</span></span>
+              </div>
+              <div class="runs-list" style="flex:1;min-height:0">
+                <div class="runs-row"><span class="state running">Running</span><b>invoice-audit@1</b><span class="subject">September invoices</span><span class="wi"><span class="chip">#1452</span></span><span class="age">3m</span></div>
+                <div class="runs-row"><span class="state queued">Queued</span><b>issue-to-pr@14</b><span class="subject">Catalog paging cursor</span><span class="wi"><span class="chip">#1489</span></span><span class="age">4m</span></div>
+                <div class="runs-row"><span class="state queued">Queued</span><b>docs-sweep@2</b><span class="subject">Stale links under docs/</span><span class="wi"></span><span class="age">9m</span></div>
+                <div class="runs-row"><span class="state waiting">Waiting</span><b>release-repair@7</b><span class="subject">Repair release packaging</span><span class="wi"><span class="chip">#842</span></span><span class="age">12m</span></div>
+                <div class="runs-row"><span class="state running">Running</span><b>mobile-shots@2</b><span class="subject">Catalog at 400 and 1280</span><span class="wi"></span><span class="age">18m</span></div>
+                <div class="runs-row"><span class="state running">Running</span><b>banana-count@1</b><span class="subject">Warehouse photo set</span><span class="wi"></span><span class="age">26m</span></div>
+                <div class="runs-row"><span class="state failed">Failed</span><b>docs-sweep@2</b><span class="subject">Stale links under docs/</span><span class="wi"><span class="chip">#1471</span></span><span class="age">41m</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Wheel metadata after the org move</span><span class="wi"><span class="chip">#1481</span></span><span class="age">1h</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>issue-to-pr@14</b><span class="subject">Serve doubles for every surface</span><span class="wi"><span class="chip">#1485</span></span><span class="age">2h</span></div>
+                <div class="runs-row"><span class="state stopped">Stopped</span><b>copy-review@2</b><span class="subject">Landing page headings</span><span class="wi"><span class="chip">WEB-19</span></span><span class="age">3h</span></div>
+              </div>
+              <div class="rt-foot">
+                <span>1–20 of 142</span>
+                <span class="pager"><button class="off">‹</button><button>›</button></span>
+                <span>cursor · no page numbers</span>
+              </div>
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop · Filter geöffnet</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-b-runs-filter"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Runs</strong><div class="appbar-meta"><span>9 runs</span><span>2 filters</span></div></header>
+            <div class="workspace pop-anchor" style="display:flex;flex-direction:column">
+              <div class="runs-bar">
+                <div class="runs-filters"><span class="chip on">All</span><span class="chip">Live</span><span class="chip">Waiting</span><span class="chip">Failed</span><span class="chip">Done</span></div>
+                <span style="display:flex;align-items:center;gap:8px"><span class="field" style="width:236px">Search runs…</span><span class="chip on">Filter 2 ▾</span></span>
+              </div>
+              <div class="filter-pop">
+                <p class="subhead" style="margin:0 0 11px">Filter</p>
+                <div class="row"><span>Date</span><span class="two"><span class="field">01.09.2026</span><span class="field">11.09.2026</span></span></div>
+                <div class="row"><span>Workflow</span><span class="field">release-repair@7</span></div>
+                <div class="row"><span>Work item</span><span class="field">any</span></div>
+                <div class="acts"><span class="mono" style="margin-right:auto;color:var(--faint);font-size:10px">applies while you type</span><button class="ui-button">Clear</button></div>
+              </div>
+              <div class="runs-head">
+                <span>State <span class="sort">↕</span></span>
+                <span>Workflow <span class="sort">↕</span></span>
+                <span>Subject <span class="sort">↕</span></span>
+                <span>Work item <span class="sort">↕</span></span>
+                <span class="last">Started <span class="sort on">↓</span></span>
+              </div>
+              <div class="runs-list" style="flex:1;min-height:0">
+                <div class="runs-row"><span class="state waiting">Waiting</span><b>release-repair@7</b><span class="subject">Repair release packaging</span><span class="wi"><span class="chip">#842</span></span><span class="age">12m</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Wheel metadata after the org move</span><span class="wi"><span class="chip">#1481</span></span><span class="age">1h</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Sdist missing the license file</span><span class="wi"><span class="chip">#1477</span></span><span class="age">1d</span></div>
+                <div class="runs-row"><span class="state failed">Failed</span><b>release-repair@7</b><span class="subject">Version bump on a protected branch</span><span class="wi"><span class="chip">#1469</span></span><span class="age">2d</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Wheel tags after the runner update</span><span class="wi"><span class="chip">#1462</span></span><span class="age">3d</span></div>
+                <div class="runs-row"><span class="state stopped">Stopped</span><b>release-repair@7</b><span class="subject">Packaging spike, abandoned</span><span class="wi"></span><span class="age">4d</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Entry points after the org move</span><span class="wi"><span class="chip">#1451</span></span><span class="age">6d</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Wheel metadata, first pass</span><span class="wi"><span class="chip">#1444</span></span><span class="age">8d</span></div>
+                <div class="runs-row"><span class="state done">Done</span><b>release-repair@7</b><span class="subject">Release notes from the changelog</span><span class="wi"><span class="chip">#1438</span></span><span class="age">9d</span></div>
+              </div>
+              <div class="rt-foot">
+                <span>1–9 of 9</span>
+                <span class="pager"><button class="off">‹</button><button class="off">›</button></span>
+                <span>cursor · no page numbers</span>
+              </div>
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot mobile-shot">
+        <div class="shot-label"><span>Mobil</span><span>400 × 780</span></div>
+        <div class="scrollbox"><div class="screen mobile" id="v9-b-runs-mobile"><div class="mobile-shell">
+          <header class="mobile-top"><strong>Runs</strong><span class="field" style="width:150px">Search…</span></header>
+          <div class="mobile-view" style="display:flex;flex-direction:column">
+            <div class="runs-filters" style="padding:11px 14px;border-bottom:1px solid var(--line)"><span class="chip on">All</span><span class="chip">Live</span><span class="chip">Waiting</span><span class="chip">Failed</span><span class="chip">Done</span><span class="chip">Filter ▾</span></div>
+            <div style="flex:1;min-height:0;overflow:hidden">
+              <div class="mrun-row"><div class="mrun-top"><span class="state running">Running</span><b>invoice-audit@1</b><time>3m</time></div><div class="mrun-sub"><span>September invoices</span><span class="chip">#1452</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state queued">Queued</span><b>issue-to-pr@14</b><time>4m</time></div><div class="mrun-sub"><span>Catalog paging cursor</span><span class="chip">#1489</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state queued">Queued</span><b>docs-sweep@2</b><time>9m</time></div><div class="mrun-sub"><span>Stale links under docs/</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state waiting">Waiting</span><b>release-repair@7</b><time>12m</time></div><div class="mrun-sub"><span>Repair release packaging</span><span class="chip">#842</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state running">Running</span><b>mobile-shots@2</b><time>18m</time></div><div class="mrun-sub"><span>Catalog at 400 and 1280</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state failed">Failed</span><b>docs-sweep@2</b><time>41m</time></div><div class="mrun-sub"><span>Stale links under docs/</span><span class="chip">#1471</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state done">Done</span><b>release-repair@7</b><time>1h</time></div><div class="mrun-sub"><span>Wheel metadata after the org move</span><span class="chip">#1481</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state done">Done</span><b>issue-to-pr@14</b><time>2h</time></div><div class="mrun-sub"><span>Serve doubles for every surface</span><span class="chip">#1485</span></div></div>
+              <div class="mrun-row"><div class="mrun-top"><span class="state stopped">Stopped</span><b>copy-review@2</b><time>3h</time></div><div class="mrun-sub"><span>Landing page headings</span><span class="chip">WEB-19</span></div></div>
+            </div>
+            <div class="rt-foot" style="padding:0 14px">
+              <span>1–20 of 142</span>
+              <span class="pager"><button class="off">‹</button><button>›</button></span>
+            </div>
+          </div>
+          <footer class="mobile-nav">
+            <span><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+            <span class="active"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+          </footer>
+        </div></div></div>
+      </div>
+
+    </div>
+    <div class="g2" style="margin-top:12px">
+      <div class="note" style="margin-top:0">
+        <strong>Die Tabelle bauen wir nicht selbst.</strong>
+        <p>Spaltenköpfe, Sortierung, Spaltenbreiten und Tastaturbedienung kommen aus der Bibliothek, die ohnehin im Stack liegt (TanStack Table); wir liefern die Zeilenform und die Zellen. Das Blättern liegt darunter: die Route gibt einen Cursor zurück, der Fuß zeigt <code>1–20 of 142</code> und zwei Pfeile. Seitenzahlen gibt es nicht, weil es über einem wachsenden Strom keine stabile Seite 7 gibt.</p>
+      </div>
+      <div class="note" style="margin-top:0">
+        <strong>Was in dieser Scheibe steckt und was nicht.</strong>
+        <p>Seiten gehören dazu: ohne sie zeigt Runs bei 142 Läufen entweder alles oder lügt. Die erweiterten Filter hinter <code>Filter</code> — Zeitraum, Workflow, Work item — sind ein eigenes, späteres Item; das Bild zeigt sie, damit der Chip nicht später als Fremdkörper erscheint. Bis dahin ist der Chip nicht da, nicht grau.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ C · EIN RUN ═══════════════ -->
+  <section class="section" id="run">
+    <div class="section-head">
+      <div><span class="surface-index">C / EIN RUN</span><h2>Ein Knoten, ein Panel.</h2></div>
+      <p>Ein Lauf ist ein gerichteter Graph, also wird er als solcher gezeichnet: von links nach rechts geschichtet, Kanten mit Pfeilspitzen, die rechts aus einem Knoten austreten und links in den nächsten eintreten. Die Art steht in der Form, der Zustand am Knoten. Jeder Knoten ist anklickbar; der gewählte zeigt Input, Result und Log. Knöpfe hat nur der deklarierte <code>wait</code>-Knoten — dieselbe Frage, dieselben zwei Antworten wie auf Home, nur ohne Link: hier <em>ist</em> man am Knoten. <code>Cancel</code> gehört dem Lauf, nie einem Knoten.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-c-run"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Run</strong><div class="appbar-meta"><span>release-repair@7</span><span class="chip">#842</span></div></header>
+            <div class="workspace" style="display:flex;flex-direction:column">
+              <div class="run-layout" style="flex:1;min-height:0">
+                <section class="run-left">
+                  <div class="run-toolbar"><b>Repair release packaging</b><button class="ui-button danger">Cancel</button><span class="state waiting">Waiting</span></div>
+                  <div class="run-canvas"><svg class="dag" width="752" height="520" viewBox="0 0 752 520" aria-label="Graph des Laufs release-repair@7">
+                    <defs>
+                      <marker id="ah-run-mint" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-mint" d="M0 0 L8 3 L0 6 Z"/></marker>
+                      <marker id="ah-run-line" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-line" d="M0 0 L8 3 L0 6 Z"/></marker>
+                    </defs>
+
+                    <path class="e done" marker-end="url(#ah-run-mint)" d="M104 151 H131"/>
+                    <path class="e done" marker-end="url(#ah-run-mint)" d="M230 151 H238 Q244 151 244 157 V425 Q244 431 250 431 H257"/>
+                    <path class="e done" marker-end="url(#ah-run-mint)" d="M230 151 H383"/>
+                    <path class="e done" marker-end="url(#ah-run-mint)" d="M356 431 H364 Q370 431 370 425 V171 Q370 165 376 165 H383"/>
+                    <path class="e" marker-end="url(#ah-run-line)" d="M482 151 H509"/>
+                    <path class="e" marker-end="url(#ah-run-line)" d="M608 151 H616 Q622 151 622 157 V425 Q622 431 628 431 H635"/>
+
+                    <g>
+                      <rect class="box" x="6" y="120" width="98" height="62"/>
+                      <rect class="badge" x="15" y="129" width="15" height="15"/>
+                      <text class="bt" x="22.5" y="140.5" text-anchor="middle">A</text>
+                      <text class="lb" x="36" y="140.5">agent</text>
+                      <text class="nm" x="15" y="160">Plan</text>
+                      <text class="st" x="15" y="174">done · 1m</text>
+                      <text class="tick" x="95" y="140.5" text-anchor="end">✓</text>
+                    </g>
+                    <g>
+                      <rect class="box" x="132" y="120" width="98" height="62"/>
+                      <rect class="badge" x="141" y="129" width="15" height="15"/>
+                      <text class="bt" x="148.5" y="140.5" text-anchor="middle">A</text>
+                      <text class="lb" x="162" y="140.5">agent</text>
+                      <text class="nm" x="141" y="160">Implement</text>
+                      <text class="st" x="141" y="174">done · 6m</text>
+                      <text class="tick" x="221" y="140.5" text-anchor="end">✓</text>
+                    </g>
+                    <g>
+                      <rect class="box" x="258" y="400" width="98" height="62"/>
+                      <rect class="badge" x="267" y="409" width="15" height="15"/>
+                      <text class="bt" x="274.5" y="420.5" text-anchor="middle">A</text>
+                      <text class="lb" x="288" y="420.5">agent</text>
+                      <text class="nm" x="267" y="440">Review</text>
+                      <text class="st" x="267" y="454">done · 3m</text>
+                      <text class="tick" x="347" y="420.5" text-anchor="end">✓</text>
+                    </g>
+                    <g>
+                      <rect class="sel" x="379" y="115" width="108" height="72"/>
+                      <rect class="box wait" x="384" y="120" width="98" height="62"/>
+                      <rect class="bar" x="384" y="120" width="3" height="62"/>
+                      <rect class="badge wait" x="396" y="129" width="15" height="15"/>
+                      <text class="bt wait" x="403.5" y="140.5" text-anchor="middle">?</text>
+                      <text class="lb" x="417" y="140.5">wait</text>
+                      <text class="nm" x="396" y="160">open-pr</text>
+                      <text class="st" x="396" y="174">waiting · 12m</text>
+                    </g>
+                    <g>
+                      <path class="box queued" d="M510 120 H600 L608 151 L600 182 H510 Z"/>
+                      <rect class="badge" x="519" y="129" width="15" height="15"/>
+                      <text class="bt" x="526.5" y="140.5" text-anchor="middle">→</text>
+                      <text class="lb" x="540" y="140.5">effect</text>
+                      <text class="nm" x="519" y="160">open-pr</text>
+                      <text class="st" x="519" y="174">queued</text>
+                    </g>
+                    <g>
+                      <path class="box queued" d="M636 400 H726 L734 431 L726 462 H636 Z"/>
+                      <rect class="badge" x="645" y="409" width="15" height="15"/>
+                      <text class="bt" x="652.5" y="420.5" text-anchor="middle">→</text>
+                      <text class="lb" x="666" y="420.5">effect</text>
+                      <text class="nm" x="645" y="440">merge</text>
+                      <text class="st" x="645" y="454">queued</text>
+                    </g>
+                  </svg></div>
+                </section>
+                <aside class="detail">
+                  <div class="detail-head">
+                    <span class="state waiting">Waiting</span>
+                    <h4>open-pr</h4>
+                    <p>wait · release-repair@7 · 12m</p>
+                  </div>
+                  <div class="tabs"><span>Input</span><span class="active">Result</span><span>Log</span></div>
+                  <div class="detail-body">
+                    <div class="result-question">
+                      <b>Open the pull request for the release repair?</b>
+                      <div class="result-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                    </div>
+                    <p class="subhead" style="margin:16px 0 4px">Proof</p>
+                    <div class="proof-row"><span><b>Independent review</b><small>approved · round 1</small></span><span class="chip">Open</span></div>
+                    <div class="proof-row"><span><b>Targeted checks</b><small>18 passed · 14s</small></span><span class="chip">Open</span></div>
+                    <div class="proof-row"><span><b>Candidate</b><small>6 files · +184 −21</small></span><span class="chip">Open</span></div>
+                    <p class="subhead" style="margin:16px 0 4px">Events</p>
+                    <div class="event"><time>16:48</time><i></i><span>node.started · implement</span></div>
+                    <div class="event"><time>16:51</time><i></i><span>node.finished · review · approved</span></div>
+                    <div class="event"><time>16:52</time><i></i><span>node.started · open-pr</span></div>
+                    <div class="event now"><time>16:52</time><i></i><span>wait.opened · answer expected</span></div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot mobile-shot">
+        <div class="shot-label"><span>Mobil</span><span>400 × 780</span></div>
+        <div class="scrollbox"><div class="screen mobile" id="v9-c-run-mobile"><div class="mobile-shell">
+          <header class="mobile-top"><strong>Run</strong><span class="state waiting">Waiting</span></header>
+          <div class="mobile-view" style="display:flex;flex-direction:column">
+            <div class="run-toolbar" style="height:auto;padding:11px 14px;display:grid;gap:7px">
+              <div style="display:flex;align-items:center;gap:8px"><span class="chip">#842</span><span class="mono" style="font-size:10px;color:var(--muted)">release-repair@7</span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><b>Repair release packaging</b><button class="ui-button danger">Cancel</button></div>
+            </div>
+            <div class="mgraph"><svg class="dag" width="342" height="128" viewBox="0 0 342 128" aria-label="Graph des Laufs release-repair@7">
+              <defs>
+                <marker id="ah-mrun-mint" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-mint" d="M0 0 L8 3 L0 6 Z"/></marker>
+                <marker id="ah-mrun-line" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-line" d="M0 0 L8 3 L0 6 Z"/></marker>
+              </defs>
+              <path class="e done" marker-end="url(#ah-mrun-mint)" d="M49 32 H58"/>
+              <path class="e done" marker-end="url(#ah-mrun-mint)" d="M107 32 H110 Q113 32 113 35 V91 Q113 94 116 94"/>
+              <path class="e done" marker-end="url(#ah-mrun-mint)" d="M107 32 H174"/>
+              <path class="e done" marker-end="url(#ah-mrun-mint)" d="M165 94 H168 Q171 94 171 91 V43 Q171 40 174 40"/>
+              <path class="e" marker-end="url(#ah-mrun-line)" d="M223 32 H232"/>
+              <path class="e" marker-end="url(#ah-mrun-line)" d="M281 32 H284 Q287 32 287 35 V91 Q287 94 290 94"/>
+              <g><rect class="box" x="1" y="8" width="48" height="48"/><rect class="badge" x="7" y="14" width="13" height="13"/><text class="bt" x="13.5" y="24" text-anchor="middle">A</text><text class="tick" x="43" y="24" text-anchor="end">✓</text><text class="nm mini" x="7" y="46">Plan</text></g>
+              <g><rect class="box" x="59" y="8" width="48" height="48"/><rect class="badge" x="65" y="14" width="13" height="13"/><text class="bt" x="71.5" y="24" text-anchor="middle">A</text><text class="tick" x="101" y="24" text-anchor="end">✓</text><text class="nm mini" x="65" y="42">Imple-</text><text class="nm mini" x="65" y="53">ment</text></g>
+              <g><rect class="box" x="117" y="70" width="48" height="48"/><rect class="badge" x="123" y="76" width="13" height="13"/><text class="bt" x="129.5" y="86" text-anchor="middle">A</text><text class="tick" x="159" y="86" text-anchor="end">✓</text><text class="nm mini" x="123" y="108">Review</text></g>
+              <g><rect class="sel" x="172" y="5" width="54" height="54"/><rect class="box wait" x="175" y="8" width="48" height="48"/><rect class="bar" x="175" y="8" width="3" height="48"/><rect class="badge wait" x="182" y="14" width="13" height="13"/><text class="bt wait" x="188.5" y="24" text-anchor="middle">?</text><text class="nm mini" x="182" y="42">open-</text><text class="nm mini" x="182" y="53">pr</text></g>
+              <g><path class="box queued" d="M233 8 H275 L281 32 L275 56 H233 Z"/><rect class="badge" x="239" y="14" width="13" height="13"/><text class="bt" x="245.5" y="24" text-anchor="middle">→</text><text class="nm mini" x="239" y="42">open-</text><text class="nm mini" x="239" y="53">pr</text></g>
+              <g><path class="box queued" d="M291 70 H333 L339 94 L333 118 H291 Z"/><rect class="badge" x="297" y="76" width="13" height="13"/><text class="bt" x="303.5" y="86" text-anchor="middle">→</text><text class="nm mini" x="297" y="108">merge</text></g>
+            </svg></div>
+            <div style="flex:1;min-height:0;overflow:hidden">
+              <div class="tabs"><span>Input</span><span class="active">Result</span><span>Log</span></div>
+              <div class="detail-body" style="padding:14px">
+                <div class="result-question">
+                  <b>Open the pull request for the release repair?</b>
+                  <div class="result-actions"><button class="ui-button primary">Yes</button><button class="ui-button">No</button></div>
+                </div>
+                <p class="subhead" style="margin:14px 0 4px">Proof</p>
+                <div class="proof-row"><span><b>Independent review</b><small>approved · round 1</small></span><span class="chip">Open</span></div>
+                <div class="proof-row"><span><b>Candidate</b><small>6 files · +184 −21</small></span><span class="chip">Open</span></div>
+                <p class="subhead" style="margin:14px 0 4px">Events</p>
+                <div class="event"><time>16:52</time><i></i><span>node.started · open-pr</span></div>
+                <div class="event now"><time>16:52</time><i></i><span>wait.opened · answer expected</span></div>
+              </div>
+            </div>
+          </div>
+          <footer class="mobile-nav">
+            <span><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+            <span class="active"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+          </footer>
+        </div></div></div>
+      </div>
+
+    </div>
+    <div class="g2" style="margin-top:12px">
+      <div class="legend">
+        <span class="subhead">Knotenarten · die Form sagt es</span>
+        <div class="dagbox"><svg class="dag" width="366" height="72" viewBox="0 0 366 72" aria-label="Die drei Knotenarten">
+          <g>
+            <rect class="box" x="6" y="5" width="98" height="62"/>
+            <rect class="badge" x="15" y="14" width="15" height="15"/>
+            <text class="bt" x="22.5" y="25.5" text-anchor="middle">A</text>
+            <text class="lb" x="36" y="25.5">agent</text>
+            <text class="nm" x="15" y="45">plan</text>
+            <text class="st" x="15" y="59">denkt</text>
+          </g>
+          <g>
+            <rect class="box wait" x="132" y="5" width="98" height="62"/>
+            <rect class="bar" x="132" y="5" width="3" height="62"/>
+            <rect class="badge wait" x="144" y="14" width="15" height="15"/>
+            <text class="bt wait" x="151.5" y="25.5" text-anchor="middle">?</text>
+            <text class="lb" x="165" y="25.5">wait</text>
+            <text class="nm" x="144" y="45">open-pr</text>
+            <text class="st" x="144" y="59">fragt dich</text>
+          </g>
+          <g>
+            <path class="box" d="M258 5 H348 L356 36 L348 67 H258 Z"/>
+            <rect class="badge" x="267" y="14" width="15" height="15"/>
+            <text class="bt" x="274.5" y="25.5" text-anchor="middle">→</text>
+            <text class="lb" x="288" y="25.5">effect</text>
+            <text class="nm" x="267" y="45">merge</text>
+            <text class="st" x="267" y="59">greift hinaus</text>
+          </g>
+        </svg></div>
+        <p>Ein Abzeichen, eine Kontur, ein Wort — und nur <code>wait</code> hat Knöpfe. Die Kerbe rechts am Effekt zeigt, wohin er greift.</p>
+      </div>
+      <div class="legend">
+        <span class="subhead">Zustand · am Knoten, nicht daneben</span>
+        <div class="dagbox"><svg class="dag" width="312" height="68" viewBox="0 0 312 68" aria-label="Die fünf Knotenzustände">
+          <g><rect class="box" x="4" y="4" width="54" height="40"/><text class="tick" x="50" y="28" text-anchor="end">✓</text><text class="lb" x="4" y="62">done</text></g>
+          <g><rect class="ring" x="63" y="1" width="60" height="46"/><rect class="box" x="66" y="4" width="54" height="40"/><text class="lb" x="66" y="62">live</text></g>
+          <g><rect class="box wait" x="128" y="4" width="54" height="40"/><rect class="bar" x="128" y="4" width="3" height="40"/><text class="lb" x="128" y="62">waiting</text></g>
+          <g><rect class="box failed" x="190" y="4" width="54" height="40"/><text class="cross" x="236" y="28" text-anchor="end">✕</text><text class="lb" x="190" y="62">failed</text></g>
+          <g><rect class="box queued" x="252" y="4" width="54" height="40"/><text class="lb" x="252" y="62">queued</text></g>
+        </svg></div>
+        <p>Fünf Marken, jede ohne Farbe erkennbar: Haken, pulsender Ring, Kupferbalken, Kreuz, gestrichelte Kontur. Der Ring pulst nur, solange wirklich etwas läuft.</p>
+      </div>
+    </div>
+    <div class="note">
+      <strong>Das Layout rechnen wir nicht selbst.</strong>
+      <p>Schichten, Reihenfolge innerhalb einer Schicht und die Kantenführung sind ein gelöstes Problem: <code>dagre</code> oder <code>elkjs</code> rechnen sie, wir zeichnen nur. Welche der beiden, entscheidet das Item nach einer kurzen Prüfung — Größe, Wartung, Kantenrouting — und nicht dieses Bild. Von Hand gesetzte Koordinaten überleben den ersten Workflow mit acht Knoten nicht. Mobil wird derselbe Graph kleiner gezeichnet — alle Knoten bleiben sichtbar, lange Namen brechen mit Trennstrich.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ D · CATALOG (BROWSE) ═══════════════ -->
+  <section class="section" id="catalog">
+    <div class="section-head">
+      <div><span class="surface-index">D / CATALOG · BROWSE</span><h2>Bauplatz, Wahrheit in Git.</h2></div>
+      <p>Drei Regale — Workflows, Agents, Skills. Jeder Eintrag trägt seine Herkunft als Repository und Commit, seine Revision, wie oft er lief und wie es zuletzt ausging. Rechts das Detail mit dem Graphen, den Revisionen und dem manuellen <code>Start</code>. Kein Import: was hier steht, steht in einem verbundenen Repository.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-d-catalog"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Catalog</strong><div class="appbar-meta"><span>31 entries</span><span>scanned 07:12</span><button class="ui-button">Rescan</button></div></header>
+            <div class="workspace" style="display:flex;flex-direction:column">
+              <div class="catalog-layout" style="flex:1;min-height:0">
+
+                <aside class="shelves">
+                  <div class="shelf-tools">
+                    <span class="field">Search the shelves…</span>
+                    <div class="shelf-chips"><span class="chip on">All</span><span class="chip">atelier-2</span><span class="chip">marketplace</span><span class="chip">Entwurf</span></div>
+                  </div>
+                  <div class="shelf-body">
+                    <div class="shelf-title"><span class="subhead">Workflows</span><span class="chip">8</span></div>
+                    <div class="entry sel"><span><b>release-repair</b><small>atelier-2@a554ffe · @7</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">41 runs</small></span></div>
+                    <div class="entry"><span><b>issue-to-pr</b><small>atelier-2@a554ffe · @14</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">88 runs</small></span></div>
+                    <div class="entry"><span><b>docs-sweep</b><small>atelier-2@a554ffe · @2</small></span><span class="right"><span class="state failed">Failed</span><small class="mono" style="color:var(--faint);font-size:10px">6 runs</small></span></div>
+                    <div class="entry"><span><b>banana-count</b><small>marketplace@1f9c2ad · @1</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">12 runs</small></span></div>
+                    <div class="entry"><span><b>invoice-audit</b><small>Entwurf · unsaved</small></span><span class="right"><span class="chip">Entwurf</span><small class="mono" style="color:var(--faint);font-size:10px">0 runs</small></span></div>
+                    <div class="shelf-title"><span class="subhead">Agents</span><span class="chip">11</span></div>
+                    <div class="entry"><span><b>independent-reviewer</b><small>marketplace@1f9c2ad · @4</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">118 runs</small></span></div>
+                    <div class="entry"><span><b>code-worker</b><small>marketplace@1f9c2ad · @9</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">204 runs</small></span></div>
+                    <div class="entry"><span><b>visual-checker</b><small>atelier-2@a554ffe · @2</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">27 runs</small></span></div>
+                    <div class="shelf-title"><span class="subhead">Skills</span><span class="chip">12</span></div>
+                    <div class="entry"><span><b>design-interface</b><small>marketplace@1f9c2ad · @6</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">33 runs</small></span></div>
+                    <div class="entry"><span><b>board-hygiene</b><small>atelier-2@a554ffe · @1</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">4 runs</small></span></div>
+                  </div>
+                </aside>
+
+                <section class="seat-mid">
+                  <div class="seat-mid-head"><div><span class="subhead">Seat</span><h4>claude-code · atelier-2</h4></div><small class="mono" style="color:var(--muted);font-size:10px">tmux · attached</small></div>
+                  <div class="terminal">
+                    <div class="term-tabs"><span class="term-tab active">atelier — zsh</span><span class="term-live">● live</span></div>
+                    <div class="term-body">
+                      <p><span class="t-blue">❯</span> Was macht release-repair eigentlich?</p>
+                      <p><span class="t-mint">●</span> Vier Knoten: <span class="t-blue">plan</span>, <span class="t-blue">implement</span>,</p>
+                      <p>  <span class="t-blue">review</span>, dann <span class="t-copper">wait open-pr</span>.</p>
+                      <p class="t-dim">  Danach zwei Effekte: open-pr, merge.</p>
+                      <p><span class="t-mint">●</span> Rollen: build → code-worker, review →</p>
+                      <p>  <span class="t-blue">independent-reviewer</span>, anderer Anbieter.</p>
+                      <p class="t-dim">  Quelle: atelier-2@a554ffe · .atelier/workflows</p>
+                      <p><span class="t-blue">❯</span> Bau mir etwas Ähnliches für Rechnungen.</p>
+                      <p><span class="t-mint">●</span> Ich lege einen Entwurf an und zeige ihn rechts.</p>
+                    </div>
+                    <div class="term-compose">❯ Sag etwas…</div>
+                  </div>
+                </section>
+
+                <aside class="aside-panel">
+                  <div class="aside-head">
+                    <div><span class="subhead">Workflow</span><h4>release-repair</h4><p>atelier-2@a554ffe · .atelier/workflows</p></div>
+                    <button class="ui-button primary">Start</button>
+                  </div>
+                  <div class="aside-body">
+                    <div class="mini-graph"><svg class="dag" width="324" height="152" viewBox="0 0 324 152" aria-label="Graph des Workflows release-repair">
+                      <defs>
+                        <marker id="ah-cat-line" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-line" d="M0 0 L8 3 L0 6 Z"/></marker>
+                      </defs>
+                      <path class="e" marker-end="url(#ah-cat-line)" d="M68 37 H85"/>
+                      <path class="e" marker-end="url(#ah-cat-line)" d="M152 37 H156 Q160 37 160 41 V109 Q160 113 164 113 H169"/>
+                      <path class="e" marker-end="url(#ah-cat-line)" d="M152 37 H253"/>
+                      <path class="e" marker-end="url(#ah-cat-line)" d="M236 113 H240 Q244 113 244 109 V53 Q244 49 248 49 H253"/>
+                      <g><rect class="box" x="2" y="10" width="66" height="54"/><rect class="badge" x="9" y="17" width="13" height="13"/><text class="bt" x="15.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="9" y="48">plan</text></g>
+                      <g><rect class="box" x="86" y="10" width="66" height="54"/><rect class="badge" x="93" y="17" width="13" height="13"/><text class="bt" x="99.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="93" y="48">implement</text></g>
+                      <g><rect class="box" x="170" y="86" width="66" height="54"/><rect class="badge" x="177" y="93" width="13" height="13"/><text class="bt" x="183.5" y="103" text-anchor="middle">A</text><text class="nm mini" x="177" y="124">review</text></g>
+                      <g><rect class="box wait" x="254" y="10" width="66" height="54"/><rect class="bar" x="254" y="10" width="3" height="54"/><rect class="badge wait" x="263" y="17" width="13" height="13"/><text class="bt wait" x="269.5" y="27" text-anchor="middle">?</text><text class="nm mini" x="263" y="48">open-pr</text></g>
+                    </svg></div>
+                    <p class="mono" style="margin:-6px 0 12px;color:var(--muted);font-size:10px">danach zwei Effekte: open-pr · merge</p>
+                    <p class="subhead" style="margin:0 0 2px">Revisions</p>
+                    <div class="rev-row"><b>@7</b><span>a554ffe · 11.09.2026</span><span class="chip">Open</span></div>
+                    <div class="rev-row"><b>@6</b><span>3c81bb0 · 08.09.2026</span><span class="chip">Open</span></div>
+                    <div class="rev-row"><b>@5</b><span>90ef214 · 02.09.2026</span><span class="chip">Open</span></div>
+                  </div>
+                </aside>
+
+              </div>
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot mobile-shot">
+        <div class="shot-label"><span>Mobil</span><span>400 × 780</span></div>
+        <div class="scrollbox"><div class="screen mobile" id="v9-d-catalog-mobile"><div class="mobile-shell">
+          <header class="mobile-top"><strong>Catalog</strong><button class="ui-button">Rescan</button></header>
+          <div class="mobile-view" style="display:flex;flex-direction:column">
+            <div class="shelf-tools" style="border-bottom:1px solid var(--line)">
+              <span class="field">Search the shelves…</span>
+              <div class="shelf-chips"><span class="chip on">All</span><span class="chip">Workflows</span><span class="chip">Agents</span><span class="chip">Skills</span></div>
+            </div>
+            <div style="flex:1;min-height:0;overflow:hidden">
+              <div class="shelf-title"><span class="subhead">Workflows</span><span class="chip">8</span></div>
+              <div class="entry sel"><span><b>release-repair</b><small>atelier-2@a554ffe · @7 · 41 runs</small></span><span class="state done">Done</span></div>
+              <div class="entry"><span><b>issue-to-pr</b><small>atelier-2@a554ffe · @14 · 88 runs</small></span><span class="state done">Done</span></div>
+              <div class="entry"><span><b>docs-sweep</b><small>atelier-2@a554ffe · @2 · 6 runs</small></span><span class="state failed">Failed</span></div>
+              <div class="entry"><span><b>invoice-audit</b><small>Entwurf · unsaved · 0 runs</small></span><span class="chip">Entwurf</span></div>
+              <div class="shelf-title"><span class="subhead">Agents</span><span class="chip">11</span></div>
+              <div class="entry"><span><b>independent-reviewer</b><small>marketplace@1f9c2ad · @4 · 118 runs</small></span><span class="state done">Done</span></div>
+              <div class="entry"><span><b>code-worker</b><small>marketplace@1f9c2ad · @9 · 204 runs</small></span><span class="state done">Done</span></div>
+              <div class="shelf-title"><span class="subhead">Skills</span><span class="chip">12</span></div>
+              <div class="entry"><span><b>design-interface</b><small>marketplace@1f9c2ad · @6 · 33 runs</small></span><span class="state done">Done</span></div>
+              <div class="entry"><span><b>board-hygiene</b><small>atelier-2@a554ffe · @1 · 4 runs</small></span><span class="state done">Done</span></div>
+              <div class="entry"><span><b>report-writing</b><small>marketplace@1f9c2ad · @2 · 14 runs</small></span><span class="state done">Done</span></div>
+            </div>
+          </div>
+          <footer class="mobile-nav">
+            <span><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+            <span class="active"><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+          </footer>
+        </div></div></div>
+      </div>
+
+    </div>
+    <div class="note">
+      <strong>Der Sitz auf Catalog ist die Mitte — oder er ist nicht da.</strong>
+      <p>Auf Mobil gibt es keine drei Spalten, und eine Leiste gibt es nicht mehr: die Regale nehmen die Fläche, geredet wird auf Home. Das ist keine Ausnahme von Ruling 3, sondern sein Wortlaut — Mitte, wo du redest, sonst nicht da. Wer mobil einen Entwurf bauen will, tut es am Sitz auf Home; Catalog zeigt ihn dann.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ D2 · CATALOG (BUILD) ═══════════════ -->
+  <section class="section" id="catalog-build">
+    <div class="section-head">
+      <div><span class="surface-index">D2 / CATALOG · BUILD</span><h2>Der Entwurf wächst mit.</h2></div>
+      <p>Dieselbe Fläche, ein anderer Zustand: der Sitz nimmt „bau mir …“, rechts wächst der Graph, und links bekommt jeder Regal-Eintrag ein Häkchen, sobald der Entwurf ihn benutzt. Mobil fehlt die Mitte — dort steht der wachsende Entwurf allein, und gebaut wird am Sitz auf Home. <code>Save</code> schreibt die YAML durch dieselbe Push-Tür, die auch Workflows benutzen — ein Commit auf einem Branch, Pull Request optional. Nach dem Merge liest der Scan den Entwurf als Revision.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop · Entwurf in Arbeit</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-d2-build"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a class="active"><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Catalog</strong><div class="appbar-meta"><span>31 entries</span><span class="chip">Entwurf</span></div></header>
+            <div class="workspace catalog-layout">
+
+              <aside class="shelves">
+                <div class="shelf-tools">
+                  <span class="field">Search the shelves…</span>
+                  <div class="shelf-chips"><span class="chip on">All</span><span class="chip">atelier-2</span><span class="chip">marketplace</span><span class="chip">Entwurf</span></div>
+                </div>
+                <div class="shelf-body">
+                  <div class="shelf-title"><span class="subhead">Workflows</span><span class="chip">8</span></div>
+                  <div class="entry"><span><b>release-repair</b><small>atelier-2@a554ffe · @7</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">41 runs</small></span></div>
+                  <div class="entry"><span><b>banana-count</b><small>marketplace@1f9c2ad · @1</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">12 runs</small></span></div>
+                  <div class="shelf-title"><span class="subhead">Agents</span><span class="chip">11</span></div>
+                  <div class="entry sel"><span><b>invoice-reader</b><small>marketplace@1f9c2ad · @2</small></span><span class="right"><span class="chip tick">✓ used</span><small class="mono" style="color:var(--faint);font-size:10px">7 runs</small></span></div>
+                  <div class="entry sel"><span><b>ledger-check</b><small>marketplace@1f9c2ad · @3</small></span><span class="right"><span class="chip tick">✓ used</span><small class="mono" style="color:var(--faint);font-size:10px">5 runs</small></span></div>
+                  <div class="entry sel"><span><b>independent-reviewer</b><small>marketplace@1f9c2ad · @4</small></span><span class="right"><span class="chip tick">✓ used</span><small class="mono" style="color:var(--faint);font-size:10px">118 runs</small></span></div>
+                  <div class="entry"><span><b>code-worker</b><small>marketplace@1f9c2ad · @9</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">204 runs</small></span></div>
+                  <div class="entry"><span><b>visual-checker</b><small>atelier-2@a554ffe · @2</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">27 runs</small></span></div>
+                  <div class="shelf-title"><span class="subhead">Skills</span><span class="chip">12</span></div>
+                  <div class="entry sel"><span><b>report-writing</b><small>marketplace@1f9c2ad · @2</small></span><span class="right"><span class="chip tick">✓ used</span><small class="mono" style="color:var(--faint);font-size:10px">14 runs</small></span></div>
+                  <div class="entry"><span><b>design-interface</b><small>marketplace@1f9c2ad · @6</small></span><span class="right"><span class="state done">Done</span><small class="mono" style="color:var(--faint);font-size:10px">33 runs</small></span></div>
+                </div>
+              </aside>
+
+              <section class="seat-mid">
+                <div class="seat-mid-head"><div><span class="subhead">Seat</span><h4>claude-code · atelier-2</h4></div><small class="mono" style="color:var(--muted);font-size:10px">tmux · attached</small></div>
+                <div class="terminal">
+                  <div class="term-tabs"><span class="term-tab active">atelier — zsh</span><span class="term-live">● live</span></div>
+                  <div class="term-body">
+                    <p><span class="t-blue">❯</span> Bau mir einen Workflow, der eingehende Rechnungen prüft.</p>
+                    <p class="t-dim">  Unbeaufsichtigt, unabhängiger Reviewer,</p>
+                    <p class="t-dim">  und vor dem Export fragst du mich.</p>
+                    <p><span class="t-mint">●</span> Regal durchsucht. Genommen:</p>
+                    <p>  <span class="t-blue">invoice-reader@2</span> · <span class="t-blue">ledger-check@3</span></p>
+                    <p>  <span class="t-blue">independent-reviewer@4</span> · <span class="t-blue">report-writing@2</span></p>
+                    <p><span class="t-mint">●</span> Knoten 1–3 stehen. Reviewer bekommt einen</p>
+                    <p>  anderen Anbieter als der Bauer.</p>
+                    <p><span class="t-copper">△</span> <span class="t-blue">export-report</span> wird ein wait-Knoten:</p>
+                    <p class="t-dim">  ohne dein Ja verlässt nichts das Haus.</p>
+                    <p><span class="t-mint">●</span> Knoten 5 schreibe ich gerade…</p>
+                    <p class="t-dim">  declared effects: push-atelier-commit · open-pr</p>
+                  </div>
+                  <div class="term-compose">❯ Nimm auch visual-checker für die Belege…</div>
+                </div>
+              </section>
+
+              <aside class="aside-panel">
+                <div class="aside-head">
+                  <div><span class="subhead">Entwurf</span><h4>invoice-audit</h4><p>5 Knoten · 4 Teile aus dem Regal</p></div>
+                  <span class="state running">Building</span>
+                </div>
+                <div class="aside-body">
+                  <div class="mini-graph"><svg class="dag" width="326" height="152" viewBox="0 0 326 152" aria-label="Graph des Entwurfs invoice-audit">
+                    <defs>
+                      <marker id="ah-draft-line" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-line" d="M0 0 L8 3 L0 6 Z"/></marker>
+                    </defs>
+                    <path class="e" marker-end="url(#ah-draft-line)" d="M55 37 H67"/>
+                    <path class="e" marker-end="url(#ah-draft-line)" d="M122 37 H125 Q129 37 129 41 V109 Q129 113 133 113"/>
+                    <path class="e" marker-end="url(#ah-draft-line)" d="M122 37 H201"/>
+                    <path class="e" marker-end="url(#ah-draft-line)" d="M189 113 H192 Q196 113 196 109 V53 Q196 49 200 49"/>
+                    <path class="e" marker-end="url(#ah-draft-line)" d="M256 37 H259 Q263 37 263 41 V109 Q263 113 267 113"/>
+                    <g><rect class="box" x="1" y="10" width="54" height="54"/><rect class="badge" x="7" y="17" width="13" height="13"/><text class="bt" x="13.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="7" y="48">read</text></g>
+                    <g><rect class="box" x="68" y="10" width="54" height="54"/><rect class="badge" x="74" y="17" width="13" height="13"/><text class="bt" x="80.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="74" y="45">check-</text><text class="nm mini" x="74" y="57">ledger</text></g>
+                    <g><rect class="box" x="135" y="86" width="54" height="54"/><rect class="badge" x="141" y="93" width="13" height="13"/><text class="bt" x="147.5" y="103" text-anchor="middle">A</text><text class="nm mini" x="141" y="124">review</text></g>
+                    <g><rect class="box wait" x="202" y="10" width="54" height="54"/><rect class="bar" x="202" y="10" width="3" height="54"/><rect class="badge wait" x="209" y="17" width="13" height="13"/><text class="bt wait" x="215.5" y="27" text-anchor="middle">?</text><text class="nm mini" x="209" y="45">export-</text><text class="nm mini" x="209" y="57">report</text></g>
+                    <g><rect class="ring" x="266" y="83" width="58" height="60"/><path class="box queued" d="M269 86 H315 L321 113 L315 140 H269 Z"/><rect class="badge" x="275" y="93" width="13" height="13"/><text class="bt" x="281.5" y="103" text-anchor="middle">→</text><text class="nm mini" x="275" y="124">export</text></g>
+                  </svg></div>
+                  <p class="mono" style="margin:-6px 0 12px;color:var(--copper);font-size:10px">Knoten 5 entsteht gerade · noch nicht gespeichert</p>
+                  <div class="push-door">
+                    <p class="subhead" style="margin:0">Save through the push door</p>
+                    <div class="push-line"><span>Repository</span><span class="field">overnightworks/atelier-2 · Catalog source</span></div>
+                    <div class="push-line"><span>Branch</span><span class="field">catalog/invoice-audit</span></div>
+                    <div class="push-line"><span>Path</span><span class="field">.atelier/workflows/invoice-audit.yaml</span></div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:4px"><button class="ui-button primary">Save</button><button class="ui-button">Discard</button><span class="chip on">PR</span></div>
+                  </div>
+                </div>
+              </aside>
+
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot mobile-shot">
+        <div class="shot-label"><span>Mobil · Entwurf in Arbeit</span><span>400 × 780</span></div>
+        <div class="scrollbox"><div class="screen mobile" id="v9-d2-build-mobile"><div class="mobile-shell">
+          <header class="mobile-top"><strong>Catalog</strong><span class="chip">Entwurf</span></header>
+          <div class="mobile-view" style="display:flex;flex-direction:column">
+            <div class="aside-head" style="padding:13px 14px">
+              <div><span class="subhead">Entwurf</span><h4 style="font-size:19px">invoice-audit</h4><p>5 Knoten · 4 Teile aus dem Regal</p></div>
+              <span class="state running">Building</span>
+            </div>
+            <div class="mgraph"><svg class="dag" width="326" height="152" viewBox="0 0 326 152" aria-label="Graph des Entwurfs invoice-audit">
+                <defs>
+                  <marker id="ah-mdraft-line" viewBox="0 0 8 6" markerWidth="8" markerHeight="6" refX="7.5" refY="3" orient="auto"><path class="ah-line" d="M0 0 L8 3 L0 6 Z"/></marker>
+                </defs>
+                <path class="e" marker-end="url(#ah-mdraft-line)" d="M55 37 H67"/>
+                <path class="e" marker-end="url(#ah-mdraft-line)" d="M122 37 H125 Q129 37 129 41 V109 Q129 113 133 113"/>
+                <path class="e" marker-end="url(#ah-mdraft-line)" d="M122 37 H201"/>
+                <path class="e" marker-end="url(#ah-mdraft-line)" d="M189 113 H192 Q196 113 196 109 V53 Q196 49 200 49"/>
+                <path class="e" marker-end="url(#ah-mdraft-line)" d="M256 37 H259 Q263 37 263 41 V109 Q263 113 267 113"/>
+                <g><rect class="box" x="1" y="10" width="54" height="54"/><rect class="badge" x="7" y="17" width="13" height="13"/><text class="bt" x="13.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="7" y="48">read</text></g>
+                <g><rect class="box" x="68" y="10" width="54" height="54"/><rect class="badge" x="74" y="17" width="13" height="13"/><text class="bt" x="80.5" y="27" text-anchor="middle">A</text><text class="nm mini" x="74" y="45">check-</text><text class="nm mini" x="74" y="57">ledger</text></g>
+                <g><rect class="box" x="135" y="86" width="54" height="54"/><rect class="badge" x="141" y="93" width="13" height="13"/><text class="bt" x="147.5" y="103" text-anchor="middle">A</text><text class="nm mini" x="141" y="124">review</text></g>
+                <g><rect class="box wait" x="202" y="10" width="54" height="54"/><rect class="bar" x="202" y="10" width="3" height="54"/><rect class="badge wait" x="209" y="17" width="13" height="13"/><text class="bt wait" x="215.5" y="27" text-anchor="middle">?</text><text class="nm mini" x="209" y="45">export-</text><text class="nm mini" x="209" y="57">report</text></g>
+                <g><rect class="ring" x="266" y="83" width="58" height="60"/><path class="box queued" d="M269 86 H315 L321 113 L315 140 H269 Z"/><rect class="badge" x="275" y="93" width="13" height="13"/><text class="bt" x="281.5" y="103" text-anchor="middle">→</text><text class="nm mini" x="275" y="124">export</text></g>
+              </svg></div>
+            <div style="flex:1;min-height:0;overflow:hidden;padding:14px">
+              <p class="subhead" style="margin:0 0 4px">Teile aus dem Regal</p>
+              <div class="rev-row"><b>@2</b><span>invoice-reader · marketplace</span><span class="chip tick">✓ used</span></div>
+              <div class="rev-row"><b>@3</b><span>ledger-check · marketplace</span><span class="chip tick">✓ used</span></div>
+              <div class="rev-row"><b>@4</b><span>independent-reviewer</span><span class="chip tick">✓ used</span></div>
+              <div class="rev-row"><b>@2</b><span>report-writing · marketplace</span><span class="chip tick">✓ used</span></div>
+              <p class="mono" style="margin:12px 0 0;color:var(--copper);font-size:10px">Knoten 5 entsteht gerade · gebaut wird am Sitz auf Home</p>
+            </div>
+            <div class="push-door" style="padding:12px 14px;border-top:1px solid var(--line)">
+              <div class="push-line"><span>Repository</span><span class="field">atelier-2 · Catalog source</span></div>
+              <div class="push-line"><span>Branch</span><span class="field">catalog/invoice-audit</span></div>
+              <div style="display:flex;align-items:center;gap:8px"><button class="ui-button primary">Save</button><button class="ui-button">Discard</button><span class="chip on">PR</span></div>
+            </div>
+          </div>
+          <footer class="mobile-nav">
+            <span><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+            <span class="active"><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+            <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+          </footer>
+        </div></div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ E · SETTINGS ═══════════════ -->
+  <section class="section" id="settings">
+    <div class="section-head">
+      <div><span class="surface-index">E / SETTINGS</span><h2>Zwei Arten von Quelle.</h2></div>
+      <p>Der Raum heißt <em>Sources</em> und hat zwei sichtbare Gruppen. <em>Project sources</em> liefern Issues in die Queue und nehmen Pushes an; sie tragen einen schreibenden Token. <em>Catalog sources</em> liefern Workflows, Agents und Skills in die Regale; sie dürfen nur lesen. Dasselbe Repository darf in beiden Gruppen stehen — dann sind es zwei Einträge, weil es zwei Aufgaben sind. Der Token wird gesetzt und ersetzt, nie zurückgezeigt. Kein Sitz: hier wird eingestellt, nicht geredet.</p>
+    </div>
+    <div class="pair">
+
+      <div class="shot">
+        <div class="shot-label"><span>Desktop</span><span>1280 × 780</span></div>
+        <div class="scrollbox"><div class="screen desktop" id="v9-e-settings"><div class="desktop-shell">
+          <nav class="rail">
+            <div class="mark-logo">A</div>
+            <div class="nav">
+              <a><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><span>Home</span><i class="seat-dot" title="Seat"></i></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg><span>Runs</span></a>
+              <a><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg><span>Catalog</span></a>
+              <a class="active"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1m-8.6 8.6-2.1 2.1"/></svg><span>Settings</span></a>
+            </div>
+            <div class="rail-foot">atelier-2</div>
+          </nav>
+          <div class="app">
+            <header class="appbar"><strong>Settings</strong><div class="appbar-meta"><span>atelier-2</span></div></header>
+            <div class="workspace" style="display:flex;flex-direction:column">
+              <div class="settings-layout" style="flex:1;min-height:0">
+                <aside class="settings-nav">
+                  <b>Project</b>
+                  <span class="active">Automation</span>
+                  <span>Sources</span>
+                  <span>Models</span>
+                </aside>
+                <div class="settings-main">
+                  <span class="subhead">Project settings</span>
+                  <h4>Automation</h4>
+
+                  <section class="set-section">
+                    <div class="set-title"><b>Rules</b><button class="ui-button">Add rule</button></div>
+                    <div class="grid-table">
+                      <div class="grid-row rules-grid"><span>Label</span><span>Workflow</span><span>Priority</span><span>Authority</span><span>Cap</span></div>
+                      <div class="grid-row rules-grid"><span class="mono">bereit</span><span class="mono">issue-to-pr@14</span><span>1</span><span class="mono">AUTOMATION_AUTHORIZED</span><span>2</span></div>
+                      <div class="grid-row rules-grid"><span class="mono">docs</span><span class="mono">docs-sweep@2</span><span>3</span><span class="mono">HUMAN_REQUIRED</span><span>1</span></div>
+                      <div class="grid-row rules-grid"><span class="mono">security</span><span class="mono">security-review@5</span><span>1</span><span class="mono">HUMAN_REQUIRED</span><span>1</span></div>
+                    </div>
+                  </section>
+
+                  <section class="set-section">
+                    <div class="set-title"><b>Sources</b><button class="ui-button">Connect</button></div>
+                    <p class="subhead" style="margin:0">Project sources · Issues in die Queue, Ziel für Pushes</p>
+                    <div class="repo-row">
+                      <span>
+                        <b>overnightworks/atelier-2</b>
+                        <div class="roles"><span class="chip">branch main</span><span class="chip">issues</span><span class="chip on">writes</span></div>
+                      </span>
+                      <span class="meta">token set 06.09.2026<br>12 issues in the queue</span>
+                      <span class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></span>
+                    </div>
+                    <p class="subhead" style="margin:14px 0 0">Catalog sources · Workflows, Agents und Skills in die Regale</p>
+                    <div class="repo-row">
+                      <span>
+                        <b>overnightworks/atelier-2</b>
+                        <div class="roles"><span class="chip">branch main</span><span class="chip">path .atelier</span></div>
+                      </span>
+                      <span class="meta">token set 06.09.2026<br>scanned today 07:12</span>
+                      <span class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></span>
+                    </div>
+                    <div class="repo-row">
+                      <span>
+                        <b>overnightworks/marketplace</b>
+                        <div class="roles"><span class="chip">branch main</span><span class="chip">path .atelier</span><span class="chip">read-only</span></div>
+                      </span>
+                      <span class="meta">no token · public<br>scanned today 07:12</span>
+                      <span class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></span>
+                    </div>
+                  </section>
+
+                  <section class="set-section">
+                    <div class="set-title"><b>Models</b><span class="chip">by difficulty</span></div>
+                    <div class="grid-table">
+                      <div class="grid-row models-grid"><span>Difficulty</span><span>Model</span><span>Account</span></div>
+                      <div class="grid-row models-grid"><span>1 · mechanical</span><span class="mono">claude-sonnet-4-6</span><span class="mono">leonardo</span></div>
+                      <div class="grid-row models-grid"><span>2 · normal</span><span class="mono">gpt-5.6-terra</span><span class="mono">overnight</span></div>
+                      <div class="grid-row models-grid"><span>3 · hard</span><span class="mono">claude-opus-5</span><span class="mono">leonardo</span></div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="shot mobile-shot">
+        <div class="shot-label"><span>Mobil</span><span>400 × 780</span></div>
+        <div class="scrollbox"><div class="screen mobile" id="v9-e-settings-mobile"><div class="mobile-shell">
+          <header class="mobile-top"><strong>Settings</strong><span class="appbar-meta">atelier-2</span></header>
+          <div class="mobile-view" style="display:flex;flex-direction:column">
+            <div class="msettings-tabs"><span class="chip">Automation</span><span class="chip on">Sources</span><span class="chip">Models</span></div>
+            <div class="msettings-body" style="flex:1;min-height:0;overflow:hidden">
+              <span class="subhead">Project settings</span>
+              <h4 style="margin:5px 0 12px;font:500 21px var(--serif)">Sources</h4>
+              <p class="subhead" style="margin:0">Project sources</p>
+              <div class="mrepo">
+                <b>overnightworks/atelier-2</b>
+                <div class="roles" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px"><span class="chip">branch main</span><span class="chip">issues</span><span class="chip on">writes</span></div>
+                <div class="meta">token set 06.09.2026 · 12 issues in the queue</div>
+                <div class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></div>
+              </div>
+              <p class="subhead" style="margin:16px 0 0">Catalog sources</p>
+              <div class="mrepo">
+                <b>overnightworks/atelier-2</b>
+                <div class="roles" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px"><span class="chip">branch main</span><span class="chip">path .atelier</span></div>
+                <div class="meta">token set 06.09.2026 · scanned today 07:12</div>
+                <div class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></div>
+              </div>
+              <div class="mrepo">
+                <b>overnightworks/marketplace</b>
+                <div class="roles" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px"><span class="chip">path .atelier</span><span class="chip">read-only</span></div>
+                <div class="meta">no token · public · scanned today 07:12</div>
+                <div class="acts"><button class="ui-button">Replace</button><button class="ui-button">Remove</button></div>
+              </div>
+              <div class="mrepo" style="border-bottom:1px solid var(--line);padding-bottom:12px">
+                <button class="ui-button">Connect</button>
+              </div>
+            </div>
+          </div>
+          <footer class="mobile-nav">
+            <span><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>Home</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Runs</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 4h6v7H5zM13 4h6v7h-6zM5 13h6v7H5zM13 13h6v7h-6z"/></svg>Catalog</span>
+            <span class="active"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg>Settings</span>
+          </footer>
+        </div></div></div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ TABELLEN ═══════════════ -->
+  <section class="section" id="owner">
+    <div class="section-head">
+      <div><span class="surface-index">WO SEHE ICH WAS?</span><h2>Ein Gegenstand, ein Besitzer.</h2></div>
+      <p>Jede Frage hat einen ersten Ort — den, an dem du sie ungesucht findest — und einen vollständigen. Zwei Orte für dieselbe Sache sind erlaubt, zwei Wahrheiten nicht. Zusammenfassungen auf Home sind Türen, keine zweite Quelle.</p>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Frage</th><th>Erster Ort</th><th>Vollständiger Ort</th><th>Warum</th></tr></thead>
+      <tbody>
+        <tr><td><b>Was sage ich jetzt?</b></td><td>Home · Seat (Mitte)</td><td>Die Sitzung selbst</td><td>Der Sitz ist privat; Atelier rahmt ihn und liest ihn nicht. Auf Catalog steht dieselbe Mitte, sonst nirgends.</td></tr>
+        <tr><td><b>Wo werde ich gebraucht?</b></td><td>Home · Asks</td><td>Run · wait-Knoten · Result</td><td>Dieselbe Zeile, dieselben Knöpfe. Der Lauf trägt Diff, PR und Review dazu.</td></tr>
+        <tr><td><b>Was läuft gerade?</b></td><td>Home · Runs · Chip <code>Live</code></td><td>Runs (die Seite)</td><td>Derselbe Name an beiden Orten: ein Run ist eine Ausführung, egal wo er steht.</td></tr>
+        <tr><td><b>Was wartet auf einen Platz?</b></td><td>Home · Runs · Chip <code>Queued</code></td><td>Settings · Automation</td><td>Die Zeile zeigt den Lauf, die Regel erklärt ihn. Keine zweite Liste namens Queue.</td></tr>
+        <tr><td><b>Was lief ohne mich?</b></td><td>Home · eine Zeile</td><td>Runs</td><td>Vier Zahlen sparen dir das Listenlesen; die Liste bleibt der Besitzer.</td></tr>
+        <tr><td><b>Welcher Lauf war das?</b></td><td>Runs · Chips, Suche, Spaltenkopf</td><td>Run · Events</td><td>Zeit findet den Lauf, der Ereignisstrom belegt ihn. Der Fuß blättert, er zählt nicht neu.</td></tr>
+        <tr><td><b>Was kann dieses Haus?</b></td><td>Catalog · drei Regale</td><td>Catalog · Detail</td><td>Herkunft steht am Eintrag, der Graph im Detail.</td></tr>
+        <tr><td><b>Woher kommt das?</b></td><td>Catalog · <code>repo@commit</code></td><td>Settings · Sources · <em>Catalog sources</em></td><td>Die Wahrheit steht in Git; Settings sagt, welches Git — und ob es nur gelesen wird.</td></tr>
+        <tr><td><b>Warum startet etwas von selbst?</b></td><td>Settings · Automation</td><td>Settings · Automation</td><td>Regeln haben genau einen Ort — sonst entsteht ein zweiter Knopf auf Home.</td></tr>
+        <tr><td><b>Welches Modell antwortet?</b></td><td>Settings · Models</td><td>Run · Node · Input</td><td>Konfiguration sagt welches, der Beleg sagt welches es war.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="section" id="woerter">
+    <div class="section-head">
+      <div><span class="surface-index">SPRACHE</span><h2>Wörter, keine Sätze.</h2></div>
+      <p>Ein Zustand ist ein Wort. Ein Knopf ist ein Wort. Ein Satz erscheint nur an vier Stellen: die Frage eines wartenden Laufs, ein Fehlergrund, eine leere Fläche und eine unumkehrbare Handlung.</p>
+    </div>
+    <div class="cards">
+      <div class="card"><span class="num">Run</span><strong>Zustände</strong>
+        <p class="tokens" style="margin-top:10px"><span class="state queued">Queued</span><span class="state running">Running</span><span class="state waiting">Waiting</span><span class="state done">Done</span><span class="state failed">Failed</span><span class="state stopped">Stopped</span></p>
+        <p>Sechs, mehr nicht. Jede Form überlebt Graustufen — Farbe bestätigt nur.</p></div>
+      <div class="card"><span class="num">Node</span><strong>Arten</strong>
+        <p style="margin-top:10px"><code>agent</code> · <code>wait</code> · <code>effect</code></p>
+        <p><code>agent</code> denkt, <code>effect</code> greift nach außen, <code>wait</code> fragt dich. Nur <code>wait</code> hat Knöpfe — auch <code>merge</code> nicht.</p></div>
+      <div class="card"><span class="num">Knöpfe</span><strong>Ein Wort</strong>
+        <p style="margin-top:10px"><code>Yes</code> · <code>No</code> · <code>Cancel</code> · <code>Open</code> · <code>Start</code> · <code>Save</code> · <code>Discard</code> · <code>Replace</code> · <code>Remove</code> · <code>Connect</code> · <code>Rescan</code> · <code>Add&nbsp;rule</code> · <code>Clear</code></p>
+        <p>Dreizehn im ganzen Produkt; <code>Clear</code> kam mit dem Filter. <code>Cancel</code> gehört dem Lauf, nie einem Knoten.</p></div>
+      <div class="card"><span class="num">Herkunft</span><strong>Repo und Commit</strong>
+        <p style="margin-top:10px"><code>atelier-2@a554ffe</code> · <code>marketplace@1f9c2ad</code> · <code>Entwurf</code></p>
+        <p>Ein Eintrag ohne Commit ist ein Entwurf. Es gibt keinen dritten Fall.</p></div>
+    </div>
+    <div class="note">
+      <strong>Workflow oder Run — das sind zwei Dinge, also zwei Wörter.</strong>
+      <p>Ein <b>Workflow</b> ist die Definition: sie steht in Git, hat Revisionen und lebt im Catalog. Ein <b>Run</b> ist eine Ausführung dieser Definition: er hat eine Zeit, einen Zustand und Ereignisse, und er lebt auf Runs. Letzte Nacht liefen <b>11 Runs von 4 Workflows</b> — ein Satz, der nur in dieser Trennung stimmt. Deshalb heißt der Block auf Home <em>Runs</em> und nicht <em>Running</em>, und deshalb ist <code>Queued</code> ein Chip an dieser Liste und keine zweite Liste. <em>Head-Vorschlag, noch nicht geruled</em> — du kannst ihn kippen, dann kippt mit ihm der Blockname, die Chips und die Besitzer-Tabelle.</p>
+    </div>
+    <div class="g2" style="margin-top:12px">
+      <div class="killed"><del>Needs you</del><p>Ein Zustand ist kein Vorwurf. Der Lauf wartet — also <code>Waiting</code>. Wie viele warten, steht als Zahl neben <code>Asks</code>.</p></div>
+      <div class="killed"><del>Import</del><p>Es gibt keine Tür, durch die eine Definition ohne Git ins Haus kommt. Was im Catalog steht, steht in einem verbundenen Repository — oder es ist ein Entwurf, der noch nicht gespeichert wurde.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="wahr">
+    <div class="section-head">
+      <div><span class="surface-index">EHRLICHKEIT</span><h2>Leer, ladend, kaputt.</h2></div>
+      <p>Die drei Zustände, die in Konzepten fehlen und im Betrieb den Tag bestimmen. Jeder ist ein Satz und höchstens eine Tür — nie ein fröhliches Bild, nie ein Spinner, wo ein Skelett genügt.</p>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Fläche</th><th>Leer</th><th>Ladend</th><th>Kaputt</th></tr></thead>
+      <tbody>
+        <tr><td><b>Home</b></td><td>„Nothing has run yet. Connect a source in Settings, or say what you want in the seat.“</td><td>Besuchszeile als Striche, Zeilen als graue Balken in echter Zeilenhöhe</td><td>„The runner is not answering. Runs already started keep running.“</td></tr>
+        <tr><td><b>Runs</b></td><td>„No runs match this filter.“ + <code>All</code></td><td>Spaltenköpfe und Fuß schon echt, acht graue Zeilen in echter Zeilenhöhe</td><td>„The run list could not be loaded.“ + <code>Retry</code></td></tr>
+        <tr><td><b>Run</b></td><td>— (ein Lauf ohne Knoten kann nicht existieren)</td><td>Graph grau, Events leer, Kopfzeile schon echt</td><td>„This run's events stopped arriving at 16:52.“ + <code>Retry</code></td></tr>
+        <tr><td><b>Catalog</b></td><td>„No definitions. Connect a catalog source.“ + <code>Settings</code></td><td>Acht graue Regalzeilen, Regaltitel schon echt</td><td>„The last scan failed: .atelier is not readable.“ + <code>Rescan</code></td></tr>
+        <tr><td><b>Catalog · Entwurf</b></td><td>Kein Entwurf: das rechte Panel zeigt das gewählte Regalstück</td><td>Graph wächst Knoten für Knoten, letzter Knoten gestrichelt</td><td>„github refused the push: catalog/invoice-audit is protected.“ + <code>Replace</code></td></tr>
+        <tr><td><b>Settings</b></td><td>Keine Regel: „Nothing starts by itself.“ + <code>Add rule</code></td><td>Felder gesperrt, Werte grau</td><td>„github rejected the token.“ + <code>Replace</code></td></tr>
+        <tr><td><b>Seat</b></td><td>—</td><td>„Attaching…“</td><td>„The seat ended. Runs are unaffected.“ + <code>Restart</code> — auf Home und Catalog, sonst nirgends</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note"><strong>Die wichtigste Zeile steht zweimal.</strong><p>Wenn der Sitz stirbt, sterben die Läufe nicht. Das ist der ganze Unterschied zu einer Sitzung, und er gehört genau dorthin, wo man ihn zum ersten Mal bemerkt.</p></div>
+  </section>
+
+  <section class="section" id="parity">
+    <div class="section-head">
+      <div><span class="surface-index">EIN VOKABULAR</span><h2>Was du klickst, kann er tippen.</h2></div>
+      <p>Jede Handlung heißt in UI, HTTP, CLI und MCP gleich. Wo eine Spalte fehlt, steht das hier — und keine dieser Lücken steht in der Oberfläche. Alle Routen unter dem Präfix <code>/atelier/api/v1</code>.</p>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Handlung</th><th>Wo in der UI</th><th>HTTP</th><th>CLI</th><th>MCP</th></tr></thead>
+      <tbody>
+        <tr><td><b>Yes / No</b></td><td>Home › Asks · Run › wait › Result</td><td><code>POST /runs/{public_ref}/answers</code></td><td><span class="gap-word">fehlt</span></td><td><code>answer_wait</code></td></tr>
+        <tr><td><b>Open</b> (Lauf)</td><td>überall</td><td><code>GET /runs/{public_ref}</code></td><td><span class="gap-word">fehlt</span></td><td><code>run_status</code></td></tr>
+        <tr><td><b>Open</b> (Events)</td><td>Run › Node › Events</td><td><code>GET /runs/{public_ref}/events</code></td><td><span class="gap-word">fehlt</span></td><td><span class="gap-word">fehlt</span> — <code>run_status</code> fragt ab, strömt nicht</td></tr>
+        <tr><td><b>Cancel</b></td><td>Run › Toolbar</td><td><code>POST /runs/{public_ref}/cancellations</code></td><td><span class="gap-word">fehlt</span></td><td><span class="gap-word">fehlt</span></td></tr>
+        <tr><td><b>Start</b></td><td>Catalog › Detail</td><td><code>POST /runs</code></td><td><code>atelier2 run</code></td><td><code>start_run</code></td></tr>
+        <tr><td><b>Open</b> (Definition)</td><td>Catalog › Regal</td><td><code>GET /workflow-revisions</code></td><td><code>atelier2 resolve</code> — löst nur den Namen auf</td><td><code>list_workflows</code></td></tr>
+        <tr><td><b>Save</b> (Entwurf)</td><td>Catalog › Entwurf</td><td><span class="gap-word">fehlt</span> — Effekte <code>push-atelier-commit</code> und <code>open-pr</code> gibt es, nur keinen Aufrufer aus dem Catalog</td><td><span class="gap-word">fehlt</span></td><td><span class="gap-word">fehlt</span></td></tr>
+        <tr><td><b>Rescan</b></td><td>Catalog · Settings</td><td><span class="gap-word">fehlt</span></td><td><code>atelier2 definition-source scan</code></td><td><span class="gap-word">fehlt</span></td></tr>
+        <tr><td><b>Connect</b> (Source)</td><td>Settings › Sources</td><td><code>POST /projects/{ref}/sources</code> — nur die Project-Seite</td><td><code>atelier2 definition-source connect</code> — nur die Catalog-Seite</td><td><span class="gap-word">fehlt</span></td></tr>
+        <tr><td><b>Replace / Remove</b> (Token)</td><td>Settings › Sources</td><td><code>PUT /projects/{ref}/sources/{source}/token</code> · <code>DELETE .../sources/{source}</code></td><td><span class="gap-word">fehlt</span></td><td><span class="gap-word">fehlt</span> — <em>und soll fehlen</em></td></tr>
+        <tr><td><b>Add rule / Edit</b></td><td>Settings › Automation</td><td><code>PUT /projects/{ref}/queue-policy</code> — <em>eine</em> Policy, keine Regel-Liste</td><td><span class="gap-word">fehlt</span></td><td><span class="gap-word">fehlt</span></td></tr>
+        <tr><td><b>Open</b> (Beleg)</td><td>Run › Node › Proof</td><td><code>GET /artifacts/{artifact_hash}</code></td><td><span class="gap-word">fehlt</span></td><td><code>read_artifact</code></td></tr>
+      </tbody>
+    </table></div>
+    <div class="g2" style="margin-top:12px">
+      <div class="note" style="margin-top:0"><strong>Die Regel für neue Flächen.</strong><p>Eine Handlung kommt mit Route, CLI-Befehl und MCP-Werkzeug unter demselben Namen — oder sie kommt nicht. Zwölf Handlungen, zwanzig fehlende Zellen: das ist die Arbeit, kein Schönheitsfehler. Zwei Zellen sind schlimmer als leer — <code>Connect</code> und <code>Add rule</code> existieren, aber unter einem anderen Begriff als dem der Fläche.</p></div>
+      <div class="note" style="margin-top:0"><strong>Eine Ausnahme mit Absicht.</strong><p>Token setzen bleibt ohne MCP-Werkzeug. Ein Agent, der Anmeldedaten schreiben kann, ist eine Angriffsfläche, die kein Komfort aufwiegt. Das ist keine Lücke, das ist die Entscheidung.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="system">
+    <div class="section-head">
+      <div><span class="surface-index">SYSTEM</span><h2>Tokens, unverändert.</h2></div>
+      <p>Palette, Schrift und Dichte kommen unverändert aus Runde 4. Mint bedeutet aktive Arbeit, Kupfer eine deklarierte Unterbrechung, Ziegel ein Ende, das ein Mensch lösen muss. Keine Farbe dekoriert. Neu ist nur der Boden: 10 px ist die kleinste Größe, die Bedeutung tragen darf.</p>
+    </div>
+    <div class="tokens-row">
+      <div class="swatches">
+        <div class="swatch" style="--c:var(--paper)"><i></i>Paper<br><span class="mono">#f6f2e8 / #0e1110</span></div>
+        <div class="swatch" style="--c:var(--mint)"><i></i>Running<br><span class="mono">#1f6c50 / #86d4af</span></div>
+        <div class="swatch" style="--c:var(--copper)"><i></i>Waiting<br><span class="mono">#8a4c22 / #d39a68</span></div>
+      </div>
+      <div class="type-sample">
+        <div class="voice">Der Mensch hört eine ruhige Stimme.</div>
+        <div class="machine">WAITING · release-repair@7 · wait open-pr · 12m</div>
+        <p>Newsreader für Fragen und Raumtitel. DM Sans für Orientierung. IBM Plex Mono für Maschine, Alter, Herkunft und Beleg. Raster 4/8 px, Radien 0–1 px, 56 px pro Run-Zeile, 34 px Spaltenkopf, 98 × 62 px pro Knoten im Graphen. Kleinste bedeutungstragende Größe: 10 px — auch das „A“ im Knoten-Abzeichen.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ LÜCKEN ═══════════════ -->
+  <section class="section" id="luecken">
+    <div class="section-head">
+      <div><span class="surface-index">BENANNT</span><h2>Was die Bilder zeigen und die Laufzeit nicht kann.</h2></div>
+      <p>Diese Sätze stehen hier und <strong>nirgends im Produkt</strong>. Eine Oberfläche, die ihren eigenen Bauzustand kommentiert, ist keine Oberfläche — deshalb gibt es in keinem Bild oben einen Chip „UI gap“ oder „Runtime gap“.</p>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>Im Bild</th><th>Heute</th><th>Konsequenz</th></tr></thead>
+      <tbody>
+        <tr><td><b>Automation-Regeln</b> als Liste (Label → Workflow, Priorität, Vollmacht, Deckel)</td><td>Ein Projekt trägt <em>eine</em> Queue-Policy, keine Liste je Label.</td><td>Das Modell bekommt Regeln — die Empfehlung steht ungeantwortet, also gilt sie. Scheibe 5.</td></tr>
+        <tr><td><b>Sources</b> in zwei Gruppen: <em>Project sources</em> und <em>Catalog sources</em></td><td>Zwei getrennte Begriffe: die Definition-Source (Adresse, Ref, Auswahlmuster) und die Projektquelle (Adresse, Token, <code>scope: issues</code>).</td><td>Beide bleiben, bekommen aber einen gemeinsamen Namen und eine gemeinsame Fläche; dasselbe Repository darf zweimal auftauchen. Umbenennung plus eine Fläche, keine Zusammenlegung der Modelle. Scheibe 6.</td></tr>
+        <tr><td><b>Token-Zustand</b> an einer Catalog source</td><td>Eine Definition-Source kennt heute nur den Zugang <code>anonymous</code> — es gibt gar kein Feld für einen Credential-Verweis. Nur die Projektquelle trägt einen Token.</td><td>Eine private Catalog source braucht einen Verweis auf ein Credential; <code>no token · public</code> im Bild ist heute der einzige ehrliche Zustand. Fällt mit Scheibe 6.</td></tr>
+        <tr><td><b>Save</b> des Entwurfs durch die Push-Tür</td><td>Die Effekte <code>push-atelier-commit</code> und <code>open-pr</code> existieren und laufen live — aber nur als deklarierte Knoten eines Laufs. Einen Weg vom Catalog-Entwurf dorthin gibt es nicht.</td><td>Kein neuer Speicher und kein Editor: derselbe Effekt, ein neuer Aufrufer. Scheibe 7.</td></tr>
+        <tr><td><b>„scanned today 07:12“</b> in Catalog und Settings</td><td>Ein Scan schreibt nichts; es gibt kein Feld „letzter Scan“. Persistiert wird nur, was ein Intake übernommen hat, mit seinem Commit.</td><td>Entweder ein Zeitstempel am Scan-Aufruf, oder die Zeile zeigt den jüngsten Intake-Commit statt einer Uhrzeit. Empfehlung: den Commit, er ist die Wahrheit.</td></tr>
+        <tr><td><b>Besuchszeile</b> („since your last visit“)</td><td>Herleitbar aus Läufen und Ereignissen, aber es gibt keine Route und keinen Begriff „letzter Besuch“.</td><td>Eine schmale Projektion, kein neuer Speicher. <strong>Head-Vorschlag, nicht geruled</strong> — siehe Frage 3.</td></tr>
+        <tr><td><b>Merge</b>-Knoten im Graphen</td><td>Ein Merge-Effekt existiert nicht.</td><td>Als Workflow-Knoten richtig gedacht; bis der Effekt da ist, kann ihn niemand deklarieren. Ein Effekt-Bau, kein UI-Bau.</td></tr>
+        <tr><td><b>Seitenfuß</b> <code>1–20 of 142 · ‹ ›</code></td><td><code>GET /runs</code> blättert heute vorwärts: <code>after</code> hinein, <code>next_after</code> heraus. Eine Gesamtzahl und ein Rückwärts-Cursor gibt es nicht.</td><td>Zwei kleine Ergänzungen an einer vorhandenen Route, kein neuer Speicher. Bis dahin zeigt der Fuß, was er weiß: die Spanne und einen Pfeil. Scheibe 2.</td></tr>
+        <tr><td><b>Filter</b>-Chip mit Zeitraum, Workflow, Work item</td><td>Die Liste filtert heute nicht nach Zeitraum oder Definition.</td><td>Bewusst ein späteres Item: das Bild zeigt den Chip, damit er nicht als Fremdkörper nachkommt. Vorher ist er nicht da — nicht grau.</td></tr>
+        <tr><td><b>Rescan</b>-Knopf</td><td>Nur als CLI-Befehl.</td><td>Der Knopf kommt mit seiner Route oder gar nicht.</td></tr>
+        <tr><td><b>Run-Zustand</b> am Catalog-Eintrag</td><td>Läufe kennen ihren Workflow; eine Projektion „letzter Zustand je Definition“ gibt es nicht.</td><td>Eine Aggregation über vorhandene Daten. Kommt mit Scheibe 7 oder gar nicht.</td></tr>
+        <tr><td><b>Reconciliation</b></td><td>Der Zustand existiert und kann heute einen Menschen verlangen.</td><td>Widerspricht „Handeln nur an <code>wait</code>“. Ich zeige ihn <em>nicht</em> als zweiten Unterbrechungskanal — siehe Widerspruch.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ═══════════════ SCHEIBEN ═══════════════ -->
+  <section class="section" id="scheiben">
+    <div class="section-head">
+      <div><span class="surface-index">REIHENFOLGE</span><h2>Billigstes zuerst.</h2></div>
+      <p>Jede Scheibe ist eine Fläche plus die Route, die sie braucht. Jede landet für sich und ist am selben Abend sichtbar; keine braucht die nächste.</p>
+    </div>
+    <div class="slices">
+      <div class="slice"><b>Home: ein Block namens Runs</b><p>Admit, Plan und Start verschwinden. Rechts steht ein Block, der heißt wie die Seite, mit den Chips <code>Live</code>, <code>Queued</code>, <code>Waiting</code>. Keine Liste namens Queue.</p><span class="route">Home · keine neue Route</span></div>
+      <div class="slice"><b>Runs als Tabelle</b><p>Eine Zeilenform in einer echten Tabelle: sortierbare Köpfe, fünf Chips, eine Suche, Fuß mit Cursor. Die Tabelle kommt aus TanStack, das Blättern aus der Route.</p><span class="route">Runs · <code>GET /runs?after=</code> + Rückwärts-Cursor</span></div>
+      <div class="slice"><b>Asks als Tor-Zeilen mit Link</b><p>Jeder Knopf, der nicht an einem deklarierten <code>wait</code> hängt, fällt. Der Kopf <code>workflow@rev · wait &lt;node&gt; ›</code> ist ein Link in den Lauf an genau diesen Knoten; mobil öffnet <code>2 asks ›</code> dasselbe als Blatt.</p><span class="route">Home + Run · <code>POST /runs/{ref}/answers</code></span></div>
+      <div class="slice"><b>Sitz: nur die Mitte</b><p>Eine Komponente, eine Form. Home und Catalog bekommen die Spalte; Runs, Run und Settings bekommen nichts — die 44-px-Leiste wird gelöscht. Auf Mobil ist Home der Sitz, Catalog zeigt nur. Die Rail trägt am Home-Eintrag einen Punkt.</p><span class="route">alle Flächen · keine neue Route</span></div>
+      <div class="slice"><b>Automation mit Regeln</b><p>Der Ort, der Scheibe 1 erst ehrlich macht: Label, Workflow, Priorität, Vollmacht, Deckel. Die Empfehlung steht ohne Widerspruch, also bekommt das Modell Regeln.</p><span class="route">Settings · Regel-Route neu</span></div>
+      <div class="slice"><b>Sources in zwei Gruppen</b><p><em>Project sources</em> und <em>Catalog sources</em> ersetzen Source und Import; dasselbe Repository darf zweimal stehen. Die Import-Routen werden <b>gelöscht</b> — der Operator hat „ja löschen“ gesagt, also verschwinden Recognition und Addition samt Fläche.</p><span class="route">Settings · Source-Route neu · Import-Routen raus</span></div>
+      <div class="slice"><b>Catalog: bauen und speichern</b><p>Was der Sitz im Bild tut, wird echt: Regal-Auswahl → wachsender Entwurf → <code>Save</code> durch die Push-Tür → Commit → Scan → Revision.</p><span class="route">Catalog · Push-Tür für Definitionen</span></div>
+      <div class="slice"><b>Der Graph als Graph</b><p>Knotenarten durch Form und Abzeichen, Kanten mit Pfeilspitzen, Schichten von links nach rechts. Das Layout rechnet eine Bibliothek — dagre oder elkjs, im Item zu prüfen, nicht von Hand. Dieselbe Sprache klein im Catalog.</p><span class="route">Run + Catalog · keine neue Route</span></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ FRAGEN & WIDERSPRUCH ═══════════════ -->
+  <section class="section" id="fragen">
+    <div class="section-head">
+      <div><span class="surface-index">KEINE OFFENE FRAGE</span><h2>Alles beantwortet, ein Widerspruch bleibt.</h2></div>
+      <p>Die drei Fragen aus Runde 4.1 sind erledigt. Zwei ohne Wort — dann gilt die Empfehlung. Eine mit Wort, weil sie eine Löschung war.</p>
+    </div>
+    <div class="g2">
+      <div class="qa">
+        <span class="rec">Geregelt · dein Wort</span>
+        <div class="qq">Der Import-Weg wird gelöscht</div>
+        <p>„Ja löschen“ — also verschwinden die Recognition- und Addition-Routen samt ihrer Fläche, nicht nur ihr Knopf. Was im Catalog steht, kommt aus einer <em>Catalog source</em> oder ist ein Entwurf. Es gibt keinen Notausgang für die CLI; einen zweiten Weg ins Haus zu behalten hieße, den Satz nur halb zu meinen. Fällt mit Scheibe 6.</p>
+      </div>
+      <div class="qa">
+        <span class="rec">Geregelt · Empfehlung gilt</span>
+        <div class="qq">Regeln und Besuchszeile</div>
+        <p>Ohne Widerspruch gilt die Empfehlung: Automation bekommt eine <b>Regel-Liste</b> statt einer Policy je Projekt (Scheibe 5), und die <b>Besuchszeile</b> bleibt in der Lesart „seit deinem letzten Besuch“. Sie steht auf dem Desktop; mobil fällt sie weg, weil dort nur der Sitz steht. Beides ist umkehrbar, solange keine Route dafür gebaut ist.</p>
+      </div>
+      <div class="qa">
+        <span class="rec">Mein Widerspruch</span>
+        <div class="qq">Reconciliation ist kein zweites Warten</div>
+        <p>Wenn ein Lauf eine menschliche Bewegung braucht, die kein deklarierter <code>wait</code> ist, dann ist das ein Laufzeitfehler mit dem Wort <code>Failed</code> und einem Satz — nicht eine neue Art von Warten, die du lernen musst. Ein zweiter Unterbrechungskanal macht Ruling 2 zur Hälfte wahr.</p>
+      </div>
+      <div class="qa">
+        <span class="rec">Mein Widerspruch</span>
+        <div class="qq">Zwei Einträge für ein Repository sind richtig</div>
+        <p>Es sieht nach Doppelung aus, wenn <code>atelier-2</code> unter <em>Project sources</em> und unter <em>Catalog sources</em> steht. Es ist keine: die eine Zeile darf schreiben und liefert Issues, die andere liest ein Verzeichnis. Ein gemeinsamer Eintrag mit zwei Häkchen würde genau die Frage verstecken, die zählt — <em>darf dieses Ding in mein Repository schreiben?</em></p>
+      </div>
+    </div>
+    <div class="note">
+      <strong>Geparkte Idee: tmux/tty in einen laufenden Agenten-Knoten.</strong>
+      <p>Zusehen ist harmlos, eingreifen nicht. Ein Eingriff in eine laufende Agenten-Sitzung umgeht jedes Gate, das der Workflow deklariert hat — der Beleg würde behaupten, ein Reviewer habe zugestimmt, wo in Wahrheit du getippt hast. Deshalb zeigt kein Bild dafür eine Affordance. <em>Zusehen</em> könnte kommen; <em>eingreifen</em> braucht erst eine Antwort darauf, was danach im Ereignisstrom steht.</p>
+    </div>
+    <div class="note">
+      <strong>Was Head-Vorschlag ist und was geruled.</strong>
+      <p>Geruled sind die neun Sätze im Kopf dieser Seite, die Namensgebung <em>Sources</em> mit ihren zwei Gruppen, die Löschung der Import-Routen und die Rulings der ersten Runden (Catalog-Bauplatz, Navigation mit Wort, Lücken nur in der Tabelle). Head-Vorschlag und noch nicht geruled sind: die Regel <em>Workflow = Definition, Run = Ausführung</em> als Satz in der Sprachsektion, die Besuchszeile „since your last visit“, die Wortwahl <code>Building</code> für einen wachsenden Entwurf, der Chip <code>Filter</code> auf Runs samt <code>Clear</code>, die Hyphenierung langer Knotennamen im kleinen Graphen und der Vorschlag, den Queue-Grund (<code>Next</code>, <code>Cap</code>, <code>No rule</code>) <em>nicht</em> in die Home-Zeile zu nehmen, sondern in Settings zu lassen.</p>
+    </div>
+  </section>
+
+  <footer class="footer">
+    Atelier UI-Konzept · Runde 4.2 · statisches HTML · Desktop 1280 / Mobil 400 · hell und dunkel<br>
+    Basis: Codex Runde 4 (Gestalt, Palette, Typografie, Tokens) und Runde 4.1. Neu in 4.2: Vokabular Workflow/Run, Mobil als Sitz, Asks als Links, Runs als Tabelle, Lauf als DAG, Sitz nur in der Mitte, Sources in zwei Gruppen.<br>
+    Vokabular: docs/requirements/0003-ziel-ui.md · docs/decisions/0019-workshop-target-picture.md.
+  </footer>
+
+</main>
+</body>
+</html>

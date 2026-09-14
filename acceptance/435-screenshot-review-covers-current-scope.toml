@@ -1,10 +1,10 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/435"
 
-# #994 is the slice that builds REQ-UIQ-11's named gate; #435 is the epic
-# story ADR 0012 requires an acceptance declaration to point at.
+# #994 is the slice that builds the screenshot gate; #435 is the epic story
+# ADR 0012 requires an acceptance declaration to point at.
 
 [[sentence]]
 id = "the-screenshot-review-gate-proves-a-mechanical-red-green-transition"
 text = "The screenshot review gate refuses when no ledger entry's scope_sha256 matches the digest of the current REQ-UI-25 core-surface source files, and passes once the ledger holds an entry whose scope_sha256 matches and whose approval_sha256 verifies the exact operator comment; a test proves both sides against fixture files, never real screenshots."
-requirement = "REQ-UIQ-11"
+requirement = "REQ-UIQ-14"
