@@ -43,7 +43,6 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
-from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
 class RevisionListingView(StrEnum):
@@ -262,18 +261,6 @@ class StartRunRequestResourceV2(ApiModel):
     )
 
 
-class InlineOrderResource(ApiModel):
-    """One order written into the start itself: a name and the exact JSON text.
-
-    The document pins the schema. The value is the exact bytes the operator
-    wrote, as UTF-8 text, so a pretty-printed file and a one-line flag stay
-    distinct material rather than being canonicalized into one hash.
-    """
-
-    name: str = Field(min_length=1)
-    value: str = Field(min_length=1, max_length=MAXIMUM_INSTANCE_DOCUMENT_BYTES)
-
-
 class ArtifactOrderResource(ApiModel):
     """One order whose value is an artifact already published: a name and its address.
 
@@ -303,9 +290,7 @@ class WorkItemOrderResource(ApiModel):
     )
 
 
-AnyStartRunOrderResource = (
-    InlineOrderResource | ArtifactOrderResource | WorkItemOrderResource
-)
+AnyStartRunOrderResource = ArtifactOrderResource | WorkItemOrderResource
 
 
 class StartRunRequestResourceV3(ApiModel):

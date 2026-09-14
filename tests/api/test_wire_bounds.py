@@ -72,7 +72,6 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import MAXIMUM_RUN_ROW_DEFECT_DETAIL_CHARACTERS
-from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library, queue)
 
@@ -159,7 +158,6 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "WorkflowNodePreviewResourceV3.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
-    "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "WorkItemOrderResource.work_item": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "ModelRegistryEntryResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,

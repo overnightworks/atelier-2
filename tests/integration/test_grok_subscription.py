@@ -19,6 +19,7 @@ from dbos import DBOSClient
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -85,11 +86,12 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
-from atelier2.contracts.orders import InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.provider_probe_receipts import (
     ProviderProbeReceipt,
     ProviderProbeResult,
@@ -98,7 +100,6 @@ from atelier2.contracts.provider_probe_receipts import (
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import (
-    MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     InstanceAccepted,
     InstanceRefused,
     SchemaAccepted,
@@ -120,6 +121,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
+from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableAgentExecutorCapabilityUnavailable,
@@ -2110,13 +2112,12 @@ def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_laun
     subject; it is not relaxed here. Under V3 the bytes an agent reads are the
     instruction plus its orders (compose_node_job.node_job), so a job past
     _MEASURED_INLINE_PROMPT_BYTES (30_000) is reached legally by adding one
-    order near the door's own MAXIMUM_INSTANCE_DOCUMENT_BYTES bound rather
-    than by growing the instruction alone (#901 slice 5, #934).
+    published order rather than by growing the instruction alone (#901 slice
+    5, #934).
     """
     order_name = "context"
     instruction = "x" * 15_000
     order_value = json.dumps("a" * 16_000).encode("utf-8")
-    assert len(order_value) <= MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
     settings = grok_subscription_deployment(
         tmp_path, "raise AssertionError('a Grok process was launched')\n"
@@ -2174,6 +2175,10 @@ nodes:
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         run_name = f"grok/prelaunch-bound/{requested_capability.value}"
         run_id = RunId(run_name)
+        published = DbosArtifactStore(runtime.engine).publish_artifact(
+            Artifact(order_value)
+        )
+        assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
         started = DbosDurableRunStarter(
             runtime.engine,
             runtime.settings,
@@ -2185,7 +2190,12 @@ nodes:
                 AgentBindingSet(
                     (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
                 ),
-                orders=(AuthoredOrder(order_name, InlineOrderValue(order_value)),),
+                orders=(
+                    AuthoredOrder(
+                        order_name,
+                        ArtifactOrderValue(published.artifact.artifact_hash),
+                    ),
+                ),
             )
         )
         assert isinstance(started, DurableRunCreated)

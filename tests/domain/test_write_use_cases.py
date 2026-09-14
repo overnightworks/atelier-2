@@ -117,9 +117,10 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutorOperationalIdentity,
 )
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
-from atelier2.contracts.orders import InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.run_projections import RunCancellationRefusal
@@ -663,14 +664,14 @@ def test_a_start_that_carries_orders_asks_for_the_v3_shape_without_a_schema_hash
         REVISION_HASH,
         (AuthoredAgentBinding("builder", "c" * 64),),
         starter,
-        (AuthoredOrder("order", InlineOrderValue(b'{"portions": 4}')),),
+        (AuthoredOrder("order", ArtifactOrderValue(ArtifactHash("d" * 64))),),
     )
 
     requested = starter.started[0]
     assert isinstance(requested, StartPublishedRunRequestV3)
     assert requested.run_inputs == ()
     assert [(order.name, order.value) for order in requested.orders] == [
-        ("order", InlineOrderValue(b'{"portions": 4}'))
+        ("order", ArtifactOrderValue(ArtifactHash("d" * 64)))
     ]
 
 

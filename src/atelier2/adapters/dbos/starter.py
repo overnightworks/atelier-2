@@ -71,7 +71,6 @@ from atelier2.contracts.host_configuration import (
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
-    InlineOrderValue,
     ObservedWorkItemOrderValue,
     WorkItemOrderValue,
 )
@@ -188,23 +187,11 @@ def _order_value_bytes(
 ) -> bytes | DurableV3StartInputRefused:
     """The exact bytes one authored order is, whichever way it was supplied.
 
-    The inline bound bites here rather than at the schema reading below, so
-    every route's refusal names the same door. A work item is the one value
-    whose *kind* must be declared: it is stored only under the house schema,
-    and a malformed scope-list token in its body refuses the order by name,
-    never as corruption.
+    A work item is the one value whose *kind* must be declared: it is stored
+    only under the house schema, and a malformed scope-list token in its body
+    refuses the order by name, never as corruption.
     """
     match order.value:
-        case InlineOrderValue(content):
-            if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
-                return DurableV3StartInputRefused(
-                    order.name,
-                    V3InputRefusal.VALUE_REFUSED,
-                    f"{len(content)} inline bytes exceeds "
-                    f"{MAXIMUM_INSTANCE_DOCUMENT_BYTES}; publish material this "
-                    "large as an artifact and order its address",
-                )
-            return content
         case ArtifactOrderValue(artifact_hash):
             stored = read_stored_artifact(connection, artifact_hash)
             if stored is None:
@@ -404,10 +391,6 @@ def _unread_order_identities(
                 identities.append((order.name, pinned.value, reference.value))
             case ObservedWorkItemOrderValue(revision):
                 identities.append((order.name, pinned.value, revision.item.value))
-            case InlineOrderValue(content):
-                identities.append(
-                    _requested_order_identity(order.name, pinned.value, content)
-                )
             case ArtifactOrderValue(artifact_hash):
                 stored = read_stored_artifact(connection, artifact_hash)
                 if stored is None:
