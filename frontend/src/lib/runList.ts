@@ -89,6 +89,22 @@ export function splitRunListRows(rows: readonly RunListRow[]): {
 }
 
 /**
+ * The defective rows with `row` among them, once per run.
+ *
+ * A run can be named unreadable by both the run list and the attention feed,
+ * and the feed names it again on every reconnect; the room shows it once.
+ */
+export function withDefectiveRow(
+  rows: readonly DefectiveRunRow[],
+  row: DefectiveRunRow
+): DefectiveRunRow[] {
+  if (rows.some((known) => known.public_run_reference === row.public_run_reference)) {
+    return [...rows];
+  }
+  return [...rows, row];
+}
+
+/**
  * Resolves a run's workflow name from the described catalog listing, keyed by
  * `workflow_revision_hash`.
  *

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyAttentionFrame,
+  feedDefectiveAfter,
   markAttentionConnecting,
   markAttentionLive,
   startAttentionHold
@@ -43,7 +44,7 @@ describe("the studio's hold of GET /events", () => {
     });
   });
 
-  it("keeps the hold live on RUN_PROJECTION_CORRUPT without queuing a run event", () => {
+  it("names the unreadable run as a defective row and keeps the hold live", () => {
     const applied = applyAttentionFrame(
       markAttentionLive(startAttentionHold()),
       JSON.stringify({
@@ -59,6 +60,12 @@ describe("the studio's hold of GET /events", () => {
     );
 
     expect(applied.event).toBeNull();
+    expect(applied.unreadable).toEqual({
+      kind: "defective",
+      public_run_reference: publicReference,
+      problem_code: "durable-state-corrupt",
+      detail: "Durable state is corrupt"
+    });
     expect(applied.hold.connection).toBe("live");
     expect(applied.hold.protocol_problem).toBeNull();
     expect(applied.hold.stream_failure).toBeNull();
@@ -135,6 +142,38 @@ describe("the studio's hold of GET /events", () => {
 
     expect(applied.event).toBeNull();
     expect(applied.hold.protocol_problem).toEqual({ type: "decoder" });
+  });
+});
+
+describe("the runs the feed names unreadable", () => {
+  const live = markAttentionLive(startAttentionHold());
+  const namedUnreadable = JSON.stringify({
+    event: "RUN_PROJECTION_CORRUPT",
+    public_run_reference: publicReference,
+    problem: {
+      type: "urn:atelier2:problem:v1:durable-state-corrupt",
+      title: "Durable state is corrupt",
+      status: 500,
+      detail: "Stop mutation and inspect the durable store."
+    }
+  });
+
+  it("keeps one row for a run the feed names again on reconnect", () => {
+    const once = feedDefectiveAfter([], applyAttentionFrame(live, namedUnreadable));
+    const again = feedDefectiveAfter(once, applyAttentionFrame(live, namedUnreadable));
+
+    expect(again.map((row) => row.public_run_reference)).toEqual([publicReference]);
+  });
+
+  it("keeps the row when the feed delivers a readable event of that run", () => {
+    const named = feedDefectiveAfter([], applyAttentionFrame(live, namedUnreadable));
+
+    const afterReadableEvent = feedDefectiveAfter(
+      named,
+      applyAttentionFrame(live, JSON.stringify(agentFailed()))
+    );
+
+    expect(afterReadableEvent).toEqual(named);
   });
 });
 

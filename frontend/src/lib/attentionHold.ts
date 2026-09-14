@@ -2,9 +2,11 @@ import {
   decodeStreamFrame,
   isRunProjectionCorrupt,
   isStreamFailure,
+  type DefectiveRunRow,
   type Problem,
   type RunEvent
 } from "../api/client";
+import { withDefectiveRow } from "./runList";
 import type { ConnectionState, ProtocolProblem } from "./runProjection";
 
 /**
@@ -63,25 +65,62 @@ function isAttentionEvent(event: RunEvent): boolean {
   );
 }
 
+export interface AppliedAttentionFrame {
+  hold: AttentionHold;
+  event: RunEvent | null;
+  /**
+   * The run this frame named unreadable, as the same defective row a run list
+   * answers with (#1042): the feed goes on, and the run is shown for what it
+   * is instead of vanishing from the room.
+   */
+  unreadable: DefectiveRunRow | null;
+}
+
 export function applyAttentionFrame(
   hold: AttentionHold,
   rawData: string
-): { hold: AttentionHold; event: RunEvent | null } {
-  if (attentionStopped(hold)) return { hold, event: null };
+): AppliedAttentionFrame {
+  if (attentionStopped(hold)) return { hold, event: null, unreadable: null };
   let frame;
   try {
     frame = decodeStreamFrame(JSON.parse(rawData));
   } catch {
-    return { hold: { ...hold, protocol_problem: { type: "decoder" } }, event: null };
+    return decoderFailure(hold);
   }
   if (isStreamFailure(frame)) {
-    return { hold: markAttentionFailed(hold, frame.problem), event: null };
+    return { hold: markAttentionFailed(hold, frame.problem), event: null, unreadable: null };
   }
   if (isRunProjectionCorrupt(frame)) {
-    return { hold, event: null };
+    return {
+      hold,
+      event: null,
+      unreadable: {
+        kind: "defective",
+        public_run_reference: frame.public_run_reference,
+        problem_code: "durable-state-corrupt",
+        detail: frame.problem.title
+      }
+    };
   }
-  if (!isAttentionEvent(frame)) {
-    return { hold: { ...hold, protocol_problem: { type: "decoder" } }, event: null };
-  }
-  return { hold, event: frame };
+  if (!isAttentionEvent(frame)) return decoderFailure(hold);
+  return { hold, event: frame, unreadable: null };
+}
+
+function decoderFailure(hold: AttentionHold): AppliedAttentionFrame {
+  return { hold: { ...hold, protocol_problem: { type: "decoder" } }, event: null, unreadable: null };
+}
+
+/**
+ * The runs the feed has named unreadable, after one more frame.
+ *
+ * A named run stands until the page is loaded again. Nothing the feed sends
+ * later confirms it reads: another event of the same run says nothing about
+ * the one that failed, and a resumed connection skips what it already sent.
+ */
+export function feedDefectiveAfter(
+  rows: readonly DefectiveRunRow[],
+  applied: AppliedAttentionFrame
+): DefectiveRunRow[] {
+  if (applied.unreadable === null) return [...rows];
+  return withDefectiveRow(rows, applied.unreadable);
 }
