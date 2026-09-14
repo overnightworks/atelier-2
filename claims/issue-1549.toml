@@ -1,0 +1,7 @@
+claim_id = "402c1f117f8e4f47aa578b3451398365"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "83d490644187ff1953fd92e2c98b977267adb035"
+branch = "claude/issue-1549-provider-reason"
+scope = ["src/atelier2/adapters/grok_subscription.py", "tests/integration/test_grok_subscription.py"]
+opened_commit = "fdd0d71179c170d2e556e88860e6aee3effe095f"
