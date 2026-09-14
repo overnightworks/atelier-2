@@ -29,6 +29,7 @@ vector and never builds a line.
 from __future__ import annotations
 
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -280,10 +281,16 @@ def toolchain_sandbox(
     never a name looked up again on a search path, and it is verified on every
     start rather than remembered from composition: one that disappeared or
     stopped working has to stop the next launch, not the next restart.
+
+    What every downstream start actually runs is the real path
+    `verified_sandbox_host` resolved and checked, never the name this
+    deployment was configured with: a later repointing of that name -- a
+    symlink swapped after the check, a file rewritten under it -- cannot put
+    another binary where the fence was proven.
     """
 
-    verified_sandbox_host(enforcer)
-    return SandboxedLaunch(enforcer, toolchain_grants(executable, state_directory))
+    resolved = verified_sandbox_host(enforcer)
+    return SandboxedLaunch(resolved, toolchain_grants(executable, state_directory))
 
 
 def toolchain_grants(executable: Path, state_directory: Path) -> SandboxGrants:
@@ -314,10 +321,21 @@ def resolved_sandbox_executable(search_path: str) -> Path:
     return Path(found) if found is not None else Path(SANDBOX_EXECUTABLE_NAME)
 
 
-def verified_sandbox_host(enforcer: Path) -> None:
-    """Refuse an enforcer this host cannot really fence a start with.
+def verified_sandbox_host(enforcer: Path) -> Path:
+    """Refuse an enforcer this host cannot really fence a start with, or answer
+    the one real path every later start of it has to run.
 
-    The capability is probed, never read off a version number: `--bind-fd`
+    Capability alone is not enough: a probe only ever runs two fixed commands,
+    so a proxy that recognises their shape can answer exactly as a fence would
+    and run every real job unfenced. Against an adversary on this account only
+    provenance holds -- OpenSSH `StrictModes` for one binary -- so an enforcer
+    counts only when the real file its name resolves to, and every directory
+    above it to `/`, belongs to root and admits no write beyond it. That check
+    runs first, and it never falls through to a later name on the search path:
+    the one this deployment was handed either answers for its own provenance
+    or the serve start is refused, named.
+
+    The capability is still probed, never read off a version number: `--bind-fd`
     reached different releases through different distributions, so a number is
     a claim about a build while the option is the fact. One throwaway start
     answers all of it at once -- that this binary is here, that this account
@@ -331,7 +349,8 @@ def verified_sandbox_host(enforcer: Path) -> None:
     stands behind `--`. So the probe reads two files of the same account in
     one command -- one inside the directory it handed over, one outside every
     grant -- and a host is attested only when the first came back alone and
-    the start failed over the second.
+    the start failed over the second. This is what an accidental fenceless
+    enforcer, or a broken installation, is still caught by.
     """
 
     if not enforcer.is_absolute():
@@ -341,7 +360,79 @@ def verified_sandbox_host(enforcer: Path) -> None:
             "resolved again wherever a launch stands, which for a fenced start is "
             "a directory a provider writes"
         )
-    _attest_enforcer(enforcer)
+    resolved = _verified_provenance(enforcer)
+    _attest_enforcer(resolved)
+    return resolved
+
+
+_ROOT_UID = 0
+_FOREIGN_WRITE_BITS = stat.S_IWGRP | stat.S_IWOTH
+
+
+@dataclass(frozen=True)
+class _PathOwnership:
+    """The stat facts one provenance check needs about one path on a chain."""
+
+    path: Path
+    owner_uid: int
+    mode: int
+    is_regular_file: bool
+
+
+def _provenance_refusal(chain: tuple[_PathOwnership, ...]) -> str | None:
+    """Why an enforcer's provenance does not hold, or nothing when it does.
+
+    Pure over stat facts already read, so it is testable without root: OpenSSH
+    `StrictModes` for one binary, applied to the resolved executable and every
+    directory above it up to `/`. Each has to belong to root and admit no
+    write beyond it, or a file on this account could repoint what a later
+    start executes between the check this function answers and the start that
+    trusts it.
+    """
+
+    executable = chain[0]
+    if not executable.is_regular_file or not executable.mode & stat.S_IXUSR:
+        return f"{executable.path} is not a regular executable file"
+    for entry in chain:
+        if entry.owner_uid != _ROOT_UID:
+            return f"{entry.path} is owned by uid {entry.owner_uid}, not root"
+        if entry.mode & _FOREIGN_WRITE_BITS:
+            kind = "file" if entry.is_regular_file else "directory"
+            return f"{kind} {entry.path} is writable by someone other than root"
+    return None
+
+
+def _stat_facts(path: Path) -> _PathOwnership:
+    """The one filesystem read `_provenance_refusal` is judged from."""
+
+    info = path.stat()
+    return _PathOwnership(path, info.st_uid, info.st_mode, stat.S_ISREG(info.st_mode))
+
+
+def _verified_provenance(enforcer: Path) -> Path:
+    """The real path behind one enforcer's name, once its provenance holds.
+
+    Symlinks are resolved before anything is checked, because a name that
+    stands for a trusted file today is not what a later start executes -- what
+    a later start executes is the real file, so that is what this function
+    checks and what it hands back for every downstream start to run.
+    """
+
+    try:
+        resolved = enforcer.resolve(strict=True)
+        chain = tuple(
+            _stat_facts(candidate) for candidate in (resolved, *resolved.parents)
+        )
+    except OSError as error:
+        raise SandboxUnavailable(
+            f"{enforcer} does not answer for its own provenance: {error}"
+        ) from error
+    refusal = _provenance_refusal(chain)
+    if refusal is not None:
+        raise SandboxUnavailable(
+            f"{enforcer} does not answer for its own provenance: {refusal}"
+        )
+    return resolved
 
 
 def _attest_enforcer(enforcer: Path) -> None:

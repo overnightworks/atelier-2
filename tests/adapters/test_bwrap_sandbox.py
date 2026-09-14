@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import errno
+import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from atelier2.adapters import bwrap_sandbox
 from atelier2.adapters.bwrap_sandbox import (
     SANDBOX_EXECUTABLE_NAME,
     SYSTEM_READ_ONLY_FILES,
     SYSTEM_READ_ONLY_ROOTS,
+    _attest_enforcer,
+    _PathOwnership,
+    _provenance_refusal,
+    _verified_provenance,
     resolved_sandbox_executable,
     sandbox_frame,
     sandbox_from_frame,
@@ -70,6 +76,24 @@ def _fake_enforcer(
     )
     executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
     return executable
+
+
+_FORGES_THE_PROBES_MARKER = (
+    "#!/bin/sh\n"
+    'while [ "$1" != "--" ]; do shift; done\n'
+    "shift\n"
+    'if [ "$1" = "/bin/cat" ] '
+    '&& [ "$(basename "$2")" = "grant" ] '
+    '&& [ "$(basename "$3")" = "grant" ]; then\n'
+    "    printf '%s\\n' 'one directory, handed over as its descriptor'\n"
+    "    exit 1\n"
+    "fi\n"
+    'exec "$@"\n'
+)
+"""The live proof a probe of two fixed commands cannot itself rule out: a proxy
+that recognises the probe's own argv shape -- `/bin/cat` on two files both
+named `grant` -- answers exactly as a real fence would and runs everything
+else, unfenced."""
 
 
 @pytest.mark.parametrize(
@@ -239,10 +263,16 @@ def test_a_bubblewrap_that_cannot_bind_a_descriptor_is_refused_by_that_option(
 ) -> None:
     """The capability, not a version number: `--bind-fd` reached different
     releases through different distributions, and a build without it would
-    leave the leased directory to be found by name."""
+    leave the leased directory to be found by name.
+
+    Tested against the probe directly rather than through
+    `verified_sandbox_host`: a fake enforcer written by this test is never
+    root-owned, so provenance -- a check this test does not exercise -- would
+    refuse it first and hide the capability answer this test is about.
+    """
 
     with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
-        verified_sandbox_host(_fake_enforcer(tmp_path, refuses="--bind-fd"))
+        _attest_enforcer(_fake_enforcer(tmp_path, refuses="--bind-fd"))
 
 
 def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
@@ -251,7 +281,7 @@ def test_a_bubblewrap_that_binds_nothing_is_refused_by_what_it_handed_over(
     """A start that answers without the directory it was given proves nothing."""
 
     with pytest.raises(SandboxUnavailable, match="did not hand a directory"):
-        verified_sandbox_host(_fake_enforcer(tmp_path, answers=""))
+        _attest_enforcer(_fake_enforcer(tmp_path, answers=""))
 
 
 def test_an_enforcer_that_only_runs_what_stands_behind_the_flags_is_refused(
@@ -267,7 +297,7 @@ def test_an_enforcer_that_only_runs_what_stands_behind_the_flags_is_refused(
     """
 
     with pytest.raises(SandboxUnavailable, match="granted no name at all"):
-        verified_sandbox_host(_fake_enforcer(tmp_path))
+        _attest_enforcer(_fake_enforcer(tmp_path))
 
 
 def test_a_filesystem_that_refuses_the_probe_files_refuses_this_enforcer(
@@ -290,7 +320,115 @@ def test_a_filesystem_that_refuses_the_probe_files_refuses_this_enforcer(
     monkeypatch.setattr(Path, "write_text", _out_of_space)
 
     with pytest.raises(SandboxUnavailable, match="could not lay down"):
-        verified_sandbox_host(enforcer)
+        _attest_enforcer(enforcer)
+
+
+def test_a_shim_that_forges_the_probes_marker_is_refused_by_its_provenance(
+    tmp_path: Path,
+) -> None:
+    """The live proof a random marker cannot answer: a proxy on this account
+    can recognise the probe's own fixed argv shape without fencing anything,
+    print the marker itself, and end non-zero -- passing capability exactly as
+    a real fence would. Only provenance tells them apart, because this shim,
+    written by the test, is owned by the account running it and not by root.
+    """
+
+    forger = tmp_path / "bwrap"
+    forger.write_text(_FORGES_THE_PROBES_MARKER, encoding="utf-8")
+    forger.chmod(forger.stat().st_mode | stat.S_IEXEC)
+
+    with pytest.raises(SandboxUnavailable, match="provenance") as failure:
+        verified_sandbox_host(forger)
+
+    assert f"owned by uid {os.getuid()}, not root" in str(failure.value)
+
+
+def _owned(
+    path: str, uid: int, mode: int, *, is_regular_file: bool = False
+) -> _PathOwnership:
+    return _PathOwnership(Path(path), uid, mode, is_regular_file)
+
+
+_ROOT_OWNED_DIRECTORY_MODE = stat.S_IFDIR | 0o755
+_ROOT_OWNED_FILE_MODE = stat.S_IFREG | 0o755
+_TRUSTED_ANCESTORS = (
+    _owned("/usr/bin", 0, _ROOT_OWNED_DIRECTORY_MODE),
+    _owned("/usr", 0, _ROOT_OWNED_DIRECTORY_MODE),
+    _owned("/", 0, _ROOT_OWNED_DIRECTORY_MODE),
+)
+
+
+@pytest.mark.parametrize(
+    ("executable", "ancestors", "refusal"),
+    (
+        pytest.param(
+            _owned("/usr/bin/bwrap", 0, _ROOT_OWNED_FILE_MODE, is_regular_file=True),
+            _TRUSTED_ANCESTORS,
+            None,
+            id="a root-owned file in root-owned, non-writable directories passes",
+        ),
+        pytest.param(
+            _owned("/usr/bin/bwrap", 1000, _ROOT_OWNED_FILE_MODE, is_regular_file=True),
+            _TRUSTED_ANCESTORS,
+            "/usr/bin/bwrap is owned by uid 1000, not root",
+            id="a file owned by a non-root uid is refused",
+        ),
+        pytest.param(
+            _owned("/usr/bin/bwrap", 0, _ROOT_OWNED_FILE_MODE, is_regular_file=True),
+            (
+                _owned("/usr/bin", 0, _ROOT_OWNED_DIRECTORY_MODE | stat.S_IWGRP),
+                *_TRUSTED_ANCESTORS[1:],
+            ),
+            "directory /usr/bin is writable by someone other than root",
+            id="a group-writable ancestor is refused",
+        ),
+        pytest.param(
+            _owned("/usr/bin/bwrap", 0, _ROOT_OWNED_FILE_MODE, is_regular_file=True),
+            (
+                _owned("/usr/bin", 0, _ROOT_OWNED_DIRECTORY_MODE | stat.S_IWOTH),
+                *_TRUSTED_ANCESTORS[1:],
+            ),
+            "directory /usr/bin is writable by someone other than root",
+            id="an other-writable ancestor is refused",
+        ),
+        pytest.param(
+            _owned("/usr/bin/bwrap", 0, stat.S_IFREG | 0o644, is_regular_file=True),
+            _TRUSTED_ANCESTORS,
+            "/usr/bin/bwrap is not a regular executable file",
+            id="a root-owned file with no execute bit is refused",
+        ),
+    ),
+)
+def test_a_provenance_chain_is_judged_by_root_ownership_and_foreign_write(
+    executable: _PathOwnership,
+    ancestors: tuple[_PathOwnership, ...],
+    refusal: str | None,
+) -> None:
+    """Pure over stat facts already read, so no file this test constructs has to
+    exist, let alone be owned by root."""
+
+    assert _provenance_refusal((executable, *ancestors)) == refusal
+
+
+def test_a_symlink_resolving_into_a_trusted_location_passes_and_is_what_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolved real file is what a provenance check judges and what a
+    later start executes -- never the name a symlink was reached through,
+    which a later repointing could swap for something else entirely."""
+
+    target = tmp_path / "trusted" / "bwrap"
+    target.parent.mkdir()
+    target.touch()
+    named = tmp_path / "bwrap"
+    named.symlink_to(target)
+
+    def _trusted(path: Path) -> _PathOwnership:
+        return _PathOwnership(path, 0, _ROOT_OWNED_FILE_MODE, path == target)
+
+    monkeypatch.setattr(bwrap_sandbox, "_stat_facts", _trusted)
+
+    assert _verified_provenance(named) == target
 
 
 def test_a_grant_survives_the_launch_frame_it_travels_in() -> None:
