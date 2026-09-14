@@ -512,7 +512,9 @@ def test_the_public_start_route_refuses_an_order_still_shaped_as_inline_value(
 
     `InlineOrderResource` is gone, so a body speaking its old dialect never
     reaches `_authored_order` -- it fails the same envelope-shape door every
-    other malformed V2/V3 body already goes through, before a row exists.
+    other malformed V2/V3 body already goes through, before a row exists. The
+    refusal names the order by its own declared name and is not mistaken for
+    a bindings problem: the bindings this request sent are perfectly fine.
     """
     workflow, bindings = publish_ordered_workflow(runtime)
     binding = bindings.bindings[0]
@@ -536,6 +538,9 @@ def test_the_public_start_route_refuses_an_order_still_shaped_as_inline_value(
     )
 
     assert refused.status_code == 422
+    problem = refused.json()
+    assert problem["type"] != "urn:atelier2:problem:v1:invalid-agent-bindings"
+    assert any(ORDER_NAME in field["path"] for field in problem["invalid_fields"])
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
