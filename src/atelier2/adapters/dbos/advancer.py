@@ -98,6 +98,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocumentNode,
     GraphInputSource,
+    WorkflowGraphV3,
 )
 from atelier2.ports.agent_tool_effects import (
     AgentToolEffectPending,
@@ -168,6 +169,7 @@ def graph_action_intent(
                 session,
                 run_id,
                 revision_hash,
+                graph,
                 predecessor,
                 producing,
                 project_id,
@@ -706,12 +708,15 @@ def _confirmed_push_branch(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
+    graph: WorkflowGraphV3,
     predecessor: AgentNodeV3,
     round_ordinal: int,
     project_id: ProjectId,
 ) -> HeadBranch:
     publication = confirmed_publication(
-        session, NodeInRun(run_id, revision_hash, predecessor.id, round_ordinal)
+        session,
+        graph,
+        NodeInRun(run_id, revision_hash, predecessor.id, round_ordinal),
     )
     if publication.branch != _head_branch(session, run_id, project_id):
         raise RunPublicationRefused(DISAGREES_WITH_OPEN_PR_HEAD)
