@@ -1,0 +1,7 @@
+claim_id = "036db7925ea54f689fc9cce201260120"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "6c9d599ca7aee6a62f88864dc53a67821d7214e3"
+branch = "claude/issue-1559-single-attester"
+scope = ["tests/integration/test_agent_process_supervisor.py"]
+opened_commit = "95b4097cc5b30288de1460502c568c5e13b649e4"
