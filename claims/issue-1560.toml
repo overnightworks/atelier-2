@@ -1,8 +1,0 @@
-claim_id = "bcd3325552eb49099a82006da6f115ed"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "536dd36fd1e73f3929ac7e021c64218b5866ce18"
-branch = "claude/issue-1560-one-logger-guard"
-scope = ["tests/conftest.py", "tests/integration/test_continuation_survives_version_change.py", "tests/integration/test_redeemed_proof.py", "tests/integration/test_api_round_trip.py", "tests/integration/test_wait_survives_version_change.py", "tests/integration/test_v3_wait_in_loop.py", "tests/integration/test_start_model_cast.py"]
-opened_commit = "b2044599e275c0b7f0ddf4cae4d9622c5e7c2fe2"
-whole_reason = "Ein Wachter und seine neun Anforderungen fallen zusammen; blieben Anforderungen stehen, zeigten sie auf eine Fixture, die es nicht mehr gibt."
