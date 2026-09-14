@@ -1,0 +1,8 @@
+claim_id = "1b6df3c3e02e4d009b7924e631fe24fc"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "536dd36fd1e73f3929ac7e021c64218b5866ce18"
+branch = "claude/issue-1563-cancel-wins-launch"
+scope = ["src/atelier2/adapters/dbos/agent_attempt_store.py", "src/atelier2/adapters/agent_processes.py", "tests/domain/test_agent_attempts.py", "tests/integration/test_agent_attempt_cancellation.py", "tests/integration/test_run_cancellation.py"]
+opened_commit = "1b2341b38548f9ee49900c9f72931497b4498eb4"
+whole_reason = "Die Regel, wer weicht, hat einen Owner und einen Entscheider; der Store-Test und der Handschlag-Test beweisen sie zusammen."
