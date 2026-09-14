@@ -472,7 +472,15 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         execution: AgentAttemptExecution,
         process_owner_id: AgentProcessOwnerId,
         watchdog_generation_id: WatchdogGenerationId,
-    ) -> AgentAttempt: ...
+    ) -> AgentAttempt | AgentAttemptPossiblyRan:
+        """Record that this attempt's process answered, unless a cancellation won.
+
+        A recorded cancellation explains a lost CAS here and is handed back
+        rather than raised, because the independently enqueued cancellation
+        workflow already owns finishing this attempt. Every other lost CAS
+        still raises.
+        """
+        ...
 
 
 class TransactionalAgentAttemptCanceller(Protocol):

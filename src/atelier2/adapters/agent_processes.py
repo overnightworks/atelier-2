@@ -38,7 +38,7 @@ from atelier2.contracts.agent_permissions import PermissionRequest
 from atelier2.contracts.agent_transcripts import TranscriptEvent
 from atelier2.contracts.agents import AgentExecutorRevision
 from atelier2.contracts.executions import AgentAttemptExecution
-from atelier2.ports.agent_attempts import AgentAttemptStore
+from atelier2.ports.agent_attempts import AgentAttemptPossiblyRan, AgentAttemptStore
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
     AgentProcessCompletion,
@@ -445,7 +445,11 @@ class AgentProcessSupervisor(AgentSession):
             )
             if launch_response.get("type") == "STARTED":
                 owned.launched = True
-                self._store.observe_process(execution, owned.owner, owned.generation)
+                observed = self._store.observe_process(
+                    execution, owned.owner, owned.generation
+                )
+                if isinstance(observed, AgentAttemptPossiblyRan):
+                    raise AgentProcessOwnerNotLocal
             elif launch_response.get("type") == "TERMINAL_BEFORE_START":
                 raise AgentProcessOwnerNotLocal
             else:
