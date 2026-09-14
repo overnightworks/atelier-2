@@ -8,13 +8,14 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
     AgentAttemptCancellationDisposition,
     AgentAttemptId,
     AgentAttemptProcessPhase,
+    AgentAttemptRedriveState,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
 )
-from atelier2.ports.agent_executions import AgentSession
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     NOTHING_IS_PERMITTED,
@@ -39,6 +40,7 @@ def _wait_for_observed_process(
 def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
+    runtime.launch()
     try:
         ready_file = tmp_path / "term-ready"
         execution = agent_attempt_execution(attempt_request(runtime, "process/term"))
@@ -73,7 +75,7 @@ def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
         _wait_for_observed_process(store, execution.attempt_id)
         _wait_for_file(ready_file)
 
-        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
@@ -88,6 +90,7 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
 ) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
+    runtime.launch()
     try:
         ready_file = tmp_path / "kill-ready"
         execution = agent_attempt_execution(attempt_request(runtime, "process/kill"))
@@ -122,7 +125,7 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
         _wait_for_observed_process(store, execution.attempt_id)
         _wait_for_file(ready_file)
 
-        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_KILL
@@ -137,6 +140,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
 ) -> None:
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
+    runtime.launch()
     descendant_pid_file = tmp_path / "descendant-pid"
     descendant_pid: int | None = None
     try:
@@ -186,7 +190,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
         _wait_for_file(ready_file)
         descendant_pid = _wait_for_process_id(descendant_pid_file)
 
-        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_KILL
@@ -202,6 +206,79 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
                     pass
         finally:
             runtime.close()
+
+
+def test_cancel_and_release_answers_with_what_the_workflow_already_attested(
+    tmp_path: Path,
+) -> None:
+    """`cancel_and_release` must not race the workflow it just enqueued.
+
+    Forces the exact interleave a loaded CI run can hit by hand: the durable
+    cancellation workflow is left to run to its own terminal cleanup, driven
+    directly through the store, before `cancel_and_release` is ever asked to
+    act on that same attempt. A helper that still attested cleanup itself
+    would collide with what the workflow already wrote; this one must only
+    read it back.
+    """
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    runtime.launch()
+    try:
+        ready_file = tmp_path / "interleave-ready"
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "process/interleave")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+        result: list[object] = []
+        waiter = threading.Thread(
+            target=lambda: result.append(
+                supervisor.launch_and_wait(
+                    execution,
+                    process_invocation(
+                        execution.attempt_id,
+                        (
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; import sys,time; Path(sys.argv[1]).touch(); time.sleep(60)",
+                            str(ready_file),
+                        ),
+                        Path.cwd(),
+                        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+                    ),
+                    NOTHING_IS_PERMITTED,
+                )
+            )
+        )
+        waiter.start()
+        _wait_for_observed_process(store, execution.attempt_id)
+        _wait_for_file(ready_file)
+
+        attempt = store.load(execution.attempt_id)
+        command = CancelAgentAttemptRequest(
+            attempt.run_id,
+            attempt.attempt_id,
+            "cancel-process",
+            attempt.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        store.request_cancellation(command)
+        converged = _wait_for_cancellation_cleanup(store, execution.attempt_id)
+        assert converged.cancellation is not None
+
+        disposition = cancel_and_release(store, execution.attempt_id)
+        waiter.join(timeout=5)
+
+        assert disposition is converged.cancellation.disposition
+        assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+        assert not waiter.is_alive()
+    finally:
+        runtime.close()
 
 
 def test_a_workspace_that_carries_its_own_atelier2_package_runs_none_of_it(
@@ -270,11 +347,39 @@ def _wait_for_process_id(path: Path) -> int:
     raise AssertionError("controlled process did not publish its process id")
 
 
+def _wait_for_cancellation_cleanup(
+    store: DbosAgentAttemptStore, attempt_id: AgentAttemptId
+) -> AgentAttempt:
+    """Wait for the durable cancellation workflow to attest its own cleanup.
+
+    `cancel_and_release` below enqueues that workflow and only reads what it
+    wrote, so this is the poll that answers once it has written it.
+    """
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        attempt = store.load(attempt_id)
+        if (
+            attempt.cancellation is not None
+            and attempt.cancellation.redrive_state
+            is AgentAttemptRedriveState.CLEANUP_ATTESTED
+        ):
+            return attempt
+        time.sleep(0.01)
+    raise AssertionError("the cancellation workflow never attested its cleanup")
+
+
 def cancel_and_release(
-    store: DbosAgentAttemptStore,
-    supervisor: AgentSession,
-    attempt_id: AgentAttemptId,
+    store: DbosAgentAttemptStore, attempt_id: AgentAttemptId
 ) -> AgentAttemptCancellationDisposition:
+    """Ask an attempt to stop, and read back what its one durable attester wrote.
+
+    The durable cancellation workflow this enqueues is the sole caller of
+    `AgentSession.cancel` and `attest_cancellation_cleanup` for a local-process
+    attempt, so driving either of those here too would make this helper a
+    second attester racing the workflow's own attestation. This only enqueues
+    the command and waits for the workflow's cleanup to converge, then answers
+    with the disposition it attested.
+    """
     attempt = store.load(attempt_id)
     command = CancelAgentAttemptRequest(
         attempt.run_id,
@@ -284,9 +389,8 @@ def cancel_and_release(
         AgentAttemptReplacement.NONE,
     )
     store.request_cancellation(command)
-    disposition, owner, generation = supervisor.cancel(store.load(attempt_id))
-    terminal = store.attest_cancellation_cleanup(
-        command, disposition, owner, generation
-    )
-    supervisor.release(terminal.attempt)
+    converged = _wait_for_cancellation_cleanup(store, attempt_id)
+    assert converged.cancellation is not None
+    disposition = converged.cancellation.disposition
+    assert disposition is not None
     return disposition

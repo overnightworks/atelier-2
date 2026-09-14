@@ -220,6 +220,7 @@ def _fenced_attempt(
     state_directory.mkdir()
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
+    runtime.launch()
     try:
         execution = agent_attempt_execution(attempt_request(runtime, name))
         store = DbosAgentAttemptStore(
@@ -513,7 +514,7 @@ def test_a_fenced_payload_is_asked_to_end_and_keeps_the_time_to_answer(
         try:
             _wait_for(attempt.workspace / "started")
             disposition = cancel_and_release(
-                attempt.store, attempt.supervisor, attempt.execution.attempt_id
+                attempt.store, attempt.execution.attempt_id
             )
         finally:
             launched.join(timeout=30)
