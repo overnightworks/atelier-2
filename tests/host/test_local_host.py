@@ -55,6 +55,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.github import GitHubConnectionUncomposable
 from atelier2.adapters.grok_subscription import (
+    AUTHENTICATION_FILE_NAME,
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
     GrokSubscriptionSettings,
@@ -98,7 +99,12 @@ from atelier2.contracts.provider_probe_receipts import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.when import RECORDED_AT_PATTERN, recorded_instant
-from atelier2.host import _claude_subscription_settings, main
+from atelier2.host import (
+    _claude_subscription_settings,
+    _codex_subscription_settings,
+    _grok_subscription_settings,
+    main,
+)
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.served_seat import SeatDeclaration
 from atelier2.host.serving import (
@@ -355,6 +361,7 @@ def served_settings(
     claude_start_refusal: str | None = None,
     grok_subscription: GrokSubscriptionSettings | None = None,
     grok_workspace_tools: bool = False,
+    grok_start_refusal: str | None = None,
     host: str = DEFAULT_HOST,
     scratch_root: Path | None = None,
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS,
@@ -398,6 +405,7 @@ def served_settings(
         claude_start_refusal=claude_start_refusal,
         grok_subscription=grok_subscription,
         grok_workspace_tools=grok_workspace_tools,
+        grok_start_refusal=grok_start_refusal,
         limits=api_limits(**tuning),
         sqlite_lock_timeout_seconds=sqlite_lock_timeout_seconds,
         project_id=project_id,
@@ -1712,3 +1720,162 @@ def test_the_store_waits_as_long_as_this_instance_was_configured_to_wait(
         assert runtime.settings.sqlite_lock_timeout_seconds == 3.5
     finally:
         runtime.close()
+
+
+def test_a_grok_deployment_without_auth_json_still_composes_and_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deleted `auth.json` used to raise out of settings construction and take
+    the whole house down with it; composing now succeeds and names no Grok
+    start refusal, because that file is judged per attempt, never at
+    composition.
+    """
+
+    deployment = tmp_path / "grok-deployment"
+    deployment.mkdir()
+    settings = grok_subscription_deployment(deployment, INTROSPECTING_GROK)
+    (settings.credential_directory / AUTHENTICATION_FILE_NAME).unlink()
+    monkeypatch.setenv("PATH", settings.search_path)
+    captured: dict[str, HostSettings] = {}
+
+    def fake_serve(host_settings: HostSettings) -> None:
+        captured["settings"] = host_settings
+
+    monkeypatch.setattr("atelier2.host.serve", fake_serve)
+
+    assert (
+        main(
+            serve_arguments(
+                tmp_path,
+                "--agent-scratch-root",
+                str(agent_scratch_root(tmp_path)),
+                "--grok-executable",
+                str(settings.executable),
+                "--grok-workspace",
+                str(settings.workspace),
+                "--grok-credential-directory",
+                str(settings.credential_directory),
+            )
+        )
+        == 0
+    )
+    served = captured["settings"]
+    assert served.grok_subscription is not None
+    assert served.grok_start_refusal is None
+
+
+def test_a_missing_grok_credential_directory_leaves_only_that_vector_unstartable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing credential directory names the Grok vector unstartable; the
+    house still serves, and an unrelated Claude vector stays startable.
+    """
+
+    grok_root = tmp_path / "grok-deployment"
+    grok_root.mkdir()
+    grok = grok_subscription_deployment(grok_root, INTROSPECTING_GROK)
+    monkeypatch.setenv("PATH", grok.search_path)
+
+    declared = _grok_subscription_settings(
+        argparse.ArgumentParser(),
+        argparse.Namespace(
+            grok_executable=grok.executable,
+            grok_workspace=grok.workspace,
+            grok_credential_directory=grok_root / "never-created-grok-home",
+            grok_workspace_tools=False,
+        ),
+    )
+    assert declared.settings is not None
+    assert declared.start_refusal is not None
+    assert "credential directory" in declared.start_refusal
+
+    claude_root = tmp_path / "claude-deployment"
+    claude_root.mkdir()
+    claude = claude_subscription_deployment(claude_root, INERT_CLAUDE)
+    settings = served_settings(
+        tmp_path,
+        claude_subscription=claude,
+        grok_subscription=declared.settings,
+        grok_start_refusal=declared.start_refusal,
+    )
+
+    app, runtime = compose_application(settings)
+    try:
+        with TestClient(app) as client:
+            health = client.get(API_PREFIX + "/health")
+            assert health.status_code == 200
+            assert health.json()["status"] == "serving"
+        registry = runtime.agent_executor_registry
+        assert GROK_SUBSCRIPTION_EXECUTOR_KEY in registry.keys
+        assert not registry.is_structurally_startable(
+            GROK_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+        )
+        assert registry.is_structurally_startable(
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_store_path_collision_still_refuses_the_whole_serve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A misconfiguration of the house itself -- not of one provider vector --
+    still refuses the whole start, unlike a single provider's credential.
+    """
+
+    frontend = tmp_path / "frontend"
+    (frontend / "assets").mkdir(parents=True)
+    (frontend / "index.html").write_text("index")
+    shared = tmp_path / "shared.sqlite"
+
+    with pytest.raises(SystemExit) as refusal:
+        main(
+            [
+                "serve",
+                "--database",
+                str(shared),
+                "--effect-store",
+                str(shared),
+                "--effect-adapter-revision",
+                "loopback-v1",
+                "--effect-destination",
+                "local",
+                "--application-version",
+                "t",
+                "--source-commit",
+                "c",
+                "--source-tree",
+                "t",
+                "--frontend-dist",
+                str(frontend),
+            ]
+        )
+
+    assert refusal.value.code == 2
+    assert "must be distinct" in capsys.readouterr().err
+
+
+def test_a_codex_deployment_without_auth_json_still_composes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex settings never judged `auth.json` content at composition, unlike
+    Grok's before this fix; this pins that it still does not.
+    """
+
+    deployment = tmp_path / "codex-deployment"
+    deployment.mkdir()
+    settings = codex_subscription_deployment(deployment)
+    (settings.credential_directory / AUTHENTICATION_FILE_NAME).unlink()
+    monkeypatch.setenv("PATH", settings.search_path)
+
+    declared = _codex_subscription_settings(
+        argparse.ArgumentParser(),
+        argparse.Namespace(
+            codex_executable=settings.executable,
+            codex_credential_directory=settings.credential_directory,
+            codex_sandbox=settings.sandbox.value,
+        ),
+    )
+
+    assert declared.settings is not None

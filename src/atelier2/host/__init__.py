@@ -42,11 +42,11 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
 )
 from atelier2.adapters.github import GitHubCredentialUnresolvable
-from atelier2.adapters.grok_capability import verify_grok_capability
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
     attest_grok_workspace_tool_invocation,
+    verify_grok_deployment,
 )
 from atelier2.adapters.project_verification import refuse_unusable_project_checkout
 from atelier2.application.project_connections import (
@@ -853,8 +853,8 @@ def _grok_subscription_settings(
         resolved_sandbox_executable(search_path),
     )
     try:
-        verify_grok_capability(settings.executable)
-    except GrokExecutableUnsupported as error:
+        verify_grok_deployment(settings)
+    except (ValueError, GrokExecutableUnsupported) as error:
         return _DeclaredSubscription(settings, start_refusal=str(error))
     tools_refusal = None
     if parsed.grok_workspace_tools:
