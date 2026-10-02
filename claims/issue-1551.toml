@@ -1,0 +1,8 @@
+claim_id = "5c9c8cd3d7f04ab39645ea134276813b"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "26eca2178b89725ab77c4745a5836aa561ec13b4"
+branch = "claude/issue-1551-loop-last-round"
+scope = ["docs/decisions/0014-in-graph-rounds.md", "src/atelier2/adapters/dbos/advancer.py", "src/atelier2/adapters/dbos/run_store.py", "src/atelier2/contracts/workflow_executability.py", "src/atelier2/contracts/workflows.py", "tests/domain", "tests/integration"]
+opened_commit = "e662427a7f390660c78d769042db847d76f38029"
+whole_reason = "Eine Regel mit einem Owner und zwei Aufrufern, die gleich antworten muessen, plus die Verweigerung, die sie ersetzt, und ihr ADR-Satz: getrennt stuende eine Laufzeit, die anders liest, als die Grammatik erlaubt."
