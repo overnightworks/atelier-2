@@ -166,12 +166,12 @@ from atelier2.ports.published_revisions import (
 )
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import (
+    HOST_ENFORCER,
     agent_scratch_root,
     claude_subscription_deployment,
     failing_agent_executor_factory,
     process_invocation,
     publish_checked_model_registry,
-    stand_in_bubblewrap,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.durable_state import (
@@ -2022,7 +2022,7 @@ def _decoded_by_grok(directory: Path, payload: bytes) -> AgentExecutionResult:
                 workspace,
                 credentials,
                 os.environ.get("PATH", "/usr/bin"),
-                stand_in_bubblewrap(directory),
+                HOST_ENFORCER,
             )
         )
         .open()

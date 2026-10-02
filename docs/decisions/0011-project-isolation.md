@@ -236,7 +236,12 @@ actually carry it, because one of them exists and the other does not:
   Stopping the *placed process* from reading B's root or a credential directory
   is the OS mechanism #632 owns — its file grant, which one vector now runs
   behind, its network allowlist, which nothing enforces yet, and its functional
-  probe. ADR 0009 already wrote the bound this record
+  probe. The probe runs only two fixed commands, so it cannot by itself tell a
+  real fence from a proxy that recognises their shape; what an enforcer counts
+  as is decided first by its provenance — the resolved binary and every
+  directory above it to `/` must belong to root and admit no write beyond it,
+  OpenSSH `StrictModes` for one executable — and a serve start whose enforcer
+  fails that is refused by name rather than served unfenced. ADR 0009 already wrote the bound this record
   consumes: the same-UID acceptance holds only while the whole boundary is one
   machine under one OS user, and it **ends** at "a second OS user or a second
   project sharing the host (#23)". A second project is precisely the event that
