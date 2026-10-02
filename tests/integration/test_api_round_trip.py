@@ -158,7 +158,7 @@ nodes:
 
 
 @pytest.fixture
-def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     """A runtime whose agents succeed, so the line reaches the person and ends."""
 
     started = DbosRuntime(
