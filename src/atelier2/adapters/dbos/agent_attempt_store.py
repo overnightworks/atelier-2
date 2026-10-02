@@ -712,6 +712,16 @@ def _require_attempt_binding(
         raise RunTransitionConflict("durable agent attempt differs from exact retry")
 
 
+_STATES_A_RECORDED_CANCELLATION_EXPLAINS = frozenset(
+    {
+        AgentAttemptState.CANCEL_REQUESTED,
+        AgentAttemptState.CANCELLED,
+        AgentAttemptState.INTERRUPTED,
+    }
+)
+"""Where a call that expected `LAUNCH_ARMED` may yield instead of raising."""
+
+
 def _require_completed_attempt_head(
     connection: Any,
     run: RunV2 | RunV3,
@@ -1804,11 +1814,7 @@ class DbosAgentAttemptStore:
                 return AgentAttemptPossiblyRan(durable)
             if durable.state is AgentAttemptState.FAILED:
                 return AgentAttemptFailed(durable)
-            if durable.state in {
-                AgentAttemptState.CANCEL_REQUESTED,
-                AgentAttemptState.CANCELLED,
-                AgentAttemptState.INTERRUPTED,
-            }:
+            if durable.state in _STATES_A_RECORDED_CANCELLATION_EXPLAINS:
                 return AgentAttemptPossiblyRan(durable)
             if durable.state is AgentAttemptState.SUCCEEDED:
                 completion = completion_after_node(
@@ -1880,7 +1886,14 @@ class DbosAgentAttemptStore:
         execution: AgentAttemptExecution,
         process_owner_id: AgentProcessOwnerId,
         watchdog_generation_id: WatchdogGenerationId,
-    ) -> AgentAttempt:
+    ) -> AgentAttempt | AgentAttemptPossiblyRan:
+        """Record that this attempt's process answered, unless a cancellation won.
+
+        A cancellation recorded first is not a conflict this call caused, so it
+        yields to it rather than raising: the independently enqueued
+        cancellation workflow already owns finishing the attempt.
+        """
+
         with canonical_write_transaction(self._engine) as connection:
             _validate_request(
                 connection,
@@ -1917,6 +1930,9 @@ class DbosAgentAttemptStore:
                 )
             )
             if updated.rowcount != 1:
+                lost_to = _load_attempt(connection, durable.attempt_id)
+                if lost_to.state in _STATES_A_RECORDED_CANCELLATION_EXPLAINS:
+                    return AgentAttemptPossiblyRan(lost_to)
                 raise RunTransitionConflict("process observation lost its attempt CAS")
             return _load_attempt(connection, durable.attempt_id)
 

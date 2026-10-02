@@ -36,11 +36,14 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
+    AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    WatchdogGenerationId,
 )
 from atelier2.contracts.agent_permissions import GRANTS_NOTHING
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import (
+    AgentAttemptExecution,
     RunEvent,
     RunEventCancellationBinding,
     RunEventKind,
@@ -392,6 +395,96 @@ def test_durable_cancellation_workflow_reaps_the_exact_running_process(
         assert len(failures) == 1
         assert isinstance(failures[0], RunTransitionConflict)
         assert len(executor.released_commands) == 1
+    finally:
+        runtime.close()
+
+
+def test_a_cancellation_during_the_launch_handshake_ends_the_node_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel racing the launch handshake must not error the node's own step.
+
+    Interleaved through `observe_process` itself -- the one seam between the
+    watchdog's `STARTED` answer and its durable recording -- rather than by
+    timing: every call blocks until the main thread has committed the
+    cancellation, so the race is deterministic however fast a real watchdog
+    handshake runs.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/launch-handshake")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        executor = inspecting_executor(runtime, delay_seconds=60)
+        outcomes: list[object] = []
+        worker_failures: list[BaseException] = []
+        reached_observation = threading.Event()
+        cancellation_recorded = threading.Event()
+        original_observe_process = DbosAgentAttemptStore.observe_process
+
+        def synchronized_observe_process(
+            self: DbosAgentAttemptStore,
+            execution: AgentAttemptExecution,
+            process_owner_id: AgentProcessOwnerId,
+            watchdog_generation_id: WatchdogGenerationId,
+        ) -> object:
+            reached_observation.set()
+            assert cancellation_recorded.wait(timeout=5)
+            return original_observe_process(
+                self, execution, process_owner_id, watchdog_generation_id
+            )
+
+        def record_worker_failure(args: threading.ExceptHookArgs) -> None:
+            if args.exc_value is not None:
+                worker_failures.append(args.exc_value)
+
+        monkeypatch.setattr(
+            DbosAgentAttemptStore, "observe_process", synchronized_observe_process
+        )
+        monkeypatch.setattr(threading, "excepthook", record_worker_failure)
+
+        def run_attempt() -> None:
+            outcomes.append(
+                execute_agent_attempt(
+                    execution,
+                    executor,
+                    store,
+                    runtime.agent_process_supervisor,
+                    runtime_workspace_owner(runtime),
+                    permissions=GRANTS_NOTHING,
+                    workspace_files=workspace_files_nobody_opens,
+                )
+            )
+
+        worker = threading.Thread(target=run_attempt)
+        worker.start()
+        assert reached_observation.wait(timeout=5)
+        current = store.load(execution.attempt_id)
+        result = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                current.run_id,
+                current.attempt_id,
+                "cancel-launch-handshake",
+                current.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(result, AgentAttemptCancellationAccepted)
+        cancellation_recorded.set()
+        runtime.launch()
+
+        terminal = _wait_for_attempt_state(
+            store, execution.attempt_id, AgentAttemptState.CANCELLED
+        )
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert not worker_failures
+        assert terminal.cancellation is not None
     finally:
         runtime.close()
 
