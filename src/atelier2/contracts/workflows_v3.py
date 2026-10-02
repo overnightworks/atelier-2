@@ -324,6 +324,12 @@ class LoopDeclaration(_ClosedV3Model):
     repeat_while: LoopVerdictCondition | None = None
 
 
+class StartsFromNode(_ClosedV3Model):
+    """Whose publication a node goes on working in (ADR 0006)."""
+
+    node: NonemptyString
+
+
 class _NodeV3(_ClosedV3Model):
     id: NonemptyString
     depends_on: Annotated[tuple[NonemptyString, ...], DeclaredSequence] = ()
@@ -356,6 +362,7 @@ class AgentNodeV3(_NodeV3):
     profile: VersionedReference | None = None
     skills: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
     tools: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
+    starts_from: StartsFromNode | None = None
     policy: VersionedReference | None = None
     required_context: Annotated[tuple[RequiredContextEntry, ...], DeclaredSequence] = ()
     available_context: Annotated[
@@ -542,12 +549,7 @@ def is_previous_round_data_edge(
 
 
 type AnyWorkflowDocument = WorkflowGraphV3
-"""Every executable document format the runtime loads.
-
-One name because callers across the durable layer already spell it, not
-because more than one format exists behind it (#901 slice 5 retired the V1/V2
-document grammar this alias once spanned).
-"""
+"""Every executable document format the runtime loads: one, under a name many spell."""
 
 type AnyWorkflowDocumentNode = WorkflowNodeV3
 
@@ -566,11 +568,8 @@ class MultipleSinkCompletionUnsupported(ValueError):
 class BranchingAdvanceUnsupported(ValueError):
     """A node's successor is not one declared edge, so no linear rule fits.
 
-    The typed shape exists before the edge it guards: while only a single V3 node
-    was startable this could not be reached at all, and a bare `ValueError` there
-    would have surfaced through the attempt path as an unhandled error on the day
-    it became reachable. Naming it is what lets the caller that opens fan-out --
-    the ready set of #86 -- refuse in its own words instead of crashing.
+    Named rather than left a bare `ValueError`, so whichever caller opens fan-out
+    refuses in its own words instead of crashing the attempt path.
     """
 
     def __init__(self, node_id: str, dependents: tuple[str, ...]) -> None:

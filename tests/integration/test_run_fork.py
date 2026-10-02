@@ -7,9 +7,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import OperationalError
 
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
+    effect_intents,
     node_execution_requests_v3,
     node_receipts_v3,
     run_agent_bindings,
@@ -24,21 +26,35 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
-from atelier2.contracts.agents import AgentExecutionCapability
+from atelier2.application.evaluate_executability import (
+    ExecutableDocument,
+    resolve_document_references,
+)
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.agents import AgentBindingSetHash, AgentExecutionCapability
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.run_forks import (
     MAXIMUM_RUN_FORK_SUCCESSORS,
     RunForkCommandId,
     successor_run_id_for,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
+from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_run_forks import (
     DurableRunForkCapabilityUnavailable,
     DurableRunForkCommandConflict,
     DurableRunForkCreated,
+    DurableRunForkDocumentNotExecutable,
     DurableRunForkExecutorUnavailable,
     DurableRunForkExisting,
     DurableRunForkLoopUnsupported,
@@ -88,6 +104,14 @@ from tests.scenarios.durable_state import (
     canonical_loopback_effects,
     canonical_runtime_settings,
 )
+from tests.scenarios.publishing_runs import (
+    BUILD,
+    Publisher,
+    push_grant,
+    push_operation,
+    workflow_document,
+)
+from tests.scenarios.runs import publish_pinned_revisions
 from tests.scenarios.workflows import LOOPED_LINE_DOCUMENT
 
 
@@ -611,6 +635,161 @@ def test_run_projection_refuses_more_than_one_bounded_successor_lineage(
             )
 
         assert durable_queries(runtime.engine).get_run(RUN) == ProjectionTooLarge()
+    finally:
+        runtime.close()
+
+
+SILENT_SECOND_PUBLISHER = Publisher("fix", depends_on=("build",))
+"""A second publisher naming no `starts_from`: a document no start admits today."""
+
+
+RUN_OF_OTHER_RULES = RunId("v3/started-under-other-rules")
+"""The finished run whose document this build would refuse to start today."""
+
+
+def _frozen_configuration(
+    runtime: DbosRuntime, revision: WorkflowRevision, binding_set_hash: str
+) -> RunConfigurationRevision:
+    """What a build whose rules admitted this document froze when it started it.
+
+    Built from the document's own resolved references, so the seeded run stands
+    on the configuration a real start writes rather than on a stand-in that
+    would refuse the fork as corrupt before it is judged at all.
+    """
+
+    graph = parse_workflow_document(revision.document)
+    assert isinstance(graph, WorkflowGraphV3), graph
+    resolved = resolve_document_references(graph, DbosCatalogStore(runtime.engine))
+    assert isinstance(resolved, ExecutableDocument), resolved
+    return RunConfigurationRevision(
+        WorkflowRevisionHash(revision.revision_hash.value),
+        AgentBindingSetHash(binding_set_hash),
+        resolved.resolutions,
+    )
+
+
+def _finished_run_of(runtime: DbosRuntime, revision: WorkflowRevision) -> None:
+    """Seed a finished run bound to this document, as the build that ran it left it.
+
+    A run's bindings are immutable and no door of this build starts a document
+    with a silent second publisher, so the only run of one is a run an earlier
+    build's rules admitted. It stands on the bindings and the terminal fact the
+    origin of this module already carries, and on the configuration that build
+    would have frozen for it.
+    """
+
+    with runtime.engine.connect() as connection:
+        origin = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+        bindings = (
+            connection.execute(
+                sa.select(run_agent_bindings).where(
+                    run_agent_bindings.c.run_id == RUN.value
+                )
+            )
+            .mappings()
+            .all()
+        )
+        configuration = _frozen_configuration(
+            runtime, revision, str(origin["agent_binding_set_hash"])
+        )
+        connection.execute(
+            run_configuration_revisions.insert().values(
+                revision_hash=configuration.revision_hash.value,
+                preimage=configuration.preimage,
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id=RUN_OF_OTHER_RULES.value,
+                bootstrap_workflow_id=f"bootstrap-{RUN_OF_OTHER_RULES.value}",
+                revision_hash=revision.revision_hash.value,
+                workflow_format_version=origin["workflow_format_version"],
+                run_configuration_revision_hash=configuration.revision_hash.value,
+                agent_binding_set_hash=origin["agent_binding_set_hash"],
+                current_node_id=SILENT_SECOND_PUBLISHER.node_id,
+                current_round_ordinal=origin["current_round_ordinal"],
+                state=RunState.COMPLETED.value,
+                state_version=origin["state_version"],
+                last_event_sequence=0,
+                terminal_hash=origin["terminal_hash"],
+            )
+        )
+        connection.execute(
+            run_agent_bindings.insert(),
+            [
+                {
+                    **dict(binding),
+                    "run_id": RUN_OF_OTHER_RULES.value,
+                    "revision_hash": revision.revision_hash.value,
+                }
+                for binding in bindings
+            ],
+        )
+        connection.commit()
+
+
+def test_fork_refuses_a_document_this_build_would_no_longer_start(
+    tmp_path: Path,
+) -> None:
+    """A fork enqueues a successor of the origin's document, so it asks what a
+    start asks: a document whose rules admitted it when the origin ran, and
+    which this build refuses, is refused here rather than carried to a claim."""
+
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        operation = push_operation()
+        grant = push_grant(operation)
+        publish_pinned_revisions(runtime.engine, operation, grant)
+        unadmitted = WorkflowRevision(
+            workflow_document("two-publishers", (BUILD, SILENT_SECOND_PUBLISHER), grant)
+        )
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(unadmitted)
+        _finished_run_of(runtime, unadmitted)
+
+        refused = starter.fork_run(
+            ForkRunRequest(RUN_OF_OTHER_RULES, "other-rules", BUILD.node_id)
+        )
+
+        assert isinstance(refused, DurableRunForkDocumentNotExecutable)
+        assert SILENT_SECOND_PUBLISHER.node_id in refused.reason
+        assert "starts_from" in refused.reason
+        successor = successor_run_id_for(
+            RunForkCommandId.for_request(RUN_OF_OTHER_RULES, "other-rules")
+        )
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(runs)
+                    .where(runs.c.run_id == successor.value)
+                )
+                == 0
+            )
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_forks))
+                == 0
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(effect_intents)
+                    .where(
+                        effect_intents.c.operation_name
+                        == AdapterOperationName.CLAIM_WORK_ITEM.value
+                    )
+                )
+                == 0
+            )
+
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "admitted", "review")),
+            DurableRunForkCreated,
+        )
     finally:
         runtime.close()
 

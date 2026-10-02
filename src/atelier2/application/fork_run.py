@@ -12,6 +12,7 @@ from atelier2.ports.durable_run_forks import (
     DurableRunForkCapabilityUnavailable,
     DurableRunForkCommandConflict,
     DurableRunForkCreated,
+    DurableRunForkDocumentNotExecutable,
     DurableRunForker,
     DurableRunForkExecutorUnavailable,
     DurableRunForkExisting,
@@ -78,6 +79,13 @@ class RunForkCapabilityUnavailable:
     pass
 
 
+@dataclass(frozen=True)
+class RunForkDocumentNotExecutable:
+    """This build refuses to start the document the origin run was started under."""
+
+    reason: str
+
+
 type ForkRunResult = (
     RunForkCreated
     | RunForkExisting
@@ -89,6 +97,7 @@ type ForkRunResult = (
     | RunForkCommandConflict
     | RunForkExecutorUnavailable
     | RunForkCapabilityUnavailable
+    | RunForkDocumentNotExecutable
     | AgentModeMismatch
     | WriteUnavailable
     | DurableStateCorrupt
@@ -125,6 +134,8 @@ def fork_run(
             return RunForkExecutorUnavailable()
         case DurableRunForkCapabilityUnavailable():
             return RunForkCapabilityUnavailable()
+        case DurableRunForkDocumentNotExecutable(reason):
+            return RunForkDocumentNotExecutable(reason)
         case AgentModeMismatch() as refused:
             return refused
         case DurableRunForkWriteUnavailable(detail):

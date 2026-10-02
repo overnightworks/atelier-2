@@ -125,6 +125,8 @@ REACHED_BY_A_SITE_VULTURE_CANNOT_SEE = (
             "adapters/dbos/node_binding_codec.py:project_commit",
             "adapters/dbos/node_binding_codec.py:project_tree",
             "adapters/dbos/node_binding_codec.py:output_schema_document",
+            "adapters/dbos/node_binding_codec.py:start_candidate_attempt",
+            "adapters/dbos/node_binding_codec.py:start_candidate_tree",
         ),
         "why": (
             "TypedDict keys adapters/dbos/node_binding_codec.py reads as string "

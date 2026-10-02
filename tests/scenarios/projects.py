@@ -27,7 +27,10 @@ from atelier2.contracts.project_sources import (
     ProjectSourcePin,
 )
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
-from atelier2.ports.candidate_store import LeasedWorkingTree
+from atelier2.ports.candidate_store import (
+    CandidateStoreUnavailable,
+    LeasedWorkingTree,
+)
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -79,6 +82,23 @@ class CandidatesKeptInMemory:
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
         return self.kept.get(attempt_id)
+
+    def attest(self, candidate: CandidateTree) -> None:
+        if self.kept.get(candidate.attempt_id) != candidate:
+            raise CandidateStoreUnavailable(f"nothing here keeps {candidate.tree}")
+
+    def materialize(
+        self, candidate: CandidateTree, lease: AgentAttemptWorkspaceLease
+    ) -> None:
+        """Unpack nothing: a scenario continuing real work drives the real store.
+
+        Answering at all would have this fake decide what an attempt begins in,
+        and a test asserting on that would be asserting on this file.
+        """
+        raise CandidateStoreUnavailable(
+            f"{candidate.tree} cannot be unpacked into {lease.attempt_id.value} "
+            "by a store that keeps no objects"
+        )
 
     def written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease

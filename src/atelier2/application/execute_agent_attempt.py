@@ -221,7 +221,7 @@ def execute_agent_attempt(
             return claim
         lease = workspaces.acquire(execution.attempt_id)
         if project is not None:
-            project.source.materialize(project.pin, lease)
+            project.materialize(lease)
         authority = _DecisionsKeptBeforeTheyAnswer(
             execution.attempt_id, PolicyPermissionDecider(permissions), store, clock
         )
@@ -256,10 +256,10 @@ def execute_agent_attempt(
 def _preflight_pinned_project(
     project: PinnedProjectSource | None, artifacts: ArtifactPublisher | None
 ) -> None:
-    """Attest the pin and its declared verification before anything is claimed."""
+    """Attest what this attempt begins in, and its check, before anything is claimed."""
     if project is None:
         return
-    project.source.attest(project.pin)
+    project.attest()
     if project.grant is None:
         return
     project.verifications.preflight(project.pin)

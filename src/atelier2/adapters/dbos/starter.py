@@ -751,7 +751,10 @@ class DbosDurableRunStarter:
         from atelier2.adapters.dbos.run_fork_store import DbosRunForkStore
 
         return DbosRunForkStore(
-            self._engine, self._settings, self._agent_executor_registry
+            self._engine,
+            self._settings,
+            self._agent_executor_registry,
+            self._published_revisions,
         ).fork_run(request)
 
     def start_published(
