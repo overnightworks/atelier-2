@@ -427,7 +427,6 @@ def durable_events(runtime: DbosRuntime) -> list[tuple[str, int, str]]:
 def test_one_public_run_keeps_three_attributed_turns_and_classifies_repeats(
     tmp_path: Path,
     recording: RecordingAgentExecutorFactoryV2,
-    dbos_logging_isolation: None,
 ) -> None:
     started = runtime_over(tmp_path, recording)
     started.initialize_storage()
@@ -646,7 +645,6 @@ def test_one_public_run_keeps_three_attributed_turns_and_classifies_repeats(
 def test_a_bound_wait_keeps_its_execution_after_a_later_loop_turns(
     tmp_path: Path,
     recording: RecordingAgentExecutorFactoryV2,
-    dbos_logging_isolation: None,
 ) -> None:
     """A later loop's round cannot change which durable pause detail displays."""
     recording.command = answering_each_execution(

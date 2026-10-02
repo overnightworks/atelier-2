@@ -36,7 +36,7 @@ ROOT_FILES = frozenset(
 )
 ROOT_DIRECTORIES = frozenset(
     {
-        ".agent-claim",
+        ".aco",
         ".github",
         "acceptance",
         "docs",
