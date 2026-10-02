@@ -683,7 +683,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from git+https://github.com/overnightworks/agent-coordination.git@v4.0.0 aco --repo ${{ github.repository }} check ${{ github.event.pull_request.number }}
+        run: uvx --from git+https://github.com/overnightworks/agent-coordination.git@v4.1.0 aco --repo ${{ github.repository }} check ${{ github.event.pull_request.number }}
 
       - name: Hold the required check name for the merge queue
         if: ${{ github.event_name == 'merge_group' }}
