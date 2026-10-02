@@ -174,7 +174,11 @@ attempt of one that already published -- stands where that publication stands,
 so the commit replacing the branch head keeps the same parent instead of
 dropping what trunk gained beside the run. Where a run's own graph orders two
 publications only beside each other, nothing is pinned and the node is refused
-by name rather than resolved by which receipt happens to be newer.
+by name rather than resolved by which receipt happens to be newer. An open-PR
+Action whose body reads the report of a node another publisher of the same run
+has published after is refused the same way, naming both nodes, and opens
+nothing: the branch already carries the later commit, so a pull request over the
+overtaken report would describe something other than the head it shows.
 A destination that answers and holds nothing, asked before anything was sent,
 has said so: a remote read that succeeds and advertises no
 such ref, and a pull request listing for that exact head branch answered with
@@ -330,12 +334,27 @@ not startability, and because a Clap refusal without an isolated home can exit
 credentials and an empty inline prompt in a private `HOME`, and reads that
 the CLI did not refuse an argument, with an unknown flag beside it as the
 control; the marker is `unexpected argument`. Neither call reaches a model.
-The executor claims no operating-system isolation, does not use
-`--always-approve`, and does not pretend parse-time ID validation: the process
-runs as the serving user and its tools reach what that user reaches. What a
-real answer may reach with those tools is still the half a billed secret-file
-probe has to establish under the operator's gate, which is why nothing composes
-this executor unless an operator armed it by name.
+This is the call the operating system fences. Every start of this vector — both
+composition probes and the launch itself — is composed by one transformation
+into a bubblewrap invocation, so what a probe attests is what later runs.
+Inside it the child reads its own executable, the system roots any program
+needs and the few `/etc` files a tool that speaks HTTPS reads; it writes the
+private `HOME` this invocation prepared and works in the attempt's workspace,
+which arrives as the descriptor the launcher verified rather than as a path
+something else could stand in for. The account's keys, the live store, every
+other checkout and whatever happens to stand on the deployment's search path
+have no name in that namespace, and the child holds no descriptor of this host
+through which it could walk to one. What a real toolchain needs beyond that
+grant is a named gap on the item that owns this fence rather than a widening.
+Its network stays,
+because the call reaches its own API, so what a credential may send is bounded
+by trust and not by the fence, and this host's own loopback and abstract unix
+sockets stay in reach with it until a network boundary owns them. A deployment whose host cannot draw the boundary
+refuses this executor at serve start instead of serving it open. The executor
+does not use `--always-approve` and does not pretend parse-time ID validation.
+What a real answer may reach with those tools is still the half a billed
+secret-file probe has to establish under the operator's gate, which is why
+nothing composes this executor unless an operator armed it by name.
 
 Codex sits behind the same boundary, declared the same way and composed
 alongside Claude rather than instead of it. Its CLI has no prompt-file flag, so
