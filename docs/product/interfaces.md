@@ -63,7 +63,7 @@ stream is the subscription. The Workbench holds that stream, so a wait that open
 watches appears without a reload and without `POST /subscriptions`. The feed is closed to
 `WAITING_INPUT`, `AGENT_FAILED`, and `ACTION_RECONCILIATION_REQUIRED` — the
 events that stop a run until an operator acts — in the same envelope and
-`VersionedRunEventResource` the per-run stream emits. A run whose projection cannot be served is named on this feed as `RUN_PROJECTION_CORRUPT` (`durable-state-corrupt`, `public_run_reference`) and does not end the subscription; that run's own event stream still ends with `STREAM_FAILED`. `Last-Event-ID` resumes by same-instant identity
+`VersionedRunEventResource` the per-run stream emits. A run whose projection cannot be served is named on this feed as `RUN_PROJECTION_CORRUPT` (`durable-state-corrupt`, `public_run_reference`) and does not end the subscription; the Workbench stands it beside the run list's defective rows, named by its reference, until the page is loaded again, and that run's own event stream still ends with `STREAM_FAILED`. `Last-Event-ID` resumes by same-instant identity
 exclusion: from that event1's instant T,
 `recorded_at > T OR (recorded_at == T AND (run_id, seq) not among identities
 already emitted at T)`. Last-Event-ID seeds the set with that cursor only; a
