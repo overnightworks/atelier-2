@@ -11,6 +11,8 @@ from agent_providers.config import reset_config
 if TYPE_CHECKING:
     from atelier2.adapters.dbos.runtime import _DbosProcessOwner
 
+pytest_plugins = ["pytester"]
+
 PROOF_MARKER = "proves"
 DBOS_RUNTIME_MODULE = "atelier2.adapters.dbos.runtime"
 DBOS_LOGGER_NAME = "dbos"
@@ -79,18 +81,6 @@ def dbos_runtime_binding_is_left_free() -> Iterator[None]:
 )
 def malformed_open_pr_payload(request: pytest.FixtureRequest) -> bytes:
     return request.param
-
-
-@pytest.fixture
-def dbos_logging_isolation() -> Iterator[None]:
-    """Keep DBOS from flushing capture handlers another test has closed."""
-    root = logging.getLogger()
-    inherited = root.handlers[:]
-    root.handlers = []
-    try:
-        yield
-    finally:
-        root.handlers = inherited
 
 
 @pytest.fixture
