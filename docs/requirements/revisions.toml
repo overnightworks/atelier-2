@@ -80,3 +80,11 @@ content_sha256 = "631153ada14adce257d8aa9e965ed0e9018a82823128e2d0427539b533c2c3
 approval_comment_id = 5483761781
 approval_sha256 = "7bc00a993fda37bcab88bcf81c4a7bfa2f3bb1964fcdafe4e29ac7fea12ab3ee"
 predecessor = "ee06111e30a0e7d1fa1c688e87888508696da40bab00caabf8a34c1b91874360"
+
+[[revision]]
+document = "0003"
+path = "docs/requirements/0003-ziel-ui.md"
+content_sha256 = "1fef5a56685065fd3839571144cff536ae96d2e4151de32c3db54770901d6935"
+approval_comment_id = 5647475300
+approval_sha256 = "3e9509be33e286838adc9e229e82f95e2b7adc1d93b784dbd77b9ca19e3dd6f7"
+predecessor = "631153ada14adce257d8aa9e965ed0e9018a82823128e2d0427539b533c2c3b9"
