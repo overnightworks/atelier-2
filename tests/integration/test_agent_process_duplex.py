@@ -10,6 +10,7 @@ for a fake proves the fake.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -194,10 +195,13 @@ os.write(1, update[24:] + b"\n")
 answer(prompt["id"], {"stopReason": "end_turn"})
 """
 
-_PROVIDER_SPLITS_ONE_FRAME_AND_COALESCES_TWO = r"""
-import os, time
+# It holds the second half back on a pipe of its own, so the write only
+# happens once the relay has proven it read the first half -- a real barrier
+# where a fixed pause would just be a guess a loaded machine can beat.
+_PROVIDER_SPLITS_ONE_FRAME_AFTER_ITS_FIRST_HALF_IS_READ = r"""
+import os, sys
 os.write(1, b'{"say":"one')
-time.sleep(0.2)
+open(sys.argv[1], "rb").read(1)
 os.write(1, b'"}\n{"say":"two"}\n{"say":"three"}\n')
 """
 
@@ -727,20 +731,29 @@ def test_a_refused_question_reaches_the_child_as_the_refusal_it_was(
 def test_split_and_coalesced_frames_reach_the_conversation_whole(
     tmp_path: Path,
 ) -> None:
+    first_half_read = tmp_path / "first-half-read"
+    os.mkfifo(first_half_read)
     with _claimed_attempt(tmp_path, "process/framing") as attempt:
         conversation = _LineFramedConversation(attempt.execution.attempt_id)
         invocation = attempt.invocation(
-            _PROVIDER_SPLITS_ONE_FRAME_AND_COALESCES_TWO,
+            _PROVIDER_SPLITS_ONE_FRAME_AFTER_ITS_FIRST_HALF_IS_READ,
+            str(first_half_read),
             conversation=_binding(conversation),
         )
 
-        completion = attempt.launch(invocation, _RecordingAuthority()).completion
+        launch = attempt.launch(invocation, _RecordingAuthority())
+        _wait_until(
+            lambda: bool(conversation.chunks), "read the split frame's first half"
+        )
+        first_half_read.write_bytes(b"go")
+        completion = launch.completion
 
         assert completion.session_events == tuple(
             AssistantTurn(f'{{"say":"{spoken}"}}') for spoken in ("one", "two", "three")
         )
-        # The child paused mid-frame, so the relay really did hand over a
-        # partial one -- without that the reassembly above proves nothing.
+        # The child held its second write behind the pipe read above, so the
+        # relay really did hand over a partial frame -- without that the
+        # reassembly here proves nothing.
         assert len(conversation.chunks) > 1
         assert b"".join(conversation.chunks) == completion.standard_output
         attempt.finalize_after_failure()

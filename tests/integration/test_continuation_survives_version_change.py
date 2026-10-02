@@ -452,7 +452,7 @@ def child_main(continuation: str, root: Path, barrier: str, marker: Path) -> Non
 
 @pytest.mark.parametrize("barrier", ("ENQUEUED", "PENDING"))
 def test_an_accepted_answer_continues_once_after_a_version_change(
-    tmp_path: Path, barrier: str, dbos_logging_isolation: None
+    tmp_path: Path, barrier: str
 ) -> None:
     first = wait_runtime(tmp_path, VERSION_X)
     first.initialize_storage()
@@ -523,7 +523,7 @@ def test_an_accepted_answer_continues_once_after_a_version_change(
 
 @pytest.mark.parametrize("barrier", ("ENQUEUED", "PENDING"))
 def test_an_accepted_reconciliation_continues_once_after_a_version_change(
-    tmp_path: Path, barrier: str, dbos_logging_isolation: None
+    tmp_path: Path, barrier: str
 ) -> None:
     first = effect_runtime(tmp_path, VERSION_X)
     first.initialize_storage()
