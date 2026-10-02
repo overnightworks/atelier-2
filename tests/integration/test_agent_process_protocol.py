@@ -45,6 +45,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_SIGNED_INT64,
     AgentExecutionResult,
 )
+from atelier2.contracts.sandbox_grants import SandboxedLaunch, SandboxGrants
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
 from atelier2.ports.agent_executions import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
@@ -1479,6 +1480,41 @@ def _receive_control(connection: socket.socket) -> dict[str, object]:
     assert isinstance(response, dict)
     assert encode_control_frame(response) == bytes(response_bytes)
     return response
+
+
+def test_a_measured_prompt_still_fits_the_launch_frame_with_a_fence_beside_it(
+    tmp_path: Path,
+) -> None:
+    """The longest prompt a provider was measured with is not the frame's only
+    passenger any more: the whole grant travels in the same launch request, and
+    a fence that pushed the measured prompt over the bound would be a boundary
+    that quietly shortened jobs."""
+
+    grants = SandboxGrants(
+        (tmp_path / "atelier2-grok-job-5f3a9c",),
+        (
+            Path.home() / ".local/share/atelier2-toolchains/grok-1.0.5/grok",
+            Path("/usr"),
+            Path("/etc"),
+            Path("/bin"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path("/sbin"),
+            Path.home() / ".local/bin",
+            Path.home() / "bin",
+            Path("/snap/bin"),
+        ),
+    )
+    invocation = process_invocation(
+        AgentAttemptId.of(b"fenced-launch-frame-bound"),
+        ("/toolchains/grok", "-p", "p" * 30_000),
+        tmp_path / "workspace",
+        sandbox=SandboxedLaunch(Path("/usr/bin/bwrap"), grants),
+    )
+
+    frame = encode_control_frame(process_module._launch_request(invocation))
+
+    assert len(frame) <= MAXIMUM_AGENT_LAUNCH_REQUEST_BYTES
 
 
 def test_a_launch_request_without_the_directory_identity_is_refused_by_name() -> None:

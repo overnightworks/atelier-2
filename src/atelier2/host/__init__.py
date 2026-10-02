@@ -15,6 +15,7 @@ from atelier2.adapters.agent_workspaces import (
     AgentScratchRootRefused,
     LocalAgentAttemptWorkspaceOwner,
 )
+from atelier2.adapters.bwrap_sandbox import resolved_sandbox_executable
 from atelier2.adapters.claude_subscription import (
     MANAGED_POLICY_ROOTS,
     ClaudeExecutableUnsupported,
@@ -41,11 +42,11 @@ from atelier2.adapters.dbos.schema import (
     initialize_schema,
 )
 from atelier2.adapters.github import GitHubCredentialUnresolvable
+from atelier2.adapters.grok_capability import verify_grok_capability
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
     attest_grok_workspace_tool_invocation,
-    verify_grok_capability,
 )
 from atelier2.adapters.project_verification import refuse_unusable_project_checkout
 from atelier2.application.project_connections import (
@@ -849,6 +850,7 @@ def _grok_subscription_settings(
         parsed.grok_workspace,
         parsed.grok_credential_directory,
         search_path,
+        resolved_sandbox_executable(search_path),
     )
     try:
         verify_grok_capability(settings.executable)
@@ -856,10 +858,9 @@ def _grok_subscription_settings(
         return _DeclaredSubscription(settings, start_refusal=str(error))
     tools_refusal = None
     if parsed.grok_workspace_tools:
-        # Startability, not a version answer: the tool-bearing invocation
-        # is the one whose flags decide what a node's process may touch, so
-        # the deployment starts that exact vector once, here, rather than
-        # discovering at the first bound node that it never spawns.
+        # Startability, not a version answer: the flags of the tool-bearing
+        # invocation decide what a node's process may touch, so the deployment
+        # starts that exact vector here rather than at the first bound node.
         try:
             attest_grok_workspace_tool_invocation(settings)
         except GrokExecutableUnsupported as error:

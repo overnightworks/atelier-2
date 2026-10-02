@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
@@ -13,6 +15,11 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     CancelAgentAttemptRequest,
+)
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationResult,
+    AgentAttemptCancellationStale,
 )
 from atelier2.ports.agent_executions import AgentSession
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
@@ -73,7 +80,80 @@ def test_supervisor_reaps_a_process_that_exits_on_term(tmp_path: Path) -> None:
         _wait_for_observed_process(store, execution.attempt_id)
         _wait_for_file(ready_file)
 
-        disposition = _cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
+        waiter.join(timeout=5)
+
+        assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
+        assert not waiter.is_alive()
+        assert len(result) == 1
+    finally:
+        runtime.close()
+
+
+def test_cancel_and_release_names_a_stale_cancellation_instead_of_attesting(
+    tmp_path: Path,
+) -> None:
+    """A cancel command built from a version loaded before `PROCESS_OBSERVED`
+    is stale: `observe_process` bumps `state_version` in between, so the
+    store answers `AgentAttemptCancellationStale`. `cancel_and_release` must
+    report that by name instead of going on to attest a cancellation the
+    store never recorded.
+    """
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        ready_file = tmp_path / "stale-ready"
+        execution = agent_attempt_execution(attempt_request(runtime, "process/stale"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+        version_before_observation = store.load(execution.attempt_id).state_version
+
+        result: list[object] = []
+        waiter = threading.Thread(
+            target=lambda: result.append(
+                supervisor.launch_and_wait(
+                    execution,
+                    process_invocation(
+                        execution.attempt_id,
+                        (
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; import sys,time; Path(sys.argv[1]).touch(); time.sleep(60)",
+                            str(ready_file),
+                        ),
+                        Path.cwd(),
+                        standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+                    ),
+                    NOTHING_IS_PERMITTED,
+                )
+            )
+        )
+        waiter.start()
+        _wait_for_observed_process(store, execution.attempt_id)
+        _wait_for_file(ready_file)
+
+        attempt = store.load(execution.attempt_id)
+        assert attempt.state_version != version_before_observation
+
+        stale_command = CancelAgentAttemptRequest(
+            attempt.run_id,
+            attempt.attempt_id,
+            "cancel-process",
+            version_before_observation,
+            AgentAttemptReplacement.NONE,
+        )
+        stale_answer = store.request_cancellation(stale_command)
+        assert isinstance(stale_answer, AgentAttemptCancellationStale)
+
+        with pytest.raises(AssertionError, match="AgentAttemptCancellationStale"):
+            _require_cancellation_accepted(stale_answer)
+
+        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_TERM
@@ -122,7 +202,7 @@ def test_supervisor_kills_and_reaps_a_process_that_ignores_term(
         _wait_for_observed_process(store, execution.attempt_id)
         _wait_for_file(ready_file)
 
-        disposition = _cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_KILL
@@ -186,7 +266,7 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
         _wait_for_file(ready_file)
         descendant_pid = _wait_for_process_id(descendant_pid_file)
 
-        disposition = _cancel_and_release(store, supervisor, execution.attempt_id)
+        disposition = cancel_and_release(store, supervisor, execution.attempt_id)
         waiter.join(timeout=5)
 
         assert disposition is AgentAttemptCancellationDisposition.REAPED_AFTER_KILL
@@ -202,6 +282,53 @@ def test_supervisor_kills_session_escaped_descendants_in_the_attempt_cgroup(
                     pass
         finally:
             runtime.close()
+
+
+def test_a_workspace_that_carries_its_own_atelier2_package_runs_none_of_it(
+    tmp_path: Path,
+) -> None:
+    """The guard that starts a provider stands in the directory that provider
+    writes, so a package dropped there must not be what the guard imports: it
+    would run before containment is joined and before any fence exists."""
+
+    workspace = tmp_path / "workspace"
+    (workspace / "atelier2").mkdir(parents=True)
+    poison = tmp_path / "ran-out-of-the-workspace"
+    (workspace / "atelier2" / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(poison)!r}).write_text('ran')\n",
+        encoding="utf-8",
+    )
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "process/poison"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        supervisor = runtime.agent_process_supervisor
+        store.prepare(execution)
+        supervisor.prepare(execution)
+        store.claim(execution)
+
+        completion = supervisor.launch_and_wait(
+            execution,
+            process_invocation(
+                execution.attempt_id,
+                (
+                    sys.executable,
+                    "-c",
+                    "import os; os.write(1, b'the guard started me')",
+                ),
+                workspace,
+                standard_output_frame_bytes=SCENARIO_PROVIDER_FRAME_BYTES,
+            ),
+            NOTHING_IS_PERMITTED,
+        )
+
+        assert completion.standard_output == b"the guard started me"
+        assert not poison.exists()
+    finally:
+        runtime.close()
 
 
 def _wait_for_file(path: Path) -> None:
@@ -223,11 +350,30 @@ def _wait_for_process_id(path: Path) -> int:
     raise AssertionError("controlled process did not publish its process id")
 
 
-def _cancel_and_release(
+def _require_cancellation_accepted(
+    response: AgentAttemptCancellationResult,
+) -> AgentAttemptCancellationAccepted:
+    """Fail loud, naming the disposition, instead of attesting a cancellation
+    the store never recorded.
+
+    A cancel command built from a `state_version` loaded before the attempt's
+    process was durably observed answers `AgentAttemptCancellationStale`
+    (`observe_process` bumps the version in between): going on to attest
+    cleanup for it produces the confusing "cleanup attestation differs from
+    its cancellation command" failure instead of naming the real cause.
+    """
+    assert isinstance(response, AgentAttemptCancellationAccepted), (
+        f"cancellation request was not accepted: {response!r}"
+    )
+    return response
+
+
+def cancel_and_release(
     store: DbosAgentAttemptStore,
     supervisor: AgentSession,
     attempt_id: AgentAttemptId,
 ) -> AgentAttemptCancellationDisposition:
+    _wait_for_observed_process(store, attempt_id)
     attempt = store.load(attempt_id)
     command = CancelAgentAttemptRequest(
         attempt.run_id,
@@ -236,7 +382,7 @@ def _cancel_and_release(
         attempt.state_version,
         AgentAttemptReplacement.NONE,
     )
-    store.request_cancellation(command)
+    _require_cancellation_accepted(store.request_cancellation(command))
     disposition, owner, generation = supervisor.cancel(store.load(attempt_id))
     terminal = store.attest_cancellation_cleanup(
         command, disposition, owner, generation

@@ -12,7 +12,7 @@ import pytest
 
 from atelier2.adapters.claude_subscription import CONFORMANT_CLAUDE_VERSIONS
 from atelier2.adapters.codex_subscription import CONFORMANT_CODEX_VERSIONS
-from atelier2.adapters.grok_subscription import CONFORMANT_GROK_VERSIONS
+from atelier2.adapters.grok_capability import CONFORMANT_GROK_VERSIONS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "install_executor_toolchain.py"
