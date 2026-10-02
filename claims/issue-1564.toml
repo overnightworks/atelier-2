@@ -1,0 +1,8 @@
+claim_id = "aa5efdb89bac441f83b366a78eb53530"
+agent = "Claude Opus 5 (head)"
+role = "builder"
+base = "c4976b6406ab9b759228eac4f562065fdc238cbf"
+branch = "claude/issue-1564-credential-per-vector"
+scope = ["src/atelier2/adapters/codex_subscription.py", "src/atelier2/adapters/grok_subscription.py", "src/atelier2/host/__init__.py", "tests/host", "tests/integration/test_codex_subscription.py", "tests/integration/test_grok_subscription.py"]
+opened_commit = "6b296dcf0affadc907639e3db60e16c0853fb19a"
+whole_reason = "Die Regel gilt fuer jeden Anbieter an einer Stelle der Komposition; die geloeschte Doppelpruefung und die strukturelle Pruefung sitzen je Adapter, ihre Beweise in den Tests beider Adapter."
