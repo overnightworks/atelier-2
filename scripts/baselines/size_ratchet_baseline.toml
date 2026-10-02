@@ -302,10 +302,6 @@ qualified_name = "atelier2.adapters.dbos.run_store.load_node_output_payload"
 lines = 115
 
 [[function]]
-qualified_name = "atelier2.adapters.dbos.run_store.load_node_outputs"
-lines = 77
-
-[[function]]
 qualified_name = "atelier2.adapters.dbos.run_transitions._commit_event"
 lines = 139
 

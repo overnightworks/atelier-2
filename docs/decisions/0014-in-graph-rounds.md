@@ -156,10 +156,18 @@ executable door was amended to admit it, with the integration proof that a
 loop starting on a Wait runs two rounds through the public start and answer
 doors.
 
-A value read *out of* a loop still names no round — the reader would have to
-say which round wrote it, and choosing is the verdict-driven continuation this
-record does not decide. That form stays refused by name at the executable
-door rather than started and abandoned.
+A value read *out of* a loop names the loop's **last executed round**: the
+highest round its source actually produced a value in, whichever way the loop
+left — a verdict's early exit or the declared bound, both handed on through
+the ordinary rule above with no round carried past the loop. The run stands in
+round one again the moment it leaves, so a reader outside asking for its own
+round would read the loop's first turn even after its last; it reads what the
+loop last wrote instead. A reader still inside the loop is untouched and keeps
+reading its own round, exactly as before. That round is a durable fact rather
+than one this record's own rule can hold, so the caller supplying it reads it
+back from what the run actually wrote.
+[#1551](https://github.com/FlexOr2/atelier-2/issues/1551) is the owning item
+for this edge.
 
 **Amendment 2026-08-26 ([#751](https://github.com/FlexOr2/atelier-2/issues/751)):
 an Action node inside a declared loop's body is deliberately out of scope, not
