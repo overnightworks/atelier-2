@@ -1,7 +1,0 @@
-claim_id = "9526602ea71b484fa6859d5f24263b68"
-agent = "Claude Opus 5 (head)"
-role = "builder"
-base = "b6887981b5ce0a4d0a9374c99c987cbcb34e58ea"
-branch = "fix/aco-pin-410"
-scope = [".github/workflows/ci.yml"]
-opened_commit = "64dca1d67f087e5cf281d996fa0d3e9a4ffa6573"
