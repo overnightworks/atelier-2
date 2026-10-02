@@ -66,7 +66,6 @@ const startAgentBindingsSchema = z
     "invalid start mutation binding"
   );
 
-const startOrderValueSchema = z.object({ name: z.string().min(1), value: z.string().min(1) }).strict();
 const startOrderWorkItemSchema = z
   .object({ name: z.string().min(1), work_item: z.string().min(1) })
   .strict();
@@ -74,11 +73,7 @@ const startOrderArtifactHashSchema = z
   .object({ name: z.string().min(1), artifact_hash: digestSchema })
   .strict();
 
-const startOrderSchema = z.union([
-  startOrderValueSchema,
-  startOrderWorkItemSchema,
-  startOrderArtifactHashSchema
-]);
+const startOrderSchema = z.union([startOrderWorkItemSchema, startOrderArtifactHashSchema]);
 
 export type StartOrder = z.infer<typeof startOrderSchema>;
 

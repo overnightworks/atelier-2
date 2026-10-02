@@ -2629,29 +2629,6 @@
         "title": "HealthResource",
         "type": "object"
       },
-      "InlineOrderResource": {
-        "additionalProperties": false,
-        "description": "One order written into the start itself: a name and the exact JSON text.\n\nThe document pins the schema. The value is the exact bytes the operator\nwrote, as UTF-8 text, so a pretty-printed file and a one-line flag stay\ndistinct material rather than being canonicalized into one hash.",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "value": {
-            "maxLength": 16384,
-            "minLength": 1,
-            "title": "Value",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "value"
-        ],
-        "title": "InlineOrderResource",
-        "type": "object"
-      },
       "InvalidFieldResource": {
         "additionalProperties": false,
         "properties": {
@@ -9923,9 +9900,6 @@
           "orders": {
             "items": {
               "anyOf": [
-                {
-                  "$ref": "#/components/schemas/InlineOrderResource"
-                },
                 {
                   "$ref": "#/components/schemas/ArtifactOrderResource"
                 },

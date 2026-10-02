@@ -7,6 +7,15 @@ import { expect, test, type Page } from "@playwright/test";
  * and does not overflow the frame. Joined order names are not purpose.
  */
 
+async function publishArtifact(page: Page, content: string): Promise<string> {
+  const published = await page.request.post("/atelier/api/v1/artifacts", {
+    headers: { "content-type": "application/octet-stream" },
+    data: content
+  });
+  expect([200, 201]).toContain(published.status());
+  return (await published.json()).artifact_hash as string;
+}
+
 async function anyJsonSchema(page: Page): Promise<string> {
   const published = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
@@ -136,6 +145,10 @@ test("a long workflow name never widens History's row past 390px, and purpose is
   await publishCheckedModelRegistry(page, "e2e-v3", "history-quality-model", agentHash);
 
   const revisionHash = await publishLongWorkflow(page, schemaHash);
+  const orders = [];
+  for (const name of ORDER_NAMES) {
+    orders.push({ name, artifact_hash: await publishArtifact(page, `"${name} material"`) });
+  }
 
   const started = await page.request.post("/atelier/api/v1/runs", {
     data: {
@@ -143,7 +156,7 @@ test("a long workflow name never widens History's row past 390px, and purpose is
       run_id: "history-quality/long-purpose",
       workflow_revision_hash: revisionHash,
       agent_bindings: [{ role: "builder", agent_configuration_revision_hash: agentHash }],
-      orders: ORDER_NAMES.map((name) => ({ name, value: `"${name} material"` }))
+      orders
     }
   });
   expect(started.status()).toBe(201);

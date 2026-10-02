@@ -33,7 +33,7 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.artifacts import Artifact
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -212,10 +212,10 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     )
 
 
-def artifact_order(runtime: DbosRuntime) -> AuthoredOrder:
-    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(DIFF))
+def artifact_order(runtime: DbosRuntime, name: str, content: bytes) -> AuthoredOrder:
+    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(content))
     assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
-    return AuthoredOrder("diff", ArtifactOrderValue(published.artifact.artifact_hash))
+    return AuthoredOrder(name, ArtifactOrderValue(published.artifact.artifact_hash))
 
 
 def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
@@ -243,8 +243,8 @@ def test_a_code_review_without_context_is_refused_before_a_run_exists(
             workflow.revision_hash,
             bindings,
             orders=(
-                artifact_order(runtime),
-                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+                artifact_order(runtime, "diff", DIFF),
+                artifact_order(runtime, "review_questions", QUESTIONS),
             ),
         )
     )
@@ -255,7 +255,7 @@ def test_a_code_review_without_context_is_refused_before_a_run_exists(
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
-def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_result(
+def test_a_code_review_round_trips_its_orders_to_an_object_result(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     schema = read_schema_document(RESULT_SCHEMA.document)
@@ -272,9 +272,9 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
             workflow.revision_hash,
             bindings,
             orders=(
-                artifact_order(runtime),
-                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
-                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
+                artifact_order(runtime, "diff", DIFF),
+                artifact_order(runtime, "review_questions", QUESTIONS),
+                artifact_order(runtime, "context", CONTEXT),
             ),
         )
     )
@@ -333,9 +333,9 @@ def test_a_code_review_object_the_schema_refuses_never_becomes_a_success(
             workflow.revision_hash,
             bindings,
             orders=(
-                artifact_order(runtime),
-                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
-                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
+                artifact_order(runtime, "diff", DIFF),
+                artifact_order(runtime, "review_questions", QUESTIONS),
+                artifact_order(runtime, "context", CONTEXT),
             ),
         )
     )

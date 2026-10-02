@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+from collections.abc import Sequence
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
@@ -116,6 +117,34 @@ def bounded_invalid_field(path: str, reason: str) -> InvalidFieldResource:
     )
 
 
+def _order_name_from_body(body: object, index: object) -> str | None:
+    """The order's own declared name, when the raw body still carries it.
+
+    `orders/0` alone tells a caller which position failed, not which order it
+    wrote; folding the declared name back into the path lets the refusal
+    speak the caller's own vocabulary instead of a position.
+    """
+    if not isinstance(body, dict) or not isinstance(index, int):
+        return None
+    orders = body.get("orders")
+    if not isinstance(orders, list) or not (0 <= index < len(orders)):
+        return None
+    order = orders[index]
+    name = order.get("name") if isinstance(order, dict) else None
+    return name if isinstance(name, str) else None
+
+
+def _named_validation_path(loc: Sequence[object], body: object) -> str:
+    parts = [str(part) for part in loc]
+    for position, part in enumerate(loc):
+        if part == "orders" and position + 1 < len(loc):
+            name = _order_name_from_body(body, loc[position + 1])
+            if name is not None:
+                parts[position + 1] = name
+            break
+    return "/".join(parts) or "request"
+
+
 def invalid_fields_from_validation(
     error: RequestValidationError,
 ) -> tuple[InvalidFieldResource, ...]:
@@ -123,10 +152,36 @@ def invalid_fields_from_validation(
     fields: list[InvalidFieldResource] = []
     for item in error.errors():
         loc = item.get("loc", ())
-        path = "/".join(str(part) for part in loc) or "request"
+        path = _named_validation_path(loc, error.body)
         reason = str(item.get("msg") or item.get("type") or "invalid")
         fields.append(bounded_invalid_field(path, reason))
     return tuple(fields)
+
+
+def _run_start_body_rejects_agent_bindings_shape(
+    error: RequestValidationError,
+) -> bool:
+    """True only when the body's own matching request shape rejects
+    `agent_bindings` or `workflow_format_version` themselves.
+
+    `AnyStartRunRequestResource` is a bare union of three request shapes, so
+    pydantic reports every shape's mismatch: a v3 body with a malformed
+    `orders` entry still carries `agent_bindings` complaints from the v1 and
+    v2 shapes it was never written for. The shape whose own
+    `workflow_format_version` field validated (or that has none, for the
+    legacy shape) is the one the caller meant; only its complaints decide
+    this refusal.
+    """
+    fields_by_shape: dict[object, set[str]] = {}
+    for item in error.errors():
+        loc = item.get("loc", ())
+        if len(loc) < 3:
+            continue
+        fields_by_shape.setdefault(loc[1], set()).add(str(loc[2]))
+    return any(
+        "workflow_format_version" not in fields and "agent_bindings" in fields
+        for fields in fields_by_shape.values()
+    )
 
 
 def install_problem_handlers(
@@ -145,8 +200,7 @@ def install_problem_handlers(
         if (
             request.method == "POST"
             and request.url.path == versioned_run_start_path
-            and isinstance(error.body, dict)
-            and {"workflow_format_version", "agent_bindings"}.intersection(error.body)
+            and _run_start_body_rejects_agent_bindings_shape(error)
         ):
             return problem_response("invalid-agent-bindings")
         fields = invalid_fields_from_validation(error)

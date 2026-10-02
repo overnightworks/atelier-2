@@ -14,7 +14,6 @@ from atelier2.contracts.host_configuration import UncastRole
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
-    InlineOrderValue,
     ObservedWorkItemOrderValue,
     StartOrderValue,
     WorkItemOrderValue,
@@ -215,12 +214,7 @@ class AuthoredOrder:
             raise ValueError("an order names a nonempty input")
         if not isinstance(
             self.value,
-            (
-                InlineOrderValue,
-                ArtifactOrderValue,
-                ObservedWorkItemOrderValue,
-                WorkItemOrderValue,
-            ),
+            (ArtifactOrderValue, ObservedWorkItemOrderValue, WorkItemOrderValue),
         ):
             raise TypeError("an order names where its value comes from")
 

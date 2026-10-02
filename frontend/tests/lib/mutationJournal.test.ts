@@ -8,7 +8,7 @@ import {
   type MutationEnvelope,
   type MutationEvidence
 } from "../../src/lib/mutationJournal";
-import { exactBody, utf8Base64 } from "../support/exactBytes";
+import { utf8Base64 } from "../support/exactBytes";
 
 const revisionHash = "5e828c8d522a41e966cd17b8172ede0d954f44be653f832cd4f9dc9e8271fb9b";
 const requestHash = "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047";
@@ -228,12 +228,13 @@ describe("MutationJournal exact transport truth", () => {
     );
   });
 
-  it("retains a V3 start that carries the exact order bytes", async () => {
+  it("retains a V3 start that carries its order through an uncertain reload", async () => {
+    const artifactHash = "e".repeat(64);
     const envelope = startMutation(
       "run-1",
       revisionHash,
       [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }],
-      [{ name: "portions", value: '{"portions": 7}' }]
+      [{ name: "portions", artifact_hash: artifactHash }]
     );
     const journal = new MutationJournal(sessionStorage);
     await journal.prepare(envelope);
@@ -244,20 +245,9 @@ describe("MutationJournal exact transport truth", () => {
       delivery: "uncertain"
     });
     const body = JSON.parse(globalThis.atob(envelope.body_base64)) as {
-      orders: Array<{ name: string; value: string }>;
+      orders: Array<{ name: string; artifact_hash: string }>;
     };
-    expect(body.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
-  });
-
-  it("retains a V3 start order's non-ASCII UTF-8 bytes exactly", () => {
-    const envelope = startMutation("run-1", revisionHash, [], [
-      { name: "notes", value: "Grüße 東京" }
-    ]);
-
-    const body = JSON.parse(exactBody(envelope)) as {
-      orders: Array<{ name: string; value: string }>;
-    };
-    expect(body.orders).toEqual([{ name: "notes", value: "Grüße 東京" }]);
+    expect(body.orders).toEqual([{ name: "portions", artifact_hash: artifactHash }]);
   });
 
   it("retains a V3 start whose order names a published artifact", async () => {
@@ -286,19 +276,14 @@ describe("MutationJournal exact transport truth", () => {
     ).rejects.toThrow(/invalid start mutation order/);
   });
 
-  it("refuses a V3 start whose order is empty or duplicated", async () => {
+  it("refuses a V3 start whose order is duplicated", async () => {
     const journal = new MutationJournal(sessionStorage);
     const bound = [{ role: "cook", agent_configuration_revision_hash: "c".repeat(64) }];
     await expect(
       journal.prepare(
-        startMutation("run-1", revisionHash, bound, [{ name: "portions", value: "" }])
-      )
-    ).rejects.toThrow(/invalid start mutation order/);
-    await expect(
-      journal.prepare(
         startMutation("run-1", revisionHash, bound, [
-          { name: "portions", value: "1" },
-          { name: "portions", value: "2" }
+          { name: "portions", artifact_hash: "1".repeat(64) },
+          { name: "portions", artifact_hash: "2".repeat(64) }
         ])
       )
     ).rejects.toThrow(/invalid start mutation order/);

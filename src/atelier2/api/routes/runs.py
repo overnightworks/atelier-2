@@ -45,7 +45,6 @@ from atelier2.api.wire.requests import (
     CancelAgentAttemptRequestResource,
     CancelRunRequestResource,
     ForkRunRequestResource,
-    InlineOrderResource,
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
@@ -163,11 +162,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
-from atelier2.contracts.orders import (
-    ArtifactOrderValue,
-    InlineOrderValue,
-    WorkItemOrderValue,
-)
+from atelier2.contracts.orders import ArtifactOrderValue, WorkItemOrderValue
 from atelier2.contracts.pages import DEFAULT_PAGE_LIMIT
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
@@ -244,8 +239,6 @@ def _refuse_work_item_order(
 def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
     """The order one wire shape is, in the vocabulary the start speaks."""
     match order:
-        case InlineOrderResource(name=name, value=value):
-            return AuthoredOrder(name, InlineOrderValue(value.encode()))
         case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
             return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact_hash)))
         case WorkItemOrderResource(name=name, work_item=work_item):
