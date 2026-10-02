@@ -213,7 +213,7 @@ async function openUncertainSheet(page: Page, fileName: string, document: string
   await expect(sheet.getByRole("button", { name: catalogPageCopy.close })).toHaveCount(0);
   const add = sheet.getByRole("button", { name: catalogPageCopy.addToCatalog });
   await expect(add).toBeDisabled();
-  await expect(add).toHaveAttribute("title", catalogPageCopy.noKindDeclared);
+  await expect(sheet.getByText(catalogPageCopy.noKindDeclared)).toBeVisible();
   await expect(sheet.getByRole("button", { name: catalogPageCopy.kindWorkflow, exact: true })).toBeVisible();
   await expect(sheet.getByRole("button", { name: catalogPageCopy.kindAgent, exact: true })).toBeVisible();
   await expect(sheet.getByRole("group", { name: catalogPageCopy.kind }).getByRole("button")).toHaveCount(

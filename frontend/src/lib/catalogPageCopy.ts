@@ -1,3 +1,4 @@
+import type { AgentConfigurationRevisionListItem } from "../api/client";
 import type { CatalogNameState } from "./catalogName";
 
 /** Git's own short-hash convention (`git rev-parse --short`). */
@@ -72,7 +73,7 @@ export const catalogPageCopy = {
   kindAgent: "Agent",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
-  noKindDeclared: "no kind declared yet",
+  noKindDeclared: "Choose a kind above to add this to the catalog.",
   importFailed: "This file could not be imported.",
   recognitionFailed: "This file could not be recognized.",
   notAWorkflow: "This is not a workflow — nothing was added.",
@@ -202,23 +203,52 @@ export function startAccountSuffix(accountId: string): string {
   return ` · Account ${accountId}`;
 }
 
-export function startUnavailableSuffix(): string {
-  return ` · ◇ ${workflowStartCopy.unavailable}`;
+/** The wire's own closed vocabulary (`client.ts`'s generated enum) for why a
+ * listed agent configuration cannot start -- never widened to a bare
+ * `string`, so a fifth reason breaks this file's build until it is mapped. */
+type NotStartableReason = NonNullable<AgentConfigurationRevisionListItem["not_startable_reason"]>;
+
+/**
+ * One sentence per reason, true of every case that reason covers
+ * (`agent_catalog.py`'s precedence), not just its most common one: a model
+ * can lack a checked registration because none was ever made, because a newer
+ * revision superseded it, or because an entry is still unchecked, and a live
+ * check can be missing because none was ever taken or because the only one on
+ * file is no longer current.
+ *
+ * No sentence names its role -- the row's own label carries it -- and none
+ * names a repair this surface does not offer: nothing in the console renews a
+ * live check, so those two sentences point at the one door the role's own
+ * select does have.
+ */
+const NOT_STARTABLE_SENTENCE: Readonly<Record<NotStartableReason, string>> = {
+  "agent-executor-binding-unavailable":
+    "This model cannot run in this workshop — choose a different one.",
+  "model-not-registered":
+    "This model is not checked in Settings — check or correct it there.",
+  "provider-probe-receipt-missing":
+    "This model has no current live check — choose a different one.",
+  "provider-probe-failed":
+    "This model's last live check failed — choose a different one."
+};
+
+/** Why this role cannot start, or the bare badge when the host named no reason. */
+export function startNotStartableReason(reason: NotStartableReason | null): string {
+  return reason === null ? workflowStartCopy.unavailable : NOT_STARTABLE_SENTENCE[reason];
 }
 
-export function pinnedModelLine(model: string, account: string, unavailable: string): string {
-  return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}${unavailable}`;
+export function pinnedModelLine(model: string, account: string): string {
+  return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}`;
 }
 
 export function projectDefaultLine(
   difficulty: number,
   model: string,
   nextHigher: boolean,
-  account: string,
-  unavailable: string
+  account: string
 ): string {
   const fallback = nextHigher ? ` (${workflowStartCopy.nextHigher})` : "";
-  return `difficulty ${difficulty} → ${model}${fallback}${account}${unavailable}`;
+  return `difficulty ${difficulty} → ${model}${fallback}${account}`;
 }
 
 export function startOrderGroup(name: string): string {
