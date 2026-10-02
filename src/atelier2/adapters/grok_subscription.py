@@ -264,6 +264,7 @@ _ANSWERED_TOOL_USE_ID_FIELD = "tool_use_id"
 _RESULT_FIELD = "result"
 _LINE_SUBTYPE_FIELD = "subtype"
 _ERROR_FLAG_FIELD = "is_error"
+_ERRORS_FIELD = "errors"
 _USAGE_FIELD = "usage"
 _INPUT_TOKENS_FIELD = "input_tokens"
 _OUTPUT_TOKENS_FIELD = "output_tokens"
@@ -973,17 +974,22 @@ def _terminal_refusal_step(entry: dict[str, object]) -> ProviderTerminalRefusal 
     which names the ending the CLI gave itself, and `result`, its own last
     words. Claude's twin reads an `api_error_status` beside them; grok writes no
     such field, so this step keeps it as the empty text the contract reserves
-    for a provider release that does not carry it.
+    for a provider release that does not carry it. A refusal can also reach
+    this line as `errors[]` rather than `result`.
     """
 
     if entry.get(_ERROR_FLAG_FIELD) is not True:
         return None
     ending = entry.get(_LINE_SUBTYPE_FIELD)
     last_words = entry.get(_RESULT_FIELD)
+    errors = entry.get(_ERRORS_FIELD)
+    error_lines = (
+        error if isinstance(error, str) else _canonical_json(error)
+        for error in (errors if isinstance(errors, list) else ())
+    )
+    parts = (last_words if isinstance(last_words, str) else "", *error_lines)
     return ProviderTerminalRefusal(
-        ending if isinstance(ending, str) else "",
-        "",
-        last_words if isinstance(last_words, str) else "",
+        ending if isinstance(ending, str) else "", "", "\n".join(filter(None, parts))
     )
 
 
@@ -1036,12 +1042,6 @@ class GrokStreamedSession:
     terminal_envelope: dict[str, object] | None
     opened_a_door: bool
 
-    @property
-    def transcript(self) -> AttemptTranscript | None:
-        """What this call did, or an honest nothing where it wrote no line."""
-
-        return AttemptTranscript.of(self.steps) if self.steps else None
-
 
 def _streamed_session(standard_output: bytes) -> GrokStreamedSession:
     """Read one whole `--output-format streaming-messages-json` call back."""
@@ -1055,6 +1055,17 @@ def _streamed_session(standard_output: bytes) -> GrokStreamedSession:
     return GrokStreamedSession(
         steps, terminal, any(isinstance(step, ToolCalled) for step in steps)
     )
+
+
+def _transcript_with_standard_error(
+    session: GrokStreamedSession, standard_error: bytes
+) -> AttemptTranscript | None:
+    """This session's own steps, plus its child's own stderr lines."""
+
+    steps = session.steps + tuple(
+        UnrecognisedProviderOutput(line) for line in _stream_lines(standard_error)
+    )
+    return AttemptTranscript.of(steps) if steps else None
 
 
 @dataclass(frozen=True)
@@ -1722,7 +1733,7 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
 
         del invocation
         session = _streamed_session(completion.standard_output)
-        transcript = session.transcript
+        transcript = _transcript_with_standard_error(session, completion.standard_error)
         if completion.return_code != 0:
             return _unusable_provider_answer(transcript)
         envelope = session.terminal_envelope
