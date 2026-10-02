@@ -292,14 +292,12 @@ def started_runtime(
 
 
 @pytest.fixture
-def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     yield from started_runtime(tmp_path, ("exact",))
 
 
 @pytest.fixture
-def three_provider_runtime(
-    tmp_path: Path, dbos_logging_isolation: None
-) -> Iterator[DbosRuntime]:
+def three_provider_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
     yield from started_runtime(tmp_path, ("exact", "openai", "anthropic"))
 
 

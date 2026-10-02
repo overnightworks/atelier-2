@@ -171,7 +171,7 @@ jobs:
               --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
               "${npm_path}" run "${script}"
           }
-          # The mockup-comparison screenshots (REQ-UIQ-11, #994): its own
+          # The mockup-comparison screenshots (REQ-UIQ-14, #994): its own
           # fresh webServer boot, run first so its own (much smaller)
           # Playwright JSON report is overwritten by the two full runs below
           # rather than the other way around -- the acceptance trace reads
@@ -220,7 +220,7 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      # The mockup-comparison evidence REQ-UIQ-11 asks a human to look at
+      # The mockup-comparison evidence REQ-UIQ-14 asks a human to look at
       # (#994): every core surface at 1280/390, light/dark. This is what the
       # screenshot review gate's refusal message tells the operator to look
       # at before approving a scope digest.
@@ -398,7 +398,7 @@ jobs:
       - name: Check types
         run: uv run --locked pyright src tests scripts
 
-      # REQ-UIQ-11's freshness gate (#994): refuses without a ledger entry
+      # REQ-UIQ-14's freshness gate (#994): refuses without a ledger entry
       # whose scope digest matches HEAD. The ledger ships empty, so this is
       # expected to refuse until the operator approves the screenshot
       # artifact the frontend job uploads and a matching entry lands in
@@ -655,7 +655,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      # check reads `.agent-claim/board.toml` under the git toplevel and
+      # check reads `.aco/board.toml` under the git toplevel and
       # fetches the coordination store `refs/aco/state` from the checkout's
       # origin with the checkout's credentials, so this job keeps them.
       - name: Check out the event commit
@@ -677,7 +677,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uvx --from git+https://github.com/overnightworks/agent-claim.git@v1.0.0 aco --repo ${{ github.repository }} check ${{ github.event.pull_request.number }}
+        run: uvx --from git+https://github.com/overnightworks/agent-coordination.git@v4.0.0 aco --repo ${{ github.repository }} check ${{ github.event.pull_request.number }}
 
       - name: Hold the required check name for the merge queue
         if: ${{ github.event_name == 'merge_group' }}
